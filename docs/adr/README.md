@@ -27,9 +27,13 @@ Unlike the upstream NATS repository, this index is **maintained by hand** — ad
 a row when you add an ADR. Keep the metadata table and header format identical
 to the template above.
 
-| Index                          | Tags             | Description                                       |
-|--------------------------------|------------------|---------------------------------------------------|
-| [ADR-1](ADR-1.md)              | api, controller  | Project resource (placeholder — design pending)   |
+| Index             | Tags                  | Description                                                        |
+|-------------------|-----------------------|-------------------------------------------------------------------|
+| [ADR-1](ADR-1.md) | api, controller       | Project resource (placeholder — design pending)                   |
+| [ADR-2](ADR-2.md) | api, principles       | Core platform principles; KRM is the primary platform API         |
+| [ADR-3](ADR-3.md) | rbac, authz, security | Authorization via Kubernetes RBAC and group membership            |
+| [ADR-4](ADR-4.md) | api, multi-tenancy    | The platform API must support multiple tenants                    |
+| [ADR-5](ADR-5.md) | api, billing, quotas  | Chargeback, quotas, and limits following the GCP model            |
 
 ## Status values
 
