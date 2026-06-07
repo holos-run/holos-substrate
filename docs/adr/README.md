@@ -29,7 +29,7 @@ to the template above.
 
 | Index             | Tags                  | Description                                                        |
 |-------------------|-----------------------|-------------------------------------------------------------------|
-| [ADR-1](ADR-1.md) | api, controller       | Project resource (placeholder — design pending)                   |
+| [ADR-1](ADR-1.md) | api, multi-tenancy    | Project resource: the platform tenant, adopted from the GCP Project |
 | [ADR-2](ADR-2.md) | api, principles       | Core platform principles; KRM is the primary platform API         |
 | [ADR-3](ADR-3.md) | rbac, authz, security | Authorization via Kubernetes RBAC and group membership            |
 | [ADR-4](ADR-4.md) | api, multi-tenancy    | The platform API must support multiple tenants                    |

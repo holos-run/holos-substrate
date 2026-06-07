@@ -25,6 +25,7 @@ second authorization system alongside Kubernetes?
 - [Kubernetes RBAC](https://kubernetes.io/docs/reference/access-authn-authz/rbac/)
 - [Kubernetes Authentication](https://kubernetes.io/docs/reference/access-authn-authz/authentication/)
 - [ADR-4 — Multi-Tenancy](ADR-4.md) (tenant-scoped authorization)
+- [ADR-1 — Project Resource](ADR-1.md) (the tenant authorization is scoped to)
 
 ## Design
 
@@ -66,5 +67,7 @@ bespoke platform workflows.
   resources, optionally namespaced). Designs that need finer-grained controls
   must model that within RBAC or justify, per [ADR-2](ADR-2.md), why the KRM and
   RBAC are not fit for purpose.
-- Tenant-scoped authorization (see [ADR-4](ADR-4.md)) is expressed with
-  namespaced roles and group bindings per tenant.
+- Tenant-scoped authorization (see [ADR-4](ADR-4.md)) is expressed with RBAC
+  roles and group bindings scoped to the `Project` ([ADR-1](ADR-1.md)); the
+  precise scoping mechanism follows the `Project` implementation, which is
+  deferred in [ADR-1](ADR-1.md).
