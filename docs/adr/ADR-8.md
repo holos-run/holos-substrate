@@ -26,6 +26,8 @@ rest of the pipeline?
 - [ADR-9 — Webhook Receiver: Thin NATS Ingress](ADR-9.md) (consumes the push
   webhook)
 - [OCI Distribution Spec](https://github.com/opencontainers/distribution-spec)
+- [Research: Handling Image-Tag Updates in Argo CD with an OCI Manifest Source](../research/argocd-oci-image-tag-updates.md)
+  (the two-artifact model and digest pinning)
 
 ## Design
 
@@ -37,6 +39,15 @@ separate version concept layered on top of the image tag for the MVP.
 A push of a new tag must emit a **registry webhook** to the receiver
 ([ADR-9](ADR-9.md)). The webhook delivery is what starts a deployment; the
 registry is therefore both the artifact store and the event source.
+
+The research on Argo CD OCI delivery
+([report](../research/argocd-oci-image-tag-updates.md)) draws out a distinction
+this milestone must carry forward: there are **two** OCI artifacts — the
+**application image** (this ADR) and the **rendered-manifests artifact** that
+Argo CD syncs ([ADR-11](ADR-11.md)). Because Holos bakes the application image
+tag into the rendered manifests, the deployed version is ultimately selected by
+the manifests artifact's `targetRevision`. Prefer **immutable, digest-pinned
+references** so "what is deployed" is exact and auditable for both artifacts.
 
 > **Planning note for the milestone:** decide and document:
 >

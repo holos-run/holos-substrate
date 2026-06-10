@@ -168,6 +168,11 @@ version; the controller reconciles the cluster to it.
   `RayCluster` from M1).
 - RBAC for the deployer's write access, scoped to the `Project`.
 - Conditions/events on `Application.status` for user feedback.
+- Delivery mechanism: when GitOps is introduced it must stay **GitHub-free** —
+  Argo CD syncs rendered manifests from an **OCI artifact** and the deployer sets
+  the Argo CD `Application`'s `targetRevision`. See
+  [Research: ArgoCD OCI image-tag updates](../research/argocd-oci-image-tag-updates.md)
+  (recommends native OCI + controller patch; Kargo as the growth path).
 - **Deferred (track as future issues, not MVP):**
   - GitOps reconciliation — unify current → desired, run `holos render platform`
     as the main step, automated commit of rendered manifests.

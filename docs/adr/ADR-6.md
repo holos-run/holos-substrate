@@ -37,6 +37,8 @@ its own status and revision history.
   - [ADR-11 — Deployer Task Subscriber and the Application Resource](ADR-11.md)
 - [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream)
 - [JetStream WorkQueue retention](https://docs.nats.io/nats-concepts/jetstream/streams#retentionpolicy)
+- [Research: Handling Image-Tag Updates in Argo CD with an OCI Manifest Source](../research/argocd-oci-image-tag-updates.md)
+  (how the terminal stage reaches Argo CD without Git)
 
 ## Design
 

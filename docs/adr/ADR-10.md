@@ -52,7 +52,12 @@ Two simplifications are **deliberately deferred**:
 
 > **Planning note for the milestone:** define the deployer task message schema
 > (a stable, versioned contract: application identity, image reference, tag,
-> source event metadata), the processor subject/stream and its retention, the
+> source event metadata). Carry enough to resolve the **rendered-manifests
+> artifact version** (digest/tag), not only the app image tag, so the deployer
+> can set the Argo CD `Application`'s `targetRevision` directly — see the
+> [research report](../research/argocd-oci-image-tag-updates.md) and
+> [ADR-11](ADR-11.md). Also define the processor subject/stream and its
+> retention, the
 > parser for the chosen registry's payload ([ADR-8](ADR-8.md)), idempotency keys
 > so a redelivered raw event does not double-dispatch, and the failure path for
 > unparseable or unknown payloads (dead-letter vs. ack-and-drop).

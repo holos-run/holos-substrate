@@ -27,6 +27,8 @@ does it relate to the KRM ([ADR-2](ADR-2.md)) and to production-grade GitOps?
 - [ADR-2 — Core Platform Principles](ADR-2.md) (the KRM is the primary API)
 - [ADR-1 — Project Resource](ADR-1.md) (the tenant that owns the `Application`)
 - [Holos](https://holos.run/) — `holos render platform` as the GitOps render step
+- [Research: Handling Image-Tag Updates in Argo CD with an OCI Manifest Source](../research/argocd-oci-image-tag-updates.md)
+  — informs the deferred GitOps mechanism below
 
 ## Design
 
@@ -44,7 +46,16 @@ Two layers are **deliberately deferred** beyond the MVP:
   the resource directly, a production pipeline would unify *current* state into
   the *desired*-state config as a pre-step, run **`holos render platform`** as
   the main step, and require an **automated commit** of the rendered manifests.
-  The deployer's direct write is the MVP shortcut for this loop.
+  The deployer's direct write is the MVP shortcut for this loop. When this work
+  is taken up it **must remain GitHub-independent for the MVP**: the research
+  ([report](../research/argocd-oci-image-tag-updates.md)) concludes that Argo CD
+  should sync the rendered manifests from an **OCI artifact**, and the deployer
+  should update the Argo CD `Application`'s **`targetRevision`** to the new
+  artifact digest — Argo CD native OCI source, no Git write-back. **Kargo** is
+  the chosen growth path for registry-watching and the separation-of-duty gate
+  below; **Argo CD Image Updater is not used** with rendered manifests because
+  its Git-free method updates Helm/Kustomize parameters only, not
+  `targetRevision`.
 - **Separation of duty for production promotion.** A production deploy could
   require an out-of-band approval — for example a **+1 reaction on a chat
   message** — to satisfy the separation-of-duty control before the change is
@@ -69,7 +80,10 @@ Two layers are **deliberately deferred** beyond the MVP:
    follow-up ADR (see the planning note).
 3. **GitOps reconciliation** — unify current into desired state, then
    `holos render platform` with an automated commit — is **deferred** beyond the
-   MVP.
+   MVP. When undertaken it stays **GitHub-independent**: Argo CD syncs rendered
+   manifests from an **OCI artifact** and the deployer updates the Argo CD
+   `Application`'s `targetRevision`, per the
+   [research report](../research/argocd-oci-image-tag-updates.md).
 4. **Separation-of-duty gating** for production promotion (e.g. a +1 chat
    reaction) is **deferred** beyond the MVP.
 
