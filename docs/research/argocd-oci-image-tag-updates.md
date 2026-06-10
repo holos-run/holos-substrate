@@ -7,6 +7,10 @@
 | Status   | Informational (informs ADR-6, 8, 10, 11) |
 | Tags     | argocd, oci, gitops, deployer, research |
 
+> **Follow-up:** this report leaves open who *produces* the rendered-manifests
+> artifact when a new app image arrives. That question is answered in
+> [Research: Performing the Re-render + ORAS Publish Step in the Event-Driven Pipeline](rendered-manifests-publish-pipeline.md).
+
 ## Purpose
 
 This report researches the state-of-the-art, open-source, Kubernetes-native
