@@ -34,6 +34,12 @@ to the template above.
 | [ADR-3](ADR-3.md) | rbac, authz, security | Authorization via Kubernetes RBAC and group membership            |
 | [ADR-4](ADR-4.md) | api, multi-tenancy    | The platform API must support multiple tenants                    |
 | [ADR-5](ADR-5.md) | api, billing, quotas  | Chargeback, quotas, and limits following the GCP model            |
+| [ADR-6](ADR-6.md) | pipeline, mvp, nats   | MVP Heroku-style deployment pipeline on a NATS JetStream backbone |
+| [ADR-7](ADR-7.md) | workload, build       | KubeRay reference workload on k3d (Apple Silicon), multi-stage build |
+| [ADR-8](ADR-8.md) | registry, build       | Container registry and image tagging; the tag is the version      |
+| [ADR-9](ADR-9.md) | webhook, nats, ingress | Thin webhook receiver posting raw bodies to a NATS WorkQueue      |
+| [ADR-10](ADR-10.md) | webhook, subscriber | Webhook subscriber parses events and dispatches a deployer task   |
+| [ADR-11](ADR-11.md) | api, deployer, gitops | Deployer updates the Application resource; GitOps/SoD deferred   |
 
 ## Status values
 
