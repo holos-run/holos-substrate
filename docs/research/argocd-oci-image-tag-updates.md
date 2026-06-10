@@ -40,6 +40,15 @@ confusion in this space:
    `holos render`, packaged as an OCI artifact (via ORAS) and synced by Argo CD
    as its Application source.
 
+> **ORAS** ([OCI Registry As Storage](https://oras.land/)) is the CNCF tool and
+> set of client libraries for pushing and pulling **arbitrary artifacts** — not
+> just container images — to any OCI-compliant registry. It packages content
+> (here, a tarball of rendered YAML) as an OCI artifact with a media type the
+> consumer recognizes; Argo CD's OCI source accepts ORAS's default layer media
+> type (`application/vnd.oci.image.layer.v1.tar+gzip`) for plain manifests. ORAS
+> is how the rendered-manifests artifact gets *into* the registry that Argo CD
+> syncs *from*.
+
 Because Holos **bakes the application image tag into the rendered manifests at
 render time**, the manifests artifact is *specific to* an application image
 version. Consequently, in this architecture the act of "update the image tag"
