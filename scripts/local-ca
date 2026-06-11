@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Vendored from https://github.com/holos-run/holos/blob/main/doc/website/static/scripts/local-ca
+# Documentation: https://github.com/holos-run/holos/blob/main/doc/md/topics/local-cluster.mdx
+#
+# Install a local mkcert root CA into the k3d cluster so cert-manager can
+# issue trusted TLS certificates for *.holos.localhost.
+#
+# The local-ca Secret (cert-manager namespace) is the integration point for
+# HOL-1116 cert-manager.  This script creates the cert-manager namespace
+# before cert-manager itself is installed — that is intentional: cert-manager's
+# ClusterIssuer references the Secret, so the Secret must exist first.  Do not
+# rename the namespace or the Secret.
+#
+# Prerequisites:
+#   - mkcert   (https://github.com/FiloSottile/mkcert#installation)
+#   - kubectl  (cluster must be reachable via current kubeconfig)
+#   - sudo access (mkcert --install writes to the system trust store)
+#     Run `sudo -v` before this script if your sudo timestamp has expired.
+#
+# Run this script after creating the cluster with scripts/local-k3d.
+# The generated namespace.yaml and local-ca.yaml are saved to $(mkcert -CAROOT)
+# (mode 0600 for local-ca.yaml) so you can reapply them after a cluster reset
+# without re-running mkcert --install.
+
+set -euo pipefail
+
+mkcert --install
+
+tmpdir="$(mktemp -d)"
+finish() {
+  [[ -d "$tmpdir" ]] && rm -rf "$tmpdir"
+}
+trap finish EXIT
+cd "$tmpdir"
+
+# Create the local CA Secret with ca.crt, tls.crt, tls.key
+
+mkdir local-ca
+cd local-ca
+CAROOT="$(mkcert -CAROOT)"
+cp -p "${CAROOT}/rootCA.pem" ca.crt
+cp -p "${CAROOT}/rootCA.pem" tls.crt
+cp -p "${CAROOT}/rootCA-key.pem" tls.key
+kubectl create secret generic --from-file=. --dry-run=client -o yaml local-ca > ../local-ca.yaml
+echo 'type: kubernetes.io/tls' >> ../local-ca.yaml
+
+cd ..
+
+cat <<EOF > namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    kubernetes.io/metadata.name: cert-manager
+  name: cert-manager
+spec:
+  finalizers:
+  - kubernetes
+EOF
+kubectl apply --server-side=true -f namespace.yaml
+kubectl apply -n cert-manager --server-side=true -f local-ca.yaml
+
+# Save the manifests to CAROOT for cluster resets.
+# local-ca.yaml contains the CA private key — install it with mode 0600.
+install -m 0644 namespace.yaml "${CAROOT}/namespace.yaml"
+install -m 0600 local-ca.yaml "${CAROOT}/local-ca.yaml"
+
+echo "local-ca Secret applied to cert-manager namespace."
+echo "Saved namespace.yaml and local-ca.yaml to ${CAROOT} for cluster resets."

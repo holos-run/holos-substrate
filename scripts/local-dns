@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Vendored from https://github.com/holos-run/holos/blob/main/doc/website/static/scripts/local-dns
+# Documentation: https://github.com/holos-run/holos/blob/main/doc/md/topics/local-cluster.mdx
+#
+# Configure macOS DNS to resolve *.holos.localhost to 127.0.0.1 via dnsmasq.
+# This is necessary for requests to reach the local k3d workload cluster.
+#
+# NOTE: This script is macOS-only. It uses Homebrew, launchctl, /etc/resolver,
+# and mDNSResponder — all macOS-specific. Linux users should configure dnsmasq
+# (or systemd-resolved) themselves to point *.holos.localhost at 127.0.0.1.
+# The MVP demo target is an Apple Silicon Mac (ADR-7).
+#
+# Prerequisites:
+#   - macOS (Apple Silicon or Intel)
+#   - Homebrew  (https://brew.sh/)
+#   - sudo access (required to write /etc/resolver and manage LaunchDaemon)
+#
+# Run this script once before creating the cluster with scripts/local-k3d.
+
+set -euo pipefail
+
+tmpdir="$(mktemp -d)"
+finish() {
+  [[ -d "$tmpdir" ]] && rm -rf "$tmpdir"
+}
+trap finish EXIT
+cd "$tmpdir"
+
+brew install dnsmasq
+
+cat <<EOF >"$(brew --prefix)/etc/dnsmasq.d/holos.localhost.conf"
+# Refer to https://holos.run/docs/tutorial/local/k3d/
+address=/holos.localhost/127.0.0.1
+EOF
+
+if [[ -r /Library/LaunchDaemons/homebrew.mxcl.dnsmasq.plist ]]; then
+  echo "dnsmasq already configured"
+else
+  sudo cp "$(brew list dnsmasq | grep 'dnsmasq.plist$')" \
+    /Library/LaunchDaemons/homebrew.mxcl.dnsmasq.plist
+  sudo launchctl unload /Library/LaunchDaemons/homebrew.mxcl.dnsmasq.plist
+  sudo launchctl load /Library/LaunchDaemons/homebrew.mxcl.dnsmasq.plist
+  dscacheutil -flushcache
+  echo "dnsmasq configured"
+fi
+
+sudo mkdir -p /etc/resolver
+sudo tee /etc/resolver/holos.localhost <<EOF
+domain holos.localhost
+nameserver 127.0.0.1
+EOF
+sudo killall -HUP mDNSResponder
+
+echo "all done."
