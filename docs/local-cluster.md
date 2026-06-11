@@ -20,7 +20,8 @@ for the full milestone plan.
 2. [k3d](https://k3d.io/#installation) — local Kubernetes via Docker
 3. [kubectl](https://kubernetes.io/docs/tasks/tools/) — Kubernetes CLI
 4. [mkcert](https://github.com/FiloSottile/mkcert) — trusted local TLS certificates
-5. [jq](https://jqlang.github.io/jq/download/) — JSON processing (used by cluster scripts)
+5. [jq](https://jqlang.org/) — JSON processing (used by cluster scripts)
+6. [Homebrew](https://brew.sh/) — macOS only, required by `scripts/local-dns`
 
 ## One-Time DNS Setup
 
