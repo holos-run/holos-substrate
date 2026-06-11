@@ -6,7 +6,7 @@
 # semantics). Any workloads or ephemeral state in the existing cluster will be
 # lost. Press Ctrl-C during the countdown to abort.
 #
-# Create a local k3d cluster named "workload" with a local registry.
+# Create a local k3d cluster named "holos" with a local registry.
 #
 # Prerequisites:
 #   - k3d    (https://k3d.io/#installation)
@@ -17,7 +17,7 @@
 # After creating the cluster, run scripts/local-ca to set up trusted TLS.
 #
 # Environment variable overrides:
-#   CLUSTER_NAME   — cluster name             (default: workload)
+#   CLUSTER_NAME   — cluster name             (default: holos)
 #   REGISTRY_NAME  — registry hostname        (default: registry.holos.localhost)
 #   REGISTRY_PORT  — registry host port       (default: 5100)
 #
@@ -28,7 +28,7 @@
 
 set -euo pipefail
 
-CLUSTER_NAME="${CLUSTER_NAME:-workload}"
+CLUSTER_NAME="${CLUSTER_NAME:-holos}"
 REGISTRY_NAME="${REGISTRY_NAME:-registry.holos.localhost}"
 REGISTRY_PORT="${REGISTRY_PORT:-5100}"
 # k3d prepends "k3d-" to the registry hostname when creating the Docker container.
@@ -77,7 +77,6 @@ fi
 echo "Creating cluster '${CLUSTER_NAME}' from ${REPO_ROOT}/k3d/config.yaml..."
 k3d cluster create \
   --config "${REPO_ROOT}/k3d/config.yaml" \
-  --name "${CLUSTER_NAME}" \
   --registry-use "${K3D_REGISTRY_NAME}:${REGISTRY_PORT}"
 
 echo "Cluster '${CLUSTER_NAME}' created successfully."

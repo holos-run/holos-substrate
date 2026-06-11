@@ -1,10 +1,9 @@
-# Declarative k3d cluster configuration for the local "workload" cluster.
+# Declarative k3d cluster configuration for the local "holos" cluster.
 # Documentation: https://github.com/holos-run/holos/blob/main/doc/md/topics/local-cluster.mdx
 #
 # Apply with: scripts/local-k3d  (recommended — handles registry lifecycle)
 # Or directly (defaults):
 #   k3d cluster create --config k3d/config.yaml \
-#     --name workload \
 #     --registry-use k3d-registry.holos.localhost:5100
 #
 # This file defines the static cluster shape: port mappings and k3s args.
@@ -16,7 +15,7 @@
 apiVersion: k3d.io/v1alpha5
 kind: Simple
 metadata:
-  name: workload
+  name: holos
 servers: 1
 ports:
   - port: 80:80
