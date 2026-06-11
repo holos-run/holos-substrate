@@ -78,6 +78,16 @@ platform: {
 				cluster:   CLUSTER.name
 				labels: app: "istio"
 			}}).output
+
+			// istio-gateway emits the shared Gateway all platform services
+			// attach HTTPRoutes to.  Applies after the Istio control plane
+			// components above: the istio GatewayClass must exist and istiod
+			// must be running to program the Gateway.
+			(#ComponentTemplate & {inputs: {
+				component: "istio-gateway"
+				cluster:   CLUSTER.name
+				labels: app: "istio"
+			}}).output
 		}
 	}
 }
