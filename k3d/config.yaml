@@ -2,15 +2,16 @@
 # Documentation: https://github.com/holos-run/holos/blob/main/doc/md/topics/local-cluster.mdx
 #
 # Apply with: scripts/local-k3d  (recommended — handles registry lifecycle)
-# Or directly (defaults):
+# Or directly (defaults, cluster name taken from metadata.name below):
 #   k3d cluster create --config k3d/config.yaml \
 #     --registry-use k3d-registry.holos.localhost:5100
 #
 # This file defines the static cluster shape: port mappings and k3s args.
 # The cluster name, registry attachment, and registry port are passed at
-# runtime by scripts/local-k3d (via --name and --registry-use) so that the
-# CLUSTER_NAME, REGISTRY_NAME, and REGISTRY_PORT env vars are fully honored
-# without editing this file.
+# runtime by scripts/local-k3d (positional NAME argument and --registry-use)
+# so that the CLUSTER_NAME, REGISTRY_NAME, and REGISTRY_PORT env vars are
+# fully honored without editing this file. The metadata.name below is the
+# default used only when applying this config directly without a NAME arg.
 ---
 apiVersion: k3d.io/v1alpha5
 kind: Simple

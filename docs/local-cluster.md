@@ -54,23 +54,23 @@ This creates:
 
 The static cluster shape — port mappings, k3s args — is defined in
 [`k3d/config.yaml`](../k3d/config.yaml), which is the source of truth for
-cluster structure. The registry hostname and port are passed at runtime by
-`scripts/local-k3d` via `--registry-use`, so `REGISTRY_NAME` and
-`REGISTRY_PORT` are fully honored without editing `k3d/config.yaml`.
-
-> **Note:** `CLUSTER_NAME` controls which existing cluster is deleted and the
-> name printed in log output, but the created cluster name is always taken from
-> `k3d/config.yaml` (`name: holos`) because `scripts/local-k3d` does not pass
-> `--name` to `k3d cluster create`. To use a different cluster name, edit
-> `k3d/config.yaml` directly.
+cluster structure. The cluster name, registry hostname, and registry port are
+passed at runtime by `scripts/local-k3d` (positional name argument and
+`--registry-use`), so `CLUSTER_NAME`, `REGISTRY_NAME`, and `REGISTRY_PORT`
+are fully honored without editing `k3d/config.yaml`.
 
 **Environment variable overrides:**
 
-| Variable        | Default                     | Description                                        |
-|-----------------|-----------------------------|----------------------------------------------------|
-| `CLUSTER_NAME`  | `holos`                     | Cluster name for deletion check and log messages   |
-| `REGISTRY_NAME` | `registry.holos.localhost`  | Registry hostname (honored at creation)            |
-| `REGISTRY_PORT` | `5100`                      | Registry host port (honored at creation)           |
+| Variable        | Default                     | Description                                  |
+|-----------------|-----------------------------|----------------------------------------------|
+| `CLUSTER_NAME`  | `holos`                     | Cluster name (honored at creation and reset) |
+| `REGISTRY_NAME` | `registry.holos.localhost`  | Registry hostname (honored at creation)      |
+| `REGISTRY_PORT` | `5100`                      | Registry host port (honored at creation)     |
+
+> **Note:** only one cluster created from this config can exist at a time —
+> the config binds host ports 80 and 443, so creating a second cluster under a
+> different `CLUSTER_NAME` fails with a port conflict until the first is
+> deleted.
 
 ## Setup Trusted TLS
 
@@ -99,6 +99,15 @@ To reset to a clean state:
 scripts/local-k3d    # Deletes and recreates the cluster (5-second abort window)
 sudo -v
 scripts/local-ca     # Re-installs the mkcert root CA
+```
+
+Alternatively, reapply the manifests saved by the previous `scripts/local-ca`
+run without re-running `mkcert --install`:
+
+```bash
+scripts/local-k3d
+kubectl apply --server-side=true -f "$(mkcert -CAROOT)/namespace.yaml"
+kubectl apply --server-side=true -f "$(mkcert -CAROOT)/local-ca.yaml"
 ```
 
 ## Clean Up

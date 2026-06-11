@@ -23,8 +23,8 @@
 #
 # The static cluster shape (port mappings, k3s args) lives in k3d/config.yaml.
 # Cluster name, registry attachment, and registry port are all passed at runtime
-# (--name, --registry-use) so all three env vars are fully honored without
-# editing k3d/config.yaml.
+# (positional NAME argument and --registry-use) so all three env vars are fully
+# honored without editing k3d/config.yaml.
 
 set -euo pipefail
 
@@ -72,10 +72,11 @@ if ! k3d registry list -o json | jq -e --arg name "${K3D_REGISTRY_NAME}" '.[] | 
   k3d registry create "${REGISTRY_NAME}" --port "${REGISTRY_PORT}"
 fi
 
-# Create the cluster: static shape from config, name and registry
-# passed at runtime so all three env vars are fully honored.
+# Create the cluster: static shape from config, name and registry passed at
+# runtime so all three env vars are fully honored. The positional NAME argument
+# overrides metadata.name in k3d/config.yaml.
 echo "Creating cluster '${CLUSTER_NAME}' from ${REPO_ROOT}/k3d/config.yaml..."
-k3d cluster create \
+k3d cluster create "${CLUSTER_NAME}" \
   --config "${REPO_ROOT}/k3d/config.yaml" \
   --registry-use "${K3D_REGISTRY_NAME}:${REGISTRY_PORT}"
 
