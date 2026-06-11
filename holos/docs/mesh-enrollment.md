@@ -25,11 +25,15 @@ HBONE (HTTP-Based Overlay Network Environment) with mutual TLS. Workloads
 need no sidecar and no restart-ordering relationship with the mesh — the
 label is the entire enrollment.
 
-This platform has no central namespaces component yet — each component emits
-its own Namespace resource and carries the label itself, as
-[`components/echo/buildplan.cue`](../components/echo/buildplan.cue) does. If
-a central namespaces component is added later, the convention (and the
-labels) move there.
+Namespaces are declared in the central namespaces registry
+([`holos/namespaces.cue`](../namespaces.cue)), rendered by the
+[`namespaces`](../components/namespaces/) component — register a namespace
+and its enrollment label there, not inline in a component. Each registry
+entry declares enrollment deliberately; the exceptions below document the
+namespaces that are deliberately not enrolled. Some components (`echo`,
+`istio-base`, `istio-gateway`) still emit a transitional inline copy of
+their Namespace; those copies converge under server-side apply and are
+slated for removal (HOL-1162).
 
 ## Verifying enrollment
 
@@ -62,5 +66,5 @@ kubectl logs -n istio-system -l app=ztunnel | grep <pod-name>
   infrastructure secures its own control-plane connections natively.
 - **`istio-gateways`** — the auto-provisioned gateway pods are Envoy proxies
   themselves and terminate mesh traffic natively, so redirecting them through
-  ztunnel adds nothing. See the comment in
-  [`components/istio-gateway/buildplan.cue`](../components/istio-gateway/buildplan.cue).
+  ztunnel adds nothing. See the registry entry in
+  [`holos/namespaces.cue`](../namespaces.cue).

@@ -62,12 +62,25 @@ holos/components/gateway-api/
 
 ## One file per resource (kubectl-slice guardrail)
 
-Components that emit multiple Kubernetes resources MUST slice their output
-into one file per resource with a `holos kubectl-slice` `Command` transformer.
-Never write multiple resources to a single artifact file: generators in
-general (Helm, Resources, upstream bundles) do not guarantee a stable
-resource order, so bundled files produce noisy diffs and false drift on
-re-render, and per-resource files diff cleanly and let apply tools prune.
+Components MUST render one file per resource. Never write multiple resources
+to a single artifact file: generators in general (Helm, Resources, upstream
+bundles) do not guarantee a stable resource order, so bundled files produce
+noisy diffs and false drift on re-render, and per-resource files diff cleanly
+and let apply tools prune.
+
+Two conforming shapes satisfy the guardrail:
+
+1. **Slice a bundle** — components whose generators emit a multi-resource
+   bundle slice it into one file per resource with a `holos kubectl-slice`
+   `Command` transformer (the worked example below).
+2. **One resource per artifact, CUE-natively** — components that iterate a
+   CUE struct may instead emit one file artifact per resource, each produced
+   by a single `Resources` generator whose `output` is the artifact directly,
+   with no transformers. Each artifact contains exactly one resource by
+   construction, so there is never a bundle to slice. The worked example is
+   [`components/namespaces/buildplan.cue`](../components/namespaces/buildplan.cue),
+   which renders one `namespace-<name>.yaml` per entry of the central
+   namespaces registry ([`holos/namespaces.cue`](../namespaces.cue)).
 
 The artifact is a *directory* (the component's deploy path), and the final
 transformer slices the bundle into it. From
@@ -216,8 +229,10 @@ Before approving a component PR:
 
 - [ ] Component integrates through `userDefinedBuildPlan` (not the
       author-style wrappers).
-- [ ] Multi-resource output is sliced one file per resource via the
-      `holos kubectl-slice` transformer; the artifact is a directory.
+- [ ] One file per resource: either multi-resource output is sliced via the
+      `holos kubectl-slice` transformer (the artifact is a directory), or
+      each artifact is a single-resource file produced directly by its own
+      `Resources` generator.
 - [ ] Upstream version pinned once in CUE with a compatibility comment.
 - [ ] Fetched manifests cached under `manifests/` and committed; the fetch
       script is executable and concurrency-safe.

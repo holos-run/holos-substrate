@@ -63,17 +63,22 @@ kubectl apply --server-side --force-conflicts -f holos/deploy/clusters/k3d-holos
 Apply order matters beyond "CRD components first". Apply the Layer 0
 components in this order:
 
-1. `gateway-api` — Gateway API standard channel CRDs (`crds: "true"`)
-2. `istio-base` — Istio CRDs and validation webhook (`crds: "true"`)
-3. `istiod` — the Istio control plane
-4. `istio-cni` — the node agent that redirects ambient pod traffic to ztunnel
-5. `istio-ztunnel` — the ambient node proxy
-6. `istio-gateway` — the shared Gateway all platform services attach
+1. `namespaces` — every platform Namespace, from the central registry
+   ([namespaces.cue](namespaces.cue)); labeled `namespaces: "true"` so apply
+   tooling can select it
+2. `gateway-api` — Gateway API standard channel CRDs (`crds: "true"`)
+3. `istio-base` — Istio CRDs and validation webhook (`crds: "true"`)
+4. `istiod` — the Istio control plane
+5. `istio-cni` — the node agent that redirects ambient pod traffic to ztunnel
+6. `istio-ztunnel` — the ambient node proxy
+7. `istio-gateway` — the shared Gateway all platform services attach
    `HTTPRoute`s to
-7. `echo` — the permanent smoke-test workload and its `HTTPRoute`
+8. `echo` — the permanent smoke-test workload and its `HTTPRoute`
 
-The order encodes four rules: CRD components (labeled `crds: "true"`) apply
-before the controllers that depend on their types; `istiod` applies before
+The order encodes five rules: the `namespaces` component applies first,
+because namespaced resources cannot be created until their Namespace exists;
+CRD components (labeled `crds: "true"`) apply before the controllers that
+depend on their types; `istiod` applies before
 the Gateway, because the `istio` GatewayClass must exist and istiod must be
 running to program the Gateway; `istio-cni` and `istio-ztunnel` apply before
 ambient-enrolled workloads like `echo`, because they must be capturing
