@@ -16,9 +16,12 @@
 #     together, then run this script; a clean exit confirms the committed
 #     tree matches the CUE.  The script requires a tree with no uncommitted
 #     changes under holos/ and fails fast otherwise — both by design and so
-#     the deploy-tree removal below can never delete uncommitted work.  If
-#     the render itself fails after the deploy tree was removed, restore it
-#     with: git restore holos/deploy
+#     the deploy-tree removal below can never delete uncommitted work
+#     (gitignored files under holos/deploy are the one exception: they are
+#     invisible to the precondition and removed without warning; ignored
+#     files are disposable by convention).  If the render itself fails after
+#     the deploy tree was removed, an error trap restores the committed tree
+#     and removes partial render output automatically.
 #   - CI: run on a fresh checkout; any diff fails the build.
 #
 # Prerequisites:
@@ -49,7 +52,10 @@ fi
 # Require a clean holos/ tree before touching anything: the deploy tree is
 # removed below, so an uncommitted change or untracked file under holos/
 # must fail here, before it could be silently deleted, rather than after.
-STATUS="$(git -C "${REPO_ROOT}" status --porcelain -- holos)"
+# --untracked-files=all overrides any status.showUntrackedFiles=no in the
+# user's git config, which would otherwise hide untracked files from this
+# guard and the post-render check alike.
+STATUS="$(git -C "${REPO_ROOT}" status --porcelain --untracked-files=all -- holos)"
 if [[ -n "${STATUS}" ]]; then
   echo "ERROR: holos/ has uncommitted changes; commit or stash them first:" >&2
   echo "${STATUS}" >&2
@@ -61,21 +67,35 @@ fi
 # deletions in the status check below.
 rm -rf "${REPO_ROOT}/holos/deploy"
 
+# If the render fails after the deploy tree was removed, restore the
+# committed tree and remove partial render output so the next run starts
+# from the precondition-clean state.
+restore_deploy() {
+  git -C "${REPO_ROOT}" restore -- holos/deploy
+  git -C "${REPO_ROOT}" clean -qfd -- holos/deploy
+}
+trap restore_deploy ERR
+
 echo "Rendering platform from ${REPO_ROOT}/holos ..."
 (cd "${REPO_ROOT}/holos" && holos render platform)
+
+# Render succeeded; on drift below we want the tree left as-is for
+# inspection, not restored.
+trap - ERR
 
 # Fail when the render left modified or deleted tracked files, or new
 # untracked files, under holos/.  git status --porcelain covers all three.
 # Scoped to holos/ — rendering writes only there — so unrelated local
 # changes elsewhere in the repo never fail the check.
-STATUS="$(git -C "${REPO_ROOT}" status --porcelain -- holos)"
+STATUS="$(git -C "${REPO_ROOT}" status --porcelain --untracked-files=all -- holos)"
 if [[ -n "${STATUS}" ]]; then
   echo "ERROR: holos/ has uncommitted changes after holos render platform:" >&2
   echo "${STATUS}" >&2
   # The diff is empty when the status is untracked-files-only; print it only
-  # when tracked files changed.
+  # when tracked files changed.  --no-ext-diff keeps the output
+  # deterministic regardless of any diff.external in the user's git config.
   if ! git -C "${REPO_ROOT}" diff --quiet -- holos; then
-    git -C "${REPO_ROOT}" --no-pager diff -- holos >&2
+    git -C "${REPO_ROOT}" --no-pager diff --no-ext-diff -- holos >&2
   fi
   echo "ERROR: commit the CUE change and the regenerated holos/deploy tree" >&2
   echo "       together (see holos/docs/component-guidelines.md)." >&2
