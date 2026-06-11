@@ -19,6 +19,11 @@
 
 set -euo pipefail
 
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "ERROR: this script is macOS-only. See the header comment for Linux instructions." >&2
+  exit 1
+fi
+
 brew install dnsmasq
 
 # Ensure the dnsmasq.d directory exists (brew install creates it, but be safe).
@@ -30,9 +35,12 @@ address=/holos.localhost/127.0.0.1
 EOF
 
 if [[ -r /Library/LaunchDaemons/homebrew.mxcl.dnsmasq.plist ]]; then
-  echo "dnsmasq already configured"
+  echo "dnsmasq already configured; reloading to pick up any config changes..."
+  sudo launchctl unload /Library/LaunchDaemons/homebrew.mxcl.dnsmasq.plist
+  sudo launchctl load /Library/LaunchDaemons/homebrew.mxcl.dnsmasq.plist
 else
-  plist="$(brew list dnsmasq | grep 'dnsmasq.plist$' | head -1)"
+  # || true prevents set -e from exiting before the emptiness check below.
+  plist="$(brew list dnsmasq | grep 'dnsmasq.plist$' | head -1 || true)"
   if [[ -z "$plist" ]]; then
     echo "ERROR: could not locate dnsmasq.plist in brew list output" >&2
     exit 1
