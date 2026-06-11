@@ -1,22 +1,33 @@
 #!/usr/bin/env bash
 # Render the Holos platform and verify the committed deploy tree is diff-clean.
 #
-# Runs `holos render platform` from holos/ and fails if anything under holos/
-# is modified or untracked afterward — a non-empty status means the committed
-# deploy tree (holos/deploy/) is stale or a component renders
-# non-deterministically.  See the render-then-commit workflow in
-# holos/docs/component-guidelines.md.
+# Removes holos/deploy/, re-runs `holos render platform` from holos/, and
+# fails if anything under holos/ is modified, deleted, or untracked afterward.
+# Removing the deploy tree first makes orphans detectable: `holos render
+# platform` never prunes files it no longer writes, so a component removed
+# from CUE would otherwise leave its committed manifests behind and still
+# pass a plain re-render check.  After this script the deploy tree exactly
+# matches what the CUE renders — a non-empty status means the committed tree
+# is stale, orphaned, or a component renders non-deterministically.  See the
+# render-then-commit workflow in holos/docs/component-guidelines.md.
 #
 # Usable locally and by future CI:
 #   - Locally: commit the CUE change and the regenerated holos/deploy tree
 #     together, then run this script; a clean exit confirms the committed
 #     tree matches the CUE.  Run it from a tree with no uncommitted changes
-#     under holos/ — pre-existing edits there fail the check by design.
+#     under holos/ — pre-existing edits there fail the check by design.  If
+#     the render itself fails after the deploy tree was removed, restore it
+#     with: git restore holos/deploy
 #   - CI: run on a fresh checkout; any diff fails the build.
 #
 # Prerequisites:
 #   - holos  (https://holos.run/docs/cli/)
 #   - git
+#
+# NOTE: prerequisite checks are inline rather than a copy of the check_prereq
+# helper shared verbatim by scripts/local-{ca,dns,k3d} — their NOTE blocks
+# call for consolidating into a shared helper if a fourth copy appears, so
+# this script deliberately avoids creating one.
 
 set -euo pipefail
 
@@ -29,19 +40,32 @@ if ! command -v holos >/dev/null 2>&1; then
   echo "       Install from https://holos.run/docs/cli/" >&2
   exit 1
 fi
+if ! command -v git >/dev/null 2>&1; then
+  echo "ERROR: 'git' not found on PATH." >&2
+  exit 1
+fi
+
+# Remove the committed deploy tree before rendering so files the render no
+# longer writes (orphans from components removed from CUE) surface as
+# deletions in the status check below.
+rm -rf "${REPO_ROOT}/holos/deploy"
 
 echo "Rendering platform from ${REPO_ROOT}/holos ..."
 (cd "${REPO_ROOT}/holos" && holos render platform)
 
-# Fail when the render left modified tracked files or new untracked files
-# under holos/.  git status --porcelain covers both.  Scoped to holos/ —
-# rendering writes only there — so unrelated local changes elsewhere in the
-# repo never fail the check.
+# Fail when the render left modified or deleted tracked files, or new
+# untracked files, under holos/.  git status --porcelain covers all three.
+# Scoped to holos/ — rendering writes only there — so unrelated local
+# changes elsewhere in the repo never fail the check.
 STATUS="$(git -C "${REPO_ROOT}" status --porcelain -- holos)"
 if [[ -n "${STATUS}" ]]; then
   echo "ERROR: holos/ has uncommitted changes after holos render platform:" >&2
   echo "${STATUS}" >&2
-  git -C "${REPO_ROOT}" --no-pager diff -- holos >&2
+  # The diff is empty when the status is untracked-files-only; print it only
+  # when tracked files changed.
+  if ! git -C "${REPO_ROOT}" diff --quiet -- holos; then
+    git -C "${REPO_ROOT}" --no-pager diff -- holos >&2
+  fi
   echo "ERROR: commit the CUE change and the regenerated holos/deploy tree" >&2
   echo "       together (see holos/docs/component-guidelines.md)." >&2
   exit 1

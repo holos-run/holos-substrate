@@ -190,8 +190,10 @@ Rendered manifests under `holos/deploy/` are build artifacts that are
    immediately after a commit must produce no diff (`git diff --exit-code`).
    A dirty re-render means the component renders non-deterministically — fix
    that before merging. `scripts/render` (from the repo root) mechanizes
-   this check: it renders and exits non-zero if anything under `holos/` is
-   modified or untracked afterward.
+   this check: it removes `holos/deploy/`, re-renders, and exits non-zero
+   if anything under `holos/` is modified, deleted, or untracked afterward
+   — removing the tree first also catches orphaned manifests left behind
+   by components removed from CUE, which a plain re-render never prunes.
 
 ## Conformance checklist
 
@@ -207,5 +209,8 @@ Before approving a component PR:
 - [ ] CRDs isolated in a dedicated component labeled `crds: "true"`.
 - [ ] Registered in `platform/platform.cue` via `#ComponentTemplate` with an
       explicit `cluster:` field.
-- [ ] `scripts/render` exits 0: `holos render platform` succeeds and the
-      committed `holos/deploy/` tree is diff-clean on re-render.
+- [ ] `scripts/render` exits 0: `holos render platform` succeeds and nothing
+      under `holos/` is modified, deleted, or untracked afterward — the
+      committed `holos/deploy/` tree matches the CUE exactly (no stale or
+      orphaned files). Note the check covers all of `holos/`, so uncommitted
+      CUE edits fail it by design.
