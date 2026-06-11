@@ -6,7 +6,7 @@ Set up a local k3d cluster for development and testing. After completing this
 guide you'll have a Kubernetes API server with proper DNS and TLS certificates.
 
 This is the Layer 0 foundation for the Holos PaaS MVP — see
-[docs/planning/holos-paas-mvp-milestones.md](planning/holos-paas-mvp-milestones.md)
+[Holos PaaS MVP Milestones](planning/holos-paas-mvp-milestones.md)
 for the full milestone plan.
 
 > **Platform note:** `scripts/local-dns` is macOS-only. The MVP demo target is
@@ -53,18 +53,23 @@ This creates:
 
 The static cluster shape — port mappings, k3s args — is defined in
 [`k3d/config.yaml`](../k3d/config.yaml), which is the source of truth for
-cluster structure. The cluster name, registry attachment, and registry port are
-passed at runtime by `scripts/local-k3d` so that the `CLUSTER_NAME`,
-`REGISTRY_NAME`, and `REGISTRY_PORT` environment variable overrides are fully
-honored without editing `k3d/config.yaml`.
+cluster structure. The registry hostname and port are passed at runtime by
+`scripts/local-k3d` via `--registry-use`, so `REGISTRY_NAME` and
+`REGISTRY_PORT` are fully honored without editing `k3d/config.yaml`.
+
+> **Note:** `CLUSTER_NAME` controls which existing cluster is deleted and the
+> name printed in log output, but the created cluster name is always taken from
+> `k3d/config.yaml` (`name: holos`) because `scripts/local-k3d` does not pass
+> `--name` to `k3d cluster create`. To use a different cluster name, edit
+> `k3d/config.yaml` directly.
 
 **Environment variable overrides:**
 
-| Variable        | Default                     | Description              |
-|-----------------|-----------------------------|--------------------------|
-| `CLUSTER_NAME`  | `holos`                     | k3d cluster name         |
-| `REGISTRY_NAME` | `registry.holos.localhost`  | Registry hostname        |
-| `REGISTRY_PORT` | `5100`                      | Registry host port       |
+| Variable        | Default                     | Description                                        |
+|-----------------|-----------------------------|----------------------------------------------------|
+| `CLUSTER_NAME`  | `holos`                     | Cluster name for deletion check and log messages   |
+| `REGISTRY_NAME` | `registry.holos.localhost`  | Registry hostname (honored at creation)            |
+| `REGISTRY_PORT` | `5100`                      | Registry host port (honored at creation)           |
 
 ## Setup Trusted TLS
 
@@ -91,6 +96,7 @@ To reset to a clean state:
 
 ```bash
 scripts/local-k3d    # Deletes and recreates the cluster (5-second abort window)
+sudo -v
 scripts/local-ca     # Re-installs the mkcert root CA
 ```
 
@@ -100,4 +106,5 @@ Remove the cluster entirely:
 
 ```bash
 k3d cluster delete holos
+k3d registry delete registry.holos.localhost
 ```
