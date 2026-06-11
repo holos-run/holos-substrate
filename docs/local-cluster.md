@@ -52,6 +52,17 @@ This creates:
 - A k3d cluster named `holos` with ports 80 and 443 forwarded to the load
   balancer and Traefik disabled
 
+With Traefik disabled, nothing answers on ports 80/443 until the platform's
+Layer 0 components are applied. The shared Istio Gateway (the `istio-gateway`
+component) then serves port 80, and platform services attach `HTTPRoute`s to
+it. The Gateway has no HTTPS/443 listener yet — it arrives with cert-manager
+(HOL-1116) — so port 443 still answers nothing even after Layer 0 is applied.
+See
+[How rendered manifests reach the cluster](../holos/README.md#how-rendered-manifests-reach-the-cluster)
+for the component apply order, and
+[mesh-enrollment.md](../holos/docs/mesh-enrollment.md) for how workload
+namespaces enroll in the ambient mesh.
+
 The static cluster shape — port mappings, k3s args — is defined in
 [`k3d/config.yaml`](../k3d/config.yaml), which is the source of truth for
 cluster structure. The cluster name, registry hostname, and registry port are

@@ -37,7 +37,9 @@ acceptable while every namespace on the cluster is platform-managed, but it
 permits hostname squatting once untrusted tenant namespaces exist (Gateway API
 resolves route conflicts oldest-wins). Before tenant workloads land, tighten
 the policy to `from: Selector` with a namespace label selector (or per-tenant
-listeners) and document the enrollment convention.
+listeners) and document the route-attachment convention — a separate concern
+from the ambient mesh enrollment convention in
+[mesh-enrollment.md](mesh-enrollment.md), which is already in force.
 
 ## Production deployment area
 
