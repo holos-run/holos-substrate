@@ -1,7 +1,7 @@
 # Writing ADRs
 
 This guide explains how to write an Architecture Decision Record (ADR) for
-holos-controller. The format follows the
+holos-paas. The format follows the
 [NATS architecture-and-design](https://github.com/nats-io/nats-architecture-and-design)
 convention, scoped to ADR documents only. Read this before adding or changing an
 ADR.
@@ -10,7 +10,7 @@ ADR.
 
 An ADR captures a decision that is worth remembering: the design of an API
 resource, the behavior of a reconciler, or a convention that applies across the
-controller. Write one when a choice has consequences others will need to
+platform. Write one when a choice has consequences others will need to
 understand later — not for routine, easily reversed decisions.
 
 ADRs are **living documents**. When a decision evolves, prefer revising the
