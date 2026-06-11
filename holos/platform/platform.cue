@@ -39,11 +39,12 @@ platform: {
 			// Istio ambient-mode control plane, rendered from the upstream
 			// Helm charts.  Manifests are applied manually during Layer 0
 			// bootstrap (see holos/README.md) in this order: gateway-api →
-			// istio-base → istiod → istio-cni → istio-ztunnel.  istio-base
-			// ships the Istio CRDs, so it is labeled crds: "true" and applies
-			// before the controllers that depend on them.  Note the webhook
-			// failurePolicy caveat in holos/README.md before re-applying
-			// istio-base or istiod: istiod manages that field at runtime.
+			// istio-base → istiod → istio-cni → istio-ztunnel →
+			// istio-gateway.  istio-base ships the Istio CRDs, so it is
+			// labeled crds: "true" and applies before the controllers that
+			// depend on them.  Note the webhook failurePolicy caveat in
+			// holos/README.md before re-applying istio-base or istiod: istiod
+			// manages that field at runtime.
 			(#ComponentTemplate & {inputs: {
 				name:      "istio-base"
 				component: "base"
@@ -75,6 +76,16 @@ platform: {
 				name:      "istio-ztunnel"
 				component: "ztunnel"
 				prefix:    "components/istio"
+				cluster:   CLUSTER.name
+				labels: app: "istio"
+			}}).output
+
+			// istio-gateway emits the shared Gateway all platform services
+			// attach HTTPRoutes to.  Applies after the Istio control plane
+			// components above: the istio GatewayClass must exist and istiod
+			// must be running to program the Gateway.
+			(#ComponentTemplate & {inputs: {
+				component: "istio-gateway"
 				cluster:   CLUSTER.name
 				labels: app: "istio"
 			}}).output
