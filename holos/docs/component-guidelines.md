@@ -49,6 +49,16 @@ holos/components/gateway-api/
   and executable (`chmod +x`). See
   [`components/gateway-api/read-thru-cache`](../components/gateway-api/read-thru-cache)
   for the canonical shape.
+- **`vendor/`** applies to components with a `Helm` generator. The holos
+  Helm generator is itself a read-through cache: the first render pulls the
+  chart from its repository and extracts it under
+  `vendor/<VERSION>/<chart>/` in the component directory; later renders use
+  the cache without network access. Commit the `vendor/` tree for the same
+  reasons `manifests/` caches are committed — offline-reproducible rendering
+  and review-visible upstream content. The root `.gitignore` anchors the Go
+  dependency rule to `/vendor/` precisely so these component-level trees
+  stay tracked. See [`components/istio/`](../components/istio/) for the
+  worked example.
 
 ## One file per resource (kubectl-slice guardrail)
 
@@ -206,6 +216,7 @@ Before approving a component PR:
 - [ ] Upstream version pinned once in CUE with a compatibility comment.
 - [ ] Fetched manifests cached under `manifests/` and committed; the fetch
       script is executable and concurrency-safe.
+- [ ] Helm charts cached under `vendor/<VERSION>/<chart>/` and committed.
 - [ ] CRDs isolated in a dedicated component labeled `crds: "true"`.
 - [ ] Registered in `platform/platform.cue` via `#ComponentTemplate` with an
       explicit `cluster:` field.

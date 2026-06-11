@@ -25,12 +25,13 @@ userDefinedBuildPlan: {
 						// configuration and binaries.  The single registered
 						// cluster is k3d, so set the paths unconditionally; gate
 						// them behind a cluster tag when a non-k3s cluster is
-						// registered.  See
+						// registered.  The chart's platform: "k3d" knob sets the
+						// same two values via files/profile-platform-k3d.yaml;
+						// the paths are pinned explicitly here so the rendered
+						// configuration is visible at the definition site.  See
 						// https://istio.io/latest/docs/ambient/install/platform-prerequisites/#k3d
-						cni: {
-							cniConfDir: "/var/lib/rancher/k3s/agent/etc/cni/net.d"
-							cniBinDir:  "/bin"
-						}
+						cniConfDir: "/var/lib/rancher/k3s/agent/etc/cni/net.d"
+						cniBinDir:  "/bin"
 					}
 				}
 			}]
@@ -40,6 +41,9 @@ userDefinedBuildPlan: {
 					inputs: [for G in generators {G.output}]
 					output: "kustomize-output-bundle.yaml"
 					kustomize: kustomization: {
+						// Forces istio-system onto every namespaced resource.  The
+						// charts emit nothing destined for another namespace today;
+						// re-verify that assumption when bumping IstioVersion.
 						namespace: IstioNamespace
 						resources: inputs
 					}

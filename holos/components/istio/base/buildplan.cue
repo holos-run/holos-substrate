@@ -31,7 +31,7 @@ userDefinedBuildPlan: {
 				{
 					kind:   "Resources"
 					output: "namespace.gen.yaml"
-					resources: Namespace: "istio-system": {
+					resources: Namespace: (IstioNamespace): {
 						apiVersion: "v1"
 						kind:       "Namespace"
 						metadata: name: IstioNamespace
@@ -44,6 +44,9 @@ userDefinedBuildPlan: {
 					inputs: [for G in generators {G.output}]
 					output: "kustomize-output-bundle.yaml"
 					kustomize: kustomization: {
+						// Forces istio-system onto every namespaced resource.  The
+						// charts emit nothing destined for another namespace today;
+						// re-verify that assumption when bumping IstioVersion.
 						namespace: IstioNamespace
 						resources: inputs
 					}

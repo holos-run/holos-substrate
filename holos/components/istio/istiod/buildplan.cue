@@ -29,6 +29,9 @@ userDefinedBuildPlan: {
 					inputs: [for G in generators {G.output}]
 					output: "kustomize-output-bundle.yaml"
 					kustomize: kustomization: {
+						// Forces istio-system onto every namespaced resource.  The
+						// charts emit nothing destined for another namespace today;
+						// re-verify that assumption when bumping IstioVersion.
 						namespace: IstioNamespace
 						resources: inputs
 					}
