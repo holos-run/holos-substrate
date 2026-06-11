@@ -32,8 +32,8 @@ and its enrollment label there, not inline in a component. Each registry
 entry declares enrollment deliberately; the exceptions below document the
 namespaces that are deliberately not enrolled. Some components (`echo`,
 `istio-base`, `istio-gateway`) still emit a transitional inline copy of
-their Namespace; those copies are byte-equivalent under server-side apply
-and are slated for removal (HOL-1162).
+their Namespace; those copies converge under server-side apply and are
+slated for removal (HOL-1162).
 
 ## Verifying enrollment
 
@@ -66,5 +66,5 @@ kubectl logs -n istio-system -l app=ztunnel | grep <pod-name>
   infrastructure secures its own control-plane connections natively.
 - **`istio-gateways`** — the auto-provisioned gateway pods are Envoy proxies
   themselves and terminate mesh traffic natively, so redirecting them through
-  ztunnel adds nothing. See the comment in
-  [`components/istio-gateway/buildplan.cue`](../components/istio-gateway/buildplan.cue).
+  ztunnel adds nothing. See the registry entry in
+  [`holos/namespaces.cue`](../namespaces.cue).
