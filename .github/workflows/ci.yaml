@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  scripts:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # shellcheck is preinstalled on ubuntu-latest runners.
+      - name: shellcheck
+        run: shellcheck scripts/local-ca scripts/local-dns scripts/local-k3d
+
+      # The three scripts each carry a verbatim copy of check_prereq so they
+      # stay standalone (see the NOTE blocks in each script). This check makes
+      # that invariant self-enforcing: the copies must stay
+      # character-identical.
+      - name: check_prereq copies are character-identical
+        run: |
+          set -euo pipefail
+          extract() { sed -n '/^check_prereq() {$/,/^}$/p' "$1"; }
+          extract scripts/local-ca  > /tmp/check_prereq.local-ca
+          extract scripts/local-dns > /tmp/check_prereq.local-dns
+          extract scripts/local-k3d > /tmp/check_prereq.local-k3d
+          # Guard against the extraction silently matching nothing.
+          test -s /tmp/check_prereq.local-ca
+          diff -u /tmp/check_prereq.local-ca /tmp/check_prereq.local-dns
+          diff -u /tmp/check_prereq.local-ca /tmp/check_prereq.local-k3d
+          echo "check_prereq copies are identical."
