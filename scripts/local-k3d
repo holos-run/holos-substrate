@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Vendored from https://github.com/holos-run/holos/blob/main/doc/md/topics/local-cluster.mdx
 # Documentation: https://github.com/holos-run/holos/blob/main/doc/md/topics/local-cluster.mdx
 #
@@ -22,14 +22,17 @@
 #   REGISTRY_PORT  — registry host port       (default: 5100)
 #
 # The static cluster shape (port mappings, k3s args) lives in k3d/config.yaml.
-# Registry attachment is passed at runtime via --registry-use so all three env
-# vars are fully honored without editing k3d/config.yaml.
+# Cluster name, registry attachment, and registry port are all passed at runtime
+# (--name, --registry-use) so all three env vars are fully honored without
+# editing k3d/config.yaml.
 
 set -euo pipefail
 
 CLUSTER_NAME="${CLUSTER_NAME:-workload}"
 REGISTRY_NAME="${REGISTRY_NAME:-registry.holos.localhost}"
 REGISTRY_PORT="${REGISTRY_PORT:-5100}"
+# k3d prepends "k3d-" to the registry hostname when creating the Docker container.
+K3D_REGISTRY_NAME="k3d-${REGISTRY_NAME}"
 
 # Resolve the repo root so this script works from any working directory.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -64,19 +67,18 @@ if k3d cluster list -o json | jq -e --arg name "${CLUSTER_NAME}" '.[] | select(.
 fi
 
 # Create local registry if it doesn't exist.
-# k3d prepends "k3d-" to the registry name when creating the Docker container,
-# so we check for "k3d-<REGISTRY_NAME>" in the registry list.
-if ! k3d registry list -o json | jq -e --arg name "k3d-${REGISTRY_NAME}" '.[] | select(.name == $name)' > /dev/null; then
+if ! k3d registry list -o json | jq -e --arg name "${K3D_REGISTRY_NAME}" '.[] | select(.name == $name)' > /dev/null; then
   echo "Creating registry '${REGISTRY_NAME}' on port ${REGISTRY_PORT}..."
   k3d registry create "${REGISTRY_NAME}" --port "${REGISTRY_PORT}"
 fi
 
-# Create the workload cluster: static shape from config file, registry
-# attached at runtime so REGISTRY_NAME and REGISTRY_PORT are fully honored.
+# Create the cluster: static shape from config, name and registry
+# passed at runtime so all three env vars are fully honored.
 echo "Creating cluster '${CLUSTER_NAME}' from ${REPO_ROOT}/k3d/config.yaml..."
 k3d cluster create \
   --config "${REPO_ROOT}/k3d/config.yaml" \
-  --registry-use "k3d-${REGISTRY_NAME}:${REGISTRY_PORT}"
+  --name "${CLUSTER_NAME}" \
+  --registry-use "${K3D_REGISTRY_NAME}:${REGISTRY_PORT}"
 
 echo "Cluster '${CLUSTER_NAME}' created successfully."
 echo "Run scripts/local-ca to set up trusted TLS certificates."
