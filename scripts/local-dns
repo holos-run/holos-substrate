@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Vendored from https://github.com/holos-run/holos/blob/main/doc/website/static/scripts/local-dns
+# Documentation: https://github.com/holos-run/holos/blob/main/doc/md/topics/local-cluster.mdx
+#
+# Configure macOS DNS to resolve *.holos.localhost to 127.0.0.1 via dnsmasq.
+# This is necessary for requests to reach the local k3d workload cluster.
+#
+# NOTE: This script is macOS-only. It uses Homebrew, launchctl, /etc/resolver,
+# and mDNSResponder — all macOS-specific. Linux users should configure dnsmasq
+# (or systemd-resolved) themselves to point *.holos.localhost at 127.0.0.1.
+# The MVP demo target is an Apple Silicon Mac (ADR-7).
+#
+# Prerequisites:
+#   - macOS (Apple Silicon or Intel)
+#   - Homebrew  (https://brew.sh/)
+#   - sudo access (required to write /etc/resolver and manage LaunchDaemon)
+#
+# Run this script once before creating the cluster with scripts/local-k3d.
+
+set -euo pipefail
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "ERROR: this script is macOS-only. See the header comment for Linux instructions." >&2
+  exit 1
+fi
+
+# Install dnsmasq if not already present (no-op and silent if already installed).
+brew list dnsmasq >/dev/null 2>&1 || brew install dnsmasq
+
+BREW_PREFIX="$(brew --prefix)"
+
+# Ensure the dnsmasq.d directory exists (brew install creates it, but be safe).
+mkdir -p "${BREW_PREFIX}/etc/dnsmasq.d"
+
+cat <<EOF >"${BREW_PREFIX}/etc/dnsmasq.d/holos.localhost.conf"
+# Refer to https://holos.run/docs/tutorial/local/k3d/
+address=/holos.localhost/127.0.0.1
+EOF
+
+# -e tests existence regardless of permissions (correct intent for LaunchDaemon).
+if [[ -e /Library/LaunchDaemons/homebrew.mxcl.dnsmasq.plist ]]; then
+  echo "dnsmasq already installed; reloading to pick up any config changes..."
+else
+  # || true prevents set -e from exiting before the emptiness check below.
+  plist="$(brew list dnsmasq | grep 'dnsmasq.plist$' | head -1 || true)"
+  if [[ -z "$plist" ]]; then
+    echo "ERROR: could not locate dnsmasq.plist in brew list output" >&2
+    exit 1
+  fi
+  sudo cp "$plist" /Library/LaunchDaemons/homebrew.mxcl.dnsmasq.plist
+  dscacheutil -flushcache
+  echo "dnsmasq installed"
+fi
+
+# Reload the daemon in both branches so config changes always take effect.
+# || true guards against launchctl unload returning nonzero when the service
+# is not currently running (e.g. first install, crash, or manual stop).
+sudo launchctl unload /Library/LaunchDaemons/homebrew.mxcl.dnsmasq.plist || true
+sudo launchctl load /Library/LaunchDaemons/homebrew.mxcl.dnsmasq.plist
+
+sudo mkdir -p /etc/resolver
+# nameserver line is sufficient; macOS routes *.holos.localhost to 127.0.0.1
+# based on the resolver file name alone.
+sudo tee /etc/resolver/holos.localhost > /dev/null <<EOF
+nameserver 127.0.0.1
+EOF
+sudo killall -HUP mDNSResponder
+
+echo "all done."
