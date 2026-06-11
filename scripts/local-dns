@@ -3,7 +3,7 @@
 # Documentation: https://github.com/holos-run/holos/blob/main/doc/md/topics/local-cluster.mdx
 #
 # Configure macOS DNS to resolve *.holos.localhost to 127.0.0.1 via dnsmasq.
-# This is necessary for requests to reach the local k3d workload cluster.
+# This is necessary for requests to reach the local k3d cluster.
 #
 # NOTE: This script is macOS-only. It uses Homebrew, launchctl, /etc/resolver,
 # and mDNSResponder — all macOS-specific. Linux users should configure dnsmasq
