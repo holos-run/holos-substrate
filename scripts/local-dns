@@ -24,6 +24,18 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
+# --- Prerequisite checks ---------------------------------------------------
+# Same helper pattern as scripts/local-k3d.
+check_prereq() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "ERROR: '$1' not found on PATH." >&2
+    echo "       $2" >&2
+    exit 1
+  fi
+}
+check_prereq brew "Install from https://brew.sh/"
+# ---------------------------------------------------------------------------
+
 # Install dnsmasq if not already present (no-op and silent if already installed).
 brew list dnsmasq >/dev/null 2>&1 || brew install dnsmasq
 
@@ -32,6 +44,8 @@ BREW_PREFIX="$(brew --prefix)"
 # Ensure the dnsmasq.d directory exists (brew install creates it, but be safe).
 mkdir -p "${BREW_PREFIX}/etc/dnsmasq.d"
 
+# Idempotent — overwriting an existing config with the same content is safe;
+# the daemon reload below picks up any changes on re-runs.
 cat <<EOF >"${BREW_PREFIX}/etc/dnsmasq.d/holos.localhost.conf"
 # Refer to https://holos.run/docs/tutorial/local/k3d/
 address=/holos.localhost/127.0.0.1
@@ -48,6 +62,10 @@ else
     exit 1
   fi
   sudo cp "$plist" /Library/LaunchDaemons/homebrew.mxcl.dnsmasq.plist
+  # Flush the directory-services cache only on first install. The asymmetry
+  # with the re-run path is intentional: every run (including re-runs) ends
+  # with `killall -HUP mDNSResponder` below, which is what reloads resolver
+  # state once the daemon and /etc/resolver entry are in place.
   dscacheutil -flushcache
   echo "dnsmasq installed"
 fi
