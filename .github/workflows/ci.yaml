@@ -5,10 +5,11 @@ on:
     branches: [main]
   pull_request:
 
-# Cancel superseded runs on force-pushed PR branches; never cancel runs on
-# main so every merged commit gets a complete CI record.
+# Cancel superseded runs on force-pushed PR branches. Push events key the
+# group by commit SHA so runs on main are neither canceled nor queued out by
+# later pushes — every merged commit gets a complete CI record.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -39,10 +40,12 @@ jobs:
           set -euo pipefail
           # Extract the function and guard against the sed range silently
           # misfiring: an empty extraction means the signature line never
-          # matched, and an extraction that does not end at a bare '}' means
-          # the closing-brace line never matched and sed ran to end-of-file.
+          # matched, and an extraction that does not end at a bare '}'
+          # indicates sed ran past the function's closing brace (e.g. it was
+          # reformatted). These guards are best-effort; the diff below
+          # remains the backstop for anything they miss.
           extract() {
-            out="${RUNNER_TEMP}/check_prereq.$(basename "$1")"
+            local out="${RUNNER_TEMP}/check_prereq.$(basename "$1")"
             sed -n '/^check_prereq() {$/,/^}$/p' "$1" > "$out"
             if ! test -s "$out"; then
               echo "ERROR: could not extract check_prereq from $1." >&2
