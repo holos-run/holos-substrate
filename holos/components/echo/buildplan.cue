@@ -16,7 +16,11 @@ package holos
 // VERSION pins the agnhost echo image tag.  agnhost is the upstream
 // Kubernetes e2e test image: multi-arch (arm64 required — the cluster is k3d
 // on OrbStack/Apple silicon), dependency-light, and maintained by
-// sig-testing; its netexec subcommand echoes request info over HTTP.
+// sig-testing; its serve-hostname subcommand answers every HTTP path with
+// the pod name.  serve-hostname is chosen over netexec deliberately:
+// netexec unconditionally serves /shell (arbitrary command execution),
+// /shutdown, and /exit, which must never be reachable — not even from
+// inside the cluster — in a permanent component.
 // Check https://github.com/kubernetes/kubernetes/tree/master/test/images/agnhost
 // for the current tag before bumping; any tag works for the smoke test as
 // long as it remains multi-arch.
@@ -83,19 +87,22 @@ userDefinedBuildPlan: {
 									containers: [{
 										name:  NAME
 										image: "registry.k8s.io/e2e-test-images/agnhost:\(VERSION)"
-										// netexec serves HTTP endpoints that echo
-										// request info (e.g. /hostname returns the
-										// pod name), proving which pod answered.
-										args: ["netexec", "--http-port=\(PORT)"]
+										// serve-hostname answers every HTTP
+										// path with the pod name, proving
+										// which pod answered.  No UDP flag
+										// means no UDP listener.  See the
+										// VERSION comment for why this
+										// subcommand and not netexec.
+										args: ["serve-hostname", "--port=\(PORT)"]
 										ports: [{
 											name:          "http"
 											containerPort: PORT
 											protocol:      "TCP"
 										}]
-										// netexec serves /healthz for exactly
-										// this purpose: keep a wedged or
-										// not-yet-ready echo server out of the
-										// smoke-test path.
+										// serve-hostname returns 200 on every
+										// path, /healthz included; the probes
+										// keep a wedged or not-yet-ready echo
+										// server out of the smoke-test path.
 										readinessProbe: httpGet: {
 											path: "/healthz"
 											port: PORT
@@ -157,14 +164,14 @@ userDefinedBuildPlan: {
 							}]
 							hostnames: ["echo.holos.localhost"]
 							rules: [{
-								// Route ONLY the exact paths the smoke test
-								// uses.  agnhost netexec also serves /shell
-								// (arbitrary command execution) and /shutdown
-								// — a catch-all route would expose them
-								// through the Gateway, which is loopback-only
-								// on k3d today but would ship to any future
-								// production cluster registered in
-								// platform/platform.cue.
+								// Route only the exact paths the smoke test
+								// uses.  serve-hostname has no dangerous
+								// endpoints (unlike netexec — see the VERSION
+								// comment), so this is defense in depth: the
+								// route documents exactly what the smoke test
+								// exercises and nothing more ships through
+								// the Gateway if the image or subcommand ever
+								// changes.
 								matches: [
 									{path: {type: "Exact", value: "/"}},
 									{path: {type: "Exact", value: "/hostname"}},

@@ -91,8 +91,11 @@ platform: {
 			}}).output
 
 			// echo is the permanent Layer 0 smoke test: an ambient-enrolled
-			// echo workload reachable through the shared Gateway.  Applies
-			// after istio-gateway so its HTTPRoute has a Gateway to attach to.
+			// echo workload reachable through the shared Gateway.  Its
+			// HTTPRoute attaches to the istio-gateway component's Gateway;
+			// attachment is level-triggered, so apply order does not matter —
+			// a route applied first simply reports unattached until the
+			// Gateway exists.
 			(#ComponentTemplate & {inputs: {
 				component: "echo"
 				cluster:   CLUSTER.name
