@@ -10,12 +10,12 @@ package holos
 // registry (holos/namespaces.cue), which carries the canonical rationale
 // for why it is deliberately NOT enrolled in the ambient mesh.
 //
-// The registry-membership constraint turns silent drift between this
-// literal and the registry entry into a render failure: if "istio-gateways"
-// is ever removed or renamed in holos/namespaces.cue, rendering fails here
-// instead of at apply time with a NotFound namespace error.  Same pattern
-// as IstioNamespace in components/istio/istio.cue.
-let NAMESPACE = "istio-gateways" & or([for N, _ in namespaces {N}])
+// The #RegisteredNamespace constraint (holos/namespaces.cue) turns silent
+// drift between this literal and the registry entry into a render failure:
+// if "istio-gateways" is ever removed or renamed in holos/namespaces.cue,
+// rendering fails here instead of at apply time with a NotFound namespace
+// error.
+let NAMESPACE = "istio-gateways" & #RegisteredNamespace
 
 let GATEWAY = {
 	apiVersion: "gateway.networking.k8s.io/v1"
