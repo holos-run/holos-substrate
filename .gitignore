@@ -32,6 +32,11 @@ go.work.sum
 .vscode/
 .claude/
 
+# In-progress download directories created by read-thru-cache scripts.  The
+# EXIT trap removes them on failure, but a SIGKILL bypasses traps and could
+# strand one inside the component tree.
+**/manifests/.tmp.*
+
 # Holos files
 .DS_Store
 .DS_Store?

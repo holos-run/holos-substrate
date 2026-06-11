@@ -23,6 +23,12 @@ if [[ -z "${version}" ]]; then
   echo "see versions at https://github.com/kubernetes-sigs/gateway-api/releases" >&2
   exit 1
 fi
+# Guard against path traversal: version is interpolated into both the bundle
+# path and the download URL, so a value containing / would escape manifests/.
+if [[ "${version}" == */* ]]; then
+  echo "error: version must not contain '/': ${version}" >&2
+  exit 1
+fi
 
 bundle="manifests/bundle.${version}.yaml"
 
@@ -36,7 +42,10 @@ if ! [[ -s "$bundle" ]]; then
     # --fail aborts on HTTP errors so an error body is never cached.
     curl -fsSL --retry 3 -o "${tmpdir}/${x}.yaml" \
       "https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v${version}/config/crd/standard/gateway.networking.k8s.io_${x}.yaml"
-    echo "---" >> "${tmpdir}/bundle.yaml"
+    # The leading newline guards against an upstream file missing its
+    # trailing newline, which would otherwise merge the separator onto the
+    # previous line.  A blank line before --- is harmless YAML.
+    printf '\n---\n' >> "${tmpdir}/bundle.yaml"
     cat "${tmpdir}/${x}.yaml" >> "${tmpdir}/bundle.yaml"
     echo "appended: $x to ${tmpdir}/bundle.yaml" >&2
   done
