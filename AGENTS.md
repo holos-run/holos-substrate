@@ -33,6 +33,9 @@ behind the layout is in
 - [holos/docs/component-guidelines.md](holos/docs/component-guidelines.md)
   — how to add a Holos component: anatomy, guardrails, and the
   render-then-commit workflow.
+- [holos/docs/mesh-enrollment.md](holos/docs/mesh-enrollment.md) — the
+  ambient mesh enrollment convention for platform namespaces, how to verify
+  it, and the exceptions.
 - [holos/docs/placeholders.md](holos/docs/placeholders.md) — stubs for
   out-of-MVP-scope concerns: ArgoCD delivery, observability dashboards,
   production deployment area.

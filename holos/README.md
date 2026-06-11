@@ -6,8 +6,10 @@ This directory is isolated from the Go code per
 [ADR-12](../docs/adr/ADR-12.md).
 
 To add or change a component, read
-[docs/component-guidelines.md](docs/component-guidelines.md). Out-of-scope
-concerns with a planned home are stubbed in
+[docs/component-guidelines.md](docs/component-guidelines.md). Components
+whose namespaces carry workloads must follow the ambient mesh enrollment
+convention in [docs/mesh-enrollment.md](docs/mesh-enrollment.md).
+Out-of-scope concerns with a planned home are stubbed in
 [docs/placeholders.md](docs/placeholders.md).
 
 ## Directory layout
