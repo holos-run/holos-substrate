@@ -54,11 +54,34 @@ clusters will be registered alongside `k3d-holos` in
 
 During Layer 0 bootstrap there is no gitops controller in the cluster yet, so
 rendered manifests are applied directly with server-side apply, one component
-at a time, CRD components first:
+at a time:
 
 ```bash
 kubectl apply --server-side --force-conflicts -f holos/deploy/clusters/k3d-holos/components/<name>/
 ```
+
+With seven ordered components, "CRD components first" is no longer the whole
+story. Apply the Layer 0 components in this order:
+
+1. `gateway-api` — Gateway API standard channel CRDs (`crds: "true"`)
+2. `istio-base` — Istio CRDs and validation webhook (`crds: "true"`)
+3. `istiod` — the Istio control plane
+4. `istio-cni` — the node agent that redirects ambient pod traffic to ztunnel
+5. `istio-ztunnel` — the ambient node proxy
+6. `istio-gateway` — the shared Gateway all platform services attach
+   `HTTPRoute`s to
+7. `echo` — the permanent smoke-test workload and its `HTTPRoute`
+
+The order encodes three rules: CRD components (labeled `crds: "true"`) apply
+before the controllers that depend on their types; the control plane
+(`istiod`, then its `istio-cni` and `istio-ztunnel` dataplane agents) applies
+before the Gateway, because the `istio` GatewayClass must exist and istiod
+must be running to program the Gateway; and the Gateway applies before
+components that attach routes to it. That last rule is for verifiability
+rather than correctness — route attachment is level-triggered, so an
+`HTTPRoute` applied early simply reports unattached until the Gateway exists
+— but applying `echo` last means the smoke test exercises a complete traffic
+path immediately.
 
 `--force-conflicts` is safe here because the rendered manifests in git are
 the source of truth for these resources and, with one exception, no other

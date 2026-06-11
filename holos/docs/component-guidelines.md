@@ -119,11 +119,10 @@ compatibility check that justifies the pin. From
 
 ```cue
 // VERSION pins the Gateway API standard channel CRDs.  Istio implements the
-// Gateway API; pick a version supported by the Istio release targeted by
-// HOL-1115.  Per https://istio.io/latest/docs/releases/supported-releases/
-// the supported Istio releases (1.28+) all support Gateway API v1.4 — the
-// Istio 1.28 change notes state "Upgraded Gateway API support to v1.4."
-// Re-check the chosen Istio minor's release notes before bumping.
+// Gateway API; the platform pins Istio 1.29.2 (IstioVersion in
+// components/istio/istio.cue), which supports Gateway API v1.4 — the Istio
+// 1.28 change notes state "Upgraded Gateway API support to v1.4."  Re-check
+// the pinned Istio minor's release notes before bumping.
 let VERSION = "1.4.1"
 ```
 
@@ -133,6 +132,12 @@ Rules:
   `buildplan.cue`); everything else — fetch URLs, cache filenames — derives
   from it, so a bump touches exactly one line plus the regenerated cache and
   deploy files.
+- When one pin must span sibling components, hoist it into a shared CUE
+  ancestor file instead of duplicating it: the four istio components share
+  `IstioVersion` (and their common Helm values) in
+  [`components/istio/istio.cue`](../components/istio/istio.cue), an ancestor
+  of the `base`, `istiod`, `cni`, and `ztunnel` leaf directories, so every
+  instance includes it without imports and a bump still touches one line.
 - The comment MUST record *why this version*: what it must be compatible
   with, where that was checked, and what to re-check before bumping.
 
