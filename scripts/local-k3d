@@ -39,8 +39,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # --- Prerequisite checks ---------------------------------------------------
+# NOTE: check_prereq is duplicated verbatim in scripts/local-dns and
+# scripts/local-ca so each vendored script stays standalone.  Keep the three
+# copies character-identical; consolidate into a shared helper if a fourth
+# copy appears.
 check_prereq() {
-  if ! command -v "$1" > /dev/null 2>&1; then
+  if ! command -v "$1" >/dev/null 2>&1; then
     echo "ERROR: '$1' not found on PATH." >&2
     echo "       $2" >&2
     exit 1

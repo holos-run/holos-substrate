@@ -25,7 +25,10 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 # --- Prerequisite checks ---------------------------------------------------
-# Same helper pattern as scripts/local-k3d.
+# NOTE: check_prereq is duplicated verbatim in scripts/local-k3d and
+# scripts/local-ca so each vendored script stays standalone.  Keep the three
+# copies character-identical; consolidate into a shared helper if a fourth
+# copy appears.
 check_prereq() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "ERROR: '$1' not found on PATH." >&2
@@ -62,11 +65,10 @@ else
     exit 1
   fi
   sudo cp "$plist" /Library/LaunchDaemons/homebrew.mxcl.dnsmasq.plist
-  # Flush the directory-services cache only on first install. The asymmetry
-  # with the re-run path is intentional: every run (including re-runs) ends
-  # with `killall -HUP mDNSResponder` below, which is what reloads resolver
-  # state once the daemon and /etc/resolver entry are in place.
-  dscacheutil -flushcache
+  # No cache flush here: at this point the daemon is not yet loaded and
+  # /etc/resolver/holos.localhost is not yet written, so there is nothing to
+  # flush. The `killall -HUP mDNSResponder` at the end of every run is what
+  # reloads resolver state once the daemon and resolver entry are in place.
   echo "dnsmasq installed"
 fi
 
