@@ -10,6 +10,7 @@
 | Revision | Date       | Author      | Info           |
 |----------|------------|-------------|----------------|
 | 1        | 2026-06-10 | @jeffmccune | Initial design |
+| 2        | 2026-06-11 | @jeffmccune | Add `holos/deploy/` and `holos/docs/` to the layout tree |
 
 ## Context and Problem Statement
 
@@ -121,7 +122,9 @@ holos-paas/
 ├── holos/                     # Holos CUE: deployment config and policy
 │   ├── cue.mod/
 │   ├── platform/
-│   └── components/            # one component per Deployment + paas CRDs
+│   ├── components/            # one component per Deployment + paas CRDs
+│   ├── deploy/                # rendered manifests, committed
+│   └── docs/                  # component guidelines and placeholders
 ├── hack/                      # scripts, boilerplate, k3d helpers
 └── docs/                      # adr/, planning/, research/, demo/
 ```
