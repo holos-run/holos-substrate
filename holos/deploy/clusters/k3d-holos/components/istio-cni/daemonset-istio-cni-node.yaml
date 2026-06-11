@@ -137,7 +137,7 @@ spec:
         operator: Exists
       volumes:
       - hostPath:
-          path: /bin
+          path: /var/lib/rancher/k3s/data/cni
         name: cni-bin-dir
       - hostPath:
           path: /proc

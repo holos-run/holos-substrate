@@ -25,13 +25,21 @@ userDefinedBuildPlan: {
 						// configuration and binaries.  The single registered
 						// cluster is k3d, so set the paths unconditionally; gate
 						// them behind a cluster tag when a non-k3s cluster is
-						// registered.  The chart's platform: "k3d" knob sets the
-						// same two values via files/profile-platform-k3d.yaml;
-						// the paths are pinned explicitly here so the rendered
-						// configuration is visible at the definition site.  See
-						// https://istio.io/latest/docs/ambient/install/platform-prerequisites/#k3d
+						// registered.  The paths are pinned explicitly here so the
+						// rendered configuration is visible at the definition site.
+						//
+						// cniBinDir matches the chart's k3s profile
+						// (files/profile-platform-k3s.yaml), not the k3d profile:
+						// recent k3s releases configure containerd to load CNI
+						// plugins from the /var/lib/rancher/k3s/data/cni symlink
+						// rather than /bin, and the stale k3d profile's /bin leaves
+						// ztunnel pods stuck in FailedCreatePodSandBox with
+						// `failed to find plugin "istio-cni" in path
+						// [/var/lib/rancher/k3s/data/cni]` (HOL-1160).  Re-check
+						// both profiles when bumping IstioVersion.  See
+						// https://istio.io/latest/docs/ambient/install/platform-prerequisites/#k3s
 						cniConfDir: "/var/lib/rancher/k3s/agent/etc/cni/net.d"
-						cniBinDir:  "/bin"
+						cniBinDir:  "/var/lib/rancher/k3s/data/cni"
 					}
 				}
 			}]
