@@ -24,12 +24,17 @@ platform: {
 
 	for CLUSTER in clusters {
 		components: {
-			// Register components for every cluster here.  For example:
-			//
-			//  (#ComponentTemplate & {inputs: {
-			//  	component: "gateway-api"
-			//  	cluster:   CLUSTER.name
-			//  }}).output
+			// gateway-api renders the Gateway API standard channel CRDs.  CRDs
+			// are isolated components labeled crds: "true" so they apply before
+			// the controllers that depend on them.
+			(#ComponentTemplate & {inputs: {
+				component: "gateway-api"
+				cluster:   CLUSTER.name
+				labels: {
+					app:  "istio"
+					crds: "true"
+				}
+			}}).output
 		}
 	}
 }

@@ -1,0 +1,40 @@
+#! /bin/bash
+#
+# Pull the Gateway API standard channel CRDs from upstream and cache them in
+# manifests/bundle.<version>.yaml so rendering is reproducible offline.
+#
+# NOTE: take care to ensure the script is safe for concurrent use.  An useful
+# technique is to write into unique files, then force move them into place,
+# then read them.
+
+set -euo pipefail
+
+cd "$(dirname $0)"
+mkdir -p manifests
+version="${1:-}"
+if [[ -z "${version}" ]]; then
+  echo "error: no version passed as arg 1" >&2
+  echo "see versions at https://github.com/kubernetes-sigs/gateway-api/releases" >&2
+  exit 1
+fi
+
+bundle="manifests/bundle.${version}.yaml"
+
+if ! [[ -s "$bundle" ]]; then
+  # Standard channel CRDs only.  Experimental channel resources (e.g.
+  # tlsroutes) are deliberately excluded.
+  for x in gatewayclasses gateways httproutes referencegrants grpcroutes; do
+    tmpfile="manifests/${x}.$$" # $$ is the current pid (guaranteed unique)
+    curl -Lo "$tmpfile" "https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v${version}/config/crd/standard/gateway.networking.k8s.io_${x}.yaml" >&2
+    echo "---" >> "$bundle".$$
+    cat "$tmpfile" >> "$bundle".$$
+    rm -f "$tmpfile"
+    echo "appended: $x to ${bundle}.$$" >&2
+  done
+
+  # rename is guaranteed atomic system call on posix filesystems
+  mv -f "$bundle".$$ "$bundle"
+  echo "cached: $bundle" >&2
+fi
+
+exec cat "$bundle"
