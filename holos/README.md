@@ -60,8 +60,8 @@ at a time:
 kubectl apply --server-side --force-conflicts -f holos/deploy/clusters/k3d-holos/components/<name>/
 ```
 
-With seven ordered components, "CRD components first" is no longer the whole
-story. Apply the Layer 0 components in this order:
+Apply order now matters beyond "CRD components first". Apply the Layer 0
+components in this order:
 
 1. `gateway-api` — Gateway API standard channel CRDs (`crds: "true"`)
 2. `istio-base` — Istio CRDs and validation webhook (`crds: "true"`)
@@ -73,11 +73,13 @@ story. Apply the Layer 0 components in this order:
 7. `echo` — the permanent smoke-test workload and its `HTTPRoute`
 
 The order encodes three rules: CRD components (labeled `crds: "true"`) apply
-before the controllers that depend on their types; the control plane
-(`istiod`, then its `istio-cni` and `istio-ztunnel` dataplane agents) applies
-before the Gateway, because the `istio` GatewayClass must exist and istiod
-must be running to program the Gateway; and the Gateway applies before
-components that attach routes to it. That last rule is for verifiability
+before the controllers that depend on their types; `istiod` applies before
+the Gateway, because the `istio` GatewayClass must exist and istiod must be
+running to program the Gateway (`istio-cni` and `istio-ztunnel` sit with the
+control plane because they must be capturing traffic before ambient-enrolled
+workloads like `echo` start — the Gateway itself is deliberately not
+enrolled, see [docs/mesh-enrollment.md](docs/mesh-enrollment.md)); and the
+Gateway applies before components that attach routes to it. That last rule is for verifiability
 rather than correctness — route attachment is level-triggered, so an
 `HTTPRoute` applied early simply reports unattached until the Gateway exists
 — but applying `echo` last means the smoke test exercises a complete traffic

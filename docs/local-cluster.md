@@ -53,8 +53,10 @@ This creates:
   balancer and Traefik disabled
 
 With Traefik disabled, nothing answers on ports 80/443 until the platform's
-Layer 0 components are applied: the shared Istio Gateway (the `istio-gateway`
-component) owns those ports, and platform services attach `HTTPRoute`s to it.
+Layer 0 components are applied. The shared Istio Gateway (the `istio-gateway`
+component) then serves port 80, and platform services attach `HTTPRoute`s to
+it. The Gateway has no HTTPS/443 listener yet — it arrives with cert-manager
+(HOL-1116) — so port 443 still answers nothing even after Layer 0 is applied.
 See
 [How rendered manifests reach the cluster](../holos/README.md#how-rendered-manifests-reach-the-cluster)
 for the component apply order, and
