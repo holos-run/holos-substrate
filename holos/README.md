@@ -76,10 +76,7 @@ components in this order:
 8. `echo` — the permanent smoke-test workload and its `HTTPRoute`
 
 The order encodes five rules: the `namespaces` component applies first, so
-namespaced resources never race their Namespace within a single server-side
-apply — a batch that submits a Namespace together with resources inside it
-fails with `NotFound` on the first apply, so every Namespace must already
-exist before any other component applies;
+every Namespace exists before any component that populates it;
 CRD components (labeled `crds: "true"`) apply before the controllers that
 depend on their types; `istiod` applies before
 the Gateway, because the `istio` GatewayClass must exist and istiod must be
@@ -87,11 +84,17 @@ running to program the Gateway; `istio-cni` and `istio-ztunnel` apply before
 ambient-enrolled workloads like `echo`, because they must be capturing
 traffic when those workloads start (the Gateway itself is deliberately not
 enrolled, see [docs/mesh-enrollment.md](docs/mesh-enrollment.md)); and the
-Gateway applies before components that attach routes to it. That last rule
-is for verifiability rather than correctness — route attachment is
-level-triggered, so an `HTTPRoute` applied early simply reports unattached
-until the Gateway exists — but applying `echo` last means the smoke test
-exercises a complete traffic path immediately.
+Gateway applies before components that attach routes to it.
+
+The first rule exists because nothing orders an apply batch by kind:
+kubectl submits the files sequentially in lexical order, so a single
+server-side apply that carries a Namespace alongside its namespaced
+resources fails with `NotFound` on the first apply whenever a namespaced
+resource sorts ahead of its Namespace. The last rule is for verifiability
+rather than correctness — route attachment is level-triggered, so an
+`HTTPRoute` applied early simply reports unattached until the Gateway
+exists — but applying `echo` last means the smoke test exercises a
+complete traffic path immediately.
 
 `--force-conflicts` is safe here because the rendered manifests in git are
 the source of truth for these resources and, with one exception, no other
