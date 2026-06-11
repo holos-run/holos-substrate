@@ -89,6 +89,15 @@ platform: {
 				cluster:   CLUSTER.name
 				labels: app: "istio"
 			}}).output
+
+			// echo is the permanent Layer 0 smoke test: an ambient-enrolled
+			// echo workload reachable through the shared Gateway.  Applies
+			// after istio-gateway so its HTTPRoute has a Gateway to attach to.
+			(#ComponentTemplate & {inputs: {
+				component: "echo"
+				cluster:   CLUSTER.name
+				labels: app: "echo"
+			}}).output
 		}
 	}
 }
