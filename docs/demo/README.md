@@ -1,11 +1,11 @@
-# Holos Controller — Demos
+# Holos PaaS — Demos
 
-Self-guided tutorials and walkthroughs for holos-controller. These are
+Self-guided tutorials and walkthroughs for holos-paas. These are
 **demonstration and learning material, not decision records** — for design
 decisions and their rationale, see the
 [Architecture Decision Records](../adr/README.md).
 
-> Many demos describe the *target* experience the controller is being built
+> Many demos describe the *target* experience the platform is being built
 > toward. Each tutorial marks steps as **[Runnable today]** or **[Aspirational]**
 > so you can tell the realizable subset from the design intent.
 

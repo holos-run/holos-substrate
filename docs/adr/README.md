@@ -1,7 +1,7 @@
-# Holos Controller — Architecture Decision Records
+# Holos PaaS — Architecture Decision Records
 
 This directory holds the Architecture Decision Records (ADRs) for
-holos-controller. The format follows the
+holos-paas. The format follows the
 [NATS architecture-and-design](https://github.com/nats-io/nats-architecture-and-design)
 convention, scoped here to **ADR documents only**.
 
@@ -10,7 +10,7 @@ ADRs serve three purposes:
 1. **Detailed design specifications** for API resources (CRDs) and their
    reconcilers.
 2. **Convention guidance** that explains how and why things are done a certain
-   way across the controller.
+   way across the platform.
 3. **System-wide design documentation** capturing decisions that affect the
    project as a whole.
 
