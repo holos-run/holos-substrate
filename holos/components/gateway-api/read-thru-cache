@@ -26,7 +26,7 @@ fi
 # Allowlist the version format before interpolating it into the bundle path
 # and the download URL: a single check rejects path separators, URL
 # metacharacters, whitespace, and control characters.
-if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.?[0-9]+)?$ ]]; then
+if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
   printf 'error: version must look like 1.4.1 (got %q)\n' "${version}" >&2
   exit 1
 fi
@@ -43,6 +43,12 @@ if ! [[ -s "$bundle" ]]; then
     # --fail aborts on HTTP errors so an error body is never cached.
     curl -fsSL --retry 3 -o "${tmpdir}/${x}.yaml" \
       "https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v${version}/config/crd/standard/gateway.networking.k8s.io_${x}.yaml"
+    # curl --fail does not catch an empty 200 body; never cache one.  This
+    # also makes the -s test below an exact not-the-first-file check.
+    if ! [[ -s "${tmpdir}/${x}.yaml" ]]; then
+      echo "error: empty download: ${x}" >&2
+      exit 1
+    fi
     # The newline before --- guards against an upstream file missing its
     # trailing newline, which would otherwise merge the separator onto the
     # previous line.  Skip the separator before the first document so strict
