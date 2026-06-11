@@ -75,8 +75,11 @@ components in this order:
    `HTTPRoute`s to
 8. `echo` — the permanent smoke-test workload and its `HTTPRoute`
 
-The order encodes five rules: the `namespaces` component applies first,
-because namespaced resources cannot be created until their Namespace exists;
+The order encodes five rules: the `namespaces` component applies first, so
+namespaced resources never race their Namespace within a single server-side
+apply — a batch that submits a Namespace together with resources inside it
+fails with `NotFound` on the first apply, so every Namespace must already
+exist before any other component applies;
 CRD components (labeled `crds: "true"`) apply before the controllers that
 depend on their types; `istiod` applies before
 the Gateway, because the `istio` GatewayClass must exist and istiod must be

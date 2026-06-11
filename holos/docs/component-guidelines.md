@@ -82,8 +82,8 @@ Two conforming shapes satisfy the guardrail:
    which renders one `namespace-<name>.yaml` per entry of the central
    namespaces registry ([`holos/namespaces.cue`](../namespaces.cue)).
 
-The artifact is a *directory* (the component's deploy path), and the final
-transformer slices the bundle into it. From
+In the sliced-bundle shape, the artifact is a *directory* (the component's
+deploy path), and the final transformer slices the bundle into it. From
 [`components/gateway-api/buildplan.cue`](../components/gateway-api/buildplan.cue):
 
 ```cue
@@ -169,6 +169,19 @@ workloads.
 channel CRDs; the Istio control plane that implements them is a separate
 component.
 
+## Namespaces are registered centrally
+
+Components MUST NOT emit Namespace resources. Platform namespaces are
+registered in the central registry
+([`holos/namespaces.cue`](../namespaces.cue)) and rendered by the
+[`namespaces`](../components/namespaces/) component, which applies before
+every other component — the ordering rationale lives in
+[`holos/README.md`](../README.md#how-rendered-manifests-reach-the-cluster).
+A component that needs a namespace adds an entry to the registry — including
+any ambient mesh enrollment label, per
+[mesh-enrollment.md](mesh-enrollment.md) — and references the namespace by
+name in its own resources.
+
 ## Registration in the platform
 
 A component does nothing until it is registered in
@@ -238,6 +251,9 @@ Before approving a component PR:
       script is executable and concurrency-safe.
 - [ ] Helm charts cached under `vendor/<VERSION>/<chart>/` and committed.
 - [ ] CRDs isolated in a dedicated component labeled `crds: "true"`.
+- [ ] No Namespace resources outside the `namespaces` component: the
+      component's namespace is registered in
+      [`holos/namespaces.cue`](../namespaces.cue), not emitted inline.
 - [ ] Registered in `platform/platform.cue` via `#ComponentTemplate` with an
       explicit `cluster:` field.
 - [ ] `scripts/render` exits 0: `holos render platform` succeeds and nothing
