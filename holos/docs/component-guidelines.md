@@ -175,12 +175,12 @@ Components MUST NOT emit Namespace resources. Platform namespaces are
 registered in the central registry
 ([`holos/namespaces.cue`](../namespaces.cue)) and rendered by the
 [`namespaces`](../components/namespaces/buildplan.cue) component, which
-applies before
-every other component — the ordering rationale lives in
+applies before every other component — the ordering rationale lives in
 [`holos/README.md`](../README.md#how-rendered-manifests-reach-the-cluster).
-A component that needs a namespace adds an entry to the registry — including
-any ambient mesh enrollment label, per
-[mesh-enrollment.md](mesh-enrollment.md) — and references the namespace by
+A component that needs a namespace adds an entry to the registry —
+declaring ambient mesh enrollment via the required `_ambient` field
+(defined in the registry file; the enrollment convention is documented in
+[mesh-enrollment.md](mesh-enrollment.md)) — and references the namespace by
 name in its own resources. Unify the namespace literal with
 `#RegisteredNamespace` (defined in the registry file), e.g.
 `let NAMESPACE = "echo" & #RegisteredNamespace`, so removing or renaming the
