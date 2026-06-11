@@ -2,8 +2,8 @@
 # Documentation: https://github.com/holos-run/holos/blob/main/doc/md/topics/local-cluster.mdx
 #
 # Apply with: scripts/local-k3d  (recommended — handles registry lifecycle)
-# Or directly (defaults):
-#   k3d cluster create holos --config k3d/config.yaml \
+# Or directly (defaults, cluster name taken from metadata.name below):
+#   k3d cluster create --config k3d/config.yaml \
 #     --registry-use k3d-registry.holos.localhost:5100
 #
 # This file defines the static cluster shape: port mappings and k3s args.

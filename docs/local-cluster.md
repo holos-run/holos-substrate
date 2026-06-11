@@ -61,11 +61,16 @@ are fully honored without editing `k3d/config.yaml`.
 
 **Environment variable overrides:**
 
-| Variable        | Default                     | Description                              |
-|-----------------|-----------------------------|------------------------------------------|
-| `CLUSTER_NAME`  | `holos`                     | Cluster name (honored at creation)       |
-| `REGISTRY_NAME` | `registry.holos.localhost`  | Registry hostname (honored at creation)  |
-| `REGISTRY_PORT` | `5100`                      | Registry host port (honored at creation) |
+| Variable        | Default                     | Description                                  |
+|-----------------|-----------------------------|----------------------------------------------|
+| `CLUSTER_NAME`  | `holos`                     | Cluster name (honored at creation and reset) |
+| `REGISTRY_NAME` | `registry.holos.localhost`  | Registry hostname (honored at creation)      |
+| `REGISTRY_PORT` | `5100`                      | Registry host port (honored at creation)     |
+
+> **Note:** only one cluster created from this config can exist at a time —
+> the config binds host ports 80 and 443, so creating a second cluster under a
+> different `CLUSTER_NAME` fails with a port conflict until the first is
+> deleted.
 
 ## Setup Trusted TLS
 
