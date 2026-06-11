@@ -3,15 +3,13 @@ package holos
 // echo is a permanent smoke test for the Layer 0 traffic path, not a
 // throwaway: it stays registered so the full path — host 80 → k3d serverlb →
 // klipper ServiceLB → shared Gateway → HTTPRoute → ambient-enrolled workload
-// — is re-verifiable after any Layer 0 change.  It emits an echo Namespace
-// enrolled in the ambient mesh, a Deployment running a trivial echo server, a
-// Service, and an HTTPRoute attached to the shared Gateway (istio-gateway
-// component).
+// — is re-verifiable after any Layer 0 change.  It emits a Deployment running
+// a trivial echo server, a Service, and an HTTPRoute attached to the shared
+// Gateway (istio-gateway component).
 //
-// The echo Namespace carries the istio.io/dataplane-mode=ambient label per
-// the platform convention documented in holos/docs/mesh-enrollment.md:
-// platform namespaces carrying workloads MUST be enrolled in the ambient
-// mesh.
+// The echo Namespace — including its ambient mesh enrollment label — is
+// registered in the central namespaces registry (holos/namespaces.cue) and
+// rendered by the namespaces component.
 
 // VERSION pins the agnhost echo image tag.  agnhost is the upstream
 // Kubernetes e2e test image: multi-arch (arm64 required — the cluster is k3d
@@ -50,19 +48,6 @@ userDefinedBuildPlan: {
 				// hand-authored resources validate against the vendored
 				// Kubernetes and Gateway API schemas at render time.
 				resources: #Resources & {
-					Namespace: (NAMESPACE): {
-						apiVersion: "v1"
-						kind:       "Namespace"
-						metadata: {
-							name: NAMESPACE
-							// Enroll every workload in this namespace in the
-							// Istio ambient mesh; ztunnel captures their
-							// traffic over HBONE.  See
-							// holos/docs/mesh-enrollment.md.
-							labels: "istio.io/dataplane-mode": "ambient"
-						}
-					}
-
 					Deployment: (NAME): {
 						apiVersion: "apps/v1"
 						kind:       "Deployment"

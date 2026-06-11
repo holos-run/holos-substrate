@@ -1,11 +1,12 @@
 package holos
 
 // istio-base renders the Istio base chart: the Istio CRDs and the
-// validation webhook configuration.  It also emits the istio-system
-// Namespace — the istiod, cni, and ztunnel charts assume it exists.  This
-// component is labeled crds: "true" at the registration site so it applies
-// before the controllers that depend on the CRDs.  The version pin and
-// shared ambient values live in ../istio.cue.
+// validation webhook configuration.  The istio-system Namespace the istiod,
+// cni, and ztunnel charts assume exists is registered in the central
+// namespaces registry (holos/namespaces.cue) and rendered by the namespaces
+// component.  This component is labeled crds: "true" at the registration
+// site so it applies before the controllers that depend on the CRDs.  The
+// version pin and shared ambient values live in ../istio.cue.
 userDefinedBuildPlan: {
 	metadata: name: "istio-base"
 	spec: artifacts: manifests: {
@@ -26,15 +27,6 @@ userDefinedBuildPlan: {
 							repository: IstioRepository
 						}
 						values: IstioValues
-					}
-				},
-				{
-					kind:   "Resources"
-					output: "namespace.gen.yaml"
-					resources: Namespace: (IstioNamespace): {
-						apiVersion: "v1"
-						kind:       "Namespace"
-						metadata: name: IstioNamespace
 					}
 				},
 			]
