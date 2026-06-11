@@ -48,7 +48,11 @@ platform: {
 		// name represents the BuildPlan metadata.name, defaults to component.
 		name: string | *component
 		// cluster represents the name of the cluster the component renders
-		// for, constrained to the names of registered clusters.
+		// for, constrained to the names of registered clusters.  Always set
+		// this field explicitly at the registration site: with a single
+		// registered cluster the disjunction collapses to a concrete value,
+		// so an omitted field silently binds to that cluster and breaks with
+		// an incomplete-value error once a second cluster is registered.
 		cluster: or([for NAME, _ in clusters {NAME}])
 		// prefix represents the directory containing the component directory.
 		prefix: string | *"components"

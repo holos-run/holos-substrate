@@ -15,6 +15,14 @@ import (
 //
 // This file lives in the components/ directory so CUE includes it in every
 // component instance loaded from components/<name> without imports.
+//
+// IMPORTANT: because this file unconditionally defines holos: as a BuildPlan
+// whose spec.artifacts list is computed from userDefinedBuildPlan, every
+// component under components/ must integrate through userDefinedBuildPlan.
+// The author-style wrappers in schema.cue (#Kubernetes, #Kustomize, #Helm)
+// produce their own BuildPlan and conflict with this adapter; they remain
+// usable only for components registered under a non-default
+// #ComponentTemplate inputs.prefix where this file is not an ancestor.
 userDefinedBuildPlan: {
 	metadata: core.#Metadata & {
 		name: _Tags.component.name
