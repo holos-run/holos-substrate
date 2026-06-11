@@ -1,0 +1,40 @@
+# holos-paas
+
+The Holos PaaS: a Kubernetes-native platform delivering a minimum viable
+Heroku experience — push a tagged image, get a deploy — managed entirely
+through the Kubernetes API and rendered with the
+[Holos](https://holos.run/) rendered-manifests pattern.
+
+## Repository layout
+
+The authoritative layout is defined in
+[ADR-12 — Repository Layout for Multiple Go Services](docs/adr/ADR-12.md):
+a single-module Go monorepo with one multi-service binary (`cmd/holos-paas`,
+one subcommand per service), kubebuilder multi-group API conventions
+(`api/<group>/<version>`), all implementation under `internal/`, and the
+Holos CUE deployment configuration and policy under `holos/` (currently
+still at the repository root — `cue.mod/`, `platform/`, `*.cue` — until the
+migration described in ADR-12 lands). Read ADR-12 before adding a service,
+an API group, or moving directories. The evidence
+behind the layout is in
+[Research: Repository Layouts for Multiple Go Services](docs/research/go-multi-service-repo-layout.md).
+
+## Documentation index
+
+- [docs/adr/](docs/adr/README.md) — Architecture Decision Records: the
+  binding design decisions. Start with the index; follow
+  [writing-adrs.md](docs/adr/writing-adrs.md) before adding or revising one.
+- [docs/planning/holos-paas-mvp-milestones.md](docs/planning/holos-paas-mvp-milestones.md)
+  — the MVP plan; mirrors the Linear *Holos PaaS* project milestones.
+- [docs/research/](docs/research/) — research reports informing decisions.
+- [docs/demo/](docs/demo/README.md) — demo walkthroughs.
+
+## Conventions
+
+- Decisions live in ADRs; revise the existing ADR (and its revision table)
+  rather than writing a new one for a refinement.
+- Every platform capability is modeled as Kubernetes resources
+  ([ADR-2](docs/adr/ADR-2.md)); integrations like Keycloak group membership
+  and Quay self-service are CRDs with reconcilers, not imperative tools.
+- Deployment configuration and policy are CUE rendered with
+  `holos render platform`.
