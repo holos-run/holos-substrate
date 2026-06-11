@@ -27,14 +27,14 @@ set -euo pipefail
 # --- Prerequisite checks ---------------------------------------------------
 # Same helper pattern as scripts/local-k3d.
 check_prereq() {
-  if ! command -v "$1" > /dev/null 2>&1; then
+  if ! command -v "$1" >/dev/null 2>&1; then
     echo "ERROR: '$1' not found on PATH." >&2
     echo "       $2" >&2
     exit 1
   fi
 }
 check_prereq mkcert  "Install from https://github.com/FiloSottile/mkcert#installation"
-check_prereq kubectl "Install kubectl and ensure the cluster is reachable."
+check_prereq kubectl "Install from https://kubernetes.io/docs/tasks/tools/"
 # ---------------------------------------------------------------------------
 
 mkcert --install
@@ -45,8 +45,8 @@ finish() {
 }
 # A single EXIT trap is preferred over trapping ERR+INT+TERM: bash runs the
 # EXIT trap exactly once on every termination path (normal exit, set -e
-# failure, or a caught signal), whereas combining EXIT with ERR/INT/TERM
-# traps would run finish twice on error or interrupt.
+# failure, or a fatal SIGINT/SIGTERM), whereas combining EXIT with
+# ERR/INT/TERM traps would run finish twice on error or interrupt.
 trap finish EXIT
 
 CAROOT="$(mkcert -CAROOT)"
@@ -103,9 +103,11 @@ metadata:
   name: cert-manager
 EOF
 
-# Preflight: show which cluster the ambient kubeconfig targets so operators
-# can catch a wrong context before anything is applied.
-echo "Applying manifests to kubectl context: $(kubectl config current-context)"
+# Preflight: resolve the ambient kubeconfig context as a standalone statement
+# so set -e aborts cleanly when no context is set, and report which cluster
+# is targeted before anything is applied.
+KUBE_CONTEXT="$(kubectl config current-context)"
+echo "Applying manifests to kubectl context: ${KUBE_CONTEXT}"
 
 kubectl apply --server-side=true -f "${tmpdir}/namespace.yaml"
 # namespace is declared in the manifest; -n flag omitted to avoid redundancy.

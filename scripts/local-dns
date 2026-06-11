@@ -27,7 +27,7 @@ fi
 # --- Prerequisite checks ---------------------------------------------------
 # Same helper pattern as scripts/local-k3d.
 check_prereq() {
-  if ! command -v "$1" > /dev/null 2>&1; then
+  if ! command -v "$1" >/dev/null 2>&1; then
     echo "ERROR: '$1' not found on PATH." >&2
     echo "       $2" >&2
     exit 1
