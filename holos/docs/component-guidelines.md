@@ -136,6 +136,7 @@ apply ordering is manual today — see
 [`holos/README.md`](../README.md#how-rendered-manifests-reach-the-cluster).
 Keeping CRDs separate lets them roll out and verify ahead of dependent
 workloads.
+
 `gateway-api` is the worked example: it ships only the Gateway API standard
 channel CRDs; the Istio control plane that implements them is a separate
 component.
