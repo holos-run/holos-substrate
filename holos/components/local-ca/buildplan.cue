@@ -3,9 +3,9 @@ package holos
 // local-ca emits the CA ClusterIssuer that signs every platform certificate.
 // It references the local-ca Secret in the cert-manager namespace: the mkcert
 // root CA staged by scripts/local-ca before cert-manager installs (see
-// docs/local-cluster.md).  mkcert -install puts that same root CA in the host
-// trust store, so certificates the issuer signs are trusted by browsers and
-// docker push without --insecure flags.
+// docs/local-cluster.md).  mkcert --install puts that same root CA in the
+// host trust store, so certificates the issuer signs are trusted by browsers
+// and other host clients without extra configuration.
 //
 // The secret reference names no namespace: cert-manager resolves
 // ClusterIssuer secrets in its cluster resource namespace, which defaults to

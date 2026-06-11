@@ -77,13 +77,15 @@ namespaces: {
 	// cainjector; its workloads enroll in the ambient mesh per the platform
 	// convention.  scripts/local-ca pre-creates this namespace at cluster
 	// bootstrap (the local-ca Secret must exist before cert-manager
-	// installs); the namespaces component converges it under server-side
-	// apply, adding the enrollment label.
+	// installs).  The script and the namespaces component both server-side
+	// apply this Namespace with kubectl's default field manager, so the
+	// script's manifest must carry the same labels as this entry — an apply
+	// that omitted the enrollment label would silently strip it.
 	//
-	// Keep this name in sync with CertManagerNamespace in
+	// Keep this name and the labels in sync with CertManagerNamespace in
 	// components/cert-manager/cert-manager.cue and with the namespace
-	// scripts/local-ca creates: cert-manager.cue asserts at render time that
-	// its value is registered here.
+	// manifest scripts/local-ca creates: cert-manager.cue asserts at render
+	// time that its value is registered here.
 	"cert-manager": _ambient: true
 
 	// echo is the permanent Layer 0 smoke-test namespace; its workloads

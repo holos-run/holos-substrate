@@ -59,7 +59,7 @@ component) then serves ports 80 and 443, and platform services attach
 `*.holos.localhost` certificate issued by cert-manager's `local-ca`
 ClusterIssuer from the mkcert root CA installed in the
 [Setup Trusted TLS](#setup-trusted-tls) step below — the same root CA your
-host trusts, so browsers and `docker push` need no `--insecure` flags.
+host trusts, so browsers accept the certificate without warnings.
 See
 [How rendered manifests reach the cluster](../holos/README.md#how-rendered-manifests-reach-the-cluster)
 for the component apply order, and
@@ -99,7 +99,7 @@ scripts/local-ca
 **Run this each time you recreate the cluster.**
 
 This installs the mkcert root CA into the host trust store (the one-liner
-`mkcert -install`, run by the script), creates the `cert-manager` namespace,
+`mkcert --install`, run by the script), creates the `cert-manager` namespace,
 and applies the `local-ca` Secret (`type: kubernetes.io/tls`) that
 cert-manager's `local-ca` ClusterIssuer references.
 The generated `namespace.yaml` and `local-ca.yaml` are saved to

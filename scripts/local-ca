@@ -106,11 +106,18 @@ EOF
 # spec.finalizers is intentionally omitted: the kubernetes finalizer is injected
 # by the API server automatically.  Declaring it in the manifest causes SSA
 # field-ownership conflicts on some cluster versions.
+#
+# The istio.io/dataplane-mode label must stay in sync with the cert-manager
+# entry in holos/namespaces.cue: this script and the namespaces component both
+# server-side-apply this Namespace with kubectl's default field manager, so a
+# re-run of this script with a manifest that omitted the label would silently
+# strip it and de-enroll cert-manager from the ambient mesh.
 cat > "${tmpdir}/namespace.yaml" <<EOF
 apiVersion: v1
 kind: Namespace
 metadata:
   labels:
+    istio.io/dataplane-mode: ambient
     kubernetes.io/metadata.name: cert-manager
   name: cert-manager
 EOF

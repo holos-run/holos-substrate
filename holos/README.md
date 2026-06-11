@@ -90,8 +90,10 @@ deliberately not enrolled, see
 [docs/mesh-enrollment.md](docs/mesh-enrollment.md)); `cert-manager` applies
 before the components that create `cert-manager.io` resources (`local-ca`'s
 `ClusterIssuer`, `istio-gateway`'s `Certificate`), because its validating
-webhook must be serving to admit them; and the
-Gateway applies before components that attach routes to it.
+webhook must be serving to admit them — the webhooks fail closed, so wait
+for the webhook Deployment between those steps
+(`kubectl -n cert-manager rollout status deployment/cert-manager-webhook`);
+and the Gateway applies before components that attach routes to it.
 
 The first rule exists because nothing orders an apply batch by kind:
 kubectl submits the files sequentially in lexical order, so a single
