@@ -68,19 +68,59 @@ userDefinedBuildPlan: {
 							selector: matchLabels: METADATA.labels
 							template: {
 								metadata: labels: METADATA.labels
-								spec: containers: [{
-									name:  NAME
-									image: "registry.k8s.io/e2e-test-images/agnhost:\(VERSION)"
-									// netexec serves HTTP endpoints that echo
-									// request info (e.g. /hostname returns the
-									// pod name), proving which pod answered.
-									args: ["netexec", "--http-port=\(PORT)"]
-									ports: [{
-										name:          "http"
-										containerPort: PORT
-										protocol:      "TCP"
+								spec: {
+									securityContext: {
+										runAsNonRoot: true
+										// The agnhost image does not declare a
+										// non-root USER; pick the conventional
+										// "nobody" uid.  netexec binds the
+										// unprivileged port 8080, so no root
+										// is needed.
+										runAsUser:  65534
+										runAsGroup: 65534
+										seccompProfile: type: "RuntimeDefault"
+									}
+									containers: [{
+										name:  NAME
+										image: "registry.k8s.io/e2e-test-images/agnhost:\(VERSION)"
+										// netexec serves HTTP endpoints that echo
+										// request info (e.g. /hostname returns the
+										// pod name), proving which pod answered.
+										args: ["netexec", "--http-port=\(PORT)"]
+										ports: [{
+											name:          "http"
+											containerPort: PORT
+											protocol:      "TCP"
+										}]
+										// netexec serves /healthz for exactly
+										// this purpose: keep a wedged or
+										// not-yet-ready echo server out of the
+										// smoke-test path.
+										readinessProbe: httpGet: {
+											path: "/healthz"
+											port: PORT
+										}
+										livenessProbe: httpGet: {
+											path: "/healthz"
+											port: PORT
+										}
+										// A minimal QoS floor for a permanent
+										// smoke-test pod; netexec idles far
+										// below these.
+										resources: {
+											requests: {
+												cpu:    "10m"
+												memory: "32Mi"
+											}
+											limits: memory: "64Mi"
+										}
+										securityContext: {
+											allowPrivilegeEscalation: false
+											capabilities: drop: ["ALL"]
+											readOnlyRootFilesystem: true
+										}
 									}]
-								}]
+								}
 							}
 						}
 					}
@@ -117,6 +157,18 @@ userDefinedBuildPlan: {
 							}]
 							hostnames: ["echo.holos.localhost"]
 							rules: [{
+								// Route ONLY the exact paths the smoke test
+								// uses.  agnhost netexec also serves /shell
+								// (arbitrary command execution) and /shutdown
+								// — a catch-all route would expose them
+								// through the Gateway, which is loopback-only
+								// on k3d today but would ship to any future
+								// production cluster registered in
+								// platform/platform.cue.
+								matches: [
+									{path: {type: "Exact", value: "/"}},
+									{path: {type: "Exact", value: "/hostname"}},
+								]
 								backendRefs: [{
 									name: NAME
 									port: PORT

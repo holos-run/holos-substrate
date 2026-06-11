@@ -15,3 +15,10 @@ spec:
   - backendRefs:
     - name: echo
       port: 8080
+    matches:
+    - path:
+        type: Exact
+        value: /
+    - path:
+        type: Exact
+        value: /hostname
