@@ -19,9 +19,9 @@
 #     the deploy-tree removal below can never delete uncommitted work
 #     (gitignored files under holos/deploy are the one exception: they are
 #     invisible to the precondition and removed without warning; ignored
-#     files are disposable by convention).  If the render itself fails after
-#     the deploy tree was removed, an error trap restores the committed tree
-#     and removes partial render output automatically.
+#     files are disposable by convention).  If the render fails or is
+#     interrupted after the deploy tree was removed, a trap restores the
+#     committed tree and removes partial render output automatically.
 #   - CI: run on a fresh checkout; any diff fails the build.
 #
 # Prerequisites:
@@ -62,26 +62,37 @@ if [[ -n "${STATUS}" ]]; then
   exit 1
 fi
 
+# If the render fails or is interrupted after the deploy tree was removed,
+# restore the committed tree and remove partial render output so the next
+# run starts from the precondition-clean state.  RENDER_OK guards the EXIT
+# trap: once the render succeeds, a drift failure below must leave the tree
+# as-is for inspection, not restore it.  The INT/TERM traps convert signals
+# into a normal exit so the EXIT trap reliably runs (bash does not run EXIT
+# traps on untrapped fatal signals) while preserving the conventional
+# 128+signal exit codes.  Installed before the rm -rf so the deploy tree is
+# never removed without the restore path armed.
+RENDER_OK=""
+restore_deploy() {
+  if [[ -z "${RENDER_OK}" ]]; then
+    git -C "${REPO_ROOT}" restore -- holos/deploy || true
+    git -C "${REPO_ROOT}" clean -qfd -- holos/deploy || true
+  fi
+}
+trap restore_deploy EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # Remove the committed deploy tree before rendering so files the render no
 # longer writes (orphans from components removed from CUE) surface as
 # deletions in the status check below.
 rm -rf "${REPO_ROOT}/holos/deploy"
-
-# If the render fails after the deploy tree was removed, restore the
-# committed tree and remove partial render output so the next run starts
-# from the precondition-clean state.
-restore_deploy() {
-  git -C "${REPO_ROOT}" restore -- holos/deploy
-  git -C "${REPO_ROOT}" clean -qfd -- holos/deploy
-}
-trap restore_deploy ERR
 
 echo "Rendering platform from ${REPO_ROOT}/holos ..."
 (cd "${REPO_ROOT}/holos" && holos render platform)
 
 # Render succeeded; on drift below we want the tree left as-is for
 # inspection, not restored.
-trap - ERR
+RENDER_OK=1
 
 # Fail when the render left modified or deleted tracked files, or new
 # untracked files, under holos/.  git status --porcelain covers all three.
