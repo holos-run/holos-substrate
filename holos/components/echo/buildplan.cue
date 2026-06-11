@@ -73,13 +73,17 @@ userDefinedBuildPlan: {
 							template: {
 								metadata: labels: METADATA.labels
 								spec: {
+									// The echo server never talks to the
+									// Kubernetes API; don't mount a
+									// ServiceAccount token it has no use for.
+									automountServiceAccountToken: false
 									securityContext: {
 										runAsNonRoot: true
 										// The agnhost image does not declare a
 										// non-root USER; pick the conventional
-										// "nobody" uid.  netexec binds the
-										// unprivileged port 8080, so no root
-										// is needed.
+										// "nobody" uid.  serve-hostname binds
+										// the unprivileged port 8080, so no
+										// root is needed.
 										runAsUser:  65534
 										runAsGroup: 65534
 										seccompProfile: type: "RuntimeDefault"
@@ -112,8 +116,8 @@ userDefinedBuildPlan: {
 											port: PORT
 										}
 										// A minimal QoS floor for a permanent
-										// smoke-test pod; netexec idles far
-										// below these.
+										// smoke-test pod; serve-hostname idles
+										// far below these.
 										resources: {
 											requests: {
 												cpu:    "10m"
