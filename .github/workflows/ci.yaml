@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+# Cancel superseded runs on force-pushed PR branches. Push events key the
+# group by commit SHA so runs on main are neither canceled nor queued out by
+# later pushes — every merged commit gets a complete CI record.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -17,7 +24,10 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       # shellcheck is preinstalled on ubuntu-latest runners. Glob the whole
-      # directory so new scripts are linted automatically.
+      # directory so new scripts are linted automatically. This also means CI
+      # hard-fails if a non-script file or subdirectory is ever added to
+      # scripts/ (shellcheck errors on anything without a recognizable
+      # shebang) — an intentional tripwire that keeps scripts/ scripts-only.
       - name: shellcheck
         run: shellcheck scripts/*
 
@@ -29,12 +39,24 @@ jobs:
         run: |
           set -euo pipefail
           # Extract the function and guard against the sed range silently
-          # matching nothing (e.g. if a signature line is reformatted).
+          # misfiring: an empty extraction means the signature line never
+          # matched, and a well-formed extraction ends at a bare '}' and
+          # contains exactly one function-signature line (check_prereq's
+          # own). Anything else means sed ran past the function's closing
+          # brace (e.g. it was reformatted) into a later function or
+          # end-of-file. The diff below remains the backstop.
           extract() {
-            sed -n '/^check_prereq() {$/,/^}$/p' "$1" > "/tmp/check_prereq.$(basename "$1")"
-            if ! test -s "/tmp/check_prereq.$(basename "$1")"; then
+            local out
+            out="${RUNNER_TEMP}/check_prereq.$(basename "$1")"
+            sed -n '/^check_prereq() {$/,/^}$/p' "$1" > "$out"
+            if ! test -s "$out"; then
               echo "ERROR: could not extract check_prereq from $1." >&2
               echo "       Was the 'check_prereq() {' signature line reformatted?" >&2
+              exit 1
+            fi
+            if [ "$(tail -n 1 "$out")" != "}" ] || [ "$(grep -c '() {$' "$out")" != 1 ]; then
+              echo "ERROR: check_prereq extraction from $1 did not stop at the function's closing brace." >&2
+              echo "       Was the function's closing '}' line reformatted?" >&2
               exit 1
             fi
           }
@@ -46,6 +68,6 @@ jobs:
             echo "       The three copies must stay character-identical (see the NOTE blocks)." >&2
             exit 1
           }
-          diff -u /tmp/check_prereq.local-ca /tmp/check_prereq.local-dns || fail scripts/local-dns
-          diff -u /tmp/check_prereq.local-ca /tmp/check_prereq.local-k3d || fail scripts/local-k3d
+          diff -u "${RUNNER_TEMP}/check_prereq.local-ca" "${RUNNER_TEMP}/check_prereq.local-dns" || fail scripts/local-dns
+          diff -u "${RUNNER_TEMP}/check_prereq.local-ca" "${RUNNER_TEMP}/check_prereq.local-k3d" || fail scripts/local-k3d
           echo "check_prereq copies are identical."
