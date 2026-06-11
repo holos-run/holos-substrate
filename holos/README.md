@@ -77,8 +77,8 @@ components in this order:
 
 The order encodes five rules: the `namespaces` component applies first,
 because namespaced resources cannot be created until their Namespace exists;
-CRD components (labeled `crds: "true"`) apply
-before the controllers that depend on their types; `istiod` applies before
+CRD components (labeled `crds: "true"`) apply before the controllers that
+depend on their types; `istiod` applies before
 the Gateway, because the `istio` GatewayClass must exist and istiod must be
 running to program the Gateway; `istio-cni` and `istio-ztunnel` apply before
 ambient-enrolled workloads like `echo`, because they must be capturing
