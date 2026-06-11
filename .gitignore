@@ -33,8 +33,8 @@ go.work.sum
 .claude/
 
 # In-progress download directories created by read-thru-cache scripts.  The
-# EXIT trap removes them on failure, but a SIGKILL bypasses traps and could
-# strand one inside the component tree.
+# EXIT trap removes them, but a SIGKILL bypasses traps and could strand one
+# inside the component tree.
 **/manifests/.tmp.*
 
 # Holos files
