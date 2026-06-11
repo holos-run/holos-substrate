@@ -25,11 +25,15 @@ HBONE (HTTP-Based Overlay Network Environment) with mutual TLS. Workloads
 need no sidecar and no restart-ordering relationship with the mesh — the
 label is the entire enrollment.
 
-This platform has no central namespaces component yet — each component emits
-its own Namespace resource and carries the label itself, as
-[`components/echo/buildplan.cue`](../components/echo/buildplan.cue) does. If
-a central namespaces component is added later, the convention (and the
-labels) move there.
+Namespaces are declared in the central namespaces registry
+([`holos/namespaces.cue`](../namespaces.cue)), rendered by the
+[`namespaces`](../components/namespaces/) component — register a namespace
+and its enrollment label there, not inline in a component. Each registry
+entry declares enrollment deliberately; the exceptions below document the
+namespaces that are deliberately not enrolled. Some components (`echo`,
+`istio-base`, `istio-gateway`) still emit a transitional inline copy of
+their Namespace; those copies are byte-equivalent under server-side apply
+and are slated for removal (HOL-1162).
 
 ## Verifying enrollment
 
