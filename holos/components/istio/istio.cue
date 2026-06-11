@@ -26,7 +26,8 @@ IstioValues: {
 
 // IstioNamespace is the control plane namespace.  Keep the chart default
 // (istio-system); this platform has no environment dimension to encode in
-// the namespace name.  The base component emits the Namespace resource.
+// the namespace name.  The namespaces component renders the Namespace
+// resource from the central registry (holos/namespaces.cue).
 //
 // Keep this value in sync with the "istio-system" entry in the central
 // namespaces registry (holos/namespaces.cue): this file is an ancestor only

@@ -30,10 +30,8 @@ Namespaces are declared in the central namespaces registry
 [`namespaces`](../components/namespaces/) component — register a namespace
 and its enrollment label there, not inline in a component. Each registry
 entry declares enrollment deliberately; the exceptions below document the
-namespaces that are deliberately not enrolled. Some components (`echo`,
-`istio-base`, `istio-gateway`) still emit a transitional inline copy of
-their Namespace; those copies converge under server-side apply and are
-slated for removal (HOL-1162).
+namespaces that are deliberately not enrolled. The registry is the only
+place Namespace resources are rendered — no component emits an inline copy.
 
 ## Verifying enrollment
 

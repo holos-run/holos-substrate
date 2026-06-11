@@ -1,16 +1,21 @@
 package holos
 
 // istio-gateway emits the shared Gateway API Gateway all platform services
-// attach HTTPRoutes to, plus its istio-gateways Namespace.  Istio's gateway
-// controller auto-provisions the gateway Deployment and LoadBalancer Service
-// in istio-gateways; on k3s, klipper ServiceLB binds the Service ports on the
-// node and k3d/config.yaml maps host ports 80/443 to the k3d loadbalancer.
+// attach HTTPRoutes to.  Istio's gateway controller auto-provisions the
+// gateway Deployment and LoadBalancer Service in istio-gateways; on k3s,
+// klipper ServiceLB binds the Service ports on the node and k3d/config.yaml
+// maps host ports 80/443 to the k3d loadbalancer.
 //
-// The istio-gateways Namespace is deliberately NOT enrolled in ambient (no
-// istio.io/dataplane-mode=ambient label): the auto-provisioned gateway pods
-// are Envoy proxies themselves and terminate mesh traffic natively, so
-// redirecting them through ztunnel adds nothing.
-let NAMESPACE = "istio-gateways"
+// The istio-gateways Namespace is registered in the central namespaces
+// registry (holos/namespaces.cue), which carries the canonical rationale
+// for why it is deliberately NOT enrolled in the ambient mesh.
+//
+// The registry-membership constraint turns silent drift between this
+// literal and the registry entry into a render failure: if "istio-gateways"
+// is ever removed or renamed in holos/namespaces.cue, rendering fails here
+// instead of at apply time with a NotFound namespace error.  Same pattern
+// as IstioNamespace in components/istio/istio.cue.
+let NAMESPACE = "istio-gateways" & or([for N, _ in namespaces {N}])
 
 let GATEWAY = {
 	apiVersion: "gateway.networking.k8s.io/v1"
@@ -57,11 +62,6 @@ userDefinedBuildPlan: {
 				// hand-authored resources validate against the vendored
 				// Kubernetes and Gateway API schemas at render time.
 				resources: #Resources & {
-					Namespace: (NAMESPACE): {
-						apiVersion: "v1"
-						kind:       "Namespace"
-						metadata: name: NAMESPACE
-					}
 					Gateway: (GATEWAY.metadata.name): GATEWAY
 				}
 			}]
