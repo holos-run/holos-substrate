@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Render the Holos platform and verify the committed deploy tree is diff-clean.
+#
+# Runs `holos render platform` from holos/ and fails if anything under holos/
+# is modified or untracked afterward — a non-empty status means the committed
+# deploy tree (holos/deploy/) is stale or a component renders
+# non-deterministically.  See the render-then-commit workflow in
+# holos/docs/component-guidelines.md.
+#
+# Usable locally and by future CI:
+#   - Locally: commit the CUE change and the regenerated holos/deploy tree
+#     together, then run this script; a clean exit confirms the committed
+#     tree matches the CUE.  Run it from a tree with no uncommitted changes
+#     under holos/ — pre-existing edits there fail the check by design.
+#   - CI: run on a fresh checkout; any diff fails the build.
+#
+# Prerequisites:
+#   - holos  (https://holos.run/docs/cli/)
+#   - git
+
+set -euo pipefail
+
+# Resolve the repo root so this script works from any working directory.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+if ! command -v holos >/dev/null 2>&1; then
+  echo "ERROR: 'holos' not found on PATH." >&2
+  echo "       Install from https://holos.run/docs/cli/" >&2
+  exit 1
+fi
+
+echo "Rendering platform from ${REPO_ROOT}/holos ..."
+(cd "${REPO_ROOT}/holos" && holos render platform)
+
+# Fail when the render left modified tracked files or new untracked files
+# under holos/.  git status --porcelain covers both.  Scoped to holos/ —
+# rendering writes only there — so unrelated local changes elsewhere in the
+# repo never fail the check.
+STATUS="$(git -C "${REPO_ROOT}" status --porcelain -- holos)"
+if [[ -n "${STATUS}" ]]; then
+  echo "ERROR: holos/ has uncommitted changes after holos render platform:" >&2
+  echo "${STATUS}" >&2
+  git -C "${REPO_ROOT}" --no-pager diff -- holos >&2
+  echo "ERROR: commit the CUE change and the regenerated holos/deploy tree" >&2
+  echo "       together (see holos/docs/component-guidelines.md)." >&2
+  exit 1
+fi
+
+echo "Render is diff-clean."

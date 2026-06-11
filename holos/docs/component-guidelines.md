@@ -189,7 +189,9 @@ Rendered manifests under `holos/deploy/` are build artifacts that are
 4. Verify the deploy tree is diff-clean: re-running `holos render platform`
    immediately after a commit must produce no diff (`git diff --exit-code`).
    A dirty re-render means the component renders non-deterministically — fix
-   that before merging.
+   that before merging. `scripts/render` (from the repo root) mechanizes
+   this check: it renders and exits non-zero if anything under `holos/` is
+   modified or untracked afterward.
 
 ## Conformance checklist
 
@@ -205,5 +207,5 @@ Before approving a component PR:
 - [ ] CRDs isolated in a dedicated component labeled `crds: "true"`.
 - [ ] Registered in `platform/platform.cue` via `#ComponentTemplate` with an
       explicit `cluster:` field.
-- [ ] `holos render platform` exits 0 and the committed `holos/deploy/` tree
-      is diff-clean on re-render.
+- [ ] `scripts/render` exits 0: `holos render platform` succeeds and the
+      committed `holos/deploy/` tree is diff-clean on re-render.
