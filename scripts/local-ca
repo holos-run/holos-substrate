@@ -114,9 +114,12 @@ metadata:
   name: cert-manager
 EOF
 
-kubectl apply --server-side=true -f "${tmpdir}/namespace.yaml"
+# Pin --context to the preflight-resolved value so the apply targets the same
+# cluster that was reported, even if the ambient context changes while
+# mkcert --install blocks on a sudo prompt.
+kubectl apply --context "${KUBE_CONTEXT}" --server-side=true -f "${tmpdir}/namespace.yaml"
 # namespace is declared in the manifest; -n flag omitted to avoid redundancy.
-kubectl apply --server-side=true -f "${tmpdir}/local-ca.yaml"
+kubectl apply --context "${KUBE_CONTEXT}" --server-side=true -f "${tmpdir}/local-ca.yaml"
 
 # Save the manifests to CAROOT for cluster resets.
 # local-ca.yaml contains the CA private key — install it with mode 0600.

@@ -84,6 +84,11 @@ sudo mkdir -p /etc/resolver
 sudo tee /etc/resolver/holos.localhost > /dev/null <<EOF
 nameserver 127.0.0.1
 EOF
+# Flush the directory-services cache now that the resolver entry is in place,
+# then HUP mDNSResponder to reload resolver state. The flush runs here — after
+# the daemon is loaded and /etc/resolver/holos.localhost is written — where it
+# can actually drop stale entries.
+sudo dscacheutil -flushcache
 sudo killall -HUP mDNSResponder
 
 echo "all done."

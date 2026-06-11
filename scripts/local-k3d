@@ -54,7 +54,7 @@ check_prereq k3d  "Install from https://k3d.io/#installation"
 check_prereq jq   "Install from https://jqlang.org/"
 check_prereq docker "Install Docker Desktop or OrbStack"
 
-if ! docker info > /dev/null 2>&1; then
+if ! docker info >/dev/null 2>&1; then
   echo "ERROR: Docker daemon is not running. Start Docker or OrbStack first." >&2
   exit 1
 fi
@@ -62,7 +62,7 @@ fi
 
 # Delete existing cluster if present (reset semantics).
 # Use jq --arg to avoid injection when the cluster name contains special chars.
-if k3d cluster list -o json | jq -e --arg name "${CLUSTER_NAME}" '.[] | select(.name == $name)' > /dev/null; then
+if k3d cluster list -o json | jq -e --arg name "${CLUSTER_NAME}" '.[] | select(.name == $name)' >/dev/null; then
   echo "WARNING: Cluster '${CLUSTER_NAME}' already exists and will be DELETED."
   echo "Press Ctrl-C within 5 seconds to abort..."
   sleep 5
@@ -71,7 +71,7 @@ if k3d cluster list -o json | jq -e --arg name "${CLUSTER_NAME}" '.[] | select(.
 fi
 
 # Create local registry if it doesn't exist.
-if ! k3d registry list -o json | jq -e --arg name "${K3D_REGISTRY_NAME}" '.[] | select(.name == $name)' > /dev/null; then
+if ! k3d registry list -o json | jq -e --arg name "${K3D_REGISTRY_NAME}" '.[] | select(.name == $name)' >/dev/null; then
   echo "Creating registry '${REGISTRY_NAME}' on port ${REGISTRY_PORT}..."
   k3d registry create "${REGISTRY_NAME}" --port "${REGISTRY_PORT}"
 fi
