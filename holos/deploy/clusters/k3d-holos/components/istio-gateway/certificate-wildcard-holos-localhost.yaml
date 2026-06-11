@@ -1,0 +1,13 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard-holos-localhost
+  namespace: istio-gateways
+spec:
+  dnsNames:
+  - '*.holos.localhost'
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: local-ca
+  secretName: wildcard-holos-localhost

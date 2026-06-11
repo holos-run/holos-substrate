@@ -49,6 +49,23 @@ platform: {
 				}
 			}}).output
 
+			// cert-manager-crds renders the cert-manager CRDs from the
+			// upstream release manifest.  CRDs are isolated components
+			// labeled crds: "true" so they apply before the controllers that
+			// depend on them.  The controller is the cert-manager component
+			// below; both share the version pin in
+			// components/cert-manager/cert-manager.cue.
+			(#ComponentTemplate & {inputs: {
+				name:      "cert-manager-crds"
+				component: "crds"
+				prefix:    "components/cert-manager"
+				cluster:   CLUSTER.name
+				labels: {
+					app:  "cert-manager"
+					crds: "true"
+				}
+			}}).output
+
 			// Istio ambient-mode control plane, rendered from the upstream
 			// Helm charts.  Manifests are applied manually during Layer 0
 			// bootstrap (see holos/README.md) in this order: namespaces →
@@ -95,10 +112,34 @@ platform: {
 				labels: app: "istio"
 			}}).output
 
+			// cert-manager renders the controller, webhook, and cainjector
+			// from the upstream Helm chart.  Applies after istio-ztunnel:
+			// the cert-manager namespace is ambient-enrolled, so the mesh
+			// dataplane must be capturing traffic when its workloads start.
+			(#ComponentTemplate & {inputs: {
+				name:      "cert-manager"
+				component: "controller"
+				prefix:    "components/cert-manager"
+				cluster:   CLUSTER.name
+				labels: app: "cert-manager"
+			}}).output
+
+			// local-ca emits the CA ClusterIssuer that signs every platform
+			// certificate, referencing the mkcert root CA Secret staged by
+			// scripts/local-ca.  A separate component so the ordered apply
+			// can wait for the cert-manager webhook before the ClusterIssuer
+			// applies.
+			(#ComponentTemplate & {inputs: {
+				component: "local-ca"
+				cluster:   CLUSTER.name
+				labels: app: "cert-manager"
+			}}).output
+
 			// istio-gateway emits the shared Gateway all platform services
-			// attach HTTPRoutes to.  Applies after the Istio control plane
-			// components above: the istio GatewayClass must exist and istiod
-			// must be running to program the Gateway.
+			// attach HTTPRoutes to, the wildcard TLS Certificate for its
+			// HTTPS listener, and its Namespace.  Applies after the Istio
+			// control plane components above: the istio GatewayClass must
+			// exist and istiod must be running to program the Gateway.
 			(#ComponentTemplate & {inputs: {
 				component: "istio-gateway"
 				cluster:   CLUSTER.name

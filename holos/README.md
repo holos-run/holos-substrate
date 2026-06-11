@@ -67,23 +67,30 @@ components in this order:
    ([namespaces.cue](namespaces.cue)); labeled `namespaces: "true"` so apply
    tooling can select it
 2. `gateway-api` — Gateway API standard channel CRDs (`crds: "true"`)
-3. `istio-base` — Istio CRDs and validation webhook (`crds: "true"`)
-4. `istiod` — the Istio control plane
-5. `istio-cni` — the node agent that redirects ambient pod traffic to ztunnel
-6. `istio-ztunnel` — the ambient node proxy
-7. `istio-gateway` — the shared Gateway all platform services attach
-   `HTTPRoute`s to
-8. `echo` — the permanent smoke-test workload and its `HTTPRoute`
+3. `cert-manager-crds` — cert-manager CRDs (`crds: "true"`)
+4. `istio-base` — Istio CRDs and validation webhook (`crds: "true"`)
+5. `istiod` — the Istio control plane
+6. `istio-cni` — the node agent that redirects ambient pod traffic to ztunnel
+7. `istio-ztunnel` — the ambient node proxy
+8. `cert-manager` — the certificate controller, webhook, and cainjector
+9. `local-ca` — the CA `ClusterIssuer` that signs all platform certificates
+10. `istio-gateway` — the shared Gateway all platform services attach
+    `HTTPRoute`s to, and its wildcard TLS certificate
+11. `echo` — the permanent smoke-test workload and its `HTTPRoute`
 
-The order encodes five rules: the `namespaces` component applies first, so
+The order encodes six rules: the `namespaces` component applies first, so
 every Namespace exists before any component that populates it;
 CRD components (labeled `crds: "true"`) apply before the controllers that
 depend on their types; `istiod` applies before
 the Gateway, because the `istio` GatewayClass must exist and istiod must be
 running to program the Gateway; `istio-cni` and `istio-ztunnel` apply before
-ambient-enrolled workloads like `echo`, because they must be capturing
-traffic when those workloads start (the Gateway itself is deliberately not
-enrolled, see [docs/mesh-enrollment.md](docs/mesh-enrollment.md)); and the
+ambient-enrolled workloads like `cert-manager` and `echo`, because they must
+be capturing traffic when those workloads start (the Gateway itself is
+deliberately not enrolled, see
+[docs/mesh-enrollment.md](docs/mesh-enrollment.md)); `cert-manager` applies
+before the components that create `cert-manager.io` resources (`local-ca`'s
+`ClusterIssuer`, `istio-gateway`'s `Certificate`), because its validating
+webhook must be serving to admit them; and the
 Gateway applies before components that attach routes to it.
 
 The first rule exists because nothing orders an apply batch by kind:
@@ -94,7 +101,10 @@ resource sorts ahead of its Namespace. The last rule is for verifiability
 rather than correctness — route attachment is level-triggered, so an
 `HTTPRoute` applied early simply reports unattached until the Gateway
 exists — but applying `echo` last means the smoke test exercises a
-complete traffic path immediately.
+complete traffic path immediately. Certificate issuance is level-triggered
+the same way: the Gateway's HTTPS listener reports an unresolved
+certificate ref only until cert-manager writes the wildcard certificate's
+Secret.
 
 `--force-conflicts` is safe here because the rendered manifests in git are
 the source of truth for these resources and, with one exception, no other

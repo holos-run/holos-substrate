@@ -7,10 +7,10 @@
 # issue trusted TLS certificates for *.holos.localhost.
 #
 # The local-ca Secret (cert-manager namespace) is the integration point for
-# HOL-1116 cert-manager.  This script creates the cert-manager namespace
-# before cert-manager itself is installed — that is intentional: cert-manager's
-# ClusterIssuer references the Secret, so the Secret must exist first.  Do not
-# rename the namespace or the Secret.
+# the local-ca ClusterIssuer (holos/components/local-ca).  This script creates
+# the cert-manager namespace before cert-manager itself is installed — that is
+# intentional: cert-manager's ClusterIssuer references the Secret, so the
+# Secret must exist first.  Do not rename the namespace or the Secret.
 #
 # Prerequisites:
 #   - mkcert   (https://github.com/FiloSottile/mkcert#installation)
