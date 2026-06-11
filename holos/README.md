@@ -30,7 +30,10 @@ holos/
   for the anatomy.
 - **`deploy/`** is generated output — never edit it by hand. Render with
   `holos render platform` from this directory and commit the result; the
-  tree must be diff-clean on re-render.
+  tree must be diff-clean on re-render. `scripts/render` (from the repo
+  root) checks exactly that: it removes `deploy/`, re-renders, and fails
+  if anything under `holos/` is modified, deleted, or untracked — catching
+  stale edits and orphaned manifests alike.
 
 ## Clusters: local development now, production later
 

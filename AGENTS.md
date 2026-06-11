@@ -45,4 +45,5 @@ behind the layout is in
   ([ADR-2](docs/adr/ADR-2.md)); integrations like Keycloak group membership
   and Quay self-service are CRDs with reconcilers, not imperative tools.
 - Deployment configuration and policy are CUE rendered with
-  `holos render platform`.
+  `holos render platform`; `scripts/render` renders and verifies the
+  committed `holos/deploy/` tree is diff-clean.
