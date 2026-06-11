@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Vendored from https://github.com/holos-run/holos/blob/main/doc/website/static/scripts/local-dns
+# Originally vendored from https://github.com/holos-run/holos/blob/main/doc/website/static/scripts/local-dns
+# and modified locally since; this copy has diverged from upstream (see git log).
 # Documentation: https://github.com/holos-run/holos/blob/main/doc/md/topics/local-cluster.mdx
 #
 # Configure macOS DNS to resolve *.holos.localhost to 127.0.0.1 via dnsmasq.
@@ -27,8 +28,8 @@ fi
 # --- Prerequisite checks ---------------------------------------------------
 # NOTE: check_prereq is duplicated verbatim in scripts/local-k3d and
 # scripts/local-ca so each vendored script stays standalone.  Keep the three
-# copies character-identical; consolidate into a shared helper if a fourth
-# copy appears.
+# copies character-identical — CI (.github/workflows/ci.yaml) enforces this —
+# and consolidate into a shared helper if a fourth copy appears.
 check_prereq() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "ERROR: '$1' not found on PATH." >&2

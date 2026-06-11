@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  scripts:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned to the full commit SHA of v4.3.1 for supply-chain hardening.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # shellcheck is preinstalled on ubuntu-latest runners. Glob the whole
+      # directory so new scripts are linted automatically.
+      - name: shellcheck
+        run: shellcheck scripts/*
+
+      # The three scripts each carry a verbatim copy of check_prereq so they
+      # stay standalone (see the NOTE blocks in each script). This check makes
+      # that invariant self-enforcing: the copies must stay
+      # character-identical.
+      - name: check_prereq copies are character-identical
+        run: |
+          set -euo pipefail
+          # Extract the function and guard against the sed range silently
+          # matching nothing (e.g. if a signature line is reformatted).
+          extract() {
+            sed -n '/^check_prereq() {$/,/^}$/p' "$1" > "/tmp/check_prereq.$(basename "$1")"
+            if ! test -s "/tmp/check_prereq.$(basename "$1")"; then
+              echo "ERROR: could not extract check_prereq from $1." >&2
+              echo "       Was the 'check_prereq() {' signature line reformatted?" >&2
+              exit 1
+            fi
+          }
+          extract scripts/local-ca
+          extract scripts/local-dns
+          extract scripts/local-k3d
+          fail() {
+            echo "ERROR: check_prereq in $1 diverged from scripts/local-ca." >&2
+            echo "       The three copies must stay character-identical (see the NOTE blocks)." >&2
+            exit 1
+          }
+          diff -u /tmp/check_prereq.local-ca /tmp/check_prereq.local-dns || fail scripts/local-dns
+          diff -u /tmp/check_prereq.local-ca /tmp/check_prereq.local-k3d || fail scripts/local-k3d
+          echo "check_prereq copies are identical."
