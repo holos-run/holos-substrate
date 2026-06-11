@@ -35,6 +35,47 @@ platform: {
 					crds: "true"
 				}
 			}}).output
+
+			// Istio ambient-mode control plane, rendered from the upstream
+			// Helm charts.  Manifests are applied manually during Layer 0
+			// bootstrap (see holos/README.md) in this order: gateway-api →
+			// istio-base → istiod → istio-cni → istio-ztunnel.  istio-base
+			// ships the Istio CRDs, so it is labeled crds: "true" and applies
+			// before the controllers that depend on them.
+			(#ComponentTemplate & {inputs: {
+				name:      "istio-base"
+				component: "base"
+				prefix:    "components/istio"
+				cluster:   CLUSTER.name
+				labels: {
+					app:  "istio"
+					crds: "true"
+				}
+			}}).output
+
+			(#ComponentTemplate & {inputs: {
+				name:      "istiod"
+				component: "istiod"
+				prefix:    "components/istio"
+				cluster:   CLUSTER.name
+				labels: app: "istio"
+			}}).output
+
+			(#ComponentTemplate & {inputs: {
+				name:      "istio-cni"
+				component: "cni"
+				prefix:    "components/istio"
+				cluster:   CLUSTER.name
+				labels: app: "istio"
+			}}).output
+
+			(#ComponentTemplate & {inputs: {
+				name:      "istio-ztunnel"
+				component: "ztunnel"
+				prefix:    "components/istio"
+				cluster:   CLUSTER.name
+				labels: app: "istio"
+			}}).output
 		}
 	}
 }
