@@ -181,7 +181,11 @@ every other component — the ordering rationale lives in
 A component that needs a namespace adds an entry to the registry — including
 any ambient mesh enrollment label, per
 [mesh-enrollment.md](mesh-enrollment.md) — and references the namespace by
-name in its own resources.
+name in its own resources. Unify the namespace literal with
+`#RegisteredNamespace` (defined in the registry file), e.g.
+`let NAMESPACE = "echo" & #RegisteredNamespace`, so removing or renaming the
+registry entry fails at render time instead of at apply time with a
+`NotFound` error.
 
 ## Registration in the platform
 

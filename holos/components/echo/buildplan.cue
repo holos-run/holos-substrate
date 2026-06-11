@@ -24,12 +24,11 @@ package holos
 // long as it remains multi-arch.
 let VERSION = "2.53"
 
-// The registry-membership constraint turns silent drift between this
-// literal and the registry entry into a render failure: if "echo" is ever
-// removed or renamed in holos/namespaces.cue, rendering fails here instead
-// of at apply time with a NotFound namespace error.  Same pattern as
-// IstioNamespace in components/istio/istio.cue.
-let NAMESPACE = "echo" & or([for N, _ in namespaces {N}])
+// The #RegisteredNamespace constraint (holos/namespaces.cue) turns silent
+// drift between this literal and the registry entry into a render failure:
+// if "echo" is ever removed or renamed in holos/namespaces.cue, rendering
+// fails here instead of at apply time with a NotFound namespace error.
+let NAMESPACE = "echo" & #RegisteredNamespace
 let NAME = "echo"
 let PORT = 8080
 

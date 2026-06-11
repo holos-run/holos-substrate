@@ -51,9 +51,11 @@ platform: {
 
 			// Istio ambient-mode control plane, rendered from the upstream
 			// Helm charts.  Manifests are applied manually during Layer 0
-			// bootstrap (see holos/README.md) in this order: gateway-api →
-			// istio-base → istiod → istio-cni → istio-ztunnel →
-			// istio-gateway.  istio-base ships the Istio CRDs, so it is
+			// bootstrap (see holos/README.md) in this order: namespaces →
+			// gateway-api → istio-base → istiod → istio-cni →
+			// istio-ztunnel → istio-gateway.  namespaces applies first so
+			// istio-base's namespaced resources find istio-system already
+			// present.  istio-base ships the Istio CRDs, so it is
 			// labeled crds: "true" and applies before the controllers that
 			// depend on them.  Note the webhook failurePolicy caveat in
 			// holos/README.md before re-applying istio-base or istiod: istiod

@@ -44,6 +44,14 @@ namespaces: [NAME=string]: corev1.#Namespace & {
 	}
 }
 
+// #RegisteredNamespace is the disjunction of every registered namespace
+// name.  Components unify their namespace literal with it so silent drift
+// between the literal and the registry entry becomes a render failure
+// instead of an apply-time NotFound error.  This file is a CUE ancestor of
+// every component instance, so components reference this definition rather
+// than cloning the comprehension.
+#RegisteredNamespace: or([for NAME, _ in namespaces {NAME}])
+
 namespaces: {
 	// istio-system hosts the mesh dataplane and control plane themselves:
 	// istiod, istio-cni, and ztunnel.  It is deliberately NOT enrolled in
