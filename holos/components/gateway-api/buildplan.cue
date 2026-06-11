@@ -20,8 +20,10 @@ userDefinedBuildPlan: {
 				command: {
 					// read-thru-cache fetches the standard channel CRDs once and
 					// caches them in manifests/bundle.<VERSION>.yaml for offline
-					// reproducible rendering.
-					args: ["./components/\(metadata.name)/read-thru-cache", VERSION]
+					// reproducible rendering.  The path derives from BuildContext
+					// so it tracks the component directory regardless of the
+					// command working directory or a metadata.name override.
+					args: ["\(BuildContext.rootDir)/\(BuildContext.leafDir)/read-thru-cache", VERSION]
 					isStdoutOutput: true
 				}
 				output: "crds-bundle.yaml"

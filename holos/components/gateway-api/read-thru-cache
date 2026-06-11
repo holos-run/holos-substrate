@@ -1,15 +1,21 @@
-#! /bin/bash
+#!/usr/bin/env bash
 #
 # Pull the Gateway API standard channel CRDs from upstream and cache them in
 # manifests/bundle.<version>.yaml so rendering is reproducible offline.
 #
-# NOTE: take care to ensure the script is safe for concurrent use.  An useful
-# technique is to write into unique files, then force move them into place,
-# then read them.
+# Concurrency safety: each invocation downloads into its own unique mktemp
+# directory, then atomically renames the finished bundle into place (rename
+# is an atomic system call on posix filesystems).  The EXIT trap removes the
+# temporary directory on failure so no partial files are left behind.
+#
+# Integrity: upstream tags are mutable refs and the download is not checksum
+# pinned.  This is mitigated because the cached bundle and the rendered
+# deploy files are committed to git, so any change in fetched content is
+# visible in review before it can take effect.
 
 set -euo pipefail
 
-cd "$(dirname $0)"
+cd "$(dirname "$0")"
 mkdir -p manifests
 version="${1:-}"
 if [[ -z "${version}" ]]; then
@@ -21,20 +27,23 @@ fi
 bundle="manifests/bundle.${version}.yaml"
 
 if ! [[ -s "$bundle" ]]; then
+  tmpdir="$(mktemp -d manifests/.tmp.XXXXXX)"
+  trap 'rm -rf "$tmpdir"' EXIT
+
   # Standard channel CRDs only.  Experimental channel resources (e.g.
   # tlsroutes) are deliberately excluded.
   for x in gatewayclasses gateways httproutes referencegrants grpcroutes; do
-    tmpfile="manifests/${x}.$$" # $$ is the current pid (guaranteed unique)
-    curl -Lo "$tmpfile" "https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v${version}/config/crd/standard/gateway.networking.k8s.io_${x}.yaml" >&2
-    echo "---" >> "$bundle".$$
-    cat "$tmpfile" >> "$bundle".$$
-    rm -f "$tmpfile"
-    echo "appended: $x to ${bundle}.$$" >&2
+    # --fail aborts on HTTP errors so an error body is never cached.
+    curl -fsSL --retry 3 -o "${tmpdir}/${x}.yaml" \
+      "https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v${version}/config/crd/standard/gateway.networking.k8s.io_${x}.yaml"
+    echo "---" >> "${tmpdir}/bundle.yaml"
+    cat "${tmpdir}/${x}.yaml" >> "${tmpdir}/bundle.yaml"
+    echo "appended: $x to ${tmpdir}/bundle.yaml" >&2
   done
 
   # rename is guaranteed atomic system call on posix filesystems
-  mv -f "$bundle".$$ "$bundle"
+  mv -f "${tmpdir}/bundle.yaml" "$bundle"
   echo "cached: $bundle" >&2
 fi
 
-exec cat "$bundle"
+cat "$bundle"
