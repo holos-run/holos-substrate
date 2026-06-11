@@ -31,22 +31,36 @@ finish() {
   [[ -d "$tmpdir" ]] && rm -rf "$tmpdir"
 }
 trap finish EXIT
-cd "$tmpdir"
 
-# Create the local CA Secret with ca.crt, tls.crt, tls.key
-
-mkdir local-ca
-cd local-ca
 CAROOT="$(mkcert -CAROOT)"
-cp -p "${CAROOT}/rootCA.pem" ca.crt
-cp -p "${CAROOT}/rootCA.pem" tls.crt
-cp -p "${CAROOT}/rootCA-key.pem" tls.key
-kubectl create secret generic --from-file=. --dry-run=client -o yaml local-ca > ../local-ca.yaml
-echo 'type: kubernetes.io/tls' >> ../local-ca.yaml
 
-cd ..
+# Copy CA files into the staging directory with tight permissions on the key.
+install -m 0644 "${CAROOT}/rootCA.pem" "${tmpdir}/ca.crt"
+install -m 0644 "${CAROOT}/rootCA.pem" "${tmpdir}/tls.crt"
+install -m 0600 "${CAROOT}/rootCA-key.pem" "${tmpdir}/tls.key"
 
-cat <<EOF > namespace.yaml
+# Build the local-ca Secret manifest directly with correct type: kubernetes.io/tls.
+# Using a heredoc with explicit base64 fields avoids the 'kubectl create secret generic'
+# pitfall where type: Opaque is emitted and cannot be overridden by appending a second
+# 'type:' key.
+CA_CRT_B64="$(base64 < "${tmpdir}/ca.crt" | tr -d '\n')"
+TLS_CRT_B64="$(base64 < "${tmpdir}/tls.crt" | tr -d '\n')"
+TLS_KEY_B64="$(base64 < "${tmpdir}/tls.key" | tr -d '\n')"
+
+cat > "${tmpdir}/local-ca.yaml" <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: local-ca
+  namespace: cert-manager
+type: kubernetes.io/tls
+data:
+  ca.crt: ${CA_CRT_B64}
+  tls.crt: ${TLS_CRT_B64}
+  tls.key: ${TLS_KEY_B64}
+EOF
+
+cat > "${tmpdir}/namespace.yaml" <<EOF
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -57,13 +71,14 @@ spec:
   finalizers:
   - kubernetes
 EOF
-kubectl apply --server-side=true -f namespace.yaml
-kubectl apply -n cert-manager --server-side=true -f local-ca.yaml
+
+kubectl apply --server-side=true -f "${tmpdir}/namespace.yaml"
+kubectl apply -n cert-manager --server-side=true -f "${tmpdir}/local-ca.yaml"
 
 # Save the manifests to CAROOT for cluster resets.
 # local-ca.yaml contains the CA private key — install it with mode 0600.
-install -m 0644 namespace.yaml "${CAROOT}/namespace.yaml"
-install -m 0600 local-ca.yaml "${CAROOT}/local-ca.yaml"
+install -m 0644 "${tmpdir}/namespace.yaml" "${CAROOT}/namespace.yaml"
+install -m 0600 "${tmpdir}/local-ca.yaml" "${CAROOT}/local-ca.yaml"
 
 echo "local-ca Secret applied to cert-manager namespace."
 echo "Saved namespace.yaml and local-ca.yaml to ${CAROOT} for cluster resets."
