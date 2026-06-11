@@ -14,8 +14,9 @@
 # Usable locally and by future CI:
 #   - Locally: commit the CUE change and the regenerated holos/deploy tree
 #     together, then run this script; a clean exit confirms the committed
-#     tree matches the CUE.  Run it from a tree with no uncommitted changes
-#     under holos/ — pre-existing edits there fail the check by design.  If
+#     tree matches the CUE.  The script requires a tree with no uncommitted
+#     changes under holos/ and fails fast otherwise — both by design and so
+#     the deploy-tree removal below can never delete uncommitted work.  If
 #     the render itself fails after the deploy tree was removed, restore it
 #     with: git restore holos/deploy
 #   - CI: run on a fresh checkout; any diff fails the build.
@@ -42,6 +43,16 @@ if ! command -v holos >/dev/null 2>&1; then
 fi
 if ! command -v git >/dev/null 2>&1; then
   echo "ERROR: 'git' not found on PATH." >&2
+  exit 1
+fi
+
+# Require a clean holos/ tree before touching anything: the deploy tree is
+# removed below, so an uncommitted change or untracked file under holos/
+# must fail here, before it could be silently deleted, rather than after.
+STATUS="$(git -C "${REPO_ROOT}" status --porcelain -- holos)"
+if [[ -n "${STATUS}" ]]; then
+  echo "ERROR: holos/ has uncommitted changes; commit or stash them first:" >&2
+  echo "${STATUS}" >&2
   exit 1
 fi
 
