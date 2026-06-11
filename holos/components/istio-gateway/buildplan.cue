@@ -21,15 +21,23 @@ let GATEWAY = {
 	}
 	spec: {
 		gatewayClassName: "istio"
-		// The HTTPS/443 listener is added by the cert-manager issue, which
-		// owns TLS certificate provisioning for the gateway.
+		// The HTTPS/443 listener is added by HOL-1116, the cert-manager
+		// issue, which owns TLS certificate provisioning for the gateway.
 		listeners: [{
-			name:     "http"
-			port:     80
-			protocol: "HTTP"
+			name: "http"
+			port: 80
+			// *.holos.localhost is the local k3d-holos cluster's domain
+			// (docs/local-cluster.md).  When a production cluster is
+			// registered, parameterize the hostname per cluster — see the
+			// production deployment area placeholder in
+			// holos/docs/placeholders.md.
 			hostname: "*.holos.localhost"
+			protocol: "HTTP"
 			// Any platform namespace may attach HTTPRoutes to the shared
-			// Gateway.
+			// Gateway.  Acceptable while every namespace is platform-managed;
+			// tighten to a label Selector before tenant namespaces land — see
+			// the shared Gateway route-attachment policy placeholder in
+			// holos/docs/placeholders.md.
 			allowedRoutes: namespaces: from: "All"
 		}]
 	}
@@ -45,7 +53,10 @@ userDefinedBuildPlan: {
 			generators: [{
 				kind:   "Resources"
 				output: "resources.gen.yaml"
-				resources: {
+				// Unify with #Resources (holos/resources.cue) so the
+				// hand-authored resources validate against the vendored
+				// Kubernetes and Gateway API schemas at render time.
+				resources: #Resources & {
 					Namespace: (NAMESPACE): {
 						apiVersion: "v1"
 						kind:       "Namespace"

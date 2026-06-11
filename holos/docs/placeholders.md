@@ -27,6 +27,18 @@ once an observability stack is chosen and deployed. Until that decision is
 made (it warrants an ADR), components are not required to carry
 observability-specific labels or annotations.
 
+## Shared Gateway route-attachment policy
+
+The shared Gateway emitted by
+[`components/istio-gateway/`](../components/istio-gateway/buildplan.cue) sets
+`allowedRoutes.namespaces.from: All` on its listener: any namespace may attach
+`HTTPRoute`s and claim hostnames under the gateway's wildcard. That is
+acceptable while every namespace on the cluster is platform-managed, but it
+permits hostname squatting once untrusted tenant namespaces exist (Gateway API
+resolves route conflicts oldest-wins). Before tenant workloads land, tighten
+the policy to `from: Selector` with a namespace label selector (or per-tenant
+listeners) and document the enrollment convention.
+
 ## Production deployment area
 
 The only registered cluster is the local `k3d-holos` development cluster.
