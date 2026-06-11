@@ -12,10 +12,8 @@ The authoritative layout is defined in
 a single-module Go monorepo with one multi-service binary (`cmd/holos-paas`,
 one subcommand per service), kubebuilder multi-group API conventions
 (`api/<group>/<version>`), all implementation under `internal/`, and the
-Holos CUE deployment configuration and policy under `holos/` (currently
-still at the repository root — `cue.mod/`, `platform/`, `*.cue` — until the
-migration described in ADR-12 lands). Read ADR-12 before adding a service,
-an API group, or moving directories. The evidence
+Holos CUE deployment configuration and policy under `holos/`. Read ADR-12
+before adding a service, an API group, or moving directories. The evidence
 behind the layout is in
 [Research: Repository Layouts for Multiple Go Services](docs/research/go-multi-service-repo-layout.md).
 

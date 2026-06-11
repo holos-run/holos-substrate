@@ -153,9 +153,9 @@ The load-bearing choices:
   CRDs into its Helm chart), so `holos render platform` always renders the
   CRDs matching the compiled types.
 - **Holos CUE lives in `holos/`.** Deployment configuration and policy are
-  isolated from Go code at the top level: the existing root-level
-  `cue.mod/`, `platform/`, `resources.cue`, `schema.cue`, and `tags.cue`
-  move under `holos/`.
+  isolated from Go code at the top level: `cue.mod/`, `platform/`,
+  `resources.cue`, `schema.cue`, and `tags.cue` live under `holos/` (moved
+  from the repository root in commit `f948372`).
 
 ## Decision
 
@@ -168,9 +168,10 @@ one container image, kubebuilder multi-group conventions
 
 ## Consequences
 
-- **Migration:** the root-level CUE files move into `holos/`; CI and
-  developer invocations of `holos render platform` change accordingly. The
-  `holos-controller` repository is archived after its scaffold is absorbed.
+- **Migration:** the root-level CUE files moved into `holos/` (commit
+  `f948372`); CI and developer invocations of `holos render platform` run
+  from that directory. The `holos-controller` repository is archived after
+  its scaffold is absorbed.
 - **Coupled releases:** every service ships in one image on one version.
   Acceptable for the MVP (the deployer updates a single tag); revisit if a
   component ever needs an independent release cadence.
