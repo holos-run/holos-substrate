@@ -46,6 +46,9 @@ trap finish EXIT
 CAROOT="$(mkcert -CAROOT)"
 
 # Copy CA files into the staging directory with tight permissions on the key.
+# tls.crt and ca.crt are intentionally both set to rootCA.pem: cert-manager's
+# CA Issuer requires tls.crt (the CA cert) and ca.crt (the trust anchor) and
+# for a self-signed root both fields are the same certificate.
 install -m 0644 "${CAROOT}/rootCA.pem" "${tmpdir}/ca.crt"
 install -m 0644 "${CAROOT}/rootCA.pem" "${tmpdir}/tls.crt"
 install -m 0600 "${CAROOT}/rootCA-key.pem" "${tmpdir}/tls.key"
@@ -54,13 +57,20 @@ install -m 0600 "${CAROOT}/rootCA-key.pem" "${tmpdir}/tls.key"
 # Using a heredoc with explicit base64 fields avoids the 'kubectl create secret generic'
 # pitfall where type: Opaque is emitted and cannot be overridden by appending a second
 # 'type:' key.
+#
+# base64 | tr -d '\n' is the portable approach: BSD base64 (macOS) wraps at 60 chars
+# and GNU base64 (Linux) wraps at 76 chars — neither supports the other's no-wrap flag
+# (-b 0 vs -w 0), so stripping newlines with tr is required for cross-platform use.
 CA_CRT_B64="$(base64 < "${tmpdir}/ca.crt" | tr -d '\n')"
 TLS_CRT_B64="$(base64 < "${tmpdir}/tls.crt" | tr -d '\n')"
 TLS_KEY_B64="$(base64 < "${tmpdir}/tls.key" | tr -d '\n')"
 
-# Write local-ca.yaml with mode 0600 — it contains base64-encoded CA private
-# key material.  Use a temp file and install rather than cat > to avoid
-# creating the file with umask-governed permissions before populating it.
+# Pre-create local-ca.yaml at mode 0600 before populating it with CA private key
+# material.  The `install` sets the inode permissions; the subsequent `cat >` writes
+# to the existing inode and inherits its permissions rather than creating a new file
+# under the current umask.  Do not remove the `install` line — without it, `cat >`
+# would create the file at umask-governed mode (typically 0644) before writing
+# the private key, creating a brief window where the key is world-readable.
 install -m 0600 /dev/null "${tmpdir}/local-ca.yaml"
 cat > "${tmpdir}/local-ca.yaml" <<EOF
 apiVersion: v1
@@ -75,6 +85,9 @@ data:
   tls.key: ${TLS_KEY_B64}
 EOF
 
+# spec.finalizers is intentionally omitted: the kubernetes finalizer is injected
+# by the API server automatically.  Declaring it in the manifest causes SSA
+# field-ownership conflicts on some cluster versions.
 cat > "${tmpdir}/namespace.yaml" <<EOF
 apiVersion: v1
 kind: Namespace
@@ -82,13 +95,11 @@ metadata:
   labels:
     kubernetes.io/metadata.name: cert-manager
   name: cert-manager
-spec:
-  finalizers:
-  - kubernetes
 EOF
 
 kubectl apply --server-side=true -f "${tmpdir}/namespace.yaml"
-kubectl apply -n cert-manager --server-side=true -f "${tmpdir}/local-ca.yaml"
+# namespace is declared in the manifest; -n flag omitted to avoid redundancy.
+kubectl apply --server-side=true -f "${tmpdir}/local-ca.yaml"
 
 # Save the manifests to CAROOT for cluster resets.
 # local-ca.yaml contains the CA private key — install it with mode 0600.
