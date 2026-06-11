@@ -55,6 +55,11 @@ at a time, CRD components first:
 kubectl apply --server-side --force-conflicts -f holos/deploy/clusters/k3d-holos/components/<name>/
 ```
 
+`--force-conflicts` is safe here because the rendered manifests in git are
+the source of truth for these resources and no other controller manages
+their fields during bootstrap; do not copy it into contexts where another
+field manager owns the resources.
+
 ArgoCD-based delivery is planned to replace manual apply once ArgoCD is
 deployed to the platform — until then every component renders with
 `argoAppDisabled: true` and no Application resources are emitted. See

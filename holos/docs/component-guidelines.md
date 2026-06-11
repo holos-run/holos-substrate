@@ -33,9 +33,10 @@ holos/components/gateway-api/
   [`components/user-defined-build-plan.cue`](../components/user-defined-build-plan.cue)).
   Every component under `components/` MUST integrate through
   `userDefinedBuildPlan` — the adapter unconditionally defines `holos:` as a
-  BuildPlan, so the author-style wrappers in `schema.cue` (`#Kubernetes`,
-  `#Kustomize`, `#Helm`) conflict with it and are usable only under a
-  non-default `#ComponentTemplate` `inputs.prefix`.
+  BuildPlan, so the author-style wrappers in
+  [`holos/schema.cue`](../schema.cue) (`#Kubernetes`, `#Kustomize`, `#Helm`)
+  conflict with it and are usable only under a non-default
+  `#ComponentTemplate` `inputs.prefix`.
 - **`typemeta.cue` and `typemeta.yaml`** are per-component boilerplate: copy
   them verbatim from an existing component. `typemeta.cue` decodes the
   `holos_build_context` tag into `BuildContext` and embeds `typemeta.yaml`
@@ -53,10 +54,10 @@ holos/components/gateway-api/
 
 Components that emit multiple Kubernetes resources MUST slice their output
 into one file per resource with a `holos kubectl-slice` `Command` transformer.
-Never write multiple resources to a single artifact file: generators do not
-guarantee a stable resource order, so bundled files produce noisy diffs and
-false drift on re-render, and per-resource files diff cleanly and let apply
-tools prune.
+Never write multiple resources to a single artifact file: generators in
+general (Helm, Resources, upstream bundles) do not guarantee a stable
+resource order, so bundled files produce noisy diffs and false drift on
+re-render, and per-resource files diff cleanly and let apply tools prune.
 
 The artifact is a *directory* (the component's deploy path), and the final
 transformer slices the bundle into it. From
@@ -129,9 +130,12 @@ Rules:
 
 Components that ship CRDs MUST isolate them in a dedicated component labeled
 `crds: "true"`, separate from the controllers and workloads that consume
-them. The label selects CRD components for application before controllers
-(e.g. `holos render platform --selector crds==true`), and keeping them
-separate lets CRDs roll out and verify ahead of dependent workloads.
+them. The label identifies CRD components so they can be applied before
+controllers (e.g. `holos show buildplans --selector crds==true` lists them);
+apply ordering is manual today — see
+[`holos/README.md`](../README.md#how-rendered-manifests-reach-the-cluster).
+Keeping CRDs separate lets them roll out and verify ahead of dependent
+workloads.
 `gateway-api` is the worked example: it ships only the Gateway API standard
 channel CRDs; the Istio control plane that implements them is a separate
 component.
