@@ -1,15 +1,14 @@
 # Declarative k3d cluster configuration for the local "workload" cluster.
 # Documentation: https://github.com/holos-run/holos/blob/main/doc/md/topics/local-cluster.mdx
 #
-# Apply with: scripts/local-k3d
-# Or directly: k3d cluster create --config k3d/config.yaml
+# Apply with: scripts/local-k3d  (recommended — handles registry lifecycle)
+# Or directly: k3d cluster create --config k3d/config.yaml \
+#                --registry-use k3d-registry.holos.localhost:5100
 #
-# Note: CLUSTER_NAME, REGISTRY_NAME, and REGISTRY_PORT environment variables
-# control the cluster and registry names in scripts/local-k3d, but this static
-# config file always uses "workload" and "k3d-registry.holos.localhost:5100".
-# To override these values, edit this file directly rather than relying on the
-# env vars (which only affect the delete/exist checks in the script, not the
-# cluster shape defined here).
+# This file defines the static cluster shape: name, port mappings, and k3s
+# args. The registry attachment is passed at runtime via --registry-use so
+# that the REGISTRY_NAME and REGISTRY_PORT env vars in scripts/local-k3d
+# are fully honored without requiring edits to this file.
 ---
 apiVersion: k3d.io/v1alpha5
 kind: Simple
@@ -29,6 +28,3 @@ options:
       - arg: --disable=traefik
         nodeFilters:
           - server:0
-registries:
-  use:
-    - k3d-registry.holos.localhost:5100
