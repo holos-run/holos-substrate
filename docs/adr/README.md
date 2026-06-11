@@ -40,6 +40,7 @@ to the template above.
 | [ADR-9](ADR-9.md) | webhook, nats, ingress | Thin webhook receiver posting raw bodies to a NATS WorkQueue      |
 | [ADR-10](ADR-10.md) | webhook, subscriber | Webhook subscriber parses events and dispatches a deployer task   |
 | [ADR-11](ADR-11.md) | api, deployer, gitops | Deployer updates the Application resource; GitOps/SoD deferred   |
+| [ADR-12](ADR-12.md) | layout, conventions, build | Single-module monorepo layout for multiple Go services and Holos CUE |
 
 ## Status values
 
