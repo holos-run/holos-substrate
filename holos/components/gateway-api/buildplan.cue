@@ -1,11 +1,10 @@
 package holos
 
 // VERSION pins the Gateway API standard channel CRDs.  Istio implements the
-// Gateway API; pick a version supported by the Istio release targeted by
-// HOL-1115.  Per https://istio.io/latest/docs/releases/supported-releases/
-// the supported Istio releases (1.28+) all support Gateway API v1.4 — the
-// Istio 1.28 change notes state "Upgraded Gateway API support to v1.4."
-// Re-check the chosen Istio minor's release notes before bumping.
+// Gateway API; the platform pins Istio 1.29.2 (IstioVersion in
+// components/istio/istio.cue), which supports Gateway API v1.4 — the Istio
+// 1.28 change notes state "Upgraded Gateway API support to v1.4."  Re-check
+// the pinned Istio minor's release notes before bumping.
 let VERSION = "1.4.1"
 
 userDefinedBuildPlan: {

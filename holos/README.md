@@ -59,9 +59,18 @@ kubectl apply --server-side --force-conflicts -f holos/deploy/clusters/k3d-holos
 ```
 
 `--force-conflicts` is safe here because the rendered manifests in git are
-the source of truth for these resources and no other controller manages
-their fields during bootstrap; do not copy it into contexts where another
-field manager owns the resources.
+the source of truth for these resources and, with one exception, no other
+controller manages their fields during bootstrap; do not copy it into
+contexts where another field manager owns the resources.
+
+The exception is Istio's webhook reconciliation: the rendered
+`ValidatingWebhookConfiguration`s (`istiod-default-validator` in
+`istio-base`, `istio-validator-istio-system` in `istiod`) set
+`failurePolicy: Ignore`, and istiod patches the field to `Fail` once it is
+ready to serve admission requests. Re-applying either component with
+`--force-conflicts` seizes the field back and downgrades it to `Ignore`
+until istiod re-patches it — expect that transient enforcement gap (and the
+resulting field-manager churn) on every re-apply of those two components.
 
 ArgoCD-based delivery is planned to replace manual apply once ArgoCD is
 deployed to the platform — until then every component renders with
