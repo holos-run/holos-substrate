@@ -47,12 +47,13 @@ platform: {
 		component: string
 		// name represents the BuildPlan metadata.name, defaults to component.
 		name: string | *component
-		// cluster represents the name of the cluster the component renders for.
-		cluster: string
+		// cluster represents the name of the cluster the component renders
+		// for, constrained to the names of registered clusters.
+		cluster: or([for NAME, _ in clusters {NAME}])
 		// prefix represents the directory containing the component directory.
 		prefix: string | *"components"
 		// parameters are injected into the component as CUE @tag variables.
-		parameters: {}
+		parameters: {[string]: string}
 		labels: {[string]: string}
 		annotations: {[string]: string}
 	}

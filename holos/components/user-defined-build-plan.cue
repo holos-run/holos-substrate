@@ -19,6 +19,16 @@ userDefinedBuildPlan: {
 	metadata: core.#Metadata & {
 		name: _Tags.component.name
 		labels: "app.holos.run/component.name": name
+
+		// labels is an optional field, guard references to it.
+		if _Tags.component.labels != _|_ {
+			labels: _Tags.component.labels
+		}
+
+		// annotations is an optional field, guard references to it.
+		if _Tags.component.annotations != _|_ {
+			annotations: _Tags.component.annotations
+		}
 	}
 
 	spec: {
@@ -81,7 +91,7 @@ userDefinedBuildPlan: {
 			destination: server: string | *"https://kubernetes.default.svc"
 			project: string | *"default"
 			source: {
-				path:           string | *"holos/deploy/clusters/\(clusterName)/components/\(metadata.name)"
+				path:           string | *"holos/deploy/clusters/\(clusterName)/components/\(userDefinedBuildPlan.metadata.name)"
 				repoURL:        string | *"https://github.com/holos-run/holos-paas"
 				targetRevision: string | *"main"
 			}
