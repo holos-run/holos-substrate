@@ -26,6 +26,16 @@ behind the layout is in
   — the MVP plan; mirrors the Linear *Holos PaaS* project milestones.
 - [docs/research/](docs/research/) — research reports informing decisions.
 - [docs/demo/](docs/demo/README.md) — demo walkthroughs.
+- [docs/local-cluster.md](docs/local-cluster.md) — create the local k3d
+  cluster with DNS and trusted TLS.
+- [holos/README.md](holos/README.md) — orientation to the Holos CUE
+  directory: layout, clusters, and how rendered manifests are applied.
+- [holos/docs/component-guidelines.md](holos/docs/component-guidelines.md)
+  — how to add a Holos component: anatomy, guardrails, and the
+  render-then-commit workflow.
+- [holos/docs/placeholders.md](holos/docs/placeholders.md) — stubs for
+  out-of-MVP-scope concerns: ArgoCD delivery, observability dashboards,
+  production deployment area.
 
 ## Conventions
 
