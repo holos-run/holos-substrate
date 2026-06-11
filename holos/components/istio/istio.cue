@@ -27,6 +27,11 @@ IstioValues: {
 // IstioNamespace is the control plane namespace.  Keep the chart default
 // (istio-system); this platform has no environment dimension to encode in
 // the namespace name.  The base component emits the Namespace resource.
+//
+// Keep this value in sync with the "istio-system" entry in the central
+// namespaces registry (holos/namespaces.cue): this file is an ancestor only
+// of the istio leaf components, so the registry at the holos root cannot
+// reference it — the two literal values must match.
 IstioNamespace: "istio-system"
 
 // IstioRepository is the upstream Helm chart repository for all four charts.

@@ -24,6 +24,19 @@ platform: {
 
 	for CLUSTER in clusters {
 		components: {
+			// namespaces renders the central namespaces registry
+			// (holos/namespaces.cue), one file per Namespace resource.  It
+			// must apply before every other component: namespaced resources
+			// cannot be created until their Namespace exists.  The
+			// namespaces: "true" label selects it for apply tooling,
+			// analogous to the crds: "true" convention (e.g. holos show
+			// buildplans --selector namespaces==true).
+			(#ComponentTemplate & {inputs: {
+				component: "namespaces"
+				cluster:   CLUSTER.name
+				labels: namespaces: "true"
+			}}).output
+
 			// gateway-api renders the Gateway API standard channel CRDs.  CRDs
 			// are isolated components labeled crds: "true" so they apply before
 			// the controllers that depend on them.
