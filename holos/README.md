@@ -259,6 +259,82 @@ script is idempotent. See the
 [Verify Quay](../docs/local-cluster.md#verify-quay) section of the local
 cluster guide for the bootstrap and the `docker push` verification flow.
 
+### Quay verification
+
+Two checks prove the registry behaviors the platform depends on
+([ADR-13](../docs/adr/ADR-13.md) builds on the push webhook); re-run them
+after any Quay change. Both assume the bootstrap above has run: the
+registry is initialized and `holos/sample` exists from the
+[Verify Quay](../docs/local-cluster.md#verify-quay) push.
+
+**Push webhook.** A `repo_push` webhook notification fires on image push.
+Verify it against a temporary in-cluster echo endpoint (the
+`mendhak/http-https-echo` image is multi-arch and logs every request body
+to stdout):
+
+```bash
+kubectl -n quay run quay-echo --image=mendhak/http-https-echo:37 --port=8080 \
+  --labels=app.kubernetes.io/name=quay-echo
+kubectl -n quay expose pod quay-echo --port=8080
+kubectl -n quay wait pod/quay-echo --for=condition=Ready --timeout=120s
+
+# The Quay API takes the admin OAuth token (basic auth is not accepted).
+TOKEN=$(kubectl -n quay get secret quay-initial-admin -o jsonpath='{.data.token}' | base64 -d)
+UUID=$(curl -fsS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -X POST https://quay.holos.localhost/api/v1/repository/holos/sample/notification/ \
+  -d '{"event": "repo_push", "method": "webhook",
+       "config": {"url": "http://quay-echo.quay.svc:8080/"},
+       "eventConfig": {}, "title": "verify-webhook"}' | jq -r .uuid)
+# Fire the built-in test first:
+curl -fsS -o /dev/null -H "Authorization: Bearer $TOKEN" \
+  -X POST "https://quay.holos.localhost/api/v1/repository/holos/sample/notification/$UUID/test"
+
+# Then a real push (docker login per docs/local-cluster.md "Verify Quay"):
+docker pull busybox && docker tag busybox quay.holos.localhost/holos/sample:test2
+docker push quay.holos.localhost/holos/sample:test2
+
+kubectl -n quay logs quay-echo
+```
+
+The echo logs must show one POST per event whose JSON body carries
+`repository`, `namespace`, `name`, `docker_url`, and `updated_tags` — the
+fields ADR-13's webhook receiver parses. Deliveries to cluster-internal
+plain-HTTP URLs work out of the box; no allowlist configuration is
+required. Failures can be silent (Quay queues deliveries through Redis),
+so on trouble check the notification's failure counter
+(`GET .../notification/` → `number_of_failures`) and the Quay pod logs.
+Clean up when done:
+
+```bash
+curl -fsS -H "Authorization: Bearer $TOKEN" \
+  -X DELETE "https://quay.holos.localhost/api/v1/repository/holos/sample/notification/$UUID"
+kubectl -n quay delete pod/quay-echo svc/quay-echo
+```
+
+**Restart resilience.** Registry state lives in the `quay-db` Postgres
+`Cluster` (metadata, including notification configs) and the
+`quay-datastorage` PVC (blobs) — not the pods. Delete both pods and
+confirm nothing is lost:
+
+```bash
+kubectl -n quay delete pod -l app.kubernetes.io/name=quay
+kubectl -n quay delete pod -l cnpg.io/cluster=quay-db
+kubectl -n quay rollout status deployment/quay --timeout=600s
+kubectl -n quay wait cluster/quay-db --for=condition=Ready --timeout=300s
+```
+
+After recovery: `docker login` with the robot credentials still works, the
+previously pushed tag is still pullable
+(`docker rmi quay.holos.localhost/holos/sample:test` then
+`docker pull quay.holos.localhost/holos/sample:test`), and any webhook
+notification configured above is still listed via the API.
+
+Sizing note: Quay's gunicorn pools enforce per-pool minimums that override
+the `WORKER_COUNT_*` pins unless `WORKER_COUNT_UNSUPPORTED_MINIMUM` is
+also set — without it the registry pool runs 8 workers and the container
+OOMKills against its memory limit. See the env comment in
+[components/quay/buildplan.cue](components/quay/buildplan.cue).
+
 ### Postgres credentials and connection contract
 
 The `cnpg-clusters` component provisions one Postgres `Cluster` per
