@@ -206,7 +206,7 @@ if [[ -n "${ADMIN_SECRET_EXISTS}" ]]; then
   TOKEN="$(kubectl get secret "${ADMIN_SECRET}" --context "${KUBE_CONTEXT}" \
     --namespace "${NAMESPACE}" -o json | jq -r '.data.token // empty' | base64 -d)"
   if [[ -z "${TOKEN}" ]]; then
-    echo "ERROR: Secret ${ADMIN_SECRET} has no 'token' key; cannot call the API." >&2
+    echo "ERROR: Secret ${ADMIN_SECRET} has no usable 'token' value; cannot call the API." >&2
     echo "       Delete the Secret and reset the registry to re-bootstrap." >&2
     exit 1
   fi
