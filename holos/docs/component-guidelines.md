@@ -220,6 +220,19 @@ holos show buildplans --selector cluster==k3d-holos
 holos render platform --selector cluster==k3d-holos
 ```
 
+## Label key domain
+
+Label and annotation keys owned by the platform configuration layer — keys
+that belong to the holos configuration itself, independent of any
+site-specific configuration — default to the `holos.run` domain, e.g. the
+`app.holos.run/component.name` label set by
+[`components/user-defined-build-plan.cue`](../components/user-defined-build-plan.cue).
+`materia.ai` keys must never appear in the holos configuration or Go code;
+the `Guardrails` job in `.github/workflows/ci.yaml` rejects them. Bare
+BuildPlan selector labels (`app`, `crds` — see the registration section
+above) and upstream-owned keys (`app.kubernetes.io/*`, `istio.io/*`, …) are
+unaffected by this rule.
+
 ## Render-then-commit workflow
 
 Rendered manifests under `holos/deploy/` are build artifacts that are
@@ -265,6 +278,9 @@ Before approving a component PR:
       [`holos/namespaces.cue`](../namespaces.cue), not emitted inline.
 - [ ] Registered in `platform/platform.cue` via `#ComponentTemplate` with an
       explicit `cluster:` field.
+- [ ] Platform-owned label and annotation keys use the `holos.run` domain;
+      no `materia.ai` keys anywhere in the component or its rendered
+      manifests (CI-enforced).
 - [ ] Layer 0 components only: added to the `COMPONENTS` array in
       `scripts/apply` in dependency order (see the ordering rules in
       [`holos/README.md`](../README.md#how-rendered-manifests-reach-the-cluster)),

@@ -51,3 +51,15 @@ behind the layout is in
 - Deployment configuration and policy are CUE rendered with
   `holos render platform`; `scripts/render` renders and verifies the
   committed `holos/deploy/` tree is diff-clean.
+- Label and annotation keys owned by the platform configuration layer —
+  aspects of the holos configuration itself, independent of site-specific
+  configuration — default to the `holos.run` domain (e.g.
+  `app.holos.run/component.name`). `materia.ai` keys must never appear in
+  the holos configuration or Go code; the `Guardrails` job in
+  [.github/workflows/ci.yaml](.github/workflows/ci.yaml) enforces this.
+- Merge pull requests with a **squash merge** (`gh pr merge --squash`) —
+  never a merge commit or a rebase merge — so code-review fix commits
+  (e.g. `fix: address code review round 1 findings`) are squashed away.
+  Clean up the squash commit message before merging: one
+  conventional-commit subject and body describing the final change, with
+  the review-round noise removed.
