@@ -154,7 +154,8 @@ until istiod re-patches it — expect that transient enforcement gap (and the
 resulting field-manager churn) on every re-apply of those two components,
 including every re-run of `scripts/apply`.
 
-ArgoCD-based delivery is planned to replace manual apply once ArgoCD is
-deployed to the platform — until then every component renders with
+ArgoCD-based delivery is planned to replace the direct apply performed by
+`scripts/apply` once ArgoCD is deployed to the platform — until then every
+component renders with
 `argoAppDisabled: true` and no Application resources are emitted. See
 [docs/placeholders.md](docs/placeholders.md#argocd-gitops-delivery).
