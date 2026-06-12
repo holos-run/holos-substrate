@@ -72,10 +72,11 @@ QUAY_TIMEOUT="${QUAY_TIMEOUT:-900s}"
 
 # Convert a kubectl-style duration composed of h/m/s components (e.g.
 # 300s, 5m, or 1h30m) to whole seconds for shell arithmetic.  Rejects
-# anything else with a clear error — including empty input, sub-second
-# units, and bare numbers without a unit, which the kubectl gates that
-# receive the same string also reject.  The 10# prefix forces base-10
-# arithmetic so leading zeros (e.g. 090s) are not misread as octal.
+# anything else with a clear error: empty input and bare numbers without a
+# unit (which kubectl also rejects), plus sub-second units — a stricter
+# whole-second grammar than kubectl's, fitting a poll loop that ticks in
+# seconds.  The 10# prefix forces base-10 arithmetic so leading zeros
+# (e.g. 090s) are not misread as octal.
 duration_seconds() {
   local duration="$1" rest="$1" total=0
   if [[ ! "${duration}" =~ ^([0-9]+[hms])+$ ]]; then
