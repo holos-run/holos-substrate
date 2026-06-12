@@ -229,7 +229,10 @@ Argo CD itself is now installed by `scripts/apply` (the `argocd-crds` and
 direct apply: every component still renders with `argoAppDisabled: true`
 and no `Application` resources are emitted, so Argo CD reconciles nothing
 until the gitops Application projection is enabled. See
-[docs/placeholders.md](docs/placeholders.md#argocd-gitops-delivery).
+[docs/placeholders.md](docs/placeholders.md#argocd-gitops-delivery). The
+`Application` source pattern that delivery will use — OCI artifacts in
+the in-cluster Quay registry — is decided, verified, and documented in
+[docs/argocd-application-source.md](docs/argocd-application-source.md).
 
 ### Keycloak admin credentials and verification
 
@@ -392,6 +395,152 @@ enrolled pods report protocol `HBONE` in
 nothing yet: no `Application` resources are emitted until the gitops
 Application projection is enabled (see
 [docs/placeholders.md](docs/placeholders.md#argocd-gitops-delivery)).
+
+### Verify an OCI-source Application
+
+The MVP delivery path syncs `Application` resources from rendered-manifests
+OCI artifacts in the in-cluster Quay registry —
+[docs/argocd-application-source.md](docs/argocd-application-source.md) is
+the pattern's contract (artifact layout, credential Secret shape, how the
+repo-server reaches Quay, tag-vs-digest guidance). The procedure below
+proves the path end to end with a throwaway artifact and Application;
+re-run it after any change to the argocd or quay components, or to the
+`quay-holos-localhost` ServiceEntry. It assumes the
+[Quay bootstrap](#quay-bootstrap-and-credentials) has run and the
+[`oras`](https://oras.land/) CLI is installed. Nothing here is committed:
+the artifact is pushed imperatively, so a committed Application would
+leave a fresh bootstrap perpetually Degraded (see the
+[pattern doc](docs/argocd-application-source.md#what-stays-imperative)).
+
+Package a trivial manifest as the single-layer artifact Argo CD expects
+and push it with the robot credentials:
+
+```bash
+WORK=$(mktemp -d)
+mkdir -p "${WORK}/manifests"
+cat > "${WORK}/manifests/configmap.yaml" <<'YAML'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-smoke
+  namespace: echo
+data:
+  purpose: OCI-source smoke test
+YAML
+tar -czf "${WORK}/manifests.tar.gz" -C "${WORK}/manifests" .
+ROBOT_TOKEN=$(kubectl -n quay get secret quay-robot-pull -o jsonpath='{.data.\.dockerconfigjson}' \
+  | base64 -d | jq -r '.auths["quay.holos.localhost"].auth' | base64 -d | cut -d: -f2-)
+(cd "${WORK}" && oras push --username 'holos+robot' --password-stdin \
+  quay.holos.localhost/holos/argocd-smoke:v1 \
+  manifests.tar.gz:application/vnd.oci.image.layer.v1.tar+gzip <<<"${ROBOT_TOKEN:?}")
+```
+
+Register the repository with Argo CD and create the test Application. The
+`${ROBOT_TOKEN:?}` expansion aborts the paste if the extraction above
+failed; `insecure: "true"` is required because the local mkcert CA is not
+in the repo-server's trust store (see the
+[pattern doc](docs/argocd-application-source.md#repository-credential-secret)):
+
+```bash
+kubectl apply --server-side -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: quay-argocd-smoke
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+stringData:
+  name: argocd-smoke
+  url: oci://quay.holos.localhost/holos/argocd-smoke
+  type: oci
+  username: holos+robot
+  password: "${ROBOT_TOKEN:?}"
+  insecure: "true"
+EOF
+kubectl apply --server-side -f - <<'EOF'
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd-smoke
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: oci://quay.holos.localhost/holos/argocd-smoke
+    targetRevision: v1
+    path: .
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: echo
+  syncPolicy:
+    automated:
+      prune: true
+EOF
+```
+
+Wait for the sync and confirm the manifest landed. `Application`s are
+ordinary namespaced objects — the plain `kubectl get` is the same access
+path the future deployment subscriber uses to patch `targetRevision`:
+
+```bash
+kubectl -n argocd wait application/argocd-smoke \
+  --for=jsonpath='{.status.sync.status}'=Synced --timeout=120s
+kubectl -n argocd wait application/argocd-smoke \
+  --for=jsonpath='{.status.health.status}'=Healthy --timeout=120s
+kubectl get applications.argoproj.io -n argocd
+kubectl -n echo get configmap argocd-smoke
+```
+
+Exercise the rollout path the deployment subscriber will use — push a
+changed artifact, resolve its immutable digest, and patch
+`targetRevision` (prefer digests over tags for controller-driven updates;
+see the
+[pattern doc](docs/argocd-application-source.md#tag-vs-digest-in-targetrevision)):
+
+```bash
+cat > "${WORK}/manifests/configmap.yaml" <<'YAML'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-smoke
+  namespace: echo
+data:
+  purpose: OCI-source smoke test
+  version: v2
+YAML
+tar -czf "${WORK}/manifests.tar.gz" -C "${WORK}/manifests" .
+(cd "${WORK}" && oras push --username 'holos+robot' --password-stdin \
+  quay.holos.localhost/holos/argocd-smoke:v2 \
+  manifests.tar.gz:application/vnd.oci.image.layer.v1.tar+gzip <<<"${ROBOT_TOKEN:?}")
+DIGEST=$(oras resolve --username 'holos+robot' --password-stdin \
+  quay.holos.localhost/holos/argocd-smoke:v2 <<<"${ROBOT_TOKEN:?}")
+kubectl -n argocd patch application argocd-smoke --type merge \
+  -p "{\"spec\":{\"source\":{\"targetRevision\":\"${DIGEST:?}\"}}}"
+# Two waits: the revision wait alone races the apply — sync.revision
+# updates when the controller *compares* against the new digest, before
+# the automated sync has written resources, so gate on Synced too.
+kubectl -n argocd wait application/argocd-smoke \
+  --for=jsonpath="{.status.sync.revision}"="${DIGEST:?}" --timeout=120s
+kubectl -n argocd wait application/argocd-smoke \
+  --for=jsonpath='{.status.sync.status}'=Synced --timeout=120s
+kubectl -n echo get configmap argocd-smoke -o jsonpath='{.data.version}'  # v2
+```
+
+Clean up — the finalizer cascades the delete, so Argo CD prunes the
+synced ConfigMap before the Application disappears. The
+`holos/argocd-smoke` repository stays in the registry (the robot
+credential cannot delete repositories), like `holos/sample` from the
+[Quay verification](#quay-verification); a re-run converges on it:
+
+```bash
+kubectl -n argocd delete application argocd-smoke --timeout=120s
+kubectl -n echo wait --for=delete configmap/argocd-smoke --timeout=30s   # prune confirmed
+kubectl -n argocd delete secret quay-argocd-smoke
+rm -rf "${WORK:?}"
+```
 
 ### Postgres credentials and connection contract
 

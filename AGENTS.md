@@ -40,6 +40,10 @@ behind the layout is in
 - [holos/docs/mesh-enrollment.md](holos/docs/mesh-enrollment.md) — the
   ambient mesh enrollment convention for platform namespaces, how to verify
   it, and the exceptions.
+- [holos/docs/argocd-application-source.md](holos/docs/argocd-application-source.md)
+  — the MVP Argo CD `Application` source pattern: OCI rendered-manifests
+  artifacts in the in-cluster Quay registry, the repository credential
+  Secret shape, and how the repo-server reaches Quay.
 - [holos/docs/placeholders.md](holos/docs/placeholders.md) — stubs for
   out-of-MVP-scope concerns: ArgoCD delivery, observability dashboards,
   the Gateway route-attachment policy, Keycloak realm reconciliation,
