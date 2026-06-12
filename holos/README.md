@@ -40,9 +40,9 @@ holos/
 ## Clusters: local development now, production later
 
 The only registered cluster is **`k3d-holos`**, the local development
-cluster — see [docs/local-cluster.md](../docs/local-cluster.md) for creating
-it with `scripts/local-k3d`. The MVP demo target is a single Apple Silicon
-Mac ([ADR-7](../docs/adr/ADR-7.md)).
+cluster — [docs/local-cluster.md](../docs/local-cluster.md) is the
+quick-start guide for creating it and applying the platform to it. The MVP
+demo target is a single Apple Silicon Mac ([ADR-7](../docs/adr/ADR-7.md)).
 
 A production deployment area is planned but not yet established: production
 clusters will be registered alongside `k3d-holos` in
@@ -60,6 +60,12 @@ current kubectl context in the correct order:
 ```bash
 scripts/apply
 ```
+
+This section is the canonical explanation of WHY the apply order is what it
+is and the caveats that come with force-applying. For the step-by-step path
+from nothing to a running platform — DNS setup, cluster creation, trusted
+TLS, then this apply step — follow the quick-start guide,
+[docs/local-cluster.md](../docs/local-cluster.md).
 
 The script is idempotent: server-side apply and `kubectl wait` both
 converge, so re-running it against a fresh, partially applied, or fully

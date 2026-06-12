@@ -26,8 +26,9 @@ behind the layout is in
   — the MVP plan; mirrors the Linear *Holos PaaS* project milestones.
 - [docs/research/](docs/research/) — research reports informing decisions.
 - [docs/demo/](docs/demo/README.md) — demo walkthroughs.
-- [docs/local-cluster.md](docs/local-cluster.md) — create the local k3d
-  cluster with DNS and trusted TLS.
+- [docs/local-cluster.md](docs/local-cluster.md) — the quick-start guide:
+  create the local k3d cluster with DNS and trusted TLS, then apply the
+  Layer 0 platform with `scripts/apply`.
 - [holos/README.md](holos/README.md) — orientation to the Holos CUE
   directory: layout, clusters, and how rendered manifests are applied.
 - [holos/docs/component-guidelines.md](holos/docs/component-guidelines.md)

@@ -2,8 +2,11 @@
 
 <!-- Vendored from https://github.com/holos-run/holos/blob/main/doc/md/topics/local-cluster.mdx -->
 
-Set up a local k3d cluster for development and testing. After completing this
-guide you'll have a Kubernetes API server with proper DNS and TLS certificates.
+Set up a local k3d cluster for development and testing, then apply the
+platform to it. This is the canonical quick-start guide: after completing
+it you'll have a running Layer 0 platform — a Kubernetes API server with
+proper DNS and TLS certificates, serving the platform's components on
+ports 80 and 443.
 
 This is the Layer 0 foundation for the Holos PaaS MVP — see
 [Holos PaaS MVP Milestones](planning/holos-paas-mvp-milestones.md)
@@ -53,16 +56,14 @@ This creates:
   balancer and Traefik disabled
 
 With Traefik disabled, nothing answers on ports 80/443 until the platform's
-Layer 0 components are applied. The shared Istio Gateway (the `istio-gateway`
-component) then serves ports 80 and 443, and platform services attach
-`HTTPRoute`s to it. The HTTPS listener terminates TLS with a wildcard
-`*.holos.localhost` certificate issued by cert-manager's `local-ca`
-ClusterIssuer from the mkcert root CA installed in the
+Layer 0 components are applied in the
+[Apply the Platform](#apply-the-platform) step below. The shared Istio
+Gateway (the `istio-gateway` component) then serves ports 80 and 443, and
+platform services attach `HTTPRoute`s to it. The HTTPS listener terminates
+TLS with a wildcard `*.holos.localhost` certificate issued by cert-manager's
+`local-ca` ClusterIssuer from the mkcert root CA installed in the
 [Setup Trusted TLS](#setup-trusted-tls) step below — the same root CA your
-host trusts, so browsers accept the certificate without warnings.
-See
-[How rendered manifests reach the cluster](../holos/README.md#how-rendered-manifests-reach-the-cluster)
-for the component apply order, and
+host trusts, so browsers accept the certificate without warnings. See
 [mesh-enrollment.md](../holos/docs/mesh-enrollment.md) for how workload
 namespaces enroll in the ambient mesh.
 
@@ -106,6 +107,30 @@ The generated `namespace.yaml` and `local-ca.yaml` are saved to
 `$(mkcert -CAROOT)` (mode 0600 for the key material) so you can reapply them
 after a cluster reset without re-running `mkcert --install`.
 
+## Apply the Platform
+
+Apply the rendered Layer 0 manifests to the cluster:
+
+```bash
+scripts/apply
+```
+
+The script applies every Layer 0 component in dependency order — starting
+with the `namespaces` component, so every namespace exists before any
+namespaced resource applies — and is idempotent, so it is safe to re-run at
+any time. See
+[How rendered manifests reach the cluster](../holos/README.md#how-rendered-manifests-reach-the-cluster)
+for the apply-order rationale and the `--force-conflicts` and webhook
+caveats.
+
+When the script completes, the platform serves ports 80 and 443 and the
+`echo` smoke-test workload answers at `https://echo.holos.localhost/`
+with a browser-trusted certificate:
+
+```bash
+curl https://echo.holos.localhost/
+```
+
 ## Reset the Cluster
 
 To reset to a clean state:
@@ -124,6 +149,10 @@ scripts/local-k3d
 kubectl apply --server-side=true -f "$(mkcert -CAROOT)/namespace.yaml"
 kubectl apply --server-side=true -f "$(mkcert -CAROOT)/local-ca.yaml"
 ```
+
+Either way, the new cluster is empty — re-run `scripts/apply` (see
+[Apply the Platform](#apply-the-platform)) to bring the Layer 0 platform
+back up.
 
 ## Clean Up
 
