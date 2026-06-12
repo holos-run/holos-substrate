@@ -18,7 +18,14 @@ spec:
         app.kubernetes.io/name: quay
     spec:
       containers:
-      - image: quay.io/projectquay/quay:3.17.3
+      - env:
+        - name: WORKER_COUNT_WEB
+          value: "2"
+        - name: WORKER_COUNT_REGISTRY
+          value: "2"
+        - name: WORKER_COUNT_SECSCAN
+          value: "1"
+        image: quay.io/projectquay/quay:3.17.3
         livenessProbe:
           httpGet:
             path: /health/instance
@@ -34,7 +41,7 @@ spec:
             port: 8080
         resources:
           limits:
-            memory: 2Gi
+            memory: 4Gi
           requests:
             cpu: 250m
             memory: 512Mi

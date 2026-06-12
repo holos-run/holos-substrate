@@ -513,6 +513,27 @@ let DEPLOYMENT = {
 				containers: [{
 					name:  NAME
 					image: "quay.io/projectquay/quay:\(VERSION)"
+					// Quay sizes its gunicorn worker pools from the node's
+					// CPU count by default, which on a many-core dev box
+					// multiplies its already large per-process footprint.
+					// Pin the pools to laptop sizing (ADR-7: a single local
+					// instance) — the env vars are the upstream
+					// quay-entrypoint contract, the same knobs the Red Hat
+					// operator sets.
+					env: [
+						{
+							name:  "WORKER_COUNT_WEB"
+							value: "2"
+						},
+						{
+							name:  "WORKER_COUNT_REGISTRY"
+							value: "2"
+						},
+						{
+							name:  "WORKER_COUNT_SECSCAN"
+							value: "1"
+						},
+					]
 					ports: [{
 						name:          "http"
 						containerPort: PORT
@@ -538,15 +559,19 @@ let DEPLOYMENT = {
 						path: "/health/instance"
 						port: PORT
 					}
-					// Laptop sizing: Quay is heavy — a Python monolith
-					// running several internal workers — so the memory limit
-					// is generous relative to the other platform services.
+					// Laptop sizing: Quay is heavy — a Python monolith whose
+					// supervisord runs ~20 worker processes — so the memory
+					// limit is generous relative to the other platform
+					// services.  2Gi was not enough: with the default
+					// CPU-scaled worker pools the first start was OOMKilled
+					// before serving (observed on the live cluster), hence
+					// 4Gi plus the pinned pools above.
 					resources: {
 						requests: {
 							cpu:    "250m"
 							memory: "512Mi"
 						}
-						limits: memory: "2Gi"
+						limits: memory: "4Gi"
 					}
 					// No readOnlyRootFilesystem: the Quay entrypoint writes
 					// runtime state (supervisord configuration and logs)
