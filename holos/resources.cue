@@ -17,6 +17,7 @@ import (
 	cnpg "postgresql.cnpg.io/cluster/v1"
 	kc "k8s.keycloak.org/keycloak/v2beta1"
 	kcri "k8s.keycloak.org/keycloakrealmimport/v2beta1"
+	dr "networking.istio.io/destinationrule/v1"
 )
 
 #Resources: {
@@ -34,6 +35,7 @@ import (
 	ConfigMap?: [_]:          corev1.#ConfigMap
 	CronJob?: [_]:            batchv1.#CronJob
 	Deployment?: [_]:         appsv1.#Deployment
+	DestinationRule?: [_]:    dr.#DestinationRule
 	ExternalSecret?: [_]:     es.#ExternalSecret
 	HTTPRoute?: [_]:          hrv1.#HTTPRoute
 	Job?: [_]:                batchv1.#Job

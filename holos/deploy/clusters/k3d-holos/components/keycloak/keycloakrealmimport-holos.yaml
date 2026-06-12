@@ -1,0 +1,17 @@
+apiVersion: k8s.keycloak.org/v2beta1
+kind: KeycloakRealmImport
+metadata:
+  name: holos
+  namespace: keycloak
+spec:
+  keycloakCRName: keycloak
+  realm:
+    clients:
+    - clientId: quay
+      enabled: false
+      name: Quay (placeholder — wired in the Quay issue)
+      protocol: openid-connect
+      redirectUris:
+      - https://quay.holos.localhost/*
+    enabled: true
+    realm: holos
