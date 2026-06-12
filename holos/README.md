@@ -92,8 +92,10 @@ before the components that create `cert-manager.io` resources (`local-ca`'s
 `ClusterIssuer`, `istio-gateway`'s `Certificate`), because its validating
 webhook must be serving to admit them — the webhooks fail closed, so wait
 for the webhook Deployment between those steps
-(`kubectl -n cert-manager rollout status deployment/cert-manager-webhook`);
-and the Gateway applies before components that attach routes to it.
+(`kubectl -n cert-manager rollout status deployment/cert-manager-webhook`),
+and retry on a transient x509 admission error while cainjector injects the
+webhook's CA bundle; and the Gateway applies before components that attach
+routes to it.
 
 The first rule exists because nothing orders an apply batch by kind:
 kubectl submits the files sequentially in lexical order, so a single
@@ -109,11 +111,17 @@ certificate ref only until cert-manager writes the wildcard certificate's
 Secret.
 
 `--force-conflicts` is safe here because the rendered manifests in git are
-the source of truth for these resources and, with one exception, no other
-controller manages their fields during bootstrap; do not copy it into
+the source of truth for these resources and, with the exceptions below, no
+other controller manages their fields during bootstrap; do not copy it into
 contexts where another field manager owns the resources.
 
-The exception is Istio's webhook reconciliation: the rendered
+cert-manager's cainjector manages `webhooks[].clientConfig.caBundle` on the
+rendered cert-manager webhook configurations at runtime. Unlike the Istio
+exception below, the field is absent from the rendered manifests, so a
+re-apply with `--force-conflicts` never claims or strips it — no enforcement
+gap results.
+
+The other exception is Istio's webhook reconciliation: the rendered
 `ValidatingWebhookConfiguration`s (`istiod-default-validator` in
 `istio-base`, `istio-validator-istio-system` in `istiod`) set
 `failurePolicy: Ignore`, and istiod patches the field to `Fail` once it is
