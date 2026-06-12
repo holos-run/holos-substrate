@@ -71,8 +71,12 @@ let PORT = 8080
 // the k3d bootstrap registry on port 5100 (scripts/local-k3d).
 let HOSTNAME = "quay.holos.localhost"
 
-// The shared Gateway's namespace (components/istio-gateway).
+// The shared Gateway's namespace and name (components/istio-gateway).
+// GATEWAY_NAME feeds both the HTTPRoute parentRefs and the ServiceEntry
+// endpoint below, so a Gateway rename fails loudly in render review
+// instead of silently breaking route attachment or endpoint resolution.
 let GATEWAY_NAMESPACE = "istio-gateways"
+let GATEWAY_NAME = "default"
 
 let REDIS_NAME = "quay-redis"
 let REDIS_PORT = 6379
@@ -737,7 +741,7 @@ let HTTPROUTE = {
 	}
 	spec: {
 		parentRefs: [{
-			name:        "default"
+			name:        GATEWAY_NAME
 			namespace:   GATEWAY_NAMESPACE
 			sectionName: "https"
 		}]
@@ -766,7 +770,7 @@ let HTTPROUTE_REDIRECT = {
 	}
 	spec: {
 		parentRefs: [{
-			name:        "default"
+			name:        GATEWAY_NAME
 			namespace:   GATEWAY_NAMESPACE
 			sectionName: "http"
 		}]
@@ -802,8 +806,12 @@ let HTTPROUTE_REDIRECT = {
 // in-cluster clients traverse the exact host path, credentials and all.
 // protocol TLS keeps ztunnel at L4 (the Gateway terminates TLS);
 // resolution DNS tracks the Gateway Service by name so the entry survives
-// ClusterIP changes.  Verified live in HOL-1188; the consumption contract
-// is documented in holos/docs/argocd-application-source.md.
+// ClusterIP changes — the "<gateway>-istio" Service name is Istio's
+// gateway auto-deployment convention, coupled to GATEWAY_NAME above.
+// exportTo is deliberately left at its mesh-wide default: every enrolled
+// namespace should resolve the registry's public hostname exactly as the
+// host does.  Verified live in HOL-1188; the consumption contract is
+// documented in holos/docs/argocd-application-source.md.
 let SERVICE_ENTRY = {
 	apiVersion: "networking.istio.io/v1"
 	kind:       "ServiceEntry"
@@ -820,7 +828,7 @@ let SERVICE_ENTRY = {
 		}]
 		resolution: "DNS"
 		endpoints: [{
-			address: "default-istio.\(GATEWAY_NAMESPACE).svc.cluster.local"
+			address: "\(GATEWAY_NAME)-istio.\(GATEWAY_NAMESPACE).svc.cluster.local"
 		}]
 	}
 }

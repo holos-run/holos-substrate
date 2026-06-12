@@ -455,7 +455,7 @@ stringData:
   url: oci://quay.holos.localhost/holos/argocd-smoke
   type: oci
   username: holos+robot
-  password: ${ROBOT_TOKEN:?}
+  password: "${ROBOT_TOKEN:?}"
   insecure: "true"
 EOF
 kubectl apply --server-side -f - <<'EOF'
@@ -519,18 +519,27 @@ DIGEST=$(oras resolve --username 'holos+robot' --password-stdin \
   quay.holos.localhost/holos/argocd-smoke:v2 <<<"${ROBOT_TOKEN:?}")
 kubectl -n argocd patch application argocd-smoke --type merge \
   -p "{\"spec\":{\"source\":{\"targetRevision\":\"${DIGEST:?}\"}}}"
+# Two waits: the revision wait alone races the apply — sync.revision
+# updates when the controller *compares* against the new digest, before
+# the automated sync has written resources, so gate on Synced too.
 kubectl -n argocd wait application/argocd-smoke \
   --for=jsonpath="{.status.sync.revision}"="${DIGEST:?}" --timeout=120s
+kubectl -n argocd wait application/argocd-smoke \
+  --for=jsonpath='{.status.sync.status}'=Synced --timeout=120s
 kubectl -n echo get configmap argocd-smoke -o jsonpath='{.data.version}'  # v2
 ```
 
 Clean up — the finalizer cascades the delete, so Argo CD prunes the
-synced ConfigMap before the Application disappears:
+synced ConfigMap before the Application disappears. The
+`holos/argocd-smoke` repository stays in the registry (the robot
+credential cannot delete repositories), like `holos/sample` from the
+[Quay verification](#quay-verification); a re-run converges on it:
 
 ```bash
 kubectl -n argocd delete application argocd-smoke --timeout=120s
-kubectl -n echo get configmap argocd-smoke   # NotFound: prune confirmed
+kubectl -n echo wait --for=delete configmap/argocd-smoke --timeout=30s   # prune confirmed
 kubectl -n argocd delete secret quay-argocd-smoke
+rm -rf "${WORK:?}"
 ```
 
 ### Postgres credentials and connection contract

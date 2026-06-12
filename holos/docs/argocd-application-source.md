@@ -119,12 +119,16 @@ and routes connections to that VIP to the shared Gateway
 for `*.holos.localhost` and routes by SNI/Host to Quay. In-cluster clients
 traverse the exact host path — same URL, same credentials, same routes.
 
-Caveat: glibc's and musl's `getaddrinfo` special-case `*.localhost` to
-loopback **in libc**, before any DNS query, so dynamically-linked clients
-(curl, git) inside pods cannot use the hostname even with the ServiceEntry
-in place. Argo CD is a static Go binary using the pure-Go resolver, which
-does query DNS — verified live. Keep this in mind before pointing other
-in-cluster consumers at `*.holos.localhost` hostnames.
+Caveat: clients that special-case `*.localhost` **themselves** never issue
+the DNS query, so the ServiceEntry cannot help them — notably curl ≥ 7.78
+and anything built on libcurl (git's HTTPS transport included) hardcode
+`localhost` and `*.localhost` to loopback. Verified live in the
+repo-server pod: `git ls-remote https://quay.holos.localhost/…` tried
+`::1`/`127.0.0.1` while `getent hosts quay.holos.localhost` (glibc's
+normal resolver path) returned the mesh VIP in the same pod. Argo CD is a
+static Go binary using the pure-Go resolver, which likewise queries DNS —
+verified by the sync itself. Check the client's resolver behavior before
+pointing other in-cluster consumers at `*.holos.localhost` hostnames.
 
 ## Applications are ordinary namespaced objects
 
