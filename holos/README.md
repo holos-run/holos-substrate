@@ -63,7 +63,10 @@ scripts/apply
 
 The script is idempotent: server-side apply and `kubectl wait` both
 converge, so re-running it against a fresh, partially applied, or fully
-applied cluster is safe. Per component it runs
+applied cluster is safe. As a guard against force-applying to the wrong
+cluster, it refuses to run when the current context is not `k3d-holos`
+unless `KUBE_CONTEXT` is set explicitly, and pins every kubectl call to
+the resolved context. Per component it runs
 
 ```bash
 kubectl apply --server-side --force-conflicts -f holos/deploy/clusters/k3d-holos/components/<name>/
