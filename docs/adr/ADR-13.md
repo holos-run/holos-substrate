@@ -6,11 +6,12 @@
 | Author   | @jeffmccune                      |
 | Status   | `Proposed`                       |
 | Tags     | pipeline, mvp, nats, oci, argocd |
-| Updates  | ADR-6, ADR-11                    |
+| Updates  | ADR-6, ADR-10, ADR-11            |
 
 | Revision | Date       | Author      | Info           |
 |----------|------------|-------------|----------------|
 | 1        | 2026-06-12 | @jeffmccune | Initial design |
+| 2        | 2026-06-12 | @jeffmccune | Clarify routing invariants and config digest lookup |
 
 ## Context and Problem Statement
 
@@ -48,6 +49,8 @@ ADR records it as a single design, centered on the sequence diagram below.
   OCI artifact
 - [Argo CD OCI source](https://argo-cd.readthedocs.io/en/latest/user-guide/oci/)
   (requires Argo CD ≥ 3.1)
+- [Red Hat Quay repository push payload](https://docs.redhat.com/en/documentation/red_hat_quay/2.9/html-single/use_red_hat_quay/index#repository-events)
+  — the documented payload carries `updated_tags`, not a manifest digest
 
 ## Design
 
@@ -75,6 +78,28 @@ repository against `Application` resources ([ADR-11](ADR-11.md)):
 The seam between the loops is the **registry itself**: loop 1 ends with an
 OCI push, and that push's notification starts loop 2. Nothing in loop 1 talks
 to the deployer directly.
+
+### Repository routing invariants
+
+The subscriber does **not** fan out one repository event to multiple
+applications in the MVP. `Application` admission must enforce these invariants
+on normalized repository names (`<registry>/<namespace>/<repository>`, without
+tag or digest):
+
+- `spec.image.repository` is unique across all watched `Application` resources.
+- `spec.config.repository` is unique across all watched `Application` resources.
+- No repository may appear as both an app image repository and a configuration
+  repository, including within the same `Application`.
+
+The webhook subscriber builds two informer-backed indexes:
+`appRepository -> Application` and `configRepository -> Application`. A Quay
+event repository must match **exactly one** index entry and exactly one index:
+app-repository matches emit render tasks, config-repository matches emit deploy
+tasks. No match is acked and dropped as an unmanaged repository. More than one
+match, or a repository present in both indexes, is an invalid platform
+configuration; the subscriber publishes the raw event plus the matched
+`Application` identities to the dead-letter subject and terminates the message
+rather than guessing or duplicating deployments.
 
 ### Sequence diagram
 
@@ -147,13 +172,14 @@ sequenceDiagram
 
 **Matching (step 4).** The webhook subscriber parses the Quay repository-push
 payload into `(repository, tags)` and consults `Application` resources via an
-informer cache (read-only access). An event whose repository equals an
-`Application`'s app image repository produces one `RenderTask` per pushed
-tag on `tasks.render`; an event matching no `Application` is acked and
-dropped with a log line; an unparseable body goes to the dead-letter subject
-(see failure table). The `RenderTask` carries the application identity
-(name/namespace), repository, tag, and an idempotency key derived from the
-source event.
+informer cache (read-only access). The repository routing invariants above
+ensure one event maps to one `Application` and one loop. An event whose
+repository equals the matched `Application`'s app image repository produces one
+`RenderTask` per pushed tag on `tasks.render`; an event matching no
+`Application` is acked and dropped with a log line; an unparseable or ambiguous
+body goes to the dead-letter subject (see failure table). The `RenderTask`
+carries the application identity (name/namespace), repository, tag, and an
+idempotency key derived from the source event.
 
 **Render (step 5).** The render subscriber is the dedicated slow stage from
 the [render+publish report](../research/rendered-manifests-publish-pipeline.md).
@@ -208,14 +234,28 @@ notification, which the deployer absorbs (below).
 
 **Matching (step 10).** The config-image push travels the identical path:
 Quay notification → receiver → `webhooks.quay` → webhook subscriber. This
-time the event's repository matches an `Application`'s configuration
-repository, so the subscriber publishes a `DeployTask` on `tasks.deploy`
-carrying the matched `Application` identity, the config repository, the tag,
-and the manifest digest (resolved from the registry, or taken from the
-payload when Quay provides it). The `Application` resource is the **KRM
-configuration object** that indicates which Argo CD `Application` to update:
-its spec names both repositories and references its Argo CD `Application`,
-so the same object routes both loops.
+time the event's repository matches exactly one `Application`'s configuration
+repository, so the subscriber publishes a `DeployTask` on `tasks.deploy`.
+Because Quay's documented repository-push payload carries `updated_tags` but no
+manifest digest, the subscriber resolves each tag before publishing the task:
+it uses a read-only registry credential for configuration repositories and
+performs an OCI Distribution `HEAD`/resolve operation against
+`<config-repository>:<tag>` to read the `Docker-Content-Digest` descriptor. The
+`DeployTask` carries the matched `Application` identity, the config repository,
+the tag, the resolved digest, and the source-event idempotency key. The
+`Application` resource is the **KRM configuration object** that indicates which
+Argo CD `Application` to update: its spec names both repositories and
+references its Argo CD `Application`, so the same object routes both loops.
+
+Digest lookup failures are handled before task publication. Authentication or
+authorization failure is deterministic platform misconfiguration: publish the
+event and error to the dead-letter subject and `Term()` the raw event. A missing
+tag/digest or registry 5xx/timeout is retried with `Nak()`/backoff under the
+webhook subscriber's delivery policy because Quay may deliver the notification
+before the tag is immediately readable; after `MaxDeliver` the subscriber
+dead-letters the event with the attempted repository and tag. The subscriber
+acks only after every tag in the payload has either produced a deploy task or
+has been explicitly dead-lettered.
 
 **Deploy (step 11).** The deployer stays exactly as decided in
 [ADR-11](ADR-11.md): a tiny, idempotent KRM writer. It updates the
@@ -260,7 +300,7 @@ WorkQueue stream ([ADR-6](ADR-6.md)). Per hop:
 | Hop | Consumer behavior |
 |-----|-------------------|
 | Receiver → `webhooks.quay` | Publish-then-ack to Quay; a JetStream publish failure returns 5xx so Quay retries ([ADR-9](ADR-9.md)). |
-| Webhook subscriber | Parse, match, publish task, ack. Unparseable body → dead-letter publish then `Term()`. No `Application` match → ack and drop (logged). |
+| Webhook subscriber | Parse, match, resolve required digests, publish task, ack. Unparseable body or ambiguous repository match → dead-letter publish then `Term()`. No `Application` match → ack and drop (logged). Config digest lookup authz/authn failure → dead-letter then `Term()`; missing tag or registry transient → `Nak()` with backoff, then dead-letter after `MaxDeliver`. |
 | Render subscriber | Pull consumer, `AckExplicit`, `MaxAckPending=1`; `AckWait` ≈ 60s with `InProgress()` heartbeats during render+push; `MaxDeliver` ≈ 5 with backoff; deterministic render failure → dead-letter then `Term()`. Ack only after the push succeeds. The digest-verified tag-exists fast path makes redelivery cheap. |
 | Deployer | Single idempotent KRM write; same version → no-op; ack after write ([ADR-11](ADR-11.md)). |
 | Argo CD | Digest-pinned `targetRevision`; no polling; sync retries are Argo CD's own. |
@@ -268,12 +308,14 @@ WorkQueue stream ([ADR-6](ADR-6.md)). Per hop:
 > **Planning note for the milestone:** specify the `Application` schema
 > fields this flow relies on (app image repository, config repository —
 > defaulting to `<app-repository>-config` — Argo CD `Application` reference,
-> and deployed-version status) in the follow-up `Application` ADR that
+> repository-uniqueness admission, and deployed-version status) in the
+> follow-up `Application` ADR that
 > [ADR-11](ADR-11.md) already calls for; the exact `WEBHOOKS`/`TASKS` stream
 > and consumer configuration; Quay notification authentication at the
-> receiver; provisioning of the config repository and its webhook alongside
-> the app repository; and verification of the digest `targetRevision` syntax
-> against the deployed Argo CD version (≥ 3.1).
+> receiver; read-only registry credentials for subscriber digest lookups;
+> provisioning of the config repository and its webhook alongside the app
+> repository; and verification of the digest `targetRevision` syntax against
+> the deployed Argo CD version (≥ 3.1).
 
 ## Decision
 
@@ -286,9 +328,11 @@ WorkQueue stream ([ADR-6](ADR-6.md)). Per hop:
    receiver ([ADR-9](ADR-9.md)), the `WEBHOOKS` WorkQueue stream, and the
    webhook subscriber ([ADR-10](ADR-10.md)).
 3. The webhook subscriber **routes by KRM match**: an event repository
-   matching an `Application`'s app image repository emits a `RenderTask` on
-   `tasks.render`; matching its configuration repository emits a `DeployTask`
-   on `tasks.deploy`.
+   matching exactly one `Application`'s app image repository emits a
+   `RenderTask` on `tasks.render`; matching exactly one configuration
+   repository emits a `DeployTask` on `tasks.deploy`. Repository uniqueness is
+   enforced by `Application` admission; ambiguous matches are dead-lettered,
+   never fanned out.
 4. A dedicated **render subscriber** renders the platform CUE with
    `holos render platform --inject` (digest-pinned app image) and pushes the
    rendered `deploy/` tree with ORAS to the sibling configuration repository
