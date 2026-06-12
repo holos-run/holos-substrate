@@ -25,6 +25,8 @@ spec:
           value: "2"
         - name: WORKER_COUNT_SECSCAN
           value: "1"
+        - name: WORKER_COUNT_UNSUPPORTED_MINIMUM
+          value: "1"
         image: quay.io/projectquay/quay:3.17.3
         livenessProbe:
           httpGet:

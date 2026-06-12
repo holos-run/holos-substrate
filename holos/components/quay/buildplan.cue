@@ -590,6 +590,23 @@ let DEPLOYMENT = {
 							name:  "WORKER_COUNT_SECSCAN"
 							value: "1"
 						},
+						{
+							// The WORKER_COUNT_* pins above are clamped to
+							// per-pool minimums in Quay's util/workers.py —
+							// the registry pool's minimum is 8, so without
+							// this knob WORKER_COUNT_REGISTRY=2 silently runs
+							// 8 gunicorn registry workers (~140Mi anon each),
+							// which pushed the container to ~4.1Gi anon and
+							// repeated OOMKills against the 4Gi limit
+							// (observed on the live cluster during the
+							// HOL-1178 webhook/restart verification).
+							// Lowering the floor to 1 makes the pins above
+							// authoritative; "UNSUPPORTED" is upstream's
+							// naming for sub-minimum sizing, acceptable for a
+							// single-user laptop registry (ADR-7).
+							name:  "WORKER_COUNT_UNSUPPORTED_MINIMUM"
+							value: "1"
+						},
 					]
 					ports: [{
 						name:          "http"
