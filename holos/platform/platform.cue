@@ -201,6 +201,40 @@ platform: {
 				cluster:   CLUSTER.name
 				labels: app: "cnpg"
 			}}).output
+
+			// keycloak-operator-crds renders the Keycloak operator CRDs
+			// (keycloaks.k8s.keycloak.org, keycloakrealmimports.k8s.keycloak.org)
+			// from the upstream keycloak-k8s-resources manifests.  CRDs are
+			// isolated components labeled crds: "true" so they apply before
+			// the controllers that depend on them.  The operator is the
+			// keycloak-operator component below; both share the version pin
+			// in components/keycloak/keycloak.cue.
+			(#ComponentTemplate & {inputs: {
+				name:      "keycloak-operator-crds"
+				component: "operator-crds"
+				prefix:    "components/keycloak"
+				cluster:   CLUSTER.name
+				labels: {
+					app:  "keycloak"
+					crds: "true"
+				}
+			}}).output
+
+			// keycloak-operator renders the Keycloak operator from the
+			// upstream kubernetes.yml manifest, placed in the keycloak
+			// namespace (deliberately NOT ambient-enrolled, see
+			// holos/namespaces.cue).  Applies after cnpg-clusters in
+			// scripts/apply, which gates on the operator Deployment rollout:
+			// the next phase applies Keycloak/KeycloakRealmImport CRs that
+			// need the operator reconciling and the keycloak-db Cluster
+			// reachable.
+			(#ComponentTemplate & {inputs: {
+				name:      "keycloak-operator"
+				component: "operator"
+				prefix:    "components/keycloak"
+				cluster:   CLUSTER.name
+				labels: app: "keycloak"
+			}}).output
 		}
 	}
 }

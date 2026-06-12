@@ -10,8 +10,10 @@
 # cert-manager webhook before the components that create cert-manager.io
 # resources, the CNPG operator rollout before the cnpg-clusters component's
 # postgresql.cnpg.io Cluster resources (its admission webhooks fail
-# closed), and Cluster readiness before the Keycloak phase's database
-# consumer.  The README is the canonical explanation of why the order is
+# closed), Cluster readiness before the Keycloak phase's database
+# consumer, and the Keycloak operator rollout before the next phase's
+# k8s.keycloak.org custom resources.  The README is the canonical
+# explanation of why the order is
 # what it is; this script encodes exactly that order.
 #
 # Idempotent by construction: server-side apply and kubectl wait both
@@ -63,6 +65,11 @@ ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
 # ambient-enrolled, the data plane), so appending it keeps the existing
 # order stable.  cnpg-clusters trails cnpg: its Cluster resources need the
 # operator's fail-closed webhook serving before they can apply.
+# keycloak-operator-crds and keycloak-operator trail cnpg-clusters: the
+# Keycloak operator depends only on its own CRDs and the keycloak
+# namespace, and the next phase's Keycloak CR needs both the operator
+# reconciling and the keycloak-db Cluster reachable, so gating the operator
+# rollout after the database keeps the dependency chain linear.
 COMPONENTS=(
   namespaces
   gateway-api
@@ -78,6 +85,8 @@ COMPONENTS=(
   cnpg-crds
   cnpg
   cnpg-clusters
+  keycloak-operator-crds
+  keycloak-operator
 )
 
 # local-ca and istio-gateway create cert-manager.io resources (ClusterIssuer,
@@ -192,6 +201,21 @@ wait_cnpg_clusters() {
     wait cluster/keycloak-db --for=condition=Ready --timeout="${ROLLOUT_TIMEOUT}"
   kubectl --context "${KUBE_CONTEXT}" --namespace quay \
     wait cluster/quay-db --for=condition=Ready --timeout="${ROLLOUT_TIMEOUT}"
+}
+
+# keycloak-operator-crds: the Keycloak operator requires its types at
+# startup, and the next phase applies k8s.keycloak.org custom resources.
+wait_keycloak_operator_crds() {
+  wait_crds_established keycloak-operator-crds
+}
+
+# keycloak-operator: the next phase applies Keycloak and KeycloakRealmImport
+# CRs that need the operator reconciling, so gate on its rollout.  The first
+# pull of the multi-arch quay.io/keycloak/keycloak-operator image may be
+# slow — ROLLOUT_TIMEOUT covers it.
+wait_keycloak_operator() {
+  kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
+    rollout status deployment/keycloak-operator --timeout="${ROLLOUT_TIMEOUT}"
 }
 
 if ! command -v kubectl >/dev/null 2>&1; then

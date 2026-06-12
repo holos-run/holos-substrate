@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+#
+# Pull the two Keycloak operator CRD manifests (keycloaks.k8s.keycloak.org,
+# keycloakrealmimports.k8s.keycloak.org) from the upstream
+# keycloak-k8s-resources tag and cache them concatenated as one
+# multi-document stream in manifests/bundle.<version>.yaml so rendering is
+# reproducible offline.  Upstream publishes each CRD as its own single-CRD
+# file with no combined asset; concatenating here keeps the committed-cache
+# shape (one bundle per component) shared by every fetching component.
+#
+# Concurrency safety: each invocation downloads into its own unique mktemp
+# directory, then atomically renames the finished bundle into place (rename
+# is an atomic system call on posix filesystems).  The EXIT trap removes the
+# temporary directory on failure so no partial files are left behind.
+#
+# Integrity: upstream release assets are not checksum pinned here.  This is
+# mitigated because the cached bundle and the rendered deploy files are
+# committed to git, so any change in fetched content is visible in review
+# before it can take effect.
+
+set -euo pipefail
+
+cd "$(dirname "$0")"
+mkdir -p manifests
+version="${1:-}"
+if [[ -z "${version}" ]]; then
+  echo "error: no version passed as arg 1" >&2
+  echo "see versions at https://github.com/keycloak/keycloak-k8s-resources/tags" >&2
+  exit 1
+fi
+# Allowlist the version format before interpolating it into the bundle path
+# and the download URL: a single check rejects path separators, URL
+# metacharacters, whitespace, and control characters.
+if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  printf 'error: version must look like 26.6.3 (got %q)\n' "${version}" >&2
+  exit 1
+fi
+
+bundle="manifests/bundle.${version}.yaml"
+
+if ! [[ -s "$bundle" ]]; then
+  tmpdir="$(mktemp -d manifests/.tmp.XXXXXX)"
+  trap 'rm -rf "$tmpdir"' EXIT
+
+  base="https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/${version}/kubernetes"
+  # --fail aborts on HTTP errors so an error body is never cached.
+  curl -fsSL --retry 3 -o "${tmpdir}/keycloaks.yaml" \
+    "${base}/keycloaks.k8s.keycloak.org-v1.yml"
+  curl -fsSL --retry 3 -o "${tmpdir}/keycloakrealmimports.yaml" \
+    "${base}/keycloakrealmimports.k8s.keycloak.org-v1.yml"
+  # curl --fail does not catch an empty 200 body; never cache one.
+  for f in keycloaks.yaml keycloakrealmimports.yaml; do
+    if ! [[ -s "${tmpdir}/${f}" ]]; then
+      echo "error: empty download: ${f}" >&2
+      exit 1
+    fi
+  done
+
+  # Concatenate the two single-document files into one multi-document
+  # stream.  Neither upstream file starts with a document separator, so one
+  # is inserted between them.
+  {
+    cat "${tmpdir}/keycloaks.yaml"
+    echo "---"
+    cat "${tmpdir}/keycloakrealmimports.yaml"
+  } >"${tmpdir}/bundle.yaml"
+
+  # rename is guaranteed atomic system call on posix filesystems
+  mv -f "${tmpdir}/bundle.yaml" "$bundle"
+  echo "cached: $bundle" >&2
+fi
+
+cat "$bundle"
