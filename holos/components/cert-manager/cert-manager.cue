@@ -24,13 +24,11 @@ CertManagerVersion: "1.19.5"
 // Keep this value in sync with the "cert-manager" entry in the central
 // namespaces registry (holos/namespaces.cue): this file is an ancestor only
 // of the cert-manager leaf components, so the registry at the holos root
-// cannot reference it — the two literal values must match.  The registry IS
-// an ancestor of these leaf instances, so the constraint below checks
-// membership in this direction: CertManagerNamespace must unify with one of
-// the registered namespace names, turning silent drift between the two
-// literals into a render failure.
+// cannot reference it — the two literal values must match.  The
+// #RegisteredNamespace constraint (holos/namespaces.cue) turns silent drift
+// between the two literals into a render failure.
 CertManagerNamespace: "cert-manager"
-CertManagerNamespace: or([for NAME, _ in namespaces {NAME}])
+CertManagerNamespace: #RegisteredNamespace
 
 // CertManagerRepository is the upstream Helm chart repository.
 CertManagerRepository: {
