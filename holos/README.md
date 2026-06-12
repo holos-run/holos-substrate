@@ -280,14 +280,14 @@ kubectl -n quay wait pod/quay-echo --for=condition=Ready --timeout=120s
 
 # The Quay API takes the admin OAuth token (basic auth is not accepted).
 TOKEN=$(kubectl -n quay get secret quay-initial-admin -o jsonpath='{.data.token}' | base64 -d)
-curl -fsS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+UUID=$(curl -fsS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -X POST https://quay.holos.localhost/api/v1/repository/holos/sample/notification/ \
   -d '{"event": "repo_push", "method": "webhook",
        "config": {"url": "http://quay-echo.quay.svc:8080/"},
-       "eventConfig": {}, "title": "verify-webhook"}'
-# Returns the notification with a "uuid"; fire the built-in test with it:
+       "eventConfig": {}, "title": "verify-webhook"}' | jq -r .uuid)
+# Fire the built-in test first:
 curl -fsS -o /dev/null -H "Authorization: Bearer $TOKEN" \
-  -X POST https://quay.holos.localhost/api/v1/repository/holos/sample/notification/<uuid>/test
+  -X POST "https://quay.holos.localhost/api/v1/repository/holos/sample/notification/$UUID/test"
 
 # Then a real push (docker login per docs/local-cluster.md "Verify Quay"):
 docker pull busybox && docker tag busybox quay.holos.localhost/holos/sample:test2
@@ -307,7 +307,7 @@ Clean up when done:
 
 ```bash
 curl -fsS -H "Authorization: Bearer $TOKEN" \
-  -X DELETE https://quay.holos.localhost/api/v1/repository/holos/sample/notification/<uuid>
+  -X DELETE "https://quay.holos.localhost/api/v1/repository/holos/sample/notification/$UUID"
 kubectl -n quay delete pod/quay-echo svc/quay-echo
 ```
 
@@ -318,7 +318,7 @@ confirm nothing is lost:
 
 ```bash
 kubectl -n quay delete pod -l app.kubernetes.io/name=quay
-kubectl -n quay delete pod quay-db-1
+kubectl -n quay delete pod -l cnpg.io/cluster=quay-db
 kubectl -n quay rollout status deployment/quay --timeout=600s
 kubectl -n quay wait cluster/quay-db --for=condition=Ready --timeout=300s
 ```
