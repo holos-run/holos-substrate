@@ -16,6 +16,35 @@ permissions:
   contents: read
 
 jobs:
+  guardrails:
+    name: Guardrails
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned to the full commit SHA of v4.3.1 for supply-chain hardening.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # materia.ai is the label/annotation domain of a sibling project; it
+      # must never leak into this repository's platform configuration or Go
+      # code. Platform-owned label keys use the holos.run domain instead
+      # (see the Conventions section of AGENTS.md). Scoped to holos/ and Go
+      # sources rather than the whole tree — and excluding markdown — so
+      # documentation (including this workflow and
+      # holos/docs/component-guidelines.md) may name the forbidden domain
+      # when describing the rule.
+      - name: no materia.ai label domain
+        run: |
+          set -euo pipefail
+          found=0
+          if grep -rniI --exclude='*.md' 'materia\.ai' holos/; then found=1; fi
+          if grep -rniI --include='*.go' --include='go.mod' --include='go.sum' 'materia\.ai' .; then found=1; fi
+          if [ "${found}" -ne 0 ]; then
+            echo "ERROR: materia.ai references found (listed above)." >&2
+            echo "       Platform-owned label keys use the holos.run domain" >&2
+            echo "       (see the Conventions section of AGENTS.md)." >&2
+            exit 1
+          fi
+          echo "No materia.ai references in holos/ or Go code."
+
   scripts:
     name: Shell scripts
     runs-on: ubuntu-latest
