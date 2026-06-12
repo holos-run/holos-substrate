@@ -64,8 +64,10 @@ userDefinedBuildPlan: {
 		disabled?: bool
 
 		// argoAppDisabled causes the gitops Application artifact to be
-		// omitted.  Defaults to true as a placeholder until ArgoCD is
-		// deployed to the platform.
+		// omitted.  Defaults to true: ArgoCD is installed on the platform,
+		// but gitops delivery of platform components has not yet replaced
+		// the direct apply — see docs/placeholders.md (ArgoCD gitops
+		// delivery) for the deferred flip to false.
 		argoAppDisabled: bool | *true
 
 		// argoApp represents the ArgoCD Application associated with this
@@ -92,7 +94,8 @@ userDefinedBuildPlan: {
 	spec: argoApp: {
 		metadata: {
 			name: userDefinedBuildPlan.metadata.name
-			// Placeholder namespace until ArgoCD is deployed to the platform.
+			// ArgoCD runs in the argocd namespace — keep in sync with
+			// ArgoCDNamespace in components/argocd/argocd.cue.
 			namespace: string | *"argocd"
 		}
 		spec: {

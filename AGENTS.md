@@ -29,7 +29,7 @@ behind the layout is in
 - [docs/local-cluster.md](docs/local-cluster.md) — the quick-start guide:
   create the local k3d cluster with DNS and trusted TLS, then apply the
   platform — the Layer 0 foundation and the Layer 1 services (Postgres,
-  Keycloak, Quay) — with `scripts/apply`.
+  Keycloak, Quay, Argo CD) — with `scripts/apply`.
 - [holos/README.md](holos/README.md) — orientation to the Holos CUE
   directory: layout, clusters, how rendered manifests are applied (the
   apply-order rationale), and the Keycloak, Postgres, and Quay
@@ -45,10 +45,10 @@ behind the layout is in
   artifacts in the in-cluster Quay registry, the repository credential
   Secret shape, and how the repo-server reaches Quay.
 - [holos/docs/placeholders.md](holos/docs/placeholders.md) — stubs for
-  out-of-MVP-scope concerns: ArgoCD delivery, observability dashboards,
-  the Gateway route-attachment policy, Keycloak realm reconciliation,
-  Quay OIDC login, node-level registry trust for in-cluster pulls,
-  production deployment area.
+  out-of-MVP-scope concerns: ArgoCD gitops delivery (the `argoAppDisabled`
+  flip), observability dashboards, the Gateway route-attachment policy,
+  Keycloak realm reconciliation, Quay OIDC login, node-level registry
+  trust for in-cluster pulls, production deployment area.
 
 ## Conventions
 
