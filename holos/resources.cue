@@ -14,6 +14,7 @@ import (
 	ap "argoproj.io/appproject/v1alpha1"
 	es "external-secrets.io/externalsecret/v1beta1"
 	ss "external-secrets.io/secretstore/v1beta1"
+	cnpg "postgresql.cnpg.io/cluster/v1"
 )
 
 #Resources: {
@@ -24,6 +25,7 @@ import (
 
 	AppProject?: [_]:         ap.#AppProject
 	Certificate?: [_]:        certv1.#Certificate
+	Cluster?: [_]:            cnpg.#Cluster
 	ClusterIssuer?: [_]:      ci.#ClusterIssuer
 	ClusterRole?: [_]:        rbacv1.#ClusterRole
 	ClusterRoleBinding?: [_]: rbacv1.#ClusterRoleBinding

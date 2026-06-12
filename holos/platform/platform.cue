@@ -187,6 +187,20 @@ platform: {
 				cluster:   CLUSTER.name
 				labels: app: "cnpg"
 			}}).output
+
+			// cnpg-clusters emits the per-service Postgres Cluster resources
+			// (keycloak-db, quay-db), each in its consuming service's
+			// namespace.  Applies after the cnpg operator: its admission
+			// webhooks for postgresql.cnpg.io resources fail closed, so
+			// scripts/apply waits for the controller-manager rollout and
+			// retries this component through the brief window before the
+			// webhook serves, then gates on Cluster readiness because the
+			// Keycloak phase depends on a reachable database.
+			(#ComponentTemplate & {inputs: {
+				component: "cnpg-clusters"
+				cluster:   CLUSTER.name
+				labels: app: "cnpg"
+			}}).output
 		}
 	}
 }

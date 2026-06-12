@@ -102,4 +102,22 @@ namespaces: {
 	// echo is the permanent Layer 0 smoke-test namespace; its workloads
 	// enroll in the ambient mesh per the platform convention.
 	echo: _ambient: true
+
+	// keycloak hosts the Keycloak server and its CNPG Postgres cluster
+	// (keycloak-db, components/cnpg-clusters).  Deliberately NOT enrolled in
+	// ambient: Keycloak terminates its own TLS with a cert-manager
+	// certificate end-to-end, and the reference platform's root-cause
+	// analysis found ztunnel ambient interception breaks Keycloak — the
+	// reference sets istio.io/dataplane-mode: none at both the namespace and
+	// pod level.  The CNPG Postgres pods in this namespace are consequently
+	// unenrolled too; Keycloak↔Postgres traffic stays in-namespace and
+	// CNPG/Keycloak handle their own transport security.  See the exceptions
+	// section of holos/docs/mesh-enrollment.md.
+	keycloak: _ambient: false
+
+	// quay hosts the Quay registry and its CNPG Postgres cluster (quay-db,
+	// components/cnpg-clusters); its workloads enroll in the ambient mesh
+	// per the platform convention.  The Quay issue (HOL-1119 or its
+	// successor) may revise this position when Quay lands.
+	quay: _ambient: true
 }

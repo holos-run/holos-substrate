@@ -66,3 +66,12 @@ kubectl logs -n istio-system -l app=ztunnel | grep <pod-name>
   themselves and terminate mesh traffic natively, so redirecting them through
   ztunnel adds nothing. See the registry entry in
   [`holos/namespaces.cue`](../namespaces.cue).
+- **`keycloak`** — Keycloak terminates its own TLS with a cert-manager
+  certificate end-to-end, and the reference platform's root-cause analysis
+  found ztunnel ambient interception breaks Keycloak — the reference sets
+  `istio.io/dataplane-mode: none` at both the namespace and pod level. The
+  CNPG Postgres pods in this namespace (`keycloak-db`, see the
+  [`cnpg-clusters`](../components/cnpg-clusters/) component) are
+  consequently unenrolled too; Keycloak↔Postgres traffic stays in-namespace
+  and CNPG/Keycloak handle their own transport security. See the registry
+  entry in [`holos/namespaces.cue`](../namespaces.cue).
