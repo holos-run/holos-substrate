@@ -7,8 +7,9 @@ to the real documentation.
 
 ## ArgoCD gitops delivery
 
-Rendered manifests will eventually be reconciled by ArgoCD instead of manual
-`kubectl apply`. The affordance already exists: the `userDefinedBuildPlan`
+Rendered manifests will eventually be reconciled by ArgoCD instead of the
+direct server-side apply performed by `scripts/apply`. The affordance
+already exists: the `userDefinedBuildPlan`
 adapter ([`components/user-defined-build-plan.cue`](../components/user-defined-build-plan.cue))
 projects an ArgoCD `Application` per component through its `gitops` artifacts,
 gated by `argoAppDisabled: bool | *true`. The future ArgoCD issue deploys

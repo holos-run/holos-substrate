@@ -160,8 +160,12 @@ Components that ship CRDs MUST isolate them in a dedicated component labeled
 `crds: "true"`, separate from the controllers and workloads that consume
 them. The label identifies CRD components so they can be applied before
 controllers (e.g. `holos show buildplans --selector crds==true` lists them);
-apply ordering is manual today — see
-[`holos/README.md`](../README.md#how-rendered-manifests-reach-the-cluster).
+`scripts/apply` (from the repo root) encodes the apply order — a new
+component is appended to its `COMPONENTS` array in dependency order, with a
+`wait_<name>()` gate only if a later component critically depends on it
+being ready — and
+[`holos/README.md`](../README.md#how-rendered-manifests-reach-the-cluster)
+is the canonical rationale for that order.
 Keeping CRDs separate lets them roll out and verify ahead of dependent
 workloads.
 
@@ -261,6 +265,11 @@ Before approving a component PR:
       [`holos/namespaces.cue`](../namespaces.cue), not emitted inline.
 - [ ] Registered in `platform/platform.cue` via `#ComponentTemplate` with an
       explicit `cluster:` field.
+- [ ] Added to the `COMPONENTS` array in `scripts/apply` in dependency order
+      (see the ordering rules in
+      [`holos/README.md`](../README.md#how-rendered-manifests-reach-the-cluster)),
+      with a `wait_<name>()` gate only if a later component critically
+      depends on it being ready.
 - [ ] `scripts/render` exits 0: `holos render platform` succeeds and nothing
       under `holos/` is modified, deleted, or untracked afterward — the
       committed `holos/deploy/` tree matches the CUE exactly (no stale or
