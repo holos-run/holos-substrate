@@ -135,17 +135,32 @@ let CONFIG_YAML = """
 	FEATURE_MAILING: false
 	"""
 
-// The initContainer substitution script.  json.dumps the env values so any
-// character CNPG or the bootstrap Job might generate stays a valid YAML
-// scalar; python3 ships in the Quay image, which the initContainer reuses
-// to avoid a second version pin.
-let RENDER_CONFIG = """
+// The initContainer script: render the config, then prepare the database.
+// json.dumps the env values so any character CNPG or the bootstrap Job
+// might generate stays a valid YAML scalar; python3 and psycopg2 ship in
+// the Quay image, which the initContainer reuses to avoid a second pin.
+//
+// Quay's config validator refuses to start without the pg_trgm extension
+// in its database.  pg_trgm is a *trusted* extension (PostgreSQL 13+), so
+// the CNPG-generated app user — owner of the quay database via initdb
+// (components/cnpg-clusters) — can CREATE it without superuser.  Creating
+// it here keeps the dependency level-triggered: it converges on an
+// already-bootstrapped Cluster exactly like a fresh one, with no manual
+// step and no bootstrap-only hook.
+let INIT_SCRIPT = """
 	import json, os
+
+	import psycopg2
 
 	template = open("/conf/template/config.yaml").read()
 	for key in ("DB_URI", "SECRET_KEY", "DATABASE_SECRET_KEY"):
 	    template = template.replace("__%s__" % key, json.dumps(os.environ[key]))
 	open("/conf/stack/config.yaml", "w").write(template)
+
+	conn = psycopg2.connect(os.environ["DB_URI"])
+	conn.autocommit = True
+	conn.cursor().execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+	conn.close()
 	"""
 
 // The create-if-absent bootstrap script for the quay-secret-keys Secret.
@@ -433,11 +448,11 @@ let DEPLOYMENT = {
 					seccompProfile: type: "RuntimeDefault"
 				}
 				initContainers: [{
-					name: "render-config"
-					// Reuse the Quay image: it ships the python3 the
-					// substitution script needs, avoiding a second pin.
+					name: "init"
+					// Reuse the Quay image: it ships the python3 and
+					// psycopg2 the init script needs, avoiding a second pin.
 					image: "quay.io/projectquay/quay:\(VERSION)"
-					command: ["python3", "-c", RENDER_CONFIG]
+					command: ["python3", "-c", INIT_SCRIPT]
 					env: [
 						{
 							name: "DB_URI"

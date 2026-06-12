@@ -62,10 +62,17 @@ spec:
         - |-
           import json, os
 
+          import psycopg2
+
           template = open("/conf/template/config.yaml").read()
           for key in ("DB_URI", "SECRET_KEY", "DATABASE_SECRET_KEY"):
               template = template.replace("__%s__" % key, json.dumps(os.environ[key]))
           open("/conf/stack/config.yaml", "w").write(template)
+
+          conn = psycopg2.connect(os.environ["DB_URI"])
+          conn.autocommit = True
+          conn.cursor().execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+          conn.close()
         env:
         - name: DB_URI
           valueFrom:
@@ -83,7 +90,7 @@ spec:
               key: DATABASE_SECRET_KEY
               name: quay-secret-keys
         image: quay.io/projectquay/quay:3.17.3
-        name: render-config
+        name: init
         resources:
           limits:
             memory: 128Mi
