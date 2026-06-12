@@ -32,11 +32,15 @@
 # outside this script there is no API credential to recover, so the script
 # fails with guidance rather than guessing.
 #
-# Known crash window: if the initialize call succeeds but the Secret write
-# that immediately follows fails, the admin credentials are lost (the
-# endpoint is one-shot).  Recovery is a registry reset — for the local
-# cluster, delete the quay database contents and the quay-* bootstrap
-# Secrets, or simply reset the cluster (docs/local-cluster.md).
+# Known crash window: the initialize endpoint is one-shot, so losing its
+# response loses the admin credentials.  Three defenses narrow the window:
+# a kubectl preflight fails fast before the registry is touched when the
+# cluster is unreachable, the Secret existence check distinguishes
+# NotFound from other kubectl failures (--ignore-not-found plus set -e),
+# and if the Secret write after a successful initialize still fails the
+# script prints the generated credentials to stderr so they can be stored
+# manually before re-running.  If all of that is missed, recovery is a
+# registry reset (docs/local-cluster.md).
 #
 # Environment overrides:
 #   KUBE_CONTEXT — kubectl context for the Secret reads/writes (default:
@@ -165,6 +169,19 @@ if ! curl -fsS --max-time 10 -o /dev/null "${QUAY_URL}/health/instance"; then
   exit 1
 fi
 
+# kubectl must work before the one-shot initialize endpoint is consumed:
+# if the cluster were unreachable, the admin credentials generated below
+# could never be stored.  Reading the quay namespace proves the context,
+# connectivity, and read permission in one call (kubectl's own error
+# message passes through on failure).
+if ! kubectl get namespace "${NAMESPACE}" --context "${KUBE_CONTEXT}" \
+  -o name >/dev/null; then
+  echo "ERROR: cannot read namespace '${NAMESPACE}' via kubectl context '${KUBE_CONTEXT}'." >&2
+  echo "       Fix the kubeconfig before bootstrapping — the initialize endpoint is" >&2
+  echo "       one-shot, so its credentials must be storable in the cluster." >&2
+  exit 1
+fi
+
 # --- step 1: initial admin user and API token ---------------------------------
 
 # 16 random bytes hex-encoded: deterministic 32-char length, no SIGPIPE
@@ -173,8 +190,14 @@ gen_password() {
   head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n'
 }
 
-if kubectl get secret "${ADMIN_SECRET}" --context "${KUBE_CONTEXT}" \
-  --namespace "${NAMESPACE}" -o name >/dev/null 2>&1; then
+# --ignore-not-found exits 0 with empty output when the Secret is absent,
+# while any other kubectl failure (unreachable cluster, RBAC denial) still
+# exits nonzero and aborts via set -e — so "missing" is never conflated
+# with "broken", which matters before consuming the one-shot endpoint.
+ADMIN_SECRET_EXISTS="$(kubectl get secret "${ADMIN_SECRET}" \
+  --context "${KUBE_CONTEXT}" --namespace "${NAMESPACE}" \
+  -o name --ignore-not-found)"
+if [[ -n "${ADMIN_SECRET_EXISTS}" ]]; then
   echo "Secret ${ADMIN_SECRET} exists; reusing stored admin credentials."
   TOKEN="$(kubectl get secret "${ADMIN_SECRET}" --context "${KUBE_CONTEXT}" \
     --namespace "${NAMESPACE}" -o jsonpath='{.data.token}' | base64 -d)"
@@ -215,8 +238,19 @@ else
     exit 1
   fi
   printf 'header = "Authorization: Bearer %s"\n' "${TOKEN}" > "${tmpdir}/auth.curlrc"
-  apply_secret "${ADMIN_SECRET}" Opaque \
-    "username=${ADMIN_USER}" "password=${ADMIN_PASS}" "token=${TOKEN}"
+  if ! apply_secret "${ADMIN_SECRET}" Opaque \
+    "username=${ADMIN_USER}" "password=${ADMIN_PASS}" "token=${TOKEN}"; then
+    # Last resort: the initialize endpoint is one-shot, so losing these
+    # values means a registry reset.  Printing credentials is normally
+    # forbidden — here it beats guaranteed loss.
+    echo "ERROR: admin user created but storing Secret ${ADMIN_SECRET} failed." >&2
+    echo "       Store these credentials manually before re-running:" >&2
+    echo "         kubectl -n ${NAMESPACE} create secret generic ${ADMIN_SECRET} \\" >&2
+    echo "           --from-literal=username='${ADMIN_USER}' \\" >&2
+    echo "           --from-literal=password='${ADMIN_PASS}' \\" >&2
+    echo "           --from-literal=token='${TOKEN}'" >&2
+    exit 1
+  fi
   echo "Created admin user '${ADMIN_USER}' and stored credentials in Secret ${ADMIN_SECRET}."
 fi
 
@@ -311,7 +345,7 @@ if [[ "${HTTP_STATUS}" != 200 ]]; then
   jq -r '.message? // .error_message? // .' < "${tmpdir}/response" >&2 || true
   exit 1
 fi
-if jq -e --arg r "${ROBOT}" '.members[] | select(.name == $r)' \
+if jq -e --arg r "${ROBOT}" '.members // [] | .[] | select(.name == $r)' \
   < "${tmpdir}/response" >/dev/null; then
   echo "Robot '${ROBOT}' is a member of team '${TEAM}'; skipping."
 else
@@ -334,8 +368,18 @@ fi
 DOCKERCONFIGJSON="$(jq -n --arg host "${QUAY_URL#https://}" \
   --arg auth "$(b64 "${ROBOT}:${ROBOT_TOKEN}")" \
   '{auths: {($host): {auth: $auth}}}')"
-apply_secret "${PULL_SECRET}" kubernetes.io/dockerconfigjson \
-  ".dockerconfigjson=${DOCKERCONFIGJSON}"
+# Check-then-create like every other step, keeping the second run a strict
+# no-op; a drifted or missing value (e.g. a regenerated robot token) still
+# converges via server-side apply.
+PULL_SECRET_CURRENT="$(kubectl get secret "${PULL_SECRET}" \
+  --context "${KUBE_CONTEXT}" --namespace "${NAMESPACE}" \
+  -o jsonpath='{.data.\.dockerconfigjson}' --ignore-not-found)"
+if [[ "${PULL_SECRET_CURRENT}" == "$(b64 "${DOCKERCONFIGJSON}")" ]]; then
+  echo "Secret ${PULL_SECRET} is up to date; skipping."
+else
+  apply_secret "${PULL_SECRET}" kubernetes.io/dockerconfigjson \
+    ".dockerconfigjson=${DOCKERCONFIGJSON}"
+fi
 
 # --- done ---------------------------------------------------------------------
 
