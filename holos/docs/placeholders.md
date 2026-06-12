@@ -7,15 +7,15 @@ to the real documentation.
 
 ## ArgoCD gitops delivery
 
-Argo CD itself is installed: the `argocd-crds` and `argocd` components
+ArgoCD itself is installed: the `argocd-crds` and `argocd` components
 ([`components/argocd/`](../components/argocd/argocd.cue)) deploy the core
 install via `scripts/apply`, with the UI at `https://argocd.holos.localhost`,
-and the `Application` source pattern delivery will use — OCI
+and the `Application` source pattern the delivery will use — OCI
 rendered-manifests artifacts in the in-cluster Quay registry — is decided,
 verified, and documented in
 [argocd-application-source.md](argocd-application-source.md). What remains
 deferred is the delivery itself: reconciling the platform's rendered
-manifests with Argo CD instead of the direct server-side apply performed by
+manifests with ArgoCD instead of the direct server-side apply performed by
 `scripts/apply`. The affordance already exists: the `userDefinedBuildPlan`
 adapter
 ([`components/user-defined-build-plan.cue`](../components/user-defined-build-plan.cue))
@@ -23,9 +23,8 @@ projects an ArgoCD `Application` per component through its `gitops`
 artifacts, gated by `argoAppDisabled: bool | *true`. The future delivery
 issue flips the default to `false` and renders the Application resources
 under `deploy/clusters/<cluster>/gitops/`. Until then no Application
-resources are emitted, Argo CD reconciles nothing, and manifests are applied
-per
-[`holos/README.md`](../README.md#how-rendered-manifests-reach-the-cluster).
+resources are emitted, ArgoCD reconciles nothing, and manifests are applied
+per [`holos/README.md`](../README.md#how-rendered-manifests-reach-the-cluster).
 
 ## Observability dashboards
 
