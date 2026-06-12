@@ -80,9 +80,9 @@ kubectl apply --server-side --force-conflicts -f holos/deploy/clusters/k3d-holos
 
 and waits only on the critical dependencies between components — CRD
 establishment, the istiod rollout, the ambient data-plane DaemonSets, the
-cert-manager webhook rollout, the CNPG operator rollout, and the Postgres
-`Cluster` Ready conditions — plus a wait on the `echo` Deployment as a
-smoke check; nothing else.
+cert-manager webhook rollout, the CNPG operator rollout, the Postgres
+`Cluster` Ready conditions, and the Keycloak operator rollout — plus a wait
+on the `echo` Deployment as a smoke check; nothing else.
 
 Apply order matters beyond "CRD components first". The script applies the
 Layer 0 components in this order:
@@ -107,6 +107,11 @@ Layer 0 components in this order:
     operator
 14. `cnpg-clusters` — the per-service Postgres `Cluster` resources
     (`keycloak-db`, `quay-db`), each in its consuming service's namespace
+15. `keycloak-operator-crds` — Keycloak operator CRDs (`crds: "true"`),
+    fetched as the two separate upstream single-CRD manifests
+16. `keycloak-operator` — the Keycloak operator, in the `keycloak`
+    namespace (deliberately not ambient-enrolled, see
+    [namespaces.cue](namespaces.cue))
 
 The order encodes six rules: the `namespaces` component applies first, so
 every Namespace exists before any component that populates it;
@@ -132,6 +137,13 @@ on its own CRDs (and, being ambient-enrolled, the data plane), so appending
 them keeps the established order stable. `cnpg-clusters` trails `cnpg` and
 is gated on each `Cluster`'s `Ready` condition because the Keycloak phase
 applies a Keycloak CR that needs a reachable database.
+`keycloak-operator-crds` and `keycloak-operator` trail `cnpg-clusters`: the
+Keycloak operator depends only on its own CRDs and the `keycloak`
+namespace, and the Keycloak phase applies `Keycloak` and
+`KeycloakRealmImport` CRs that need both the operator reconciling — hence
+the gate on its Deployment rollout — and the `keycloak-db` `Cluster`
+reachable, so appending the pair after the database keeps the dependency
+chain linear.
 
 ### Postgres credentials and connection contract
 

@@ -15,6 +15,8 @@ import (
 	es "external-secrets.io/externalsecret/v1beta1"
 	ss "external-secrets.io/secretstore/v1beta1"
 	cnpg "postgresql.cnpg.io/cluster/v1"
+	kc "k8s.keycloak.org/keycloak/v2beta1"
+	kcri "k8s.keycloak.org/keycloakrealmimport/v2beta1"
 )
 
 #Resources: {
@@ -35,15 +37,20 @@ import (
 	ExternalSecret?: [_]:     es.#ExternalSecret
 	HTTPRoute?: [_]:          hrv1.#HTTPRoute
 	Job?: [_]:                batchv1.#Job
-	Namespace?: [_]:          corev1.#Namespace
-	ReferenceGrant?: [_]:     rgv1.#ReferenceGrant
-	Role?: [_]:               rbacv1.#Role
-	RoleBinding?: [_]:        rbacv1.#RoleBinding
-	Secret?: [_]:             corev1.#Secret
-	SecretStore?: [_]:        ss.#SecretStore
-	Service?: [_]:            corev1.#Service
-	ServiceAccount?: [_]:     corev1.#ServiceAccount
-	StatefulSet?: [_]:        appsv1.#StatefulSet
+	// Keycloak CRs use v2beta1, the storage version of the pinned Keycloak
+	// 26.6.3 CRDs (v2alpha1 is served for compatibility but deprecated; both
+	// are vendored under cue.mod/gen/k8s.keycloak.org/).
+	Keycloak?: [_]:            kc.#Keycloak
+	KeycloakRealmImport?: [_]: kcri.#KeycloakRealmImport
+	Namespace?: [_]:           corev1.#Namespace
+	ReferenceGrant?: [_]:      rgv1.#ReferenceGrant
+	Role?: [_]:                rbacv1.#Role
+	RoleBinding?: [_]:         rbacv1.#RoleBinding
+	Secret?: [_]:              corev1.#Secret
+	SecretStore?: [_]:         ss.#SecretStore
+	Service?: [_]:             corev1.#Service
+	ServiceAccount?: [_]:      corev1.#ServiceAccount
+	StatefulSet?: [_]:         appsv1.#StatefulSet
 
 	Gateway?: [_]: gwv1.#Gateway & {
 		spec: gatewayClassName: string | *"istio"
