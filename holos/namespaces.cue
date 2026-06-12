@@ -117,7 +117,9 @@ namespaces: {
 
 	// quay hosts the Quay registry and its CNPG Postgres cluster (quay-db,
 	// components/cnpg-clusters); its workloads enroll in the ambient mesh
-	// per the platform convention.  The Quay issue (HOL-1119 or its
-	// successor) may revise this position when Quay lands.
+	// per the platform convention.  This position is final, verified live
+	// (HOL-1178): repo_push webhook delivery to cluster-internal plain-HTTP
+	// URLs and registry restart resilience both work through ambient
+	// interception, so Quay needs no Keycloak-style exception.
 	quay: _ambient: true
 }

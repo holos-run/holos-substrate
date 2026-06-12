@@ -29,11 +29,11 @@ behind the layout is in
 - [docs/local-cluster.md](docs/local-cluster.md) — the quick-start guide:
   create the local k3d cluster with DNS and trusted TLS, then apply the
   platform — the Layer 0 foundation and the Layer 1 services (Postgres,
-  Keycloak) — with `scripts/apply`.
+  Keycloak, Quay) — with `scripts/apply`.
 - [holos/README.md](holos/README.md) — orientation to the Holos CUE
   directory: layout, clusters, how rendered manifests are applied (the
-  apply-order rationale), and the Keycloak and Postgres verification
-  steps and service contracts.
+  apply-order rationale), and the Keycloak, Postgres, and Quay
+  verification steps and service contracts.
 - [holos/docs/component-guidelines.md](holos/docs/component-guidelines.md)
   — how to add a Holos component: anatomy, guardrails, and the
   render-then-commit workflow.
@@ -43,6 +43,7 @@ behind the layout is in
 - [holos/docs/placeholders.md](holos/docs/placeholders.md) — stubs for
   out-of-MVP-scope concerns: ArgoCD delivery, observability dashboards,
   the Gateway route-attachment policy, Keycloak realm reconciliation,
+  Quay OIDC login, node-level registry trust for in-cluster pulls,
   production deployment area.
 
 ## Conventions

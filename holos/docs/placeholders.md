@@ -54,8 +54,37 @@ reconciliation mechanism is chosen (a keycloak-config-cli-style tool, a
 platform reconciler per [ADR-2](../../docs/adr/ADR-2.md), or an upstream
 operator feature), realm changes on an existing cluster are manual: apply
 them in the admin console, or delete and re-import the realm — which
-destroys realm state. The Quay issue hits this first when it enables the
-placeholder `quay` OIDC client and provisions its credentials.
+destroys realm state.
+[Quay OIDC login](#quay-oidc-login-against-the-keycloak-holos-realm) hits
+this first when it enables the placeholder `quay` client.
+
+## Quay OIDC login against the Keycloak `holos` realm
+
+Quay authenticates against its local database; OIDC login via the
+Keycloak `holos` realm was deliberately deferred from the MVP. The realm
+carries a **disabled** placeholder `quay` client with no secret committed
+([`components/keycloak/instance/`](../components/keycloak/instance/buildplan.cue)).
+[HOL-1183](https://linear.app/holos-run/issue/HOL-1183/featquay-oidc-login-via-the-keycloak-holos-realm)
+enables the client, provisions its secret without committing it, and sets
+Quay's OIDC configuration. Because the realm import is bootstrap-only,
+enabling the client on an existing cluster takes more than a CR edit — the
+work is effectively blocked on the
+[Keycloak realm reconciliation](#keycloak-realm-reconciliation) mechanism
+above.
+
+## Node-level registry trust for in-cluster pulls
+
+Pushes to `quay.holos.localhost` from the host work (the host resolves
+`*.holos.localhost` and trusts the mkcert root CA), but containerd on the
+k3d nodes can neither resolve nor trust the registry hostname, so pods
+cannot run images pushed to Quay. The gap must close before Layer 2
+([ADR-13](../../docs/adr/ADR-13.md)) deploys the images the pipeline
+pushes — likely k3d `registries`/hosts configuration plus CA trust on the
+nodes.
+[HOL-1184](https://linear.app/holos-run/issue/HOL-1184/featquay-in-cluster-image-pulls-from-quayholoslocalhost)
+tracks it; the scope boundary is noted in the
+[Verify Quay](../../docs/local-cluster.md#verify-quay) section of the
+local cluster guide and in `scripts/quay-init`.
 
 ## Production deployment area
 

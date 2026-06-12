@@ -9,9 +9,9 @@ package holos
 // pinned in components/cnpg/cnpg.cue, so a CNPG bump is the one line that
 // moves both.
 //
-// Generated names (CNPG conventions) — the contract the Keycloak phase
-// (HOL-1170/HOL-1171) and the Quay issue (HOL-1119 or successor) consume;
-// also documented in holos/README.md:
+// Generated names (CNPG conventions) — the contract the keycloak
+// (components/keycloak/instance) and quay (components/quay) components
+// consume; also documented in holos/README.md:
 //
 //   - Credentials Secret: <cluster>-app — keycloak-db-app in the keycloak
 //     namespace, quay-db-app in the quay namespace; keys: username,

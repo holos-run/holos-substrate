@@ -182,11 +182,14 @@ let REALM_IMPORT = {
 			realm:   "holos"
 			enabled: true
 			// OIDC client placeholder for Quay: disabled, with no secret
-			// committed.  The Quay issue enables it and provisions real
-			// credentials.
+			// committed.  Quay shipped with local database auth; HOL-1183
+			// enables this client and provisions real credentials.  Because
+			// the realm import is bootstrap-only (CAVEAT above), enabling it
+			// on an existing cluster takes more than editing this CR — see
+			// the "Quay OIDC login" stub in holos/docs/placeholders.md.
 			clients: [{
 				clientId: "quay"
-				name:     "Quay (placeholder — wired in the Quay issue)"
+				name:     "Quay (placeholder — enabled by HOL-1183)"
 				enabled:  false
 				protocol: "openid-connect"
 				redirectUris: ["https://quay.holos.localhost/*"]

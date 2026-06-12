@@ -6,9 +6,10 @@ Set up a local k3d cluster for development and testing, then apply the
 platform to it. This is the canonical quick-start guide: after completing
 it you'll have a running platform — the Layer 0 foundation (a Kubernetes
 API server with proper DNS and TLS certificates, serving the platform's
-components on ports 80 and 443) plus the first Layer 1 services:
-CloudNativePG-managed Postgres and Keycloak with the `holos` realm at
-`https://auth.holos.localhost`.
+components on ports 80 and 443) plus the Layer 1 services:
+CloudNativePG-managed Postgres, Keycloak with the `holos` realm at
+`https://auth.holos.localhost`, and the Quay registry at
+`https://quay.holos.localhost`.
 
 This is the foundation for the Holos PaaS MVP — see
 [Holos PaaS MVP Milestones](planning/holos-paas-mvp-milestones.md)
@@ -120,9 +121,10 @@ scripts/apply
 The script applies every platform component in dependency order — the
 Layer 0 foundation (namespaces, the Istio ambient mesh, cert-manager, the
 shared Gateway) followed by the Layer 1 services (CloudNativePG Postgres,
-the Keycloak operator, and the Keycloak instance) — starting with the
-`namespaces` component, so every namespace exists before any namespaced
-resource applies. It is idempotent, so it is safe to re-run at any time.
+the Keycloak operator and instance, and the Quay registry) — starting
+with the `namespaces` component, so every namespace exists before any
+namespaced resource applies. It is idempotent, so it is safe to re-run at
+any time.
 See
 [How rendered manifests reach the cluster](../holos/README.md#how-rendered-manifests-reach-the-cluster)
 for the apply-order rationale and the `--force-conflicts` and webhook
@@ -233,8 +235,12 @@ auto-created by push are private).
 
 In-cluster pulls of `quay.holos.localhost/...` images by the k3d nodes'
 containerd are out of scope here — node-level DNS and CA trust for the
-registry hostname is a separate concern. `scripts/quay-init` only
-provisions the credentials and the `quay-robot-pull` pull Secret.
+registry hostname is a separate concern, tracked by
+[HOL-1184](https://linear.app/holos-run/issue/HOL-1184/featquay-in-cluster-image-pulls-from-quayholoslocalhost)
+and stubbed in
+[placeholders.md](../holos/docs/placeholders.md#node-level-registry-trust-for-in-cluster-pulls).
+`scripts/quay-init` only provisions the credentials and the
+`quay-robot-pull` pull Secret.
 
 ## Reset the Cluster
 

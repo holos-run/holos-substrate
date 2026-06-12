@@ -4,8 +4,8 @@ package holos
 // quay-db CNPG Postgres Cluster (components/cnpg-clusters) and a minimal
 // single-pod Redis, with registry blob storage on a local-path PVC, exposed
 // at https://quay.holos.localhost through the shared Gateway
-// (components/istio-gateway).  This phase brings up the UI and the v2
-// registry API; users and credentials are bootstrapped in the next phase
+// (components/istio-gateway).  This component brings up the UI and the v2
+// registry API; users and credentials are bootstrapped by scripts/quay-init
 // (HOL-1177), which uses the /api/v1/user/initialize endpoint enabled by
 // FEATURE_USER_INITIALIZE below.
 //
@@ -107,7 +107,7 @@ let REDIS_METADATA = {
 //   - BUILDLOGS_REDIS and USER_EVENTS_REDIS are both mandatory even though
 //     the build feature is unused.
 //   - FEATURE_USER_INITIALIZE enables the one-shot /api/v1/user/initialize
-//     endpoint the next phase (HOL-1177) uses to create the admin user.
+//     endpoint scripts/quay-init (HOL-1177) uses to create the admin user.
 //   - SETUP_COMPLETE skips the interactive setup flow.
 let CONFIG_YAML = """
 	SERVER_HOSTNAME: \(HOSTNAME)

@@ -364,7 +364,7 @@ fi
 # consumers (e.g. a future imagePullSecrets reference).  Note the scope
 # boundary from HOL-1177: node-level containerd pulls of
 # quay.holos.localhost images (DNS + CA trust on the k3d nodes) are a
-# separate concern — this only provisions the credential.
+# separate concern (HOL-1184) — this only provisions the credential.
 DOCKERCONFIGJSON="$(jq -n --arg host "${QUAY_URL#https://}" \
   --arg auth "$(b64 "${ROBOT}:${ROBOT_TOKEN}")" \
   '{auths: {($host): {auth: $auth}}}')"
