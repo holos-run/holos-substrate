@@ -130,10 +130,12 @@ userDefinedBuildPlan: {
 						// Helm derives version-gated template output from the
 						// helm binary's compiled-in default Kubernetes version
 						// unless overridden; pin it to the local cluster's
-						// k3s version (k3d v5.8.3 default image, see
-						// docs/local-cluster.md) so rendering is
-						// deterministic across helm versions on
-						// contributor machines and CI.
+						// k3s version — v1.31.5, the k3d v5.8.3 default
+						// image, per the CertManagerVersion pin comment in
+						// components/cert-manager/cert-manager.cue — so
+						// rendering is deterministic across helm versions on
+						// contributor machines and CI.  Keep in sync with
+						// that comment when the cluster's k3s version moves.
 						kubeVersionOverride: "1.31.5"
 						// CRDs are isolated in the argocd-crds component.
 						crds: install: false

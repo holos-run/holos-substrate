@@ -23,7 +23,11 @@ ArgoCDChartVersion: "9.5.15"
 // (controller/vendor/9.5.15/argo-cd/Chart.yaml — verified 2026-06-12) so
 // the CRDs applied ahead of the controllers are exactly the versions the
 // chart's workloads expect.  Re-check Chart.yaml's appVersion whenever
-// ArgoCDChartVersion is bumped.
+// ArgoCDChartVersion is bumped.  The invariant is deliberately NOT a
+// render-time assertion: embedding the vendored Chart.yaml has a bootstrap
+// problem (vendor/<version>/ does not exist until the first render after a
+// bump), and drift is reviewable anyway — a bump regenerates the committed
+// CRD bundle and deploy tree, so a mismatched pair is visible in the diff.
 ArgoCDAppVersion: "3.4.2"
 
 // ArgoCDNamespace is the namespace Argo CD runs in.  Keep the conventional

@@ -46,27 +46,26 @@ if ! [[ -s "$bundle" ]]; then
   # applicationsets, appprojects.  Keep this list in sync with
   # https://github.com/argoproj/argo-cd/tree/master/manifests/crds —
   # re-check it before bumping ArgoCDAppVersion.
-  crds=(
-    application-crd.yaml
-    applicationset-crd.yaml
-    appproject-crd.yaml
-  )
-  for crd in "${crds[@]}"; do
+  for crd in application-crd applicationset-crd appproject-crd; do
     # --fail aborts on HTTP errors so an error body is never cached.
-    curl -fsSL --retry 3 -o "${tmpdir}/${crd}" \
-      "https://raw.githubusercontent.com/argoproj/argo-cd/v${version}/manifests/crds/${crd}"
-    # curl --fail does not catch an empty 200 body; never cache one.
-    if ! [[ -s "${tmpdir}/${crd}" ]]; then
+    curl -fsSL --retry 3 -o "${tmpdir}/${crd}.yaml" \
+      "https://raw.githubusercontent.com/argoproj/argo-cd/v${version}/manifests/crds/${crd}.yaml"
+    # curl --fail does not catch an empty 200 body; never cache one.  This
+    # also makes the -s test below an exact not-the-first-file check.
+    if ! [[ -s "${tmpdir}/${crd}.yaml" ]]; then
       echo "error: empty download: ${crd}" >&2
       exit 1
     fi
+    # The newline before --- guards against an upstream file missing its
+    # trailing newline, which would otherwise merge the separator onto the
+    # previous line.  Skip the separator before the first document so strict
+    # parsers do not see a leading null document.
+    if [[ -s "${tmpdir}/bundle.yaml" ]]; then
+      printf '\n---\n' >> "${tmpdir}/bundle.yaml"
+    fi
+    cat "${tmpdir}/${crd}.yaml" >> "${tmpdir}/bundle.yaml"
+    echo "appended: ${crd} to ${tmpdir}/bundle.yaml" >&2
   done
-
-  # Concatenate into one bundle with document separators.
-  for crd in "${crds[@]}"; do
-    echo "---"
-    cat "${tmpdir}/${crd}"
-  done > "${tmpdir}/bundle.yaml"
 
   # rename is guaranteed atomic system call on posix filesystems
   mv -f "${tmpdir}/bundle.yaml" "$bundle"
