@@ -437,9 +437,15 @@ let DEPLOYMENT = {
 		template: {
 			metadata: labels: METADATA.labels
 			spec: {
-				// Quay never talks to the Kubernetes API; don't mount a
-				// ServiceAccount token it has no use for.
-				automountServiceAccountToken: false
+				// The ServiceAccount token IS mounted (the default), unlike
+				// the other pods in this component: Quay selects its
+				// KubernetesConfigProvider whenever KUBERNETES_SERVICE_HOST
+				// is set — which the kubelet always injects — and that
+				// provider refuses to start without a token file (verified
+				// on the live cluster: "Cannot load Kubernetes service
+				// account token").  The token is inert: the namespace
+				// default ServiceAccount has no role bindings, so it grants
+				// no API access.
 				// The Quay image config declares USER 1001 (verified with
 				// the VERSION pin above), so runAsNonRoot validates without
 				// forcing a uid the image layout doesn't expect.
