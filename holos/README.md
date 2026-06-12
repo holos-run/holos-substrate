@@ -148,6 +148,27 @@ contract the Keycloak and Quay components consume:
 Each `<cluster>-app` Secret carries the keys `username`, `password`,
 `dbname`, `host`, `port`, `uri`, and `jdbc-uri`.
 
+Verify the databases on the live cluster after `scripts/apply`:
+
+```bash
+kubectl get cluster -A                       # both: Cluster in healthy state
+kubectl -n keycloak get secret keycloak-db-app
+kubectl -n quay get secret quay-db-app
+kubectl -n keycloak exec keycloak-db-1 -- psql -U postgres -c 'SELECT 1'
+kubectl -n quay exec quay-db-1 -- psql -U postgres -c 'SELECT 1'
+```
+
+To exercise the same path the consuming service uses — the `-rw` Service
+with the `-app` credentials — run a short-lived client pod with the `uri`
+key from the Secret:
+
+```bash
+URI=$(kubectl -n keycloak get secret keycloak-db-app -o jsonpath='{.data.uri}' | base64 -d)
+kubectl -n keycloak run psql-verify --rm -i --restart=Never \
+  --image=ghcr.io/cloudnative-pg/postgresql:18.1 --env="URI=$URI" -- \
+  psql "$URI" -c 'SELECT current_user, current_database()'
+```
+
 The first rule exists because nothing orders an apply batch by kind:
 kubectl submits the files sequentially in lexical order, so a single
 server-side apply that carries a Namespace alongside its namespaced
