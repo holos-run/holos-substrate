@@ -51,7 +51,13 @@ userDefinedBuildPlan: {
 					inputs: [for G in generators {G.output}]
 					output: "operator-bundle.yaml"
 					command: {
-						args: ["\(BuildContext.rootDir)/\(SHARED_DIR)/filter-kinds", "exclude", "\(BuildContext.tempDir)/\(inputs[0])", "CustomResourceDefinition", "Namespace"]
+						args: [
+							"\(BuildContext.rootDir)/\(SHARED_DIR)/filter-kinds",
+							"exclude",
+							"\(BuildContext.tempDir)/\(inputs[0])",
+							"CustomResourceDefinition",
+							"Namespace",
+						]
 						isStdoutOutput: true
 					}
 				},

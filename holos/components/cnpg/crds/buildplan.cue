@@ -45,7 +45,12 @@ userDefinedBuildPlan: {
 					inputs: [for G in generators {G.output}]
 					output: "crds-bundle.yaml"
 					command: {
-						args: ["\(BuildContext.rootDir)/\(SHARED_DIR)/filter-kinds", "include", "\(BuildContext.tempDir)/\(inputs[0])", "CustomResourceDefinition"]
+						args: [
+							"\(BuildContext.rootDir)/\(SHARED_DIR)/filter-kinds",
+							"include",
+							"\(BuildContext.tempDir)/\(inputs[0])",
+							"CustomResourceDefinition",
+						]
 						isStdoutOutput: true
 					}
 				},

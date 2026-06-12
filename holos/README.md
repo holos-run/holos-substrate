@@ -134,10 +134,10 @@ resource sorts ahead of its Namespace. The last rule is for verifiability
 rather than correctness — route attachment is level-triggered, so an
 `HTTPRoute` applied early simply reports unattached until the Gateway
 exists — but applying `echo` after the Gateway means the smoke test
-exercises a complete traffic path immediately. Certificate issuance is level-triggered
-the same way: the Gateway's HTTPS listener reports an unresolved
-certificate ref only until cert-manager writes the wildcard certificate's
-Secret.
+exercises a complete traffic path immediately. Certificate issuance is
+level-triggered the same way: the Gateway's HTTPS listener reports an
+unresolved certificate ref only until cert-manager writes the wildcard
+certificate's Secret.
 
 `--force-conflicts` is safe here because the rendered manifests in git are
 the source of truth for these resources and, with the exceptions below, no
