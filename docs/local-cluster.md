@@ -8,8 +8,9 @@ it you'll have a running platform — the Layer 0 foundation (a Kubernetes
 API server with proper DNS and TLS certificates, serving the platform's
 components on ports 80 and 443) plus the Layer 1 services:
 CloudNativePG-managed Postgres, Keycloak with the `holos` realm at
-`https://auth.holos.localhost`, and the Quay registry at
-`https://quay.holos.localhost`.
+`https://auth.holos.localhost`, the Quay registry at
+`https://quay.holos.localhost`, and Argo CD at
+`https://argocd.holos.localhost`.
 
 This is the foundation for the Holos PaaS MVP — see
 [Holos PaaS MVP Milestones](planning/holos-paas-mvp-milestones.md)
@@ -121,10 +122,10 @@ scripts/apply
 The script applies every platform component in dependency order — the
 Layer 0 foundation (namespaces, the Istio ambient mesh, cert-manager, the
 shared Gateway) followed by the Layer 1 services (CloudNativePG Postgres,
-the Keycloak operator and instance, and the Quay registry) — starting
-with the `namespaces` component, so every namespace exists before any
-namespaced resource applies. It is idempotent, so it is safe to re-run at
-any time.
+the Keycloak operator and instance, the Quay registry, and Argo CD) —
+starting with the `namespaces` component, so every namespace exists before
+any namespaced resource applies. It is idempotent, so it is safe to re-run
+at any time.
 See
 [How rendered manifests reach the cluster](../holos/README.md#how-rendered-manifests-reach-the-cluster)
 for the apply-order rationale and the `--force-conflicts` and webhook
@@ -241,6 +242,26 @@ and stubbed in
 [placeholders.md](../holos/docs/placeholders.md#node-level-registry-trust-for-in-cluster-pulls).
 `scripts/quay-init` only provisions the credentials and the
 `quay-robot-pull` pull Secret.
+
+## Verify Argo CD
+
+`scripts/apply` brings Argo CD up at `https://argocd.holos.localhost`.
+The server generates the initial `admin` password on first startup and
+stores it in the `argocd-initial-admin-secret` Secret — no credentials are
+committed to this repository. Verify the UI answers with a
+browser-trusted certificate, then log in as `admin`:
+
+```bash
+curl -fsSI https://argocd.holos.localhost/
+kubectl -n argocd get secret argocd-initial-admin-secret \
+  -o jsonpath='{.data.password}' | base64 -d; echo
+```
+
+Argo CD reconciles nothing yet — no `Application` resources are emitted
+until the gitops Application projection is enabled (see
+[placeholders.md](../holos/docs/placeholders.md#argocd-gitops-delivery)).
+For the full verification steps and the service contract, see
+[Argo CD admin credentials and verification](../holos/README.md#argo-cd-admin-credentials-and-verification).
 
 ## Reset the Cluster
 

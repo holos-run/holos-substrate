@@ -84,8 +84,8 @@ establishment, the istiod rollout, the ambient data-plane DaemonSets, the
 cert-manager webhook rollout, the CNPG operator rollout, the Postgres
 `Cluster` Ready conditions, and the Keycloak operator rollout — plus waits
 on the `echo` Deployment, the `Keycloak` CR Ready and realm import Done
-conditions, and the `quay` Deployment rollout as smoke checks; nothing
-else.
+conditions, the `quay` Deployment rollout, and the Argo CD workload
+rollouts as smoke checks; nothing else.
 
 Apply order matters beyond "CRD components first". The script applies the
 platform components in this order — everything through `echo` is the
@@ -126,6 +126,12 @@ platform service:
     `quay-db` Postgres `Cluster` and a minimal `quay-redis` Deployment,
     with blob storage on a local-path PVC and the `HTTPRoute` pair
     attaching it to the shared Gateway at `quay.holos.localhost`
+19. `argocd-crds` — the Argo CD CRDs (`crds: "true"`): `applications`,
+    `applicationsets`, and `appprojects` in group `argoproj.io`
+20. `argocd` — the Argo CD core install: the application-controller
+    `StatefulSet`, the repo-server, server, and redis `Deployment`s, and
+    the `HTTPRoute` pair attaching the UI to the shared Gateway at
+    `argocd.holos.localhost`
 
 The order encodes six rules: the `namespaces` component applies first, so
 every Namespace exists before any component that populates it;
@@ -166,12 +172,21 @@ smoke check, so a bootstrap cannot report success while the realm import
 Job is still running or has failed — the first start pulls the server
 image and runs the database schema migrations, so each wait gets a more
 generous timeout (`KEYCLOAK_TIMEOUT`, default 600s) than the rollout
-gates. `quay` applies last because it needs the `quay-db` `Cluster`
+gates. `quay` trails `keycloak` because it needs the `quay-db` `Cluster`
 reachable — already gated Ready in the `cnpg-clusters` step — and its gate
 waits on the secret-keys bootstrap Job and then on the `quay` Deployment
 rollout with its own generous timeout (`QUAY_TIMEOUT`, default 900s),
 since the first pull of the Quay image is large and the first start runs
-Quay's database schema migrations.
+Quay's database schema migrations. `argocd-crds` and `argocd` close the
+sequence: the CRDs apply (and are gated Established) before the
+controllers that need the types, and Argo CD depends only on the Gateway
+its `HTTPRoute`s attach to — nothing downstream depends on it during
+bootstrap — so appending the pair keeps the established order stable. The
+`argocd` gate waits on the rollout of exactly the workloads the chart
+renders with pods — the redis, repo-server, and server `Deployment`s and
+the application-controller `StatefulSet` — as the Argo CD smoke check
+(the applicationset-controller `Deployment` renders with `replicas: 0`,
+and dex and notifications are disabled and render no workloads).
 
 The first rule exists because nothing orders an apply batch by kind:
 kubectl submits the files sequentially in lexical order, so a single
@@ -209,10 +224,11 @@ until istiod re-patches it — expect that transient enforcement gap (and the
 resulting field-manager churn) on every re-apply of those two components,
 including every re-run of `scripts/apply`.
 
-ArgoCD-based delivery is planned to replace the direct apply performed by
-`scripts/apply` once ArgoCD is deployed to the platform — until then every
-component renders with
-`argoAppDisabled: true` and no Application resources are emitted. See
+Argo CD itself is now installed by `scripts/apply` (the `argocd-crds` and
+`argocd` components), but ArgoCD-based delivery has not yet replaced the
+direct apply: every component still renders with `argoAppDisabled: true`
+and no `Application` resources are emitted, so Argo CD reconciles nothing
+until the gitops Application projection is enabled. See
 [docs/placeholders.md](docs/placeholders.md#argocd-gitops-delivery).
 
 ### Keycloak admin credentials and verification
@@ -336,6 +352,46 @@ the `WORKER_COUNT_*` pins unless `WORKER_COUNT_UNSUPPORTED_MINIMUM` is
 also set — without it the registry pool runs 8 workers and the container
 OOMKills against its memory limit. See the env comment in
 [components/quay/buildplan.cue](components/quay/buildplan.cue).
+
+### Argo CD admin credentials and verification
+
+The Argo CD UI is served at `https://argocd.holos.localhost` through the
+shared Gateway, which terminates TLS with the wildcard certificate — the
+server itself runs with `server.insecure: "true"` and a plain-HTTP backend,
+like the other routed services. The server bootstraps the initial `admin`
+user itself on first startup and stores the generated password in the
+`argocd-initial-admin-secret` Secret (`argocd` namespace, key `password`)
+— no credentials are committed to this repository, mirroring the Keycloak
+`keycloak-initial-admin` pattern. The Secret appears only after the first
+server start, so never gate on it ahead of the rollout. Retrieve the
+password:
+
+```bash
+kubectl -n argocd get secret argocd-initial-admin-secret \
+  -o jsonpath='{.data.password}' | base64 -d; echo
+```
+
+Verify Argo CD on the live cluster after `scripts/apply` — wait on exactly
+the workloads the chart renders with pods (the applicationset-controller
+Deployment renders with `replicas: 0`, and dex and notifications are
+disabled and render no workloads):
+
+```bash
+kubectl -n argocd wait deployment argocd-redis argocd-repo-server argocd-server \
+  --for=condition=Available --timeout=300s
+kubectl -n argocd rollout status statefulset/argocd-application-controller --timeout=300s
+curl -fsSI https://argocd.holos.localhost/   # trusted chain via the mkcert root
+# log in to https://argocd.holos.localhost/ as admin with the password above
+```
+
+The `argocd` namespace is ambient-enrolled (`_ambient: true` in
+[namespaces.cue](namespaces.cue), following the reference platform);
+enrolled pods report protocol `HBONE` in
+`istioctl ztunnel-config workloads` — see
+[docs/mesh-enrollment.md](docs/mesh-enrollment.md). Argo CD reconciles
+nothing yet: no `Application` resources are emitted until the gitops
+Application projection is enabled (see
+[docs/placeholders.md](docs/placeholders.md#argocd-gitops-delivery)).
 
 ### Postgres credentials and connection contract
 

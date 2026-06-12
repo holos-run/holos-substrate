@@ -14,8 +14,9 @@
 # closed), Cluster readiness before the Keycloak and Quay phases' database
 # consumers, the Keycloak operator rollout before the keycloak component's
 # k8s.keycloak.org custom resources, the Keycloak CR Ready and realm
-# import Done conditions as the Layer 1 smoke check, and the quay
-# Deployment rollout as the Quay smoke check.  The README is the canonical
+# import Done conditions as the Layer 1 smoke check, the quay
+# Deployment rollout as the Quay smoke check, and the Argo CD workload
+# rollouts as the Argo CD smoke check.  The README is the canonical
 # explanation of why the order is what it is; this script encodes exactly
 # that order.
 #
@@ -117,10 +118,15 @@ ROLLOUT_TIMEOUT_SECONDS="$(duration_seconds "${ROLLOUT_TIMEOUT}")" || exit 1
 # operator rollout after the database keeps the dependency chain linear.
 # keycloak trails the operator: its k8s.keycloak.org CRs need the operator
 # reconciling and its cert-manager.io Certificate needs the cert-manager
-# webhook admitting (hence the retried apply, like local-ca).  quay applies
-# last: it needs the quay-db Cluster reachable (gated Ready in the
+# webhook admitting (hence the retried apply, like local-ca).  quay trails
+# keycloak: it needs the quay-db Cluster reachable (gated Ready in the
 # cnpg-clusters step) and attaches routes to the shared Gateway, so
-# appending it keeps the established order stable.
+# appending it keeps the established order stable.  argocd-crds and argocd
+# close the sequence: CRDs before the controllers that need the types (the
+# same guardrail as the other *-crds pairs), and Argo CD depends only on
+# the Gateway its HTTPRoutes attach to — nothing downstream depends on it
+# during bootstrap — so appending the pair keeps the established order
+# stable.
 COMPONENTS=(
   namespaces
   gateway-api
@@ -140,6 +146,8 @@ COMPONENTS=(
   keycloak-operator
   keycloak
   quay
+  argocd-crds
+  argocd
 )
 
 # local-ca and istio-gateway create cert-manager.io resources (ClusterIssuer,
@@ -348,6 +356,39 @@ wait_quay() {
   done
   kubectl --context "${KUBE_CONTEXT}" --namespace quay \
     rollout status deployment/quay --timeout="${QUAY_TIMEOUT}"
+}
+
+# argocd-crds: the Argo CD controllers require the argoproj.io types at
+# startup.
+wait_argocd_crds() {
+  wait_crds_established argocd-crds
+}
+
+# argocd: the Argo CD smoke check.  Wait on exactly the workloads the chart
+# renders with pods: the application-controller StatefulSet (a StatefulSet,
+# not a Deployment, so a `wait deployment --all` would miss it) and the
+# redis, repo-server, and server Deployments.  Deliberately not waited on:
+# the applicationset-controller Deployment renders with replicas: 0 (chart
+# 9.x has no enabled toggle — see components/argocd/controller/buildplan.cue),
+# so its rollout is trivially complete, and dex and notifications are
+# disabled and render no workloads.  The redis-secret-init Job needs no
+# gate of its own: pods consuming the argocd-redis Secret it creates wait
+# in CreateContainerConfigError until it completes, which takes seconds —
+# well inside the redis rollout's budget (contrast wait_quay, whose Job
+# gate names the actual culprit ahead of a 900s rollout wait).  The
+# argocd-initial-admin-secret is created by the server itself during its
+# first startup, not by the chart, so nothing gates on its existence.
+# Route attachment is level-triggered; verify the traffic path separately
+# (see holos/README.md).
+wait_argocd() {
+  kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
+    rollout status deployment/argocd-redis --timeout="${ROLLOUT_TIMEOUT}"
+  kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
+    rollout status deployment/argocd-repo-server --timeout="${ROLLOUT_TIMEOUT}"
+  kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
+    rollout status deployment/argocd-server --timeout="${ROLLOUT_TIMEOUT}"
+  kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
+    rollout status statefulset/argocd-application-controller --timeout="${ROLLOUT_TIMEOUT}"
 }
 
 if ! command -v kubectl >/dev/null 2>&1; then
