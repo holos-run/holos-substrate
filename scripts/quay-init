@@ -199,8 +199,12 @@ ADMIN_SECRET_EXISTS="$(kubectl get secret "${ADMIN_SECRET}" \
   -o name --ignore-not-found)"
 if [[ -n "${ADMIN_SECRET_EXISTS}" ]]; then
   echo "Secret ${ADMIN_SECRET} exists; reusing stored admin credentials."
+  # jq's `// empty` (over -o json) tolerates a missing 'token' key, unlike
+  # -o jsonpath='{.data.token}' which exits nonzero and would abort via
+  # set -e with kubectl's raw error — this way both the missing-key and
+  # empty-value cases reach the friendly guard below.
   TOKEN="$(kubectl get secret "${ADMIN_SECRET}" --context "${KUBE_CONTEXT}" \
-    --namespace "${NAMESPACE}" -o jsonpath='{.data.token}' | base64 -d)"
+    --namespace "${NAMESPACE}" -o json | jq -r '.data.token // empty' | base64 -d)"
   if [[ -z "${TOKEN}" ]]; then
     echo "ERROR: Secret ${ADMIN_SECRET} has no 'token' key; cannot call the API." >&2
     echo "       Delete the Secret and reset the registry to re-bootstrap." >&2
