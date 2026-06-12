@@ -783,6 +783,48 @@ let HTTPROUTE_REDIRECT = {
 	}
 }
 
+// In-cluster clients must reach the registry by its public hostname:
+// Quay pins its OCI token-auth realm to
+// https://quay.holos.localhost/v2/auth (PREFERRED_URL_SCHEME +
+// SERVER_HOSTNAME above), so a client that connects via the in-cluster
+// Service DNS name is still redirected to the public hostname to fetch a
+// token — every v2 client needs quay.holos.localhost to resolve and route
+// inside the cluster.  Plain DNS cannot provide that: *.localhost names
+// resolve to loopback both upstream of CoreDNS (the host resolver
+// implements RFC 6761) and inside ztunnel's DNS proxy
+// (AMBIENT_DNS_CAPTURE is enabled, and ztunnel's resolver special-cases
+// *.localhost before forwarding), so a CoreDNS rewrite never sees queries
+// from ambient-enrolled pods.  This ServiceEntry fixes both layers at
+// once: it makes quay.holos.localhost a service the mesh knows, so ztunnel
+// answers enrolled pods' queries with the auto-allocated VIP and routes
+// connections to that VIP to the shared Gateway, which terminates TLS for
+// *.holos.localhost and routes by SNI/Host to the HTTPRoute above —
+// in-cluster clients traverse the exact host path, credentials and all.
+// protocol TLS keeps ztunnel at L4 (the Gateway terminates TLS);
+// resolution DNS tracks the Gateway Service by name so the entry survives
+// ClusterIP changes.  Verified live in HOL-1188; the consumption contract
+// is documented in holos/docs/argocd-application-source.md.
+let SERVICE_ENTRY = {
+	apiVersion: "networking.istio.io/v1"
+	kind:       "ServiceEntry"
+	metadata: {
+		name:      "quay-holos-localhost"
+		namespace: NAMESPACE
+	}
+	spec: {
+		hosts: [HOSTNAME]
+		ports: [{
+			number:   443
+			name:     "tls"
+			protocol: "TLS"
+		}]
+		resolution: "DNS"
+		endpoints: [{
+			address: "default-istio.\(GATEWAY_NAMESPACE).svc.cluster.local"
+		}]
+	}
+}
+
 userDefinedBuildPlan: {
 	metadata: name: "quay"
 	spec: artifacts: manifests: {
@@ -815,6 +857,7 @@ userDefinedBuildPlan: {
 					}
 					AuthorizationPolicy: (REDIS_AUTHZ.metadata.name): REDIS_AUTHZ
 					PersistentVolumeClaim: (PVC.metadata.name):       PVC
+					ServiceEntry: (SERVICE_ENTRY.metadata.name):      SERVICE_ENTRY
 					HTTPRoute: {
 						(HTTPROUTE.metadata.name):          HTTPROUTE
 						(HTTPROUTE_REDIRECT.metadata.name): HTTPROUTE_REDIRECT

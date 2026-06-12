@@ -18,6 +18,7 @@ import (
 	kc "k8s.keycloak.org/keycloak/v2beta1"
 	kcri "k8s.keycloak.org/keycloakrealmimport/v2beta1"
 	dr "networking.istio.io/destinationrule/v1"
+	se "networking.istio.io/serviceentry/v1"
 	azp "security.istio.io/authorizationpolicy/v1"
 )
 
@@ -55,6 +56,7 @@ import (
 	SecretStore?: [_]:           ss.#SecretStore
 	Service?: [_]:               corev1.#Service
 	ServiceAccount?: [_]:        corev1.#ServiceAccount
+	ServiceEntry?: [_]:          se.#ServiceEntry
 	StatefulSet?: [_]:           appsv1.#StatefulSet
 
 	Gateway?: [_]: gwv1.#Gateway & {
