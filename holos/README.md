@@ -284,12 +284,12 @@ UUID=$(curl -fsS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application
   -X POST https://quay.holos.localhost/api/v1/repository/holos/sample/notification/ \
   -d '{"event": "repo_push", "method": "webhook",
        "config": {"url": "http://quay-echo.quay.svc:8080/"},
-       "eventConfig": {}, "title": "verify-webhook"}' | jq -er .uuid)
-# Guard: an empty UUID would POST to .../notification//test below.
-: "${UUID:?notification create failed — empty UUID}"
-# Fire the built-in test first:
-curl -fsS -o /dev/null -H "Authorization: Bearer $TOKEN" \
-  -X POST "https://quay.holos.localhost/api/v1/repository/holos/sample/notification/$UUID/test"
+       "eventConfig": {}, "title": "verify-webhook"}' | jq -er '.uuid // empty')
+# Fire the built-in test first. The ${UUID:?} expansion aborts this command —
+# even when the block is pasted into an interactive shell — if the create
+# above failed, instead of POSTing to .../notification//test:
+curl -fsS -o /dev/null -H "Authorization: Bearer $TOKEN" -X POST \
+  "https://quay.holos.localhost/api/v1/repository/holos/sample/notification/${UUID:?notification create failed}/test"
 
 # Then a real push (docker login per docs/local-cluster.md "Verify Quay"):
 docker pull busybox && docker tag busybox quay.holos.localhost/holos/sample:test2
@@ -359,11 +359,13 @@ kubectl get cluster -A                       # both: Cluster in healthy state
 kubectl -n keycloak get secret keycloak-db-app
 kubectl -n quay get secret quay-db-app
 KC_POD=$(kubectl -n keycloak get pod \
-  -l cnpg.io/cluster=keycloak-db,cnpg.io/instanceRole=primary -o name | head -n1)
+  -l cnpg.io/cluster=keycloak-db,cnpg.io/instanceRole=primary -o name)
 QUAY_POD=$(kubectl -n quay get pod \
-  -l cnpg.io/cluster=quay-db,cnpg.io/instanceRole=primary -o name | head -n1)
-kubectl -n keycloak exec "$KC_POD" -- psql -U postgres -c 'SELECT 1'
-kubectl -n quay exec "$QUAY_POD" -- psql -U postgres -c 'SELECT 1'
+  -l cnpg.io/cluster=quay-db,cnpg.io/instanceRole=primary -o name)
+kubectl -n keycloak exec "${KC_POD:?no keycloak-db primary pod}" -- \
+  psql -U postgres -c 'SELECT 1'
+kubectl -n quay exec "${QUAY_POD:?no quay-db primary pod}" -- \
+  psql -U postgres -c 'SELECT 1'
 ```
 
 To exercise the same path the consuming service uses — the `-rw` Service
