@@ -11,12 +11,13 @@
 # cert-manager webhook before the components that create cert-manager.io
 # resources, the CNPG operator rollout before the cnpg-clusters component's
 # postgresql.cnpg.io Cluster resources (its admission webhooks fail
-# closed), Cluster readiness before the Keycloak phase's database
-# consumer, the Keycloak operator rollout before the keycloak component's
-# k8s.keycloak.org custom resources, and the Keycloak CR Ready and realm
-# import Done conditions as the Layer 1 smoke check.  The README is the
-# canonical explanation of why the order is what it is; this script encodes
-# exactly that order.
+# closed), Cluster readiness before the Keycloak and Quay phases' database
+# consumers, the Keycloak operator rollout before the keycloak component's
+# k8s.keycloak.org custom resources, the Keycloak CR Ready and realm
+# import Done conditions as the Layer 1 smoke check, and the quay
+# Deployment rollout as the Quay smoke check.  The README is the canonical
+# explanation of why the order is what it is; this script encodes exactly
+# that order.
 #
 # Idempotent by construction: server-side apply and kubectl wait both
 # converge, so re-running against a fresh, partially applied, or fully
@@ -41,6 +42,11 @@
 #                      (default: 600s; the first start pulls the server
 #                      image and runs DB migrations, so it gets a more
 #                      generous budget than ROLLOUT_TIMEOUT)
+#   QUAY_TIMEOUT     — timeout for the quay Deployment rollout gate
+#                      (default: 600s; the first pull of the Quay image is
+#                      large and the first start runs DB schema migrations,
+#                      so it gets a more generous budget than
+#                      ROLLOUT_TIMEOUT)
 #
 # Prerequisites:
 #   - kubectl, with a context pointing at the target cluster
@@ -62,6 +68,7 @@ COMPONENTS_DIR="${REPO_ROOT}/holos/deploy/clusters/k3d-holos/components"
 CRD_TIMEOUT="${CRD_TIMEOUT:-120s}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
 KEYCLOAK_TIMEOUT="${KEYCLOAK_TIMEOUT:-600s}"
+QUAY_TIMEOUT="${QUAY_TIMEOUT:-600s}"
 
 # Platform components, in apply order.  The order encodes the six ordering
 # rules documented in holos/README.md: namespaces first, CRDs before their
@@ -78,9 +85,12 @@ KEYCLOAK_TIMEOUT="${KEYCLOAK_TIMEOUT:-600s}"
 # namespace, and the keycloak component's Keycloak CR needs both the
 # operator reconciling and the keycloak-db Cluster reachable, so gating the
 # operator rollout after the database keeps the dependency chain linear.
-# keycloak applies last: its k8s.keycloak.org CRs need the operator
+# keycloak trails the operator: its k8s.keycloak.org CRs need the operator
 # reconciling and its cert-manager.io Certificate needs the cert-manager
-# webhook admitting (hence the retried apply, like local-ca).
+# webhook admitting (hence the retried apply, like local-ca).  quay applies
+# last: it needs the quay-db Cluster reachable (gated Ready in the
+# cnpg-clusters step) and attaches routes to the shared Gateway, so
+# appending it keeps the established order stable.
 COMPONENTS=(
   namespaces
   gateway-api
@@ -99,6 +109,7 @@ COMPONENTS=(
   keycloak-operator-crds
   keycloak-operator
   keycloak
+  quay
 )
 
 # local-ca and istio-gateway create cert-manager.io resources (ClusterIssuer,
@@ -248,6 +259,18 @@ wait_keycloak() {
     wait keycloak/keycloak --for=condition=Ready --timeout="${KEYCLOAK_TIMEOUT}"
   kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
     wait keycloakrealmimport/holos --for=condition=Done --timeout="${KEYCLOAK_TIMEOUT}"
+}
+
+# quay: the Quay smoke check.  The rollout converges on the component's
+# level-triggered internal dependency — the secret-keys bootstrap Job must
+# complete before the pod's initContainer can resolve its Secret env — and
+# the first start pulls the large multi-arch quay.io/projectquay/quay image
+# and runs the database schema migrations against quay-db, so the gate gets
+# the more generous QUAY_TIMEOUT.  Route attachment is level-triggered;
+# verify the traffic path separately (see holos/README.md).
+wait_quay() {
+  kubectl --context "${KUBE_CONTEXT}" --namespace quay \
+    rollout status deployment/quay --timeout="${QUAY_TIMEOUT}"
 }
 
 if ! command -v kubectl >/dev/null 2>&1; then

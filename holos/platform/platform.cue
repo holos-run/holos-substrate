@@ -252,6 +252,23 @@ platform: {
 				cluster:   CLUSTER.name
 				labels: app: "keycloak"
 			}}).output
+
+			// quay emits the Quay registry: the Quay Deployment (config
+			// rendered by an initContainer from the committed template plus
+			// the CNPG-generated quay-db credentials), its Service, the
+			// quay-redis Deployment and Service, the registry blob-storage
+			// PVC, the secret-keys bootstrap Job with its scoped RBAC, and
+			// the HTTPRoute pair attaching it to the shared Gateway at
+			// quay.holos.localhost.  Applies after keycloak in
+			// scripts/apply: it needs the quay-db Cluster reachable (gated
+			// Ready in the cnpg-clusters step), and appending it keeps the
+			// established order stable — its gate waits on the quay
+			// Deployment rollout as the smoke check.
+			(#ComponentTemplate & {inputs: {
+				component: "quay"
+				cluster:   CLUSTER.name
+				labels: app: "quay"
+			}}).output
 		}
 	}
 }

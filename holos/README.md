@@ -83,8 +83,9 @@ and waits only on the critical dependencies between components — CRD
 establishment, the istiod rollout, the ambient data-plane DaemonSets, the
 cert-manager webhook rollout, the CNPG operator rollout, the Postgres
 `Cluster` Ready conditions, and the Keycloak operator rollout — plus waits
-on the `echo` Deployment and the `Keycloak` CR Ready and realm import Done
-conditions as smoke checks; nothing else.
+on the `echo` Deployment, the `Keycloak` CR Ready and realm import Done
+conditions, and the `quay` Deployment rollout as smoke checks; nothing
+else.
 
 Apply order matters beyond "CRD components first". The script applies the
 platform components in this order — everything through `echo` is the
@@ -121,6 +122,10 @@ platform service:
     declarative `holos` realm import, the `HTTPRoute` attaching it to the
     shared Gateway at `auth.holos.localhost`, and the `DestinationRule`
     that re-encrypts the Gateway→Keycloak hop
+18. `quay` — the Quay registry: the Quay `Deployment` backed by the
+    `quay-db` Postgres `Cluster` and a minimal `quay-redis` Deployment,
+    with blob storage on a local-path PVC and the `HTTPRoute` pair
+    attaching it to the shared Gateway at `quay.holos.localhost`
 
 The order encodes six rules: the `namespaces` component applies first, so
 every Namespace exists before any component that populates it;
@@ -152,16 +157,20 @@ namespace, and the `keycloak` component applies `Keycloak` and
 `KeycloakRealmImport` CRs that need both the operator reconciling — hence
 the gate on its Deployment rollout — and the `keycloak-db` `Cluster`
 reachable, so appending the pair after the database keeps the dependency
-chain linear. `keycloak` applies last: its CRs need everything above, and
-it creates a `cert-manager.io` `Certificate`, so its apply retries through
-the same transient webhook admission window as `local-ca` and
-`istio-gateway`. Its gate waits on the `Keycloak` CR Ready condition and
-then on the `holos` `KeycloakRealmImport` Done condition as the Layer 1
+chain linear. `keycloak` trails the operator: its CRs need everything
+above, and it creates a `cert-manager.io` `Certificate`, so its apply
+retries through the same transient webhook admission window as `local-ca`
+and `istio-gateway`. Its gate waits on the `Keycloak` CR Ready condition
+and then on the `holos` `KeycloakRealmImport` Done condition as the Layer 1
 smoke check, so a bootstrap cannot report success while the realm import
 Job is still running or has failed — the first start pulls the server
 image and runs the database schema migrations, so each wait gets a more
 generous timeout (`KEYCLOAK_TIMEOUT`, default 600s) than the rollout
-gates.
+gates. `quay` applies last because it needs the `quay-db` `Cluster`
+reachable — already gated Ready in the `cnpg-clusters` step — and its gate
+waits on the `quay` Deployment rollout with its own generous timeout
+(`QUAY_TIMEOUT`, default 600s), since the first pull of the Quay image is
+large and the first start runs Quay's database schema migrations.
 
 The first rule exists because nothing orders an apply batch by kind:
 kubectl submits the files sequentially in lexical order, so a single
