@@ -88,8 +88,9 @@ the field, sync fails with `x509: certificate signed by unknown
 authority`. Distributing the local CA into in-cluster trust stores is the
 same concern as the
 [node-level registry trust placeholder](placeholders.md#node-level-registry-trust-for-in-cluster-pulls);
-revisit both together. The credential itself is still protected: the
-connection terminates at the shared Gateway inside the cluster.
+revisit both together. The credential is still encrypted in transit — TLS
+to whichever workload answers the mesh VIP, unauthenticated — which rests
+on trusting the cluster network, acceptable for the local MVP.
 
 ## How the repo-server reaches Quay (in-cluster reachability)
 
@@ -117,7 +118,9 @@ so ztunnel answers enrolled pods' DNS queries with an auto-allocated VIP
 and routes connections to that VIP to the shared Gateway
 (`default-istio.istio-gateways.svc.cluster.local`), which terminates TLS
 for `*.holos.localhost` and routes by SNI/Host to Quay. In-cluster clients
-traverse the exact host path — same URL, same credentials, same routes.
+traverse the host's HTTPS path — same URL, same credentials, same routes
+(the ServiceEntry declares only 443, so the Gateway's port-80 redirect
+listener stays host-only; every v2 client speaks HTTPS anyway).
 
 Caveat: clients that special-case `*.localhost` **themselves** never issue
 the DNS query, so the ServiceEntry cannot help them — notably curl ≥ 7.78

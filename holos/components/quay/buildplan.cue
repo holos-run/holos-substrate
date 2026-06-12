@@ -73,8 +73,10 @@ let HOSTNAME = "quay.holos.localhost"
 
 // The shared Gateway's namespace and name (components/istio-gateway).
 // GATEWAY_NAME feeds both the HTTPRoute parentRefs and the ServiceEntry
-// endpoint below, so a Gateway rename fails loudly in render review
-// instead of silently breaking route attachment or endpoint resolution.
+// endpoint below, keeping this component's references to the Gateway
+// mutually consistent.  Nothing ties the literal to the istio-gateway
+// component at render time, so a Gateway rename still surfaces only at
+// runtime — update both components together.
 let GATEWAY_NAMESPACE = "istio-gateways"
 let GATEWAY_NAME = "default"
 
