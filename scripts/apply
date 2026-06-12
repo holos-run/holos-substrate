@@ -70,27 +70,26 @@ ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
 KEYCLOAK_TIMEOUT="${KEYCLOAK_TIMEOUT:-600s}"
 QUAY_TIMEOUT="${QUAY_TIMEOUT:-900s}"
 
-# Convert a kubectl-style duration (bare seconds, or h/m/s components like
+# Convert a kubectl-style duration composed of h/m/s components (e.g.
 # 300s, 5m, or 1h30m) to whole seconds for shell arithmetic.  Rejects
-# anything else — including sub-second units — with a clear error.
+# anything else with a clear error — including empty input, sub-second
+# units, and bare numbers without a unit, which the kubectl gates that
+# receive the same string also reject.  The 10# prefix forces base-10
+# arithmetic so leading zeros (e.g. 090s) are not misread as octal.
 duration_seconds() {
   local duration="$1" rest="$1" total=0
-  if [[ "${duration}" =~ ^[0-9]+$ ]]; then
-    echo "${duration}"
-    return 0
-  fi
-  while [[ "${rest}" =~ ^([0-9]+)([hms]) ]]; do
-    case "${BASH_REMATCH[2]}" in
-      h) total=$((total + BASH_REMATCH[1] * 3600)) ;;
-      m) total=$((total + BASH_REMATCH[1] * 60)) ;;
-      s) total=$((total + BASH_REMATCH[1])) ;;
-    esac
-    rest="${rest:${#BASH_REMATCH[0]}}"
-  done
-  if [[ -n "${rest}" ]]; then
+  if [[ ! "${duration}" =~ ^([0-9]+[hms])+$ ]]; then
     echo "ERROR: cannot parse duration '${duration}' (expected e.g. 300s, 5m, 1h30m)." >&2
     return 1
   fi
+  while [[ "${rest}" =~ ^([0-9]+)([hms]) ]]; do
+    case "${BASH_REMATCH[2]}" in
+      h) total=$((total + 10#${BASH_REMATCH[1]} * 3600)) ;;
+      m) total=$((total + 10#${BASH_REMATCH[1]} * 60)) ;;
+      s) total=$((total + 10#${BASH_REMATCH[1]})) ;;
+    esac
+    rest="${rest:${#BASH_REMATCH[0]}}"
+  done
   echo "${total}"
 }
 
@@ -316,9 +315,11 @@ wait_quay() {
   while true; do
     # One read captures both existence and state: absent yields empty
     # output; present yields the Job name followed by one Type=Status line
-    # per status condition.
+    # per status condition.  --request-timeout bounds each poll so a hung
+    # apiserver connection cannot stall past the script-owned deadline.
     if job_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace quay \
-      get "${job}" --ignore-not-found -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
+      get "${job}" --ignore-not-found --request-timeout=10s \
+      -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
       lookup_failures=0
       if [[ -z "${job_state}" ]] || grep -q '^Complete=True$' <<<"${job_state}"; then
         break
