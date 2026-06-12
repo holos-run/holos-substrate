@@ -90,6 +90,14 @@ let KEYCLOAK = {
 		// Laptop sizing: a single instance for the local MVP (ADR-7).
 		instances: 1
 
+		// The operator creates a classless Ingress for the hostname by
+		// default — confirmed on the live cluster — outside the rendered
+		// Gateway API path, which would bypass the HTTPRoute redirect and
+		// the verified Gateway→Keycloak TLS hop if any default Ingress
+		// controller were present.  Disable it: the shared Gateway is the
+		// only ingress path (the reference platform disables it too).
+		ingress: enabled: false
+
 		// The CNPG Secret/Service contract from components/cnpg-clusters
 		// (documented in holos/README.md): the keycloak-db-rw Service and
 		// the keycloak-db-app credentials Secret, both in this namespace,

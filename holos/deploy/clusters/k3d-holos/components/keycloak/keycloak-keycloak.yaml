@@ -22,6 +22,8 @@ spec:
   http:
     httpsPort: 8443
     tlsSecret: keycloak-tls
+  ingress:
+    enabled: false
   instances: 1
   proxy:
     headers: xforwarded
