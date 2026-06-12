@@ -6,9 +6,10 @@
 # rendered manifests reach the cluster"), gating only on the critical
 # dependencies between components: CRD establishment before the controllers
 # that need the types, the istiod rollout before the Gateway is programmed,
-# and the ambient data-plane DaemonSets before enrolled workloads start.
-# The README is the canonical explanation of WHY the order is what it is;
-# this script encodes exactly that order.
+# the ambient data-plane DaemonSets before enrolled workloads start, and the
+# cert-manager webhook before the components that create cert-manager.io
+# resources.  The README is the canonical explanation of WHY the order is
+# what it is; this script encodes exactly that order.
 #
 # Idempotent by construction: server-side apply and kubectl wait both
 # converge, so re-running against a fresh, partially applied, or fully
@@ -48,20 +49,38 @@ COMPONENTS_DIR="${REPO_ROOT}/holos/deploy/clusters/k3d-holos/components"
 CRD_TIMEOUT="${CRD_TIMEOUT:-120s}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
 
-# Layer 0 components, in apply order.  The order encodes the five ordering
+# Layer 0 components, in apply order.  The order encodes the six ordering
 # rules documented in holos/README.md: namespaces first, CRDs before their
 # controllers, istiod before the Gateway, the ambient data plane before
-# enrolled workloads, and the Gateway before components that attach routes.
+# enrolled workloads, cert-manager before the components that create
+# cert-manager.io resources, and the Gateway before components that attach
+# routes.
 COMPONENTS=(
   namespaces
   gateway-api
+  cert-manager-crds
   istio-base
   istiod
   istio-cni
   istio-ztunnel
+  cert-manager
+  local-ca
   istio-gateway
   echo
 )
+
+# local-ca and istio-gateway create cert-manager.io resources (ClusterIssuer,
+# Certificate) that cert-manager's fail-closed validating webhook must admit.
+# Even after the webhook Deployment is Available there is a brief window,
+# while cainjector injects the webhook's CA bundle, in which admission fails
+# with a transient x509 error (see holos/README.md) — retry those applies
+# instead of aborting the bootstrap.
+apply_attempts() {
+  case "$1" in
+    local-ca | istio-gateway) echo 10 ;;
+    *) echo 1 ;;
+  esac
+}
 
 # Wait for every CRD a component ships to be Established, by waiting on the
 # component's own customresourcedefinition-*.yaml files rather than
@@ -82,14 +101,21 @@ wait_crds_established() {
 }
 
 # Per-component wait gates, run after the component's apply.  Components
-# without a gate (namespaces, istio-cni, istio-gateway) simply define no
-# function: namespace creation is synchronous, istio-cni is gated together
-# with ztunnel below, and Gateway route attachment is level-triggered.
+# without a gate (namespaces, istio-cni, local-ca, istio-gateway) simply
+# define no function: namespace creation is synchronous, istio-cni is gated
+# together with ztunnel below, and ClusterIssuer readiness, certificate
+# issuance, and Gateway route attachment are all level-triggered.
 
 # gateway-api: the Gateway/HTTPRoute types must exist before istio-gateway
 # and echo apply.
 wait_gateway_api() {
   wait_crds_established gateway-api
+}
+
+# cert-manager-crds: cert-manager requires its types at startup, and
+# local-ca and istio-gateway create cert-manager.io resources.
+wait_cert_manager_crds() {
+  wait_crds_established cert-manager-crds
 }
 
 # istio-base: istiod requires the Istio types at startup.
@@ -111,6 +137,13 @@ wait_istio_ztunnel() {
     rollout status daemonset/istio-cni-node --timeout="${ROLLOUT_TIMEOUT}"
   kubectl --context "${KUBE_CONTEXT}" --namespace istio-system \
     rollout status daemonset/ztunnel --timeout="${ROLLOUT_TIMEOUT}"
+}
+
+# cert-manager: its validating webhook fails closed, so it must be serving
+# before local-ca's ClusterIssuer and istio-gateway's Certificate apply.
+wait_cert_manager() {
+  kubectl --context "${KUBE_CONTEXT}" --namespace cert-manager \
+    rollout status deployment/cert-manager-webhook --timeout="${ROLLOUT_TIMEOUT}"
 }
 
 # echo: applied last; waiting for its rollout is a final smoke check that
@@ -157,8 +190,19 @@ fi
 
 for component in "${COMPONENTS[@]}"; do
   echo "==> ${component}"
-  kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
-    -f "${COMPONENTS_DIR}/${component}/"
+  attempts="$(apply_attempts "${component}")"
+  for ((attempt = 1; ; attempt++)); do
+    if kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
+      -f "${COMPONENTS_DIR}/${component}/"; then
+      break
+    fi
+    if ((attempt >= attempts)); then
+      echo "ERROR: apply failed for component '${component}'." >&2
+      exit 1
+    fi
+    echo "    apply failed (transient webhook x509 expected here); retrying in 5s (attempt ${attempt}/${attempts})..."
+    sleep 5
+  done
   wait_hook="wait_${component//-/_}"
   if declare -F "${wait_hook}" >/dev/null; then
     "${wait_hook}"

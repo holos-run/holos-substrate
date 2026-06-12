@@ -1,6 +1,6 @@
 # Local Cluster
 
-<!-- Vendored from https://github.com/holos-run/holos/blob/main/doc/md/topics/local-cluster.mdx -->
+<!-- Originally vendored from https://github.com/holos-run/holos/blob/main/doc/md/topics/local-cluster.mdx; has since diverged — do not overwrite with a re-vendor. -->
 
 Set up a local k3d cluster for development and testing, then apply the
 platform to it. This is the canonical quick-start guide: after completing

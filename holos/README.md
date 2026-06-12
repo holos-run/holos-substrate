@@ -61,8 +61,8 @@ current kubectl context in the correct order:
 scripts/apply
 ```
 
-This section is the canonical explanation of WHY the apply order is what it
-is and the caveats that come with force-applying. For the step-by-step path
+This section is the canonical explanation of *why* the apply order is what
+it is and the caveats that come with force-applying. For the step-by-step path
 from nothing to a running platform — DNS setup, cluster creation, trusted
 TLS, then this apply step — follow the quick-start guide,
 [docs/local-cluster.md](../docs/local-cluster.md).
@@ -79,8 +79,9 @@ kubectl apply --server-side --force-conflicts -f holos/deploy/clusters/k3d-holos
 ```
 
 and waits only on the critical dependencies between components — CRD
-establishment, the istiod rollout, and the ambient data-plane DaemonSets —
-plus a final wait on the `echo` Deployment as a smoke check; nothing else.
+establishment, the istiod rollout, the ambient data-plane DaemonSets, and
+the cert-manager webhook rollout — plus a final wait on the `echo`
+Deployment as a smoke check; nothing else.
 
 Apply order matters beyond "CRD components first". The script applies the
 Layer 0 components in this order:

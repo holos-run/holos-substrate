@@ -12,9 +12,9 @@ guide from zero to a running Layer 0 platform — then verify the smoke
 test answers at `https://echo.holos.localhost/`. In summary:
 
 ```bash
-scripts/local-dns    # one-time DNS setup (macOS)
+scripts/local-dns    # one-time DNS setup (macOS, requires sudo)
 scripts/local-k3d    # create the local k3d cluster
-scripts/local-ca     # install the mkcert root CA into the cluster
+scripts/local-ca     # install the mkcert root CA (requires sudo)
 scripts/apply        # apply the Layer 0 components in order
 ```
 
