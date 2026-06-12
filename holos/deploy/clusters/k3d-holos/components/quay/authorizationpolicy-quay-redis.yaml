@@ -1,0 +1,17 @@
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  labels:
+    app.kubernetes.io/name: quay-redis
+  name: quay-redis
+  namespace: quay
+spec:
+  action: ALLOW
+  rules:
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/quay/sa/quay
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: quay-redis

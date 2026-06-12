@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/name: quay-redis
+  name: quay-redis
+  namespace: quay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: quay-redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: quay-redis
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - args:
+        - redis-server
+        - --save
+        - ""
+        - --appendonly
+        - "no"
+        image: docker.io/library/redis:8.6.4-alpine
+        livenessProbe:
+          tcpSocket:
+            port: 6379
+        name: redis
+        ports:
+        - containerPort: 6379
+          name: redis
+          protocol: TCP
+        readinessProbe:
+          tcpSocket:
+            port: 6379
+        resources:
+          limits:
+            memory: 128Mi
+          requests:
+            cpu: 25m
+            memory: 32Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - mountPath: /data
+          name: data
+      securityContext:
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 999
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+      - emptyDir: {}
+        name: data

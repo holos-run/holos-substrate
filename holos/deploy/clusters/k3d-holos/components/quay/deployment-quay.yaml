@@ -1,0 +1,134 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/name: quay
+  name: quay
+  namespace: quay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: quay
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: quay
+    spec:
+      containers:
+      - env:
+        - name: WORKER_COUNT_WEB
+          value: "2"
+        - name: WORKER_COUNT_REGISTRY
+          value: "2"
+        - name: WORKER_COUNT_SECSCAN
+          value: "1"
+        image: quay.io/projectquay/quay:3.17.3
+        livenessProbe:
+          httpGet:
+            path: /health/instance
+            port: 8080
+          timeoutSeconds: 5
+        name: quay
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /health/instance
+            port: 8080
+          timeoutSeconds: 5
+        resources:
+          limits:
+            memory: 4Gi
+          requests:
+            cpu: 250m
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        startupProbe:
+          failureThreshold: 60
+          httpGet:
+            path: /health/instance
+            port: 8080
+          periodSeconds: 10
+          timeoutSeconds: 5
+        volumeMounts:
+        - mountPath: /conf/stack
+          name: config
+        - mountPath: /datastorage
+          name: datastorage
+      initContainers:
+      - command:
+        - python3
+        - -c
+        - |-
+          import json, os
+
+          import psycopg2
+
+          template = open("/conf/template/config.yaml").read()
+          for key in ("DB_URI", "SECRET_KEY", "DATABASE_SECRET_KEY"):
+              template = template.replace("__%s__" % key, json.dumps(os.environ[key]))
+          open("/conf/stack/config.yaml", "w").write(template)
+
+          conn = psycopg2.connect(os.environ["DB_URI"])
+          conn.autocommit = True
+          conn.cursor().execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+          conn.close()
+        env:
+        - name: DB_URI
+          valueFrom:
+            secretKeyRef:
+              key: uri
+              name: quay-db-app
+        - name: SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              key: SECRET_KEY
+              name: quay-secret-keys
+        - name: DATABASE_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              key: DATABASE_SECRET_KEY
+              name: quay-secret-keys
+        image: quay.io/projectquay/quay:3.17.3
+        name: init
+        resources:
+          limits:
+            memory: 128Mi
+          requests:
+            cpu: 10m
+            memory: 32Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - mountPath: /conf/template
+          name: config-template
+          readOnly: true
+        - mountPath: /conf/stack
+          name: config
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: quay
+      volumes:
+      - configMap:
+          name: quay-config-template
+        name: config-template
+      - emptyDir: {}
+        name: config
+      - name: datastorage
+        persistentVolumeClaim:
+          claimName: quay-datastorage
