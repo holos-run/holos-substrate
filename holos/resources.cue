@@ -18,6 +18,7 @@ import (
 	kc "k8s.keycloak.org/keycloak/v2beta1"
 	kcri "k8s.keycloak.org/keycloakrealmimport/v2beta1"
 	dr "networking.istio.io/destinationrule/v1"
+	azp "security.istio.io/authorizationpolicy/v1"
 )
 
 #Resources: {
@@ -26,19 +27,20 @@ import (
 		metadata: name: string | *InternalLabel
 	}
 
-	AppProject?: [_]:         ap.#AppProject
-	Certificate?: [_]:        certv1.#Certificate
-	Cluster?: [_]:            cnpg.#Cluster
-	ClusterIssuer?: [_]:      ci.#ClusterIssuer
-	ClusterRole?: [_]:        rbacv1.#ClusterRole
-	ClusterRoleBinding?: [_]: rbacv1.#ClusterRoleBinding
-	ConfigMap?: [_]:          corev1.#ConfigMap
-	CronJob?: [_]:            batchv1.#CronJob
-	Deployment?: [_]:         appsv1.#Deployment
-	DestinationRule?: [_]:    dr.#DestinationRule
-	ExternalSecret?: [_]:     es.#ExternalSecret
-	HTTPRoute?: [_]:          hrv1.#HTTPRoute
-	Job?: [_]:                batchv1.#Job
+	AppProject?: [_]:          ap.#AppProject
+	AuthorizationPolicy?: [_]: azp.#AuthorizationPolicy
+	Certificate?: [_]:         certv1.#Certificate
+	Cluster?: [_]:             cnpg.#Cluster
+	ClusterIssuer?: [_]:       ci.#ClusterIssuer
+	ClusterRole?: [_]:         rbacv1.#ClusterRole
+	ClusterRoleBinding?: [_]:  rbacv1.#ClusterRoleBinding
+	ConfigMap?: [_]:           corev1.#ConfigMap
+	CronJob?: [_]:             batchv1.#CronJob
+	Deployment?: [_]:          appsv1.#Deployment
+	DestinationRule?: [_]:     dr.#DestinationRule
+	ExternalSecret?: [_]:      es.#ExternalSecret
+	HTTPRoute?: [_]:           hrv1.#HTTPRoute
+	Job?: [_]:                 batchv1.#Job
 	// Keycloak CRs use v2beta1, the storage version of the pinned Keycloak
 	// 26.6.3 CRDs (v2alpha1 is served for compatibility but deprecated; both
 	// are vendored under cue.mod/gen/k8s.keycloak.org/).

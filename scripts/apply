@@ -261,14 +261,23 @@ wait_keycloak() {
     wait keycloakrealmimport/holos --for=condition=Done --timeout="${KEYCLOAK_TIMEOUT}"
 }
 
-# quay: the Quay smoke check.  The rollout converges on the component's
-# level-triggered internal dependency — the secret-keys bootstrap Job must
-# complete before the pod's initContainer can resolve its Secret env — and
-# the first start pulls the large multi-arch quay.io/projectquay/quay image
-# and runs the database schema migrations against quay-db, so the gate gets
-# the more generous QUAY_TIMEOUT.  Route attachment is level-triggered;
-# verify the traffic path separately (see holos/README.md).
+# quay: the Quay smoke check.  First the secret-keys bootstrap Job — the
+# pod's initContainer cannot resolve its Secret env until it completes, so
+# a failed Job surfaces here as a sharp error instead of a generic rollout
+# timeout; the Job carries a ttlSecondsAfterFinished, so tolerate it being
+# absent (already garbage-collected on a long-bootstrapped cluster, with
+# the Secret it created still in place).  Then the Deployment rollout: the
+# first start pulls the large multi-arch quay.io/projectquay/quay image
+# and runs the database schema migrations against quay-db, so it gets the
+# more generous QUAY_TIMEOUT.  Route attachment is level-triggered; verify
+# the traffic path separately (see holos/README.md).
 wait_quay() {
+  if kubectl --context "${KUBE_CONTEXT}" --namespace quay \
+    get job/quay-secret-keys-bootstrap >/dev/null 2>&1; then
+    kubectl --context "${KUBE_CONTEXT}" --namespace quay \
+      wait job/quay-secret-keys-bootstrap --for=condition=Complete \
+      --timeout="${ROLLOUT_TIMEOUT}"
+  fi
   kubectl --context "${KUBE_CONTEXT}" --namespace quay \
     rollout status deployment/quay --timeout="${QUAY_TIMEOUT}"
 }

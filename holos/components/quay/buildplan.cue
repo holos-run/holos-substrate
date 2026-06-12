@@ -167,7 +167,12 @@ let INIT_SCRIPT = """
 // DATABASE_SECRET_KEY encrypts fields inside Postgres, so it MUST be stable
 // across restarts and MUST NOT be committed: the Job generates it once and
 // never touches an existing Secret.  Keys are alphanumeric (base64 with
-// +/=/newlines stripped) so they are safe in any downstream context.
+// +/=/newlines stripped) so they are safe in any downstream context.  The
+// length checks guard against an improbable pipeline failure under set -eu
+// (no pipefail in busybox sh) silently creating empty keys — empty keys
+// would otherwise become permanent by the create-if-absent design.  The
+// Secret is piped as a manifest on stdin so the key material never appears
+// in the container's argv (/proc-visible).
 let BOOTSTRAP_SCRIPT = """
 	set -eu
 	if kubectl -n \(NAMESPACE) get secret \(SECRET_KEYS) >/dev/null 2>&1; then
@@ -177,9 +182,20 @@ let BOOTSTRAP_SCRIPT = """
 	random_key() {
 	  head -c 256 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c 1-48
 	}
-	kubectl -n \(NAMESPACE) create secret generic \(SECRET_KEYS) \\
-	  --from-literal=SECRET_KEY="$(random_key)" \\
-	  --from-literal=DATABASE_SECRET_KEY="$(random_key)"
+	SECRET_KEY="$(random_key)"
+	DATABASE_SECRET_KEY="$(random_key)"
+	[ "${#SECRET_KEY}" -eq 48 ]
+	[ "${#DATABASE_SECRET_KEY}" -eq 48 ]
+	kubectl -n \(NAMESPACE) create -f - <<EOF
+	apiVersion: v1
+	kind: Secret
+	metadata:
+	  name: \(SECRET_KEYS)
+	  namespace: \(NAMESPACE)
+	stringData:
+	  SECRET_KEY: "${SECRET_KEY}"
+	  DATABASE_SECRET_KEY: "${DATABASE_SECRET_KEY}"
+	EOF
 	echo "Secret \(SECRET_KEYS) created."
 	"""
 
@@ -253,8 +269,11 @@ let BOOTSTRAP_ROLE_BINDING = {
 }
 
 // CAVEAT: a completed Job's pod template is immutable.  Server-side
-// re-apply of this unchanged spec is a no-op, but any future change to the
-// pod template requires deleting the old Job first
+// re-apply of this unchanged spec is a no-op while the Job exists, and
+// ttlSecondsAfterFinished garbage-collects it a day after completion —
+// after that a re-apply recreates the Job, which exits 0 against the
+// existing Secret.  Only a pod-template change within the TTL window
+// requires deleting the old Job first
 // (kubectl -n quay delete job quay-secret-keys-bootstrap) — the Secret it
 // created survives, and the new Job exits 0 without touching it.
 let BOOTSTRAP_JOB = {
@@ -267,6 +286,10 @@ let BOOTSTRAP_JOB = {
 	}
 	spec: {
 		backoffLimit: 3
+		// A day keeps the Job's logs around for debugging a fresh
+		// bootstrap while still dissolving the immutable-pod-template
+		// caveat above for routine re-applies.
+		ttlSecondsAfterFinished: 86400
 		template: {
 			metadata: labels: "app.kubernetes.io/name": NAME
 			spec: {
@@ -399,6 +422,29 @@ let REDIS_SERVICE = {
 			port:       REDIS_PORT
 			targetPort: REDIS_PORT
 			protocol:   "TCP"
+		}]
+	}
+}
+
+// Redis runs without auth, so make the in-cluster-only claim true by
+// construction: the quay namespace is ambient-enrolled
+// (holos/namespaces.cue), ztunnel enforces L4 authorization, and this
+// policy allows only the Quay pod's identity — the namespace default
+// ServiceAccount it runs as — to connect.  Kubelet health probes are
+// exempt from ambient capture, so the TCP probes above keep working.
+let REDIS_AUTHZ = {
+	apiVersion: "security.istio.io/v1"
+	kind:       "AuthorizationPolicy"
+	metadata: {
+		name:      REDIS_NAME
+		namespace: NAMESPACE
+		labels: "app.kubernetes.io/name": REDIS_NAME
+	}
+	spec: {
+		selector: matchLabels: REDIS_METADATA.labels
+		action: "ALLOW"
+		rules: [{
+			from: [{source: principals: ["cluster.local/ns/\(NAMESPACE)/sa/default"]}]
 		}]
 	}
 }
@@ -542,7 +588,10 @@ let DEPLOYMENT = {
 					// The first start runs the database schema migrations
 					// before the HTTP endpoints serve; the startupProbe
 					// gives that up to 10 minutes before the liveness probe
-					// takes over.
+					// takes over.  /health/instance checks the database,
+					// Redis, and storage from a heavyweight Python service,
+					// so every probe gets an explicit generous timeout
+					// instead of the 1s default.
 					startupProbe: {
 						httpGet: {
 							path: "/health/instance"
@@ -550,14 +599,21 @@ let DEPLOYMENT = {
 						}
 						periodSeconds:    10
 						failureThreshold: 60
+						timeoutSeconds:   5
 					}
-					readinessProbe: httpGet: {
-						path: "/health/instance"
-						port: PORT
+					readinessProbe: {
+						httpGet: {
+							path: "/health/instance"
+							port: PORT
+						}
+						timeoutSeconds: 5
 					}
-					livenessProbe: httpGet: {
-						path: "/health/instance"
-						port: PORT
+					livenessProbe: {
+						httpGet: {
+							path: "/health/instance"
+							port: PORT
+						}
+						timeoutSeconds: 5
 					}
 					// Laptop sizing: Quay is heavy — a Python monolith whose
 					// supervisord runs ~20 worker processes — so the memory
@@ -716,7 +772,8 @@ userDefinedBuildPlan: {
 						(SERVICE.metadata.name):       SERVICE
 						(REDIS_SERVICE.metadata.name): REDIS_SERVICE
 					}
-					PersistentVolumeClaim: (PVC.metadata.name): PVC
+					AuthorizationPolicy: (REDIS_AUTHZ.metadata.name): REDIS_AUTHZ
+					PersistentVolumeClaim: (PVC.metadata.name):       PVC
 					HTTPRoute: {
 						(HTTPROUTE.metadata.name):          HTTPROUTE
 						(HTTPROUTE_REDIRECT.metadata.name): HTTPROUTE_REDIRECT
