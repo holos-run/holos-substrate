@@ -54,9 +54,12 @@ This creates:
 
 With Traefik disabled, nothing answers on ports 80/443 until the platform's
 Layer 0 components are applied. The shared Istio Gateway (the `istio-gateway`
-component) then serves port 80, and platform services attach `HTTPRoute`s to
-it. The Gateway has no HTTPS/443 listener yet — it arrives with cert-manager
-(HOL-1116) — so port 443 still answers nothing even after Layer 0 is applied.
+component) then serves ports 80 and 443, and platform services attach
+`HTTPRoute`s to it. The HTTPS listener terminates TLS with a wildcard
+`*.holos.localhost` certificate issued by cert-manager's `local-ca`
+ClusterIssuer from the mkcert root CA installed in the
+[Setup Trusted TLS](#setup-trusted-tls) step below — the same root CA your
+host trusts, so browsers accept the certificate without warnings.
 See
 [How rendered manifests reach the cluster](../holos/README.md#how-rendered-manifests-reach-the-cluster)
 for the component apply order, and
@@ -95,9 +98,10 @@ scripts/local-ca
 
 **Run this each time you recreate the cluster.**
 
-This installs the mkcert root CA into the system trust store, creates the
-`cert-manager` namespace, and applies the `local-ca` Secret
-(`type: kubernetes.io/tls`) that cert-manager's ClusterIssuer references.
+This installs the mkcert root CA into the host trust store (the one-liner
+`mkcert --install`, run by the script), creates the `cert-manager` namespace,
+and applies the `local-ca` Secret (`type: kubernetes.io/tls`) that
+cert-manager's `local-ca` ClusterIssuer references.
 The generated `namespace.yaml` and `local-ca.yaml` are saved to
 `$(mkcert -CAROOT)` (mode 0600 for the key material) so you can reapply them
 after a cluster reset without re-running `mkcert --install`.

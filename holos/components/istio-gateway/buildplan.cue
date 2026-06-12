@@ -1,10 +1,11 @@
 package holos
 
 // istio-gateway emits the shared Gateway API Gateway all platform services
-// attach HTTPRoutes to.  Istio's gateway controller auto-provisions the
-// gateway Deployment and LoadBalancer Service in istio-gateways; on k3s,
-// klipper ServiceLB binds the Service ports on the node and k3d/config.yaml
-// maps host ports 80/443 to the k3d loadbalancer.
+// attach HTTPRoutes to, plus the wildcard TLS Certificate its HTTPS listener
+// terminates with.  Istio's gateway controller auto-provisions the gateway
+// Deployment and LoadBalancer Service in istio-gateways; on k3s, klipper
+// ServiceLB binds the Service ports on the node and k3d/config.yaml maps
+// host ports 80/443 to the k3d loadbalancer.
 //
 // The istio-gateways Namespace is registered in the central namespaces
 // registry (holos/namespaces.cue), which carries the canonical rationale
@@ -17,6 +18,32 @@ package holos
 // error.
 let NAMESPACE = "istio-gateways" & #RegisteredNamespace
 
+// The wildcard certificate for the local demo domain, issued by the local-ca
+// ClusterIssuer (components/local-ca) backed by the mkcert root CA the host
+// already trusts, so the Gateway's HTTPS listener chains to a trusted root.
+// The Certificate lives in this component because Gateway certificateRefs
+// resolve Secrets in the Gateway's own namespace unless a ReferenceGrant
+// allows otherwise — keeping the certificate next to the listener avoids the
+// grant.  Issuance is level-triggered: the listener reports an invalid
+// certificate ref only until cert-manager writes the Secret.
+let CERTIFICATE = {
+	apiVersion: "cert-manager.io/v1"
+	kind:       "Certificate"
+	metadata: {
+		name:      "wildcard-holos-localhost"
+		namespace: NAMESPACE
+	}
+	spec: {
+		secretName: "wildcard-holos-localhost"
+		dnsNames: ["*.holos.localhost"]
+		issuerRef: {
+			group: "cert-manager.io"
+			kind:  "ClusterIssuer"
+			name:  "local-ca"
+		}
+	}
+}
+
 let GATEWAY = {
 	apiVersion: "gateway.networking.k8s.io/v1"
 	kind:       "Gateway"
@@ -26,8 +53,6 @@ let GATEWAY = {
 	}
 	spec: {
 		gatewayClassName: "istio"
-		// The HTTPS/443 listener is added by HOL-1116, the cert-manager
-		// issue, which owns TLS certificate provisioning for the gateway.
 		listeners: [{
 			name: "http"
 			port: 80
@@ -43,6 +68,19 @@ let GATEWAY = {
 			// tighten to a label Selector before tenant namespaces land — see
 			// the shared Gateway route-attachment policy placeholder in
 			// holos/docs/placeholders.md.
+			allowedRoutes: namespaces: from: "All"
+		}, {
+			name: "https"
+			port: 443
+			// Same domain and route-attachment policy as the http listener
+			// above; see its comments.
+			hostname: "*.holos.localhost"
+			protocol: "HTTPS"
+			tls: {
+				mode: "Terminate"
+				// The Secret cert-manager writes for CERTIFICATE above.
+				certificateRefs: [{name: CERTIFICATE.spec.secretName}]
+			}
 			allowedRoutes: namespaces: from: "All"
 		}]
 	}
@@ -62,7 +100,8 @@ userDefinedBuildPlan: {
 				// hand-authored resources validate against the vendored
 				// Kubernetes and Gateway API schemas at render time.
 				resources: #Resources & {
-					Gateway: (GATEWAY.metadata.name): GATEWAY
+					Certificate: (CERTIFICATE.metadata.name): CERTIFICATE
+					Gateway: (GATEWAY.metadata.name):         GATEWAY
 				}
 			}]
 			transformers: [
