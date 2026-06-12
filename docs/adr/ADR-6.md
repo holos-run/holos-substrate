@@ -10,6 +10,7 @@
 | Revision | Date       | Author      | Info           |
 |----------|------------|-------------|----------------|
 | 1        | 2026-06-09 | @jeffmccune | Initial design |
+| 2        | 2026-06-12 | @jeffmccune | Refined by [ADR-13](ADR-13.md): end-to-end two-loop flow; render & publish becomes a sixth stage |
 
 ## Context and Problem Statement
 
@@ -35,6 +36,9 @@ its own status and revision history.
   - [ADR-9 — Webhook Receiver: Thin NATS Ingress](ADR-9.md)
   - [ADR-10 — Webhook Subscriber: Parse and Dispatch](ADR-10.md)
   - [ADR-11 — Deployer Task Subscriber and the Application Resource](ADR-11.md)
+- [ADR-13 — End-to-End MVP Deployment Flow: Two Registry-Event Loops](ADR-13.md)
+  — records the complete flow this pipeline carries, inserting a **render &
+  publish** stage between parse and deploy (six stages total)
 - [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream)
 - [JetStream WorkQueue retention](https://docs.nats.io/nats-concepts/jetstream/streams#retentionpolicy)
 - [Research: Handling Image-Tag Updates in Argo CD with an OCI Manifest Source](../research/argocd-oci-image-tag-updates.md)

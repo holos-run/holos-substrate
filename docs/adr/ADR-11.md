@@ -11,6 +11,7 @@
 | Revision | Date       | Author      | Info           |
 |----------|------------|-------------|----------------|
 | 1        | 2026-06-09 | @jeffmccune | Initial design |
+| 2        | 2026-06-12 | @jeffmccune | Refined by [ADR-13](ADR-13.md): OCI rendered-manifests delivery moves into the MVP; only Git write-back and SoD gating remain deferred |
 
 ## Context and Problem Statement
 
@@ -26,6 +27,9 @@ does it relate to the KRM ([ADR-2](ADR-2.md)) and to production-grade GitOps?
   deployer task)
 - [ADR-2 — Core Platform Principles](ADR-2.md) (the KRM is the primary API)
 - [ADR-1 — Project Resource](ADR-1.md) (the tenant that owns the `Application`)
+- [ADR-13 — End-to-End MVP Deployment Flow: Two Registry-Event Loops](ADR-13.md)
+  — the end-to-end flow this deployer terminates; moves the OCI
+  rendered-manifests delivery described below from deferred into MVP scope
 - [Holos](https://holos.run/) — `holos render platform` as the GitOps render step
 - [Research: Handling Image-Tag Updates in Argo CD with an OCI Manifest Source](../research/argocd-oci-image-tag-updates.md)
   — informs the deferred GitOps mechanism below
