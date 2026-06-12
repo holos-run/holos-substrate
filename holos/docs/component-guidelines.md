@@ -160,7 +160,7 @@ Components that ship CRDs MUST isolate them in a dedicated component labeled
 `crds: "true"`, separate from the controllers and workloads that consume
 them. The label identifies CRD components so they can be applied before
 controllers (e.g. `holos show buildplans --selector crds==true` lists them);
-`scripts/apply` (from the repo root) encodes the apply order — a new Layer 0
+`scripts/apply` (from the repo root) encodes the apply order — a new
 component is added to its `COMPONENTS` array in dependency order, with a
 `wait_<name>()` gate only if a later component critically depends on it
 being ready — and
@@ -281,7 +281,7 @@ Before approving a component PR:
 - [ ] Platform-owned label and annotation keys use the `holos.run` domain;
       no `materia.ai` keys anywhere in the component or its rendered
       manifests (CI-enforced).
-- [ ] Layer 0 components only: added to the `COMPONENTS` array in
+- [ ] Added to the `COMPONENTS` array in
       `scripts/apply` in dependency order (see the ordering rules in
       [`holos/README.md`](../README.md#how-rendered-manifests-reach-the-cluster)),
       with a `wait_<name>()` gate only if a later component critically

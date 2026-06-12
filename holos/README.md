@@ -52,9 +52,10 @@ clusters will be registered alongside `k3d-holos` in
 
 ## How rendered manifests reach the cluster
 
-During Layer 0 bootstrap there is no gitops controller in the cluster yet, so
+During bootstrap there is no gitops controller in the cluster yet, so
 rendered manifests are applied directly with server-side apply.
-`scripts/apply` (from the repo root) applies every Layer 0 component to the
+`scripts/apply` (from the repo root) applies every platform component — the
+Layer 0 foundation and the Layer 1 services — to the
 current kubectl context in the correct order:
 
 ```bash
@@ -86,7 +87,9 @@ on the `echo` Deployment and the `Keycloak` CR Ready and realm import Done
 conditions as smoke checks; nothing else.
 
 Apply order matters beyond "CRD components first". The script applies the
-Layer 0 components in this order:
+platform components in this order — everything through `echo` is the
+Layer 0 cluster foundation; everything from `cnpg-crds` on is a Layer 1
+platform service:
 
 1. `namespaces` — every platform Namespace, from the central registry
    ([namespaces.cue](namespaces.cue)); labeled `namespaces: "true"` so apply
@@ -160,71 +163,6 @@ image and runs the database schema migrations, so each wait gets a more
 generous timeout (`KEYCLOAK_TIMEOUT`, default 600s) than the rollout
 gates.
 
-### Keycloak admin credentials and verification
-
-The Keycloak operator bootstraps the initial admin user itself and stores
-the generated credentials in the `keycloak-initial-admin` Secret (keys
-`username` and `password`) on first reconcile — no credentials are
-committed to this repository. Retrieve them:
-
-```bash
-kubectl -n keycloak get secret keycloak-initial-admin -o json \
-  | jq '.data | map_values(@base64d)'
-```
-
-Verify Keycloak on the live cluster after `scripts/apply`:
-
-```bash
-kubectl -n keycloak wait keycloak/keycloak --for=condition=Ready --timeout=600s
-curl -fsSI https://auth.holos.localhost/        # trusted chain via the mkcert root
-curl -fs https://auth.holos.localhost/realms/holos/.well-known/openid-configuration | jq .issuer
-# log in to https://auth.holos.localhost/admin/ with the credentials above
-```
-
-State lives in the `keycloak-db` Postgres `Cluster`, not the pod: deleting
-the Keycloak pod (`kubectl -n keycloak delete pod -l
-app.kubernetes.io/managed-by=keycloak-operator`) loses nothing — after the
-operator restarts it, the `holos` realm and admin login still work. Note
-the realm import is bootstrap-only: the operator's import Job skips when
-the realm already exists, so post-bootstrap realm changes are not
-reconciled from the `KeycloakRealmImport` CR.
-
-### Postgres credentials and connection contract
-
-The `cnpg-clusters` component provisions one Postgres `Cluster` per
-consuming service, in that service's namespace. CNPG generates the
-credentials and connection endpoints with conventional names — this is the
-contract the Keycloak and Quay components consume:
-
-| Cluster | Namespace | Credentials Secret | Read-write Service |
-|---------|-----------|--------------------|--------------------|
-| `keycloak-db` | `keycloak` | `keycloak-db-app` | `keycloak-db-rw.keycloak.svc:5432` |
-| `quay-db` | `quay` | `quay-db-app` | `quay-db-rw.quay.svc:5432` |
-
-Each `<cluster>-app` Secret carries the keys `username`, `password`,
-`dbname`, `host`, `port`, `uri`, and `jdbc-uri`.
-
-Verify the databases on the live cluster after `scripts/apply`:
-
-```bash
-kubectl get cluster -A                       # both: Cluster in healthy state
-kubectl -n keycloak get secret keycloak-db-app
-kubectl -n quay get secret quay-db-app
-kubectl -n keycloak exec keycloak-db-1 -- psql -U postgres -c 'SELECT 1'
-kubectl -n quay exec quay-db-1 -- psql -U postgres -c 'SELECT 1'
-```
-
-To exercise the same path the consuming service uses — the `-rw` Service
-with the `-app` credentials — run a short-lived client pod with the `uri`
-key from the Secret:
-
-```bash
-URI=$(kubectl -n keycloak get secret keycloak-db-app -o jsonpath='{.data.uri}' | base64 -d)
-kubectl -n keycloak run psql-verify --rm -i --restart=Never \
-  --image=ghcr.io/cloudnative-pg/postgresql:18.1 --env="URI=$URI" -- \
-  psql "$URI" -c 'SELECT current_user, current_database()'
-```
-
 The first rule exists because nothing orders an apply batch by kind:
 kubectl submits the files sequentially in lexical order, so a single
 server-side apply that carries a Namespace alongside its namespaced
@@ -266,3 +204,71 @@ ArgoCD-based delivery is planned to replace the direct apply performed by
 component renders with
 `argoAppDisabled: true` and no Application resources are emitted. See
 [docs/placeholders.md](docs/placeholders.md#argocd-gitops-delivery).
+
+### Keycloak admin credentials and verification
+
+The Keycloak operator bootstraps the initial admin user itself and stores
+the generated credentials in the `keycloak-initial-admin` Secret (keys
+`username` and `password`) on first reconcile — no credentials are
+committed to this repository. Retrieve them:
+
+```bash
+kubectl -n keycloak get secret keycloak-initial-admin -o json \
+  | jq '.data | map_values(@base64d)'
+```
+
+Verify Keycloak on the live cluster after `scripts/apply`:
+
+```bash
+kubectl -n keycloak wait keycloak/keycloak --for=condition=Ready --timeout=600s
+curl -fsSI https://auth.holos.localhost/        # trusted chain via the mkcert root
+curl -fs https://auth.holos.localhost/realms/holos/.well-known/openid-configuration | jq .issuer
+# log in to https://auth.holos.localhost/admin/ with the credentials above
+```
+
+State lives in the `keycloak-db` Postgres `Cluster`, not the pod: deleting
+the Keycloak pod (`kubectl -n keycloak delete pod -l
+app.kubernetes.io/managed-by=keycloak-operator`) loses nothing — after the
+operator restarts it, the `holos` realm and admin login still work. Note
+the realm import is bootstrap-only: the operator's import Job skips when
+the realm already exists, so post-bootstrap realm changes are not
+reconciled from the `KeycloakRealmImport` CR — see the caveat in
+[components/keycloak/instance/buildplan.cue](components/keycloak/instance/buildplan.cue)
+and the stub in
+[docs/placeholders.md](docs/placeholders.md#keycloak-realm-reconciliation).
+
+### Postgres credentials and connection contract
+
+The `cnpg-clusters` component provisions one Postgres `Cluster` per
+consuming service, in that service's namespace. CNPG generates the
+credentials and connection endpoints with conventional names — this is the
+contract the Keycloak and Quay components consume:
+
+| Cluster | Namespace | Credentials Secret | Read-write Service |
+|---------|-----------|--------------------|--------------------|
+| `keycloak-db` | `keycloak` | `keycloak-db-app` | `keycloak-db-rw.keycloak.svc:5432` |
+| `quay-db` | `quay` | `quay-db-app` | `quay-db-rw.quay.svc:5432` |
+
+Each `<cluster>-app` Secret carries the keys `username`, `password`,
+`dbname`, `host`, `port`, `uri`, and `jdbc-uri`.
+
+Verify the databases on the live cluster after `scripts/apply`:
+
+```bash
+kubectl get cluster -A                       # both: Cluster in healthy state
+kubectl -n keycloak get secret keycloak-db-app
+kubectl -n quay get secret quay-db-app
+kubectl -n keycloak exec keycloak-db-1 -- psql -U postgres -c 'SELECT 1'
+kubectl -n quay exec quay-db-1 -- psql -U postgres -c 'SELECT 1'
+```
+
+To exercise the same path the consuming service uses — the `-rw` Service
+with the `-app` credentials — run a short-lived client pod with the `uri`
+key from the Secret:
+
+```bash
+URI=$(kubectl -n keycloak get secret keycloak-db-app -o jsonpath='{.data.uri}' | base64 -d)
+kubectl -n keycloak run psql-verify --rm -i --restart=Never \
+  --image=ghcr.io/cloudnative-pg/postgresql:18.1 --env="URI=$URI" -- \
+  psql "$URI" -c 'SELECT current_user, current_database()'
+```

@@ -4,11 +4,13 @@
 
 Set up a local k3d cluster for development and testing, then apply the
 platform to it. This is the canonical quick-start guide: after completing
-it you'll have a running Layer 0 platform — a Kubernetes API server with
-proper DNS and TLS certificates, serving the platform's components on
-ports 80 and 443.
+it you'll have a running platform — the Layer 0 foundation (a Kubernetes
+API server with proper DNS and TLS certificates, serving the platform's
+components on ports 80 and 443) plus the first Layer 1 services:
+CloudNativePG-managed Postgres and Keycloak with the `holos` realm at
+`https://auth.holos.localhost`.
 
-This is the Layer 0 foundation for the Holos PaaS MVP — see
+This is the foundation for the Holos PaaS MVP — see
 [Holos PaaS MVP Milestones](planning/holos-paas-mvp-milestones.md)
 for the full milestone plan.
 
@@ -109,19 +111,25 @@ after a cluster reset without re-running `mkcert --install`.
 
 ## Apply the Platform
 
-Apply the rendered Layer 0 manifests to the cluster:
+Apply the rendered platform manifests to the cluster:
 
 ```bash
 scripts/apply
 ```
 
-The script applies every Layer 0 component in dependency order — starting
-with the `namespaces` component, so every namespace exists before any
-namespaced resource applies — and is idempotent, so it is safe to re-run at
-any time. See
+The script applies every platform component in dependency order — the
+Layer 0 foundation (namespaces, the Istio ambient mesh, cert-manager, the
+shared Gateway) followed by the Layer 1 services (CloudNativePG Postgres,
+the Keycloak operator, and the Keycloak instance) — starting with the
+`namespaces` component, so every namespace exists before any namespaced
+resource applies. It is idempotent, so it is safe to re-run at any time.
+See
 [How rendered manifests reach the cluster](../holos/README.md#how-rendered-manifests-reach-the-cluster)
 for the apply-order rationale and the `--force-conflicts` and webhook
-caveats.
+caveats. The final gate waits for the Keycloak CR to report Ready and the
+`holos` realm import to complete, so the first run takes several minutes
+while images pull and Keycloak runs its database schema migrations
+(`KEYCLOAK_TIMEOUT`, default 600s).
 
 When the script completes, the platform serves ports 80 and 443 and the
 `echo` smoke-test workload answers at `https://echo.holos.localhost/`
@@ -130,6 +138,42 @@ with a browser-trusted certificate:
 ```bash
 curl https://echo.holos.localhost/
 ```
+
+## Verify Keycloak
+
+The full bootstrap from zero — `scripts/local-dns` (one-time), then
+`scripts/local-k3d`, `scripts/local-ca`, and `scripts/apply` — brings up
+Keycloak with the `holos` realm and no manual steps. Verify it the same
+way as the echo smoke test: the console answers at
+`https://auth.holos.localhost/` with a browser-trusted certificate, and
+the `holos` realm serves its OIDC discovery document:
+
+```bash
+curl -fsSI https://auth.holos.localhost/
+curl -fs https://auth.holos.localhost/realms/holos/.well-known/openid-configuration | jq .issuer
+```
+
+The Keycloak operator generates the initial admin credentials on first
+reconcile and stores them in the `keycloak-initial-admin` Secret — no
+credentials are committed to this repository. Retrieve them and log in to
+the admin console at `https://auth.holos.localhost/admin/`:
+
+```bash
+kubectl -n keycloak get secret keycloak-initial-admin -o json \
+  | jq '.data | map_values(@base64d)'
+```
+
+Keycloak's state lives in the `keycloak-db` Postgres `Cluster`, not the
+pod, and the `holos` realm import is bootstrap-only: the operator's
+import Job skips when the realm already exists, so post-bootstrap realm
+changes are not reconciled from the `KeycloakRealmImport` CR (see the
+caveat in
+[`holos/components/keycloak/instance/buildplan.cue`](../holos/components/keycloak/instance/buildplan.cue)).
+For the full verification steps — including the pod restart-survival
+check — see
+[Keycloak admin credentials and verification](../holos/README.md#keycloak-admin-credentials-and-verification);
+for the database contract, see
+[Postgres credentials and connection contract](../holos/README.md#postgres-credentials-and-connection-contract).
 
 ## Reset the Cluster
 
@@ -151,7 +195,7 @@ kubectl apply --server-side=true -f "$(mkcert -CAROOT)/local-ca.yaml"
 ```
 
 Either way, the new cluster is empty — re-run `scripts/apply` (see
-[Apply the Platform](#apply-the-platform)) to bring the Layer 0 platform
+[Apply the Platform](#apply-the-platform)) to bring the platform
 back up.
 
 ## Clean Up

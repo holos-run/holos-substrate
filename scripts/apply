@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Apply the rendered Layer 0 manifests to the cluster in dependency order.
+# Apply the rendered platform manifests — the Layer 0 foundation and the
+# Layer 1 services — to the cluster in dependency order.
 #
 # Applies each component under holos/deploy/clusters/k3d-holos/components/
 # with server-side apply, in the order documented in holos/README.md ("How
@@ -14,9 +15,8 @@
 # consumer, the Keycloak operator rollout before the keycloak component's
 # k8s.keycloak.org custom resources, and the Keycloak CR Ready and realm
 # import Done conditions as the Layer 1 smoke check.  The README is the
-# canonical
-# explanation of why the order is
-# what it is; this script encodes exactly that order.
+# canonical explanation of why the order is what it is; this script encodes
+# exactly that order.
 #
 # Idempotent by construction: server-side apply and kubectl wait both
 # converge, so re-running against a fresh, partially applied, or fully
@@ -63,7 +63,7 @@ CRD_TIMEOUT="${CRD_TIMEOUT:-120s}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
 KEYCLOAK_TIMEOUT="${KEYCLOAK_TIMEOUT:-600s}"
 
-# Layer 0 components, in apply order.  The order encodes the six ordering
+# Platform components, in apply order.  The order encodes the six ordering
 # rules documented in holos/README.md: namespaces first, CRDs before their
 # controllers, istiod before the Gateway, the ambient data plane before
 # enrolled workloads, fail-closed admission webhooks (cert-manager, the
@@ -305,4 +305,4 @@ for component in "${COMPONENTS[@]}"; do
   fi
 done
 
-echo "All Layer 0 components applied."
+echo "All platform components applied."

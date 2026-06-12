@@ -42,6 +42,21 @@ listeners) and document the route-attachment convention — a separate concern
 from the ambient mesh enrollment convention in
 [mesh-enrollment.md](mesh-enrollment.md), which is already in force.
 
+## Keycloak realm reconciliation
+
+The `holos` realm is created declaratively at bootstrap by the
+`KeycloakRealmImport` CR in
+[`components/keycloak/instance/`](../components/keycloak/instance/buildplan.cue),
+but the import is bootstrap-only: the operator's import Job skips when the
+realm already exists, so post-bootstrap changes to the CR — new clients,
+roles, users — are not reconciled into the live realm. Until a
+reconciliation mechanism is chosen (a keycloak-config-cli-style tool, a
+platform reconciler per [ADR-2](../../docs/adr/ADR-2.md), or an upstream
+operator feature), realm changes on an existing cluster are manual: apply
+them in the admin console, or delete and re-import the realm — which
+destroys realm state. The Quay issue hits this first when it enables the
+placeholder `quay` OIDC client and provisions its credentials.
+
 ## Production deployment area
 
 The only registered cluster is the local `k3d-holos` development cluster.

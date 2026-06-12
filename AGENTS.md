@@ -28,9 +28,12 @@ behind the layout is in
 - [docs/demo/](docs/demo/README.md) — demo walkthroughs.
 - [docs/local-cluster.md](docs/local-cluster.md) — the quick-start guide:
   create the local k3d cluster with DNS and trusted TLS, then apply the
-  Layer 0 platform with `scripts/apply`.
+  platform — the Layer 0 foundation and the Layer 1 services (Postgres,
+  Keycloak) — with `scripts/apply`.
 - [holos/README.md](holos/README.md) — orientation to the Holos CUE
-  directory: layout, clusters, and how rendered manifests are applied.
+  directory: layout, clusters, how rendered manifests are applied (the
+  apply-order rationale), and the Keycloak and Postgres verification
+  steps and service contracts.
 - [holos/docs/component-guidelines.md](holos/docs/component-guidelines.md)
   — how to add a Holos component: anatomy, guardrails, and the
   render-then-commit workflow.
@@ -39,6 +42,7 @@ behind the layout is in
   it, and the exceptions.
 - [holos/docs/placeholders.md](holos/docs/placeholders.md) — stubs for
   out-of-MVP-scope concerns: ArgoCD delivery, observability dashboards,
+  the Gateway route-attachment policy, Keycloak realm reconciliation,
   production deployment area.
 
 ## Conventions
