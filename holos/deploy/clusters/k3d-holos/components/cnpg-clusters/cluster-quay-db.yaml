@@ -1,0 +1,19 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+    name: quay-db
+    namespace: quay
+spec:
+    bootstrap:
+        initdb:
+            database: quay
+            owner: quay
+    instances: 1
+    resources:
+        limits:
+            memory: 512Mi
+        requests:
+            cpu: 100m
+            memory: 256Mi
+    storage:
+        size: 2Gi

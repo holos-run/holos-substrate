@@ -80,8 +80,9 @@ kubectl apply --server-side --force-conflicts -f holos/deploy/clusters/k3d-holos
 
 and waits only on the critical dependencies between components — CRD
 establishment, the istiod rollout, the ambient data-plane DaemonSets, the
-cert-manager webhook rollout, and the CNPG operator rollout — plus a wait
-on the `echo` Deployment as a smoke check; nothing else.
+cert-manager webhook rollout, the CNPG operator rollout, and the Postgres
+`Cluster` Ready conditions — plus a wait on the `echo` Deployment as a
+smoke check; nothing else.
 
 Apply order matters beyond "CRD components first". The script applies the
 Layer 0 components in this order:
@@ -104,6 +105,8 @@ Layer 0 components in this order:
     single upstream release manifest
 13. `cnpg` — the CloudNativePG operator, the platform's single Postgres
     operator
+14. `cnpg-clusters` — the per-service Postgres `Cluster` resources
+    (`keycloak-db`, `quay-db`), each in its consuming service's namespace
 
 The order encodes six rules: the `namespaces` component applies first, so
 every Namespace exists before any component that populates it;
@@ -120,11 +123,51 @@ before the components that create the resources they admit: `cert-manager`
 before the `cert-manager.io` resources (`local-ca`'s `ClusterIssuer`,
 `istio-gateway`'s `Certificate`), with a retry on the transient x509
 admission error while cainjector injects the webhook's CA bundle, and the
-`cnpg` operator before the `postgresql.cnpg.io` `Cluster` resources a later
-phase introduces; and the Gateway applies before components that attach
+`cnpg` operator before the `postgresql.cnpg.io` `Cluster` resources the
+`cnpg-clusters` component creates — with the same shape of retry, because
+the operator's webhook may briefly reject admission after its rollout is
+Available; and the Gateway applies before components that attach
 routes to it. `cnpg-crds` and `cnpg` trail `echo` because CNPG depends only
 on its own CRDs (and, being ambient-enrolled, the data plane), so appending
-them keeps the established order stable.
+them keeps the established order stable. `cnpg-clusters` trails `cnpg` and
+is gated on each `Cluster`'s `Ready` condition because the Keycloak phase
+applies a Keycloak CR that needs a reachable database.
+
+### Postgres credentials and connection contract
+
+The `cnpg-clusters` component provisions one Postgres `Cluster` per
+consuming service, in that service's namespace. CNPG generates the
+credentials and connection endpoints with conventional names — this is the
+contract the Keycloak and Quay components consume:
+
+| Cluster | Namespace | Credentials Secret | Read-write Service |
+|---------|-----------|--------------------|--------------------|
+| `keycloak-db` | `keycloak` | `keycloak-db-app` | `keycloak-db-rw.keycloak.svc:5432` |
+| `quay-db` | `quay` | `quay-db-app` | `quay-db-rw.quay.svc:5432` |
+
+Each `<cluster>-app` Secret carries the keys `username`, `password`,
+`dbname`, `host`, `port`, `uri`, and `jdbc-uri`.
+
+Verify the databases on the live cluster after `scripts/apply`:
+
+```bash
+kubectl get cluster -A                       # both: Cluster in healthy state
+kubectl -n keycloak get secret keycloak-db-app
+kubectl -n quay get secret quay-db-app
+kubectl -n keycloak exec keycloak-db-1 -- psql -U postgres -c 'SELECT 1'
+kubectl -n quay exec quay-db-1 -- psql -U postgres -c 'SELECT 1'
+```
+
+To exercise the same path the consuming service uses — the `-rw` Service
+with the `-app` credentials — run a short-lived client pod with the `uri`
+key from the Secret:
+
+```bash
+URI=$(kubectl -n keycloak get secret keycloak-db-app -o jsonpath='{.data.uri}' | base64 -d)
+kubectl -n keycloak run psql-verify --rm -i --restart=Never \
+  --image=ghcr.io/cloudnative-pg/postgresql:18.1 --env="URI=$URI" -- \
+  psql "$URI" -c 'SELECT current_user, current_database()'
+```
 
 The first rule exists because nothing orders an apply batch by kind:
 kubectl submits the files sequentially in lexical order, so a single
