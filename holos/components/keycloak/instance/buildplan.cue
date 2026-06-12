@@ -125,10 +125,13 @@ let KEYCLOAK = {
 			tlsSecret: TLS_SECRET
 		}
 
-		// Browsers use the public hostname through the Gateway; strict:
-		// false plus backchannelDynamic lets in-cluster consumers (Quay
-		// later) reach Keycloak via the Service DNS names over the
-		// backchannel.  See https://www.keycloak.org/server/hostname.
+		// Browsers use the public hostname through the Gateway, and
+		// backchannelDynamic lets in-cluster consumers (Quay later) reach
+		// Keycloak via the Service DNS names over the backchannel.
+		// hostname-strict is ignored once a full hostname is configured;
+		// strict: false is kept explicit so the intended posture survives
+		// if the hostname field is ever removed or made relative.  See
+		// https://www.keycloak.org/server/hostname.
 		hostname: {
 			hostname:           "https://\(HOSTNAME)"
 			strict:             false
