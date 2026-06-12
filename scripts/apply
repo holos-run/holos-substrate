@@ -8,7 +8,7 @@
 # that need the types, the istiod rollout before the Gateway is programmed,
 # the ambient data-plane DaemonSets before enrolled workloads start, and the
 # cert-manager webhook before the components that create cert-manager.io
-# resources.  The README is the canonical explanation of WHY the order is
+# resources.  The README is the canonical explanation of why the order is
 # what it is; this script encodes exactly that order.
 #
 # Idempotent by construction: server-side apply and kubectl wait both
@@ -200,7 +200,7 @@ for component in "${COMPONENTS[@]}"; do
       echo "ERROR: apply failed for component '${component}'." >&2
       exit 1
     fi
-    echo "    apply failed (transient webhook x509 expected here); retrying in 5s (attempt ${attempt}/${attempts})..."
+    echo "    apply failed (may be the transient webhook x509 window); retrying in 5s (attempt ${attempt}/${attempts})..."
     sleep 5
   done
   wait_hook="wait_${component//-/_}"
