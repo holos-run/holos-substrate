@@ -309,7 +309,7 @@ Clean up when done:
 
 ```bash
 curl -fsS -H "Authorization: Bearer $TOKEN" \
-  -X DELETE "https://quay.holos.localhost/api/v1/repository/holos/sample/notification/$UUID"
+  -X DELETE "https://quay.holos.localhost/api/v1/repository/holos/sample/notification/${UUID:?}"
 kubectl -n quay delete pod/quay-echo svc/quay-echo
 ```
 
