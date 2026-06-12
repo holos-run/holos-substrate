@@ -53,15 +53,31 @@ clusters will be registered alongside `k3d-holos` in
 ## How rendered manifests reach the cluster
 
 During Layer 0 bootstrap there is no gitops controller in the cluster yet, so
-rendered manifests are applied directly with server-side apply, one component
-at a time:
+rendered manifests are applied directly with server-side apply.
+`scripts/apply` (from the repo root) applies every Layer 0 component to the
+current kubectl context in the correct order:
+
+```bash
+scripts/apply
+```
+
+The script is idempotent: server-side apply and `kubectl wait` both
+converge, so re-running it against a fresh, partially applied, or fully
+applied cluster is safe. As a guard against force-applying to the wrong
+cluster, it refuses to run when the current context is not `k3d-holos`
+unless `KUBE_CONTEXT` is set explicitly, and pins every kubectl call to
+the resolved context. Per component it runs
 
 ```bash
 kubectl apply --server-side --force-conflicts -f holos/deploy/clusters/k3d-holos/components/<name>/
 ```
 
-Apply order matters beyond "CRD components first". Apply the Layer 0
-components in this order:
+and waits only on the critical dependencies between components — CRD
+establishment, the istiod rollout, and the ambient data-plane DaemonSets —
+plus a final wait on the `echo` Deployment as a smoke check; nothing else.
+
+Apply order matters beyond "CRD components first". The script applies the
+Layer 0 components in this order:
 
 1. `namespaces` — every platform Namespace, from the central registry
    ([namespaces.cue](namespaces.cue)); labeled `namespaces: "true"` so apply
@@ -128,7 +144,8 @@ The other exception is Istio's webhook reconciliation: the rendered
 ready to serve admission requests. Re-applying either component with
 `--force-conflicts` seizes the field back and downgrades it to `Ignore`
 until istiod re-patches it — expect that transient enforcement gap (and the
-resulting field-manager churn) on every re-apply of those two components.
+resulting field-manager churn) on every re-apply of those two components,
+including every re-run of `scripts/apply`.
 
 ArgoCD-based delivery is planned to replace manual apply once ArgoCD is
 deployed to the platform — until then every component renders with

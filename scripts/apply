@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# Apply the rendered Layer 0 manifests to the cluster in dependency order.
+#
+# Applies each component under holos/deploy/clusters/k3d-holos/components/
+# with server-side apply, in the order documented in holos/README.md ("How
+# rendered manifests reach the cluster"), gating only on the critical
+# dependencies between components: CRD establishment before the controllers
+# that need the types, the istiod rollout before the Gateway is programmed,
+# and the ambient data-plane DaemonSets before enrolled workloads start.
+# The README is the canonical explanation of WHY the order is what it is;
+# this script encodes exactly that order.
+#
+# Idempotent by construction: server-side apply and kubectl wait both
+# converge, so re-running against a fresh, partially applied, or fully
+# applied cluster is safe.  Note the istiod webhook caveat in the README:
+# every re-apply of istio-base or istiod transiently downgrades the
+# validation webhook's failurePolicy until istiod re-patches it.
+#
+# To add a component: append its name to the COMPONENTS array below (order
+# matters), and define a wait_<name>() function (hyphens become underscores)
+# only if a later component critically depends on it being ready.
+#
+# Environment overrides:
+#   KUBE_CONTEXT     — kubectl context to apply to (default: the current
+#                      context, which must be k3d-holos — the cluster these
+#                      manifests are rendered for; setting this explicitly
+#                      is informed consent to target another context)
+#   CRD_TIMEOUT      — kubectl wait timeout for CRD establishment (default: 120s)
+#   ROLLOUT_TIMEOUT  — rollout status timeout (default: 300s)
+#
+# Prerequisites:
+#   - kubectl, with a context pointing at the target cluster
+#     (scripts/local-k3d creates the local cluster; see docs/local-cluster.md)
+#
+# NOTE: prerequisite checks are inline rather than a copy of the check_prereq
+# helper shared verbatim by scripts/local-{ca,dns,k3d} — their NOTE blocks
+# call for consolidating into a shared helper if a fourth copy appears, so
+# this script deliberately avoids creating one.
+
+set -euo pipefail
+
+# Resolve the repo root so this script works from any working directory.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+COMPONENTS_DIR="${REPO_ROOT}/holos/deploy/clusters/k3d-holos/components"
+
+# CRD establishment is fast; rollouts may pull images on first run.
+CRD_TIMEOUT="${CRD_TIMEOUT:-120s}"
+ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
+
+# Layer 0 components, in apply order.  The order encodes the five ordering
+# rules documented in holos/README.md: namespaces first, CRDs before their
+# controllers, istiod before the Gateway, the ambient data plane before
+# enrolled workloads, and the Gateway before components that attach routes.
+COMPONENTS=(
+  namespaces
+  gateway-api
+  istio-base
+  istiod
+  istio-cni
+  istio-ztunnel
+  istio-gateway
+  echo
+)
+
+# Wait for every CRD a component ships to be Established, by waiting on the
+# component's own customresourcedefinition-*.yaml files rather than
+# `crd --all`, which would couple the gate to unrelated CRDs.
+wait_crds_established() {
+  local component="$1" crd_file args=()
+  for crd_file in "${COMPONENTS_DIR}/${component}"/customresourcedefinition-*.yaml; do
+    # Without nullglob an unmatched glob yields the literal pattern; fail
+    # with a clear message instead of a confusing kubectl path error.
+    if [[ ! -e "${crd_file}" ]]; then
+      echo "ERROR: no customresourcedefinition-*.yaml files found for component '${component}'." >&2
+      return 1
+    fi
+    args+=(-f "${crd_file}")
+  done
+  kubectl --context "${KUBE_CONTEXT}" wait --for=condition=Established \
+    --timeout="${CRD_TIMEOUT}" "${args[@]}"
+}
+
+# Per-component wait gates, run after the component's apply.  Components
+# without a gate (namespaces, istio-cni, istio-gateway) simply define no
+# function: namespace creation is synchronous, istio-cni is gated together
+# with ztunnel below, and Gateway route attachment is level-triggered.
+
+# gateway-api: the Gateway/HTTPRoute types must exist before istio-gateway
+# and echo apply.
+wait_gateway_api() {
+  wait_crds_established gateway-api
+}
+
+# istio-base: istiod requires the Istio types at startup.
+wait_istio_base() {
+  wait_crds_established istio-base
+}
+
+# istiod: must be running before the Gateway applies so the istio
+# GatewayClass exists and istiod can program the Gateway.
+wait_istiod() {
+  kubectl --context "${KUBE_CONTEXT}" --namespace istio-system \
+    rollout status deployment/istiod --timeout="${ROLLOUT_TIMEOUT}"
+}
+
+# istio-ztunnel: ambient capture (the istio-cni node agent applied just
+# before, plus ztunnel) must be active before enrolled workloads start.
+wait_istio_ztunnel() {
+  kubectl --context "${KUBE_CONTEXT}" --namespace istio-system \
+    rollout status daemonset/istio-cni-node --timeout="${ROLLOUT_TIMEOUT}"
+  kubectl --context "${KUBE_CONTEXT}" --namespace istio-system \
+    rollout status daemonset/ztunnel --timeout="${ROLLOUT_TIMEOUT}"
+}
+
+# echo: applied last; waiting for its rollout is a final smoke check that
+# the enrolled workload starts under ambient capture.  It does not exercise
+# the Gateway or HTTPRoute attachment — verify the traffic path separately.
+wait_echo() {
+  kubectl --context "${KUBE_CONTEXT}" --namespace echo \
+    rollout status deployment/echo --timeout="${ROLLOUT_TIMEOUT}"
+}
+
+if ! command -v kubectl >/dev/null 2>&1; then
+  echo "ERROR: 'kubectl' not found on PATH." >&2
+  exit 1
+fi
+if [[ ! -d "${COMPONENTS_DIR}" ]]; then
+  echo "ERROR: rendered manifests not found: ${COMPONENTS_DIR}" >&2
+  echo "       The deploy tree is committed; is this a complete checkout?" >&2
+  exit 1
+fi
+
+# Resolve and pin the target context before mutating anything: the manifests
+# are rendered for the k3d-holos cluster, and a server-side apply with
+# --force-conflicts seizes field ownership — refuse to do that to whatever
+# context happens to be current unless it is k3d-holos or the operator
+# explicitly opted in via KUBE_CONTEXT.  Every kubectl call below passes
+# --context so a context switch in another terminal mid-run cannot redirect
+# later components to a different cluster.
+if [[ -z "${KUBE_CONTEXT:-}" ]]; then
+  KUBE_CONTEXT="$(kubectl config current-context)"
+  if [[ "${KUBE_CONTEXT}" != "k3d-holos" ]]; then
+    echo "ERROR: current kubectl context is '${KUBE_CONTEXT}', expected 'k3d-holos'." >&2
+    echo "       The rendered manifests target the k3d-holos cluster.  Set" >&2
+    echo "       KUBE_CONTEXT explicitly to apply to a different context." >&2
+    exit 1
+  fi
+fi
+echo "Will apply manifests to kubectl context: ${KUBE_CONTEXT}"
+
+if ! kubectl --context "${KUBE_CONTEXT}" version --request-timeout=10s >/dev/null 2>&1; then
+  echo "ERROR: cannot reach the cluster for kubectl context '${KUBE_CONTEXT}'." >&2
+  echo "       Create the local cluster with scripts/local-k3d (see docs/local-cluster.md)." >&2
+  exit 1
+fi
+
+for component in "${COMPONENTS[@]}"; do
+  echo "==> ${component}"
+  kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
+    -f "${COMPONENTS_DIR}/${component}/"
+  wait_hook="wait_${component//-/_}"
+  if declare -F "${wait_hook}" >/dev/null; then
+    "${wait_hook}"
+  fi
+done
+
+echo "All Layer 0 components applied."
