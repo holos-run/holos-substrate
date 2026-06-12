@@ -177,12 +177,32 @@ correlation handle — the value Argo CD deploys is the immutable **digest**
 captured at push time.
 
 **Idempotency.** Delivery is at-least-once at every hop, and OCI pushes are
-not byte-reproducible, so the render subscriber uses the
-**tag-exists fast path**: before rendering, it resolves the target config tag
-in the registry; if present, it skips the render entirely. A redelivered
-`RenderTask` therefore converges on the same artifact without a second
-render, and at most re-fires the loop-2 notification, which the deployer
-absorbs (below).
+not byte-reproducible, so the render subscriber uses a **digest-verified
+tag-exists fast path**. At push time it stamps the config artifact's manifest
+with annotations recording its inputs: the rendered app-image digest
+(`holos.run/app-image-digest`) and the platform-config version (the render
+subscriber's own image digest while the config is image-baked). On a
+`RenderTask` it resolves the target config tag in the registry and compares
+those annotations against the freshly resolved inputs:
+
+- **Tag exists and the inputs match** → skip the render entirely; the
+  artifact for this exact input already exists. A redelivered `RenderTask`
+  converges without a second render.
+- **Tag exists but the inputs differ** (a reused or moved app tag — e.g.
+  `latest`, or a re-pushed `v2` — or a platform-config change) → render and
+  push, moving the config tag to the new artifact. The mirrored tag alone is
+  **never** trusted as proof of freshness.
+- **Tag absent** → render and push.
+
+[ADR-8](ADR-8.md)'s immutable-tag preference makes the mismatch case the
+exception, but the digest comparison keeps the pipeline correct even for
+mutable tags. The input-addressed tagging scheme from the
+[render+publish report](../research/rendered-manifests-publish-pipeline.md)
+(`render-<config-digest>-<image-digest>`) is the recorded alternative if
+mirrored tags prove confusing once the platform config becomes its own OCI
+artifact. Either way, loop 2 deploys the **digest**, so a stale tag can
+mislabel but never mis-deploy. At most a redelivery re-fires the loop-2
+notification, which the deployer absorbs (below).
 
 ### Loop 2 — deploy
 
@@ -241,7 +261,7 @@ WorkQueue stream ([ADR-6](ADR-6.md)). Per hop:
 |-----|-------------------|
 | Receiver → `webhooks.quay` | Publish-then-ack to Quay; a JetStream publish failure returns 5xx so Quay retries ([ADR-9](ADR-9.md)). |
 | Webhook subscriber | Parse, match, publish task, ack. Unparseable body → dead-letter publish then `Term()`. No `Application` match → ack and drop (logged). |
-| Render subscriber | Pull consumer, `AckExplicit`, `MaxAckPending=1`; `AckWait` ≈ 60s with `InProgress()` heartbeats during render+push; `MaxDeliver` ≈ 5 with backoff; deterministic render failure → dead-letter then `Term()`. Ack only after the push succeeds. Tag-exists fast path makes redelivery cheap. |
+| Render subscriber | Pull consumer, `AckExplicit`, `MaxAckPending=1`; `AckWait` ≈ 60s with `InProgress()` heartbeats during render+push; `MaxDeliver` ≈ 5 with backoff; deterministic render failure → dead-letter then `Term()`. Ack only after the push succeeds. The digest-verified tag-exists fast path makes redelivery cheap. |
 | Deployer | Single idempotent KRM write; same version → no-op; ack after write ([ADR-11](ADR-11.md)). |
 | Argo CD | Digest-pinned `targetRevision`; no polling; sync retries are Argo CD's own. |
 
@@ -272,8 +292,10 @@ WorkQueue stream ([ADR-6](ADR-6.md)). Per hop:
 4. A dedicated **render subscriber** renders the platform CUE with
    `holos render platform --inject` (digest-pinned app image) and pushes the
    rendered `deploy/` tree with ORAS to the sibling configuration repository
-   `<app-repository>-config`, tagged to mirror the app image tag. Idempotency
-   is the tag-exists fast path, not byte-reproducible artifacts.
+   `<app-repository>-config`, tagged to mirror the app image tag and
+   annotated with its input digests. Idempotency is the **digest-verified**
+   tag-exists fast path — input annotations must match, the mirrored tag
+   alone is never trusted — not byte-reproducible artifacts.
 5. The deployer updates the `Application` resource's config-image version;
    the `Application` controller patches the Argo CD `Application`'s
    `targetRevision` to the artifact **digest**, and Argo CD syncs the OCI

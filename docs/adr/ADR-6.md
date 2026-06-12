@@ -46,7 +46,9 @@ its own status and revision history.
 
 ## Design
 
-The MVP pipeline has five stages, each owned by its own ADR:
+The MVP pipeline has six stages, each owned by its own ADR. The end-to-end
+flow they carry — two registry-event loops connected by the configuration
+image push — is recorded in [ADR-13](ADR-13.md):
 
 1. **Build a sample app** ([ADR-7](ADR-7.md)) — a real workload (KubeRay) built
    with a multi-stage container build, runnable on k3d on Apple Silicon. This is
@@ -58,11 +60,19 @@ The MVP pipeline has five stages, each owned by its own ADR:
    parsing. It writes the raw webhook body to a NATS subject backed by a durable,
    file-backed **WorkQueue** stream and acknowledges the sender immediately.
 4. **Webhook subscriber** ([ADR-10](ADR-10.md)) — consumes raw webhook events,
-   parses them, and publishes a single well-known **deployer task** message to a
-   processor subject.
-5. **Deployer task subscriber** ([ADR-11](ADR-11.md)) — consumes deployer task
-   messages and, for the MVP, updates an `Application` resource to the new image
-   version. Reconciling the cluster to that resource is the controller's job.
+   parses them, matches the event repository against `Application` resources,
+   and publishes a single well-known task message: a **render task** for an
+   application-image push or a **deployer task** for a configuration-image
+   push ([ADR-13](ADR-13.md)).
+5. **Render subscriber** ([ADR-13](ADR-13.md)) — consumes render tasks, renders
+   the platform CUE with the new tag injected, and publishes the rendered
+   manifests as an OCI **configuration image**; that push re-enters the
+   pipeline through stage 3 as the deploy trigger.
+6. **Deployer task subscriber** ([ADR-11](ADR-11.md)) — consumes deployer task
+   messages and, for the MVP, updates an `Application` resource to the new
+   configuration-image version. Reconciling the cluster to that resource — for
+   the MVP, patching the Argo CD `Application`'s `targetRevision` — is the
+   controller's job.
 
 The stages communicate through **NATS JetStream**, not direct calls. The seam
 between every stage is a durable subject:
@@ -79,15 +89,16 @@ acknowledged, giving at-least-once processing with no unbounded backlog of
 already-handled events.
 
 This ADR intentionally **defers** the production-grade concerns to the per-stage
-ADRs and to follow-up work, notably: GitOps reconciliation of desired state
-([ADR-11](ADR-11.md)), separation-of-duty controls for production promotion
-([ADR-11](ADR-11.md)), and per-user feedback backpressure on the webhook body
-([ADR-10](ADR-10.md)).
+ADRs and to follow-up work, notably: Git write-back of desired state
+([ADR-11](ADR-11.md), [ADR-13](ADR-13.md)), separation-of-duty controls for
+production promotion ([ADR-11](ADR-11.md)), and per-user feedback backpressure
+on the webhook body ([ADR-10](ADR-10.md)).
 
 ## Decision
 
-1. The MVP delivers a **minimum viable Heroku experience** as a five-stage
-   pipeline: build → push → receive → subscribe/parse → deploy.
+1. The MVP delivers a **minimum viable Heroku experience** as a six-stage
+   pipeline: build → push → receive → parse/route → render & publish → deploy
+   ([ADR-13](ADR-13.md)).
 2. **NATS JetStream is the communication backbone** between stages; stages are
    decoupled through durable subjects rather than direct synchronous calls.
 3. The webhook ingress stream uses a **durable, file-backed WorkQueue** stream so
@@ -95,7 +106,7 @@ ADRs and to follow-up work, notably: GitOps reconciliation of desired state
 4. For the MVP the terminal stage **updates an `Application` resource**;
    reconciling actual cluster state to that resource is the controller's
    responsibility ([ADR-11](ADR-11.md)).
-5. Production concerns (GitOps reconciliation, separation of duty, body
+5. Production concerns (Git write-back, separation of duty, body
    backpressure) are **deferred** and tracked in the per-stage ADRs.
 
 ## Consequences
@@ -107,7 +118,7 @@ ADRs and to follow-up work, notably: GitOps reconciliation of desired state
 - Because stages are decoupled, failures are isolated and retryable, but the
   system is eventually consistent: "pushed" and "deployed" are distinct
   observable states with lag between them.
-- The MVP deliberately stops at updating the `Application` resource. The gap
-  between that resource and a fully reconciled, separation-of-duty-gated
-  production deployment is real and is carried as deferred work in
-  [ADR-11](ADR-11.md).
+- The MVP deliberately stops at updating the `Application` resource; the
+  controller and Argo CD carry it to a running deployment ([ADR-13](ADR-13.md)).
+  The gap between that and a Git-backed, separation-of-duty-gated production
+  deployment is real and is carried as deferred work in [ADR-11](ADR-11.md).

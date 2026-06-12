@@ -37,29 +37,31 @@ does it relate to the KRM ([ADR-2](ADR-2.md)) and to production-grade GitOps?
 ## Design
 
 The deployer task subscriber consumes deployer task messages and, for the MVP,
-**updates an `Application` resource** to the new image version. The `Application`
-is a custom resource ([ADR-2](ADR-2.md)) owned by a `Project`
-([ADR-1](ADR-1.md)); writing the new version to its `spec` makes that version the
-desired state, and the controller's reconcilers drive the cluster to match.
-Keeping the deployer's job to "update one KRM resource" keeps this stage small
-and idempotent.
+**updates an `Application` resource** to the new version — the
+configuration-image version produced by the render stage
+([ADR-13](ADR-13.md)). The `Application` is a custom resource
+([ADR-2](ADR-2.md)) owned by a `Project` ([ADR-1](ADR-1.md)); writing the new
+version to its `spec` makes that version the desired state, and the
+controller's reconcilers drive the cluster to match — for the MVP by patching
+the Argo CD `Application`'s **`targetRevision`** to the new artifact digest,
+so Argo CD syncs the rendered manifests from the **OCI artifact** (Argo CD
+native OCI source, no Git write-back), per the research
+([report](../research/argocd-oci-image-tag-updates.md)) and
+[ADR-13](ADR-13.md). Keeping the deployer's job to "update one KRM resource"
+keeps this stage small and idempotent.
 
 Two layers are **deliberately deferred** beyond the MVP:
 
-- **GitOps reconciliation of desired state.** Rather than the deployer writing
-  the resource directly, a production pipeline would unify *current* state into
-  the *desired*-state config as a pre-step, run **`holos render platform`** as
-  the main step, and require an **automated commit** of the rendered manifests.
-  The deployer's direct write is the MVP shortcut for this loop. When this work
-  is taken up it **must remain GitHub-independent for the MVP**: the research
-  ([report](../research/argocd-oci-image-tag-updates.md)) concludes that Argo CD
-  should sync the rendered manifests from an **OCI artifact**, and the deployer
-  should update the Argo CD `Application`'s **`targetRevision`** to the new
-  artifact digest — Argo CD native OCI source, no Git write-back. **Kargo** is
-  the chosen growth path for registry-watching and the separation-of-duty gate
-  below; **Argo CD Image Updater is not used** with rendered manifests because
-  its Git-free method updates Helm/Kustomize parameters only, not
-  `targetRevision`.
+- **Git write-back of desired state.** The MVP renders (`holos render
+  platform` in the render stage, [ADR-13](ADR-13.md)) and delivers via the OCI
+  artifact, but no rendered manifests are committed anywhere. A production
+  pipeline would unify *current* state into the *desired*-state config as a
+  pre-step and require an **automated commit** of the rendered manifests so
+  Git is the auditable source of truth. The in-cluster `targetRevision` patch
+  is the MVP shortcut for that loop. **Kargo** is the chosen growth path for
+  registry-watching and the separation-of-duty gate below; **Argo CD Image
+  Updater is not used** with rendered manifests because its Git-free method
+  updates Helm/Kustomize parameters only, not `targetRevision`.
 - **Separation of duty for production promotion.** A production deploy could
   require an out-of-band approval — for example a **+1 reaction on a chat
   message** — to satisfy the separation-of-duty control before the change is
@@ -70,24 +72,26 @@ Two layers are **deliberately deferred** beyond the MVP:
 > ownership per [ADR-1](ADR-1.md)) — likely its own ADR; the deployer's
 > consumer/ack semantics and idempotency (a redelivered task must not thrash the
 > resource); the reconciler that turns `Application.spec` into running workload
-> (for the MVP, the KubeRay `RayCluster` from [ADR-7](ADR-7.md)); RBAC for the
+> (for the MVP, patching the Argo CD `Application` that delivers the KubeRay
+> `RayCluster` manifests from [ADR-7](ADR-7.md); see [ADR-13](ADR-13.md)); RBAC for the
 > deployer's write access scoped to the `Project`; and the conditions/events
 > written back to `Application.status` for user feedback.
 
 ## Decision
 
 1. For the MVP the deployer task subscriber **updates an `Application` resource**
-   to the new image version; the controller reconciles the cluster to that
-   resource.
+   to the new configuration-image version ([ADR-13](ADR-13.md)); the controller
+   reconciles the cluster to that resource by patching the Argo CD
+   `Application`'s `targetRevision`.
 2. The `Application` is a **KRM custom resource** ([ADR-2](ADR-2.md)) owned by a
    `Project` ([ADR-1](ADR-1.md)). Its detailed schema is to be specified in a
    follow-up ADR (see the planning note).
-3. **GitOps reconciliation** — unify current into desired state, then
-   `holos render platform` with an automated commit — is **deferred** beyond the
-   MVP. When undertaken it stays **GitHub-independent**: Argo CD syncs rendered
-   manifests from an **OCI artifact** and the deployer updates the Argo CD
-   `Application`'s `targetRevision`, per the
-   [research report](../research/argocd-oci-image-tag-updates.md).
+3. **OCI rendered-manifests delivery is MVP scope** ([ADR-13](ADR-13.md)): Argo
+   CD syncs rendered manifests from an **OCI artifact** and the controller
+   updates the Argo CD `Application`'s `targetRevision`, per the
+   [research report](../research/argocd-oci-image-tag-updates.md) — GitHub-
+   independent by construction. **Git write-back** — unify current into desired
+   state and commit the rendered manifests — is **deferred** beyond the MVP.
 4. **Separation-of-duty gating** for production promotion (e.g. a +1 chat
    reaction) is **deferred** beyond the MVP.
 
@@ -98,9 +102,9 @@ Two layers are **deliberately deferred** beyond the MVP:
 - Modeling the deploy target as an `Application` resource keeps the platform
   Kubernetes-native ([ADR-2](ADR-2.md)) and reuses the controller's
   reconciliation, RBAC, and audit surfaces.
-- Writing the resource directly bypasses Git as the source of truth; the deferred
-  GitOps loop (`holos render platform` + automated commit) is required before the
-  pipeline is safe for production.
+- Writing the resource directly bypasses Git as the source of truth; the
+  deferred Git write-back loop (automated commit of the rendered manifests) is
+  required before the pipeline is safe for production.
 - Without separation-of-duty gating, the MVP must not be pointed at a production
   environment; promotion controls are a prerequisite for that, not an
   enhancement.
