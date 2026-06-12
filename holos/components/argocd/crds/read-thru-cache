@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+#
+# Pull the Argo CD CRD manifests from the upstream source tree and cache
+# them in manifests/bundle.<version>.yaml so rendering is reproducible
+# offline.  Argo CD publishes no CRDs-only release asset; the CRDs live as
+# three files under manifests/crds/ in the argoproj/argo-cd repository, so
+# this script fetches each at the pinned app version tag and concatenates
+# them into a single bundle (the kubectl-slice transformer splits it back
+# into one file per resource).
+#
+# Concurrency safety: each invocation downloads into its own unique mktemp
+# directory, then atomically renames the finished bundle into place (rename
+# is an atomic system call on posix filesystems).  The EXIT trap removes the
+# temporary directory on failure so no partial files are left behind.
+#
+# Integrity: upstream source files are not checksum pinned here.  This is
+# mitigated because the cached bundle and the rendered deploy files are
+# committed to git, so any change in fetched content is visible in review
+# before it can take effect.
+
+set -euo pipefail
+
+cd "$(dirname "$0")"
+mkdir -p manifests
+version="${1:-}"
+if [[ -z "${version}" ]]; then
+  echo "error: no version passed as arg 1" >&2
+  echo "select a release tag: https://github.com/argoproj/argo-cd/tags" >&2
+  exit 1
+fi
+# Allowlist the version format before interpolating it into the bundle path
+# and the download URLs: a single check rejects path separators, URL
+# metacharacters, whitespace, and control characters.
+if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  printf 'error: version must look like 3.4.2 (got %q)\n' "${version}" >&2
+  exit 1
+fi
+
+bundle="manifests/bundle.${version}.yaml"
+
+if ! [[ -s "$bundle" ]]; then
+  tmpdir="$(mktemp -d manifests/.tmp.XXXXXX)"
+  trap 'rm -rf "$tmpdir"' EXIT
+
+  # The three Argo CD CRDs (group argoproj.io): applications,
+  # applicationsets, appprojects.  Keep this list in sync with
+  # https://github.com/argoproj/argo-cd/tree/master/manifests/crds —
+  # re-check it before bumping ArgoCDAppVersion.
+  crds=(
+    application-crd.yaml
+    applicationset-crd.yaml
+    appproject-crd.yaml
+  )
+  for crd in "${crds[@]}"; do
+    # --fail aborts on HTTP errors so an error body is never cached.
+    curl -fsSL --retry 3 -o "${tmpdir}/${crd}" \
+      "https://raw.githubusercontent.com/argoproj/argo-cd/v${version}/manifests/crds/${crd}"
+    # curl --fail does not catch an empty 200 body; never cache one.
+    if ! [[ -s "${tmpdir}/${crd}" ]]; then
+      echo "error: empty download: ${crd}" >&2
+      exit 1
+    fi
+  done
+
+  # Concatenate into one bundle with document separators.
+  for crd in "${crds[@]}"; do
+    echo "---"
+    cat "${tmpdir}/${crd}"
+  done > "${tmpdir}/bundle.yaml"
+
+  # rename is guaranteed atomic system call on posix filesystems
+  mv -f "${tmpdir}/bundle.yaml" "$bundle"
+  echo "cached: $bundle" >&2
+fi
+
+cat "$bundle"
