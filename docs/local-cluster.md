@@ -234,6 +234,15 @@ auto-created by push are private).
 > `~/.docker/certs.d/quay.holos.localhost/ca.crt`
 > (`mkcert -CAROOT` prints the directory containing `rootCA.pem`).
 
+In-cluster pulls of `quay.holos.localhost/...` images by the k3d nodes'
+containerd are out of scope here — node-level DNS and CA trust for the
+registry hostname is a separate concern, tracked by
+[HOL-1184](https://linear.app/holos-run/issue/HOL-1184/featquay-in-cluster-image-pulls-from-quayholoslocalhost)
+and stubbed in
+[placeholders.md](../holos/docs/placeholders.md#node-level-registry-trust-for-in-cluster-pulls).
+`scripts/quay-init` only provisions the credentials and the
+`quay-robot-pull` pull Secret.
+
 ## Verify Argo CD
 
 `scripts/apply` brings Argo CD up at `https://argocd.holos.localhost`.
@@ -253,15 +262,6 @@ until the gitops Application projection is enabled (see
 [placeholders.md](../holos/docs/placeholders.md#argocd-gitops-delivery)).
 For the full verification steps and the service contract, see
 [Argo CD admin credentials and verification](../holos/README.md#argo-cd-admin-credentials-and-verification).
-
-In-cluster pulls of `quay.holos.localhost/...` images by the k3d nodes'
-containerd are out of scope here — node-level DNS and CA trust for the
-registry hostname is a separate concern, tracked by
-[HOL-1184](https://linear.app/holos-run/issue/HOL-1184/featquay-in-cluster-image-pulls-from-quayholoslocalhost)
-and stubbed in
-[placeholders.md](../holos/docs/placeholders.md#node-level-registry-trust-for-in-cluster-pulls).
-`scripts/quay-init` only provisions the credentials and the
-`quay-robot-pull` pull Secret.
 
 ## Reset the Cluster
 

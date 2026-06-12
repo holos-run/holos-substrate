@@ -376,8 +376,8 @@ wait_argocd_crds() {
 # in CreateContainerConfigError until it completes, which takes seconds —
 # well inside the redis rollout's budget (contrast wait_quay, whose Job
 # gate names the actual culprit ahead of a 900s rollout wait).  The
-# argocd-initial-admin-secret is created by the server on first startup,
-# after — never before — the rollout completes, so nothing gates on it.
+# argocd-initial-admin-secret is created by the server itself during its
+# first startup, not by the chart, so nothing gates on its existence.
 # Route attachment is level-triggered; verify the traffic path separately
 # (see holos/README.md).
 wait_argocd() {
