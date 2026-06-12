@@ -649,13 +649,23 @@ let DEPLOYMENT = {
 					// services.  2Gi was not enough: with the default
 					// CPU-scaled worker pools the first start was OOMKilled
 					// before serving (observed on the live cluster), hence
-					// 4Gi plus the pinned pools above.
+					// the pinned pools above.  4Gi was still not enough:
+					// before the WORKER_COUNT_UNSUPPORTED_MINIMUM floor fix
+					// above the container OOMKilled roughly every 10
+					// minutes at ~4.1Gi anonymous memory, and even with the
+					// pools genuinely pinned it idles at ~3.6Gi — Quay's
+					// ~20 single-purpose workers each carry the full Python
+					// codebase — leaving under 500Mi of headroom for push
+					// load (all observed on the live cluster during the
+					// HOL-1178 verification).  6Gi gives real headroom; a
+					// limit reserves nothing, so the only cost is on a box
+					// that cannot spare it.
 					resources: {
 						requests: {
 							cpu:    "250m"
 							memory: "512Mi"
 						}
-						limits: memory: "4Gi"
+						limits: memory: "6Gi"
 					}
 					// No readOnlyRootFilesystem: the Quay entrypoint writes
 					// runtime state (supervisord configuration and logs)
