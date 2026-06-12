@@ -100,7 +100,7 @@ install -m 0600 /dev/null "${tmpdir}/request.json"
 install -m 0600 /dev/null "${tmpdir}/auth.curlrc"
 install -m 0600 /dev/null "${tmpdir}/secret.yaml"
 
-# --- helpers -----------------------------------------------------------------
+# --- helpers ------------------------------------------------------------------
 
 # http METHOD PATH [REQUEST_BODY_FILE]
 # Calls the Quay API; sets HTTP_STATUS (numeric code) and leaves the
@@ -112,12 +112,12 @@ install -m 0600 /dev/null "${tmpdir}/secret.yaml"
 http() {
   local method="$1" path="$2" body_file="${3:-}"
   local args=(-sS --max-time 30 -o "${tmpdir}/response" -w '%{http_code}'
-    -X "${method}" -H 'Content-Type: application/json')
+    -X "${method}")
   if [[ -s "${tmpdir}/auth.curlrc" ]]; then
     args+=(--config "${tmpdir}/auth.curlrc")
   fi
   if [[ -n "${body_file}" ]]; then
-    args+=(--data "@${body_file}")
+    args+=(-H 'Content-Type: application/json' --data "@${body_file}")
   fi
   HTTP_STATUS="$(curl "${args[@]}" "${QUAY_URL}${path}")"
 }
@@ -143,6 +143,8 @@ kind: Secret
 metadata:
   name: ${name}
   namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/managed-by: quay-init
 type: ${type}
 data:
 EOF
@@ -155,7 +157,7 @@ EOF
     -f "${tmpdir}/secret.yaml"
 }
 
-# --- preflight ---------------------------------------------------------------
+# --- preflight ----------------------------------------------------------------
 
 if ! curl -fsS --max-time 10 -o /dev/null "${QUAY_URL}/health/instance"; then
   echo "ERROR: Quay is not answering at ${QUAY_URL}/health/instance." >&2
@@ -163,7 +165,7 @@ if ! curl -fsS --max-time 10 -o /dev/null "${QUAY_URL}/health/instance"; then
   exit 1
 fi
 
-# --- step 1: initial admin user and API token --------------------------------
+# --- step 1: initial admin user and API token ---------------------------------
 
 # 16 random bytes hex-encoded: deterministic 32-char length, no SIGPIPE
 # hazard under pipefail (head reads a fixed count and exits cleanly).
@@ -223,6 +225,12 @@ fi
 http GET "/api/v1/organization/${ORG}"
 if [[ "${HTTP_STATUS}" == 200 ]]; then
   echo "Organization '${ORG}' exists; skipping."
+elif [[ "${HTTP_STATUS}" != 404 ]]; then
+  # 404 is the live-verified "no such organization" status; anything else
+  # (401/403/5xx) is API trouble, not absence — fail rather than create.
+  echo "ERROR: checking organization '${ORG}' failed (HTTP ${HTTP_STATUS}):" >&2
+  jq -r '.message? // .error_message? // .' < "${tmpdir}/response" >&2 || true
+  exit 1
 else
   jq -n --arg n "${ORG}" --arg e "${ORG_EMAIL}" '{name: $n, email: $e}' \
     > "${tmpdir}/request.json"
@@ -237,9 +245,19 @@ fi
 
 # --- step 3: the organization robot account -----------------------------------
 
+# Both the GET (exists) and PUT (created) responses carry the robot token;
+# capture it inside each branch so the data flow stays explicit.
+ROBOT_TOKEN=""
 http GET "/api/v1/organization/${ORG}/robots/${ROBOT_SHORTNAME}"
 if [[ "${HTTP_STATUS}" == 200 ]]; then
   echo "Robot account '${ROBOT}' exists; skipping."
+  ROBOT_TOKEN="$(jq -r '.token' < "${tmpdir}/response")"
+elif [[ "${HTTP_STATUS}" != 400 ]]; then
+  # 400 ("Could not find robot with specified username") is the
+  # live-verified "no such robot" status; anything else is API trouble.
+  echo "ERROR: checking robot '${ROBOT}' failed (HTTP ${HTTP_STATUS}):" >&2
+  jq -r '.message? // .error_message? // .' < "${tmpdir}/response" >&2 || true
+  exit 1
 else
   jq -n '{description: "Bootstrap robot: pushes auto-create repositories under the holos org."}' \
     > "${tmpdir}/request.json"
@@ -250,8 +268,8 @@ else
     exit 1
   fi
   echo "Created robot account '${ROBOT}'."
+  ROBOT_TOKEN="$(jq -r '.token' < "${tmpdir}/response")"
 fi
-ROBOT_TOKEN="$(jq -r '.token' < "${tmpdir}/response")"
 if [[ -z "${ROBOT_TOKEN}" || "${ROBOT_TOKEN}" == "null" ]]; then
   echo "ERROR: robot response carried no token." >&2
   exit 1
@@ -266,6 +284,13 @@ fi
 # role on re-run; membership is checked first to keep the second run a
 # strict no-op.
 http GET "/api/v1/organization/${ORG}"
+if [[ "${HTTP_STATUS}" != 200 ]]; then
+  # Step 2 just ensured the org exists, so any non-200 here is API trouble
+  # — fail rather than misread an error body as "team missing".
+  echo "ERROR: reading organization '${ORG}' teams failed (HTTP ${HTTP_STATUS}):" >&2
+  jq -r '.message? // .error_message? // .' < "${tmpdir}/response" >&2 || true
+  exit 1
+fi
 TEAM_ROLE="$(jq -r --arg t "${TEAM}" '.teams[$t].role // empty' < "${tmpdir}/response")"
 if [[ "${TEAM_ROLE}" == "creator" ]]; then
   echo "Team '${TEAM}' exists with the creator role; skipping."
@@ -281,6 +306,11 @@ else
 fi
 
 http GET "/api/v1/organization/${ORG}/team/${TEAM}/members"
+if [[ "${HTTP_STATUS}" != 200 ]]; then
+  echo "ERROR: listing team '${TEAM}' members failed (HTTP ${HTTP_STATUS}):" >&2
+  jq -r '.message? // .error_message? // .' < "${tmpdir}/response" >&2 || true
+  exit 1
+fi
 if jq -e --arg r "${ROBOT}" '.members[] | select(.name == $r)' \
   < "${tmpdir}/response" >/dev/null; then
   echo "Robot '${ROBOT}' is a member of team '${TEAM}'; skipping."
@@ -307,7 +337,7 @@ DOCKERCONFIGJSON="$(jq -n --arg host "${QUAY_URL#https://}" \
 apply_secret "${PULL_SECRET}" kubernetes.io/dockerconfigjson \
   ".dockerconfigjson=${DOCKERCONFIGJSON}"
 
-# --- done ----------------------------------------------------------------------
+# --- done ---------------------------------------------------------------------
 
 cat <<EOF
 
