@@ -71,7 +71,7 @@ kubectl apply --server-side --force-conflicts -f holos/deploy/clusters/k3d-holos
 
 and waits only on the critical dependencies between components — CRD
 establishment, the istiod rollout, and the ambient data-plane DaemonSets —
-not on everything.
+plus a final wait on the `echo` Deployment as a smoke check; nothing else.
 
 Apply order matters beyond "CRD components first". The script applies the
 Layer 0 components in this order:
