@@ -17,9 +17,10 @@
 # every re-apply of istio-base or istiod transiently downgrades the
 # validation webhook's failurePolicy until istiod re-patches it.
 #
-# To add a component: append its name to the COMPONENTS array below (order
-# matters), and define a wait_<name>() function (hyphens become underscores)
-# only if a later component critically depends on it being ready.
+# To add a component: add its name to the COMPONENTS array below in
+# dependency order, and define a wait_<name>() function (hyphens become
+# underscores) only if a later component critically depends on it being
+# ready.
 #
 # Environment overrides:
 #   KUBE_CONTEXT     — kubectl context to apply to (default: the current
