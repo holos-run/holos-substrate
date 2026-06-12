@@ -79,9 +79,9 @@ kubectl apply --server-side --force-conflicts -f holos/deploy/clusters/k3d-holos
 ```
 
 and waits only on the critical dependencies between components — CRD
-establishment, the istiod rollout, the ambient data-plane DaemonSets, and
-the cert-manager webhook rollout — plus a final wait on the `echo`
-Deployment as a smoke check; nothing else.
+establishment, the istiod rollout, the ambient data-plane DaemonSets, the
+cert-manager webhook rollout, and the CNPG operator rollout — plus a wait
+on the `echo` Deployment as a smoke check; nothing else.
 
 Apply order matters beyond "CRD components first". The script applies the
 Layer 0 components in this order:
@@ -100,6 +100,10 @@ Layer 0 components in this order:
 10. `istio-gateway` — the shared Gateway all platform services attach
     `HTTPRoute`s to, and its wildcard TLS certificate
 11. `echo` — the permanent smoke-test workload and its `HTTPRoute`
+12. `cnpg-crds` — CloudNativePG CRDs (`crds: "true"`), filtered out of the
+    single upstream release manifest
+13. `cnpg` — the CloudNativePG operator, the platform's single Postgres
+    operator
 
 The order encodes six rules: the `namespaces` component applies first, so
 every Namespace exists before any component that populates it;
@@ -107,18 +111,20 @@ CRD components (labeled `crds: "true"`) apply before the controllers that
 depend on their types; `istiod` applies before
 the Gateway, because the `istio` GatewayClass must exist and istiod must be
 running to program the Gateway; `istio-cni` and `istio-ztunnel` apply before
-ambient-enrolled workloads like `cert-manager` and `echo`, because they must
-be capturing traffic when those workloads start (the Gateway itself is
-deliberately not enrolled, see
-[docs/mesh-enrollment.md](docs/mesh-enrollment.md)); `cert-manager` applies
-before the components that create `cert-manager.io` resources (`local-ca`'s
-`ClusterIssuer`, `istio-gateway`'s `Certificate`), because its validating
-webhook must be serving to admit them — the webhooks fail closed, so wait
-for the webhook Deployment between those steps
-(`kubectl -n cert-manager rollout status deployment/cert-manager-webhook`),
-and retry on a transient x509 admission error while cainjector injects the
-webhook's CA bundle; and the Gateway applies before components that attach
-routes to it.
+ambient-enrolled workloads like `cert-manager`, `echo`, and `cnpg`, because
+they must be capturing traffic when those workloads start (the Gateway
+itself is deliberately not enrolled, see
+[docs/mesh-enrollment.md](docs/mesh-enrollment.md)); components with
+fail-closed admission webhooks apply — and their Deployments are waited on —
+before the components that create the resources they admit: `cert-manager`
+before the `cert-manager.io` resources (`local-ca`'s `ClusterIssuer`,
+`istio-gateway`'s `Certificate`), with a retry on the transient x509
+admission error while cainjector injects the webhook's CA bundle, and the
+`cnpg` operator before the `postgresql.cnpg.io` `Cluster` resources a later
+phase introduces; and the Gateway applies before components that attach
+routes to it. `cnpg-crds` and `cnpg` trail `echo` because CNPG depends only
+on its own CRDs (and, being ambient-enrolled, the data plane), so appending
+them keeps the established order stable.
 
 The first rule exists because nothing orders an apply batch by kind:
 kubectl submits the files sequentially in lexical order, so a single
@@ -127,11 +133,11 @@ resources fails with `NotFound` on the first apply whenever a namespaced
 resource sorts ahead of its Namespace. The last rule is for verifiability
 rather than correctness — route attachment is level-triggered, so an
 `HTTPRoute` applied early simply reports unattached until the Gateway
-exists — but applying `echo` last means the smoke test exercises a
-complete traffic path immediately. Certificate issuance is level-triggered
-the same way: the Gateway's HTTPS listener reports an unresolved
-certificate ref only until cert-manager writes the wildcard certificate's
-Secret.
+exists — but applying `echo` after the Gateway means the smoke test
+exercises a complete traffic path immediately. Certificate issuance is
+level-triggered the same way: the Gateway's HTTPS listener reports an
+unresolved certificate ref only until cert-manager writes the wildcard
+certificate's Secret.
 
 `--force-conflicts` is safe here because the rendered manifests in git are
 the source of truth for these resources and, with the exceptions below, no
@@ -142,7 +148,9 @@ cert-manager's cainjector manages `webhooks[].clientConfig.caBundle` on the
 rendered cert-manager webhook configurations at runtime. Unlike the Istio
 exception below, the field is absent from the rendered manifests, so a
 re-apply with `--force-conflicts` never claims or strips it — no enforcement
-gap results.
+gap results. The CNPG operator manages the `caBundle` on its own webhook
+configurations the same way, and the field is likewise absent from the
+rendered `cnpg` manifests.
 
 The other exception is Istio's webhook reconciliation: the rendered
 `ValidatingWebhookConfiguration`s (`istiod-default-validator` in

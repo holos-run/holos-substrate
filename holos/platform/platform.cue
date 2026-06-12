@@ -154,6 +154,39 @@ platform: {
 				cluster:   CLUSTER.name
 				labels: app: "echo"
 			}}).output
+
+			// cnpg-crds renders the CloudNativePG CRDs, filtered out of the
+			// single upstream release manifest (upstream ships no CRDs-only
+			// asset).  CRDs are isolated components labeled crds: "true" so
+			// they apply before the controllers that depend on them.  The
+			// operator is the cnpg component below; both share the version
+			// pin in components/cnpg/cnpg.cue.
+			(#ComponentTemplate & {inputs: {
+				name:      "cnpg-crds"
+				component: "crds"
+				prefix:    "components/cnpg"
+				cluster:   CLUSTER.name
+				labels: {
+					app:  "cnpg"
+					crds: "true"
+				}
+			}}).output
+
+			// cnpg renders the CloudNativePG operator from the same release
+			// manifest, CRDs and Namespace stripped.  Applies after
+			// istio-ztunnel: the cnpg-system namespace is ambient-enrolled,
+			// so the mesh dataplane must be capturing traffic when its
+			// workloads start.  Its admission webhooks for postgresql.cnpg.io
+			// resources fail closed, so scripts/apply waits for the
+			// controller-manager rollout before later components apply
+			// Cluster resources.
+			(#ComponentTemplate & {inputs: {
+				name:      "cnpg"
+				component: "operator"
+				prefix:    "components/cnpg"
+				cluster:   CLUSTER.name
+				labels: app: "cnpg"
+			}}).output
 		}
 	}
 }
