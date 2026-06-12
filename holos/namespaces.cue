@@ -88,6 +88,17 @@ namespaces: {
 	// time that its value is registered here.
 	"cert-manager": _ambient: true
 
+	// cnpg-system hosts the CloudNativePG operator (the controller-manager
+	// Deployment and its webhook Service); its workloads enroll in the
+	// ambient mesh per the platform convention for controller namespaces,
+	// like cert-manager.
+	//
+	// Keep this name in sync with CnpgNamespace in
+	// components/cnpg/cnpg.cue: that file is an ancestor only of the cnpg
+	// leaf components, so it cannot be referenced from here.  cnpg.cue
+	// asserts at render time that its value is registered here.
+	"cnpg-system": _ambient: true
+
 	// echo is the permanent Layer 0 smoke-test namespace; its workloads
 	// enroll in the ambient mesh per the platform convention.
 	echo: _ambient: true

@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+#
+# Pull the CloudNativePG release manifest from the upstream release branch and
+# cache it in manifests/bundle.<version>.yaml so rendering is reproducible
+# offline.  The manifest carries both the CRDs and the operator; this script
+# is shared by the crds and operator leaf components, which each filter the
+# bundle by kind (see the sibling filter-kinds script), so the bundle is
+# cached and committed exactly once.
+#
+# Concurrency safety: holos renders components concurrently and both leaf
+# components invoke this script, so each invocation downloads into its own
+# unique mktemp directory, then atomically renames the finished bundle into
+# place (rename is an atomic system call on posix filesystems).  The EXIT
+# trap removes the temporary directory on failure so no partial files are
+# left behind.
+#
+# Integrity: upstream release assets are not checksum pinned here.  This is
+# mitigated because the cached bundle and the rendered deploy files are
+# committed to git, so any change in fetched content is visible in review
+# before it can take effect.
+
+set -euo pipefail
+
+cd "$(dirname "$0")"
+mkdir -p manifests
+version="${1:-}"
+if [[ -z "${version}" ]]; then
+  echo "error: no version passed as arg 1" >&2
+  echo "see versions at https://github.com/cloudnative-pg/cloudnative-pg/releases" >&2
+  exit 1
+fi
+# Allowlist the version format before interpolating it into the bundle path
+# and the download URL: a single check rejects path separators, URL
+# metacharacters, whitespace, and control characters.
+if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  printf 'error: version must look like 1.29.1 (got %q)\n' "${version}" >&2
+  exit 1
+fi
+
+bundle="manifests/bundle.${version}.yaml"
+
+if ! [[ -s "$bundle" ]]; then
+  tmpdir="$(mktemp -d manifests/.tmp.XXXXXX)"
+  trap 'rm -rf "$tmpdir"' EXIT
+
+  # CloudNativePG publishes the release manifest on the release-<major.minor>
+  # branch, e.g. releases/cnpg-1.29.1.yaml on release-1.29.
+  # --fail aborts on HTTP errors so an error body is never cached.
+  curl -fsSL --retry 3 -o "${tmpdir}/bundle.yaml" \
+    "https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-${version%.*}/releases/cnpg-${version}.yaml"
+  # curl --fail does not catch an empty 200 body; never cache one.
+  if ! [[ -s "${tmpdir}/bundle.yaml" ]]; then
+    echo "error: empty download: cnpg-${version}.yaml" >&2
+    exit 1
+  fi
+
+  # rename is guaranteed atomic system call on posix filesystems
+  mv -f "${tmpdir}/bundle.yaml" "$bundle"
+  echo "cached: $bundle" >&2
+fi
+
+cat "$bundle"

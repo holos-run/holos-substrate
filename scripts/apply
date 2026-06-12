@@ -6,9 +6,11 @@
 # rendered manifests reach the cluster"), gating only on the critical
 # dependencies between components: CRD establishment before the controllers
 # that need the types, the istiod rollout before the Gateway is programmed,
-# the ambient data-plane DaemonSets before enrolled workloads start, and the
+# the ambient data-plane DaemonSets before enrolled workloads start, the
 # cert-manager webhook before the components that create cert-manager.io
-# resources.  The README is the canonical explanation of why the order is
+# resources, and the CNPG operator rollout before the next phase's
+# postgresql.cnpg.io Cluster resources (its admission webhooks fail
+# closed).  The README is the canonical explanation of why the order is
 # what it is; this script encodes exactly that order.
 #
 # Idempotent by construction: server-side apply and kubectl wait both
@@ -53,9 +55,12 @@ ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
 # Layer 0 components, in apply order.  The order encodes the six ordering
 # rules documented in holos/README.md: namespaces first, CRDs before their
 # controllers, istiod before the Gateway, the ambient data plane before
-# enrolled workloads, cert-manager before the components that create
-# cert-manager.io resources, and the Gateway before components that attach
-# routes.
+# enrolled workloads, fail-closed admission webhooks (cert-manager, the
+# CNPG operator) before the components that create the resources they
+# admit, and the Gateway before components that attach routes.  cnpg-crds
+# and cnpg trail echo: CNPG depends only on its own CRDs (and, being
+# ambient-enrolled, the data plane), so appending it keeps the existing
+# order stable.
 COMPONENTS=(
   namespaces
   gateway-api
@@ -68,6 +73,8 @@ COMPONENTS=(
   local-ca
   istio-gateway
   echo
+  cnpg-crds
+  cnpg
 )
 
 # local-ca and istio-gateway create cert-manager.io resources (ClusterIssuer,
@@ -147,12 +154,26 @@ wait_cert_manager() {
     rollout status deployment/cert-manager-webhook --timeout="${ROLLOUT_TIMEOUT}"
 }
 
-# echo: applied last; waiting for its rollout is a final smoke check that
-# the enrolled workload starts under ambient capture.  It does not exercise
-# the Gateway or HTTPRoute attachment — verify the traffic path separately.
+# echo: waiting for its rollout is a smoke check that the enrolled workload
+# starts under ambient capture.  It does not exercise the Gateway or
+# HTTPRoute attachment — verify the traffic path separately.
 wait_echo() {
   kubectl --context "${KUBE_CONTEXT}" --namespace echo \
     rollout status deployment/echo --timeout="${ROLLOUT_TIMEOUT}"
+}
+
+# cnpg-crds: the CNPG operator requires its types at startup, and the next
+# phase applies postgresql.cnpg.io Cluster resources.
+wait_cnpg_crds() {
+  wait_crds_established cnpg-crds
+}
+
+# cnpg: the operator's admission webhooks for postgresql.cnpg.io resources
+# fail closed, so the controller-manager must be serving before the next
+# phase's Cluster resources can apply.
+wait_cnpg() {
+  kubectl --context "${KUBE_CONTEXT}" --namespace cnpg-system \
+    rollout status deployment/cnpg-controller-manager --timeout="${ROLLOUT_TIMEOUT}"
 }
 
 if ! command -v kubectl >/dev/null 2>&1; then

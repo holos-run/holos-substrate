@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+#
+# filter-kinds include|exclude FILE KIND...
+#
+# Print to stdout the documents of the multi-document YAML stream in FILE
+# whose top-level kind is one of KIND... (include) or is not (exclude).
+# Documents containing only comments and blank lines are always dropped so
+# the downstream kubectl-slice transformer never sees an empty document.
+#
+# CloudNativePG publishes one release manifest carrying both the CRDs and the
+# operator; the cnpg crds and operator leaf components each run this script
+# as a Command transformer to take their half of the shared cached bundle.
+# Implemented with awk as a line-by-line state machine — no YAML parser is
+# needed because a top-level kind is exactly a line matching /^kind:/ — to
+# avoid depending on a specific yq flavor (the Go and Python tools share the
+# name but not the syntax).
+
+set -euo pipefail
+
+if (($# < 3)); then
+  echo "usage: filter-kinds include|exclude FILE KIND..." >&2
+  exit 1
+fi
+
+mode="$1"
+file="$2"
+shift 2
+
+case "${mode}" in
+  include | exclude) ;;
+  *)
+    echo "error: mode must be include or exclude (got '${mode}')" >&2
+    exit 1
+    ;;
+esac
+
+awk -v mode="${mode}" -v kinds="$*" '
+  function flush(   i, keep) {
+    if (n > 0 && hascontent) {
+      keep = (mode == "exclude")
+      if (kind != "" && index(" " kinds " ", " " kind " ") > 0)
+        keep = (mode == "include")
+      if (keep) {
+        if (printed) print "---"
+        for (i = 1; i <= n; i++) print line[i]
+        printed = 1
+      }
+    }
+    n = 0
+    kind = ""
+    hascontent = 0
+  }
+  /^---[ \t]*$/ { flush(); next }
+  {
+    n++
+    line[n] = $0
+    if ($0 !~ /^[ \t]*(#|$)/) hascontent = 1
+    if (kind == "" && $0 ~ /^kind:/) {
+      kind = $0
+      sub(/^kind:[ \t]*/, "", kind)
+      sub(/[ \t]+$/, "", kind)
+    }
+  }
+  END { flush() }
+' "${file}"
