@@ -122,9 +122,9 @@ The script applies every platform component in dependency order — the
 Layer 0 foundation (namespaces, the Istio ambient mesh, cert-manager, the
 shared Gateway) followed by the Layer 1 services (CloudNativePG Postgres,
 the Keycloak operator and instance, and the Quay registry) — starting
-with the
-`namespaces` component, so every namespace exists before any namespaced
-resource applies. It is idempotent, so it is safe to re-run at any time.
+with the `namespaces` component, so every namespace exists before any
+namespaced resource applies. It is idempotent, so it is safe to re-run at
+any time.
 See
 [How rendered manifests reach the cluster](../holos/README.md#how-rendered-manifests-reach-the-cluster)
 for the apply-order rationale and the `--force-conflicts` and webhook
