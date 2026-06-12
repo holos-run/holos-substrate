@@ -12,8 +12,9 @@
 # postgresql.cnpg.io Cluster resources (its admission webhooks fail
 # closed), Cluster readiness before the Keycloak phase's database
 # consumer, the Keycloak operator rollout before the keycloak component's
-# k8s.keycloak.org custom resources, and the Keycloak CR Ready condition
-# as the Layer 1 smoke check.  The README is the canonical
+# k8s.keycloak.org custom resources, and the Keycloak CR Ready and realm
+# import Done conditions as the Layer 1 smoke check.  The README is the
+# canonical
 # explanation of why the order is
 # what it is; this script encodes exactly that order.
 #
@@ -35,10 +36,11 @@
 #                      is informed consent to target another context)
 #   CRD_TIMEOUT      — kubectl wait timeout for CRD establishment (default: 120s)
 #   ROLLOUT_TIMEOUT  — rollout status timeout (default: 300s)
-#   KEYCLOAK_TIMEOUT — Keycloak CR Ready condition timeout (default: 600s;
-#                      the first start pulls the server image and runs DB
-#                      migrations, so it gets a more generous budget than
-#                      ROLLOUT_TIMEOUT)
+#   KEYCLOAK_TIMEOUT — timeout for each Keycloak gate: the Keycloak CR
+#                      Ready condition and the realm import Done condition
+#                      (default: 600s; the first start pulls the server
+#                      image and runs DB migrations, so it gets a more
+#                      generous budget than ROLLOUT_TIMEOUT)
 #
 # Prerequisites:
 #   - kubectl, with a context pointing at the target cluster
@@ -230,15 +232,22 @@ wait_keycloak_operator() {
     rollout status deployment/keycloak-operator --timeout="${ROLLOUT_TIMEOUT}"
 }
 
-# keycloak: the Keycloak CR Ready condition is the Layer 1 smoke check that
-# the server started against the CNPG database with its TLS certificate.
-# The first reconcile pulls the multi-arch quay.io/keycloak/keycloak image
-# and runs the database schema migrations, so it gets the more generous
-# KEYCLOAK_TIMEOUT.  Realm import and route attachment are level-triggered;
-# verify the traffic path separately (see holos/README.md).
+# keycloak: the Layer 1 smoke check.  First the Keycloak CR Ready condition
+# — the server started against the CNPG database with its TLS certificate —
+# then the KeycloakRealmImport Done condition, so the script cannot exit
+# successfully while the holos realm import Job is still running or has
+# failed (a failed import never reaches Done and times out here; the
+# operator's import Job only starts once the server is Ready, hence the
+# wait order).  The first reconcile pulls the multi-arch
+# quay.io/keycloak/keycloak image and runs the database schema migrations,
+# so both waits get the more generous KEYCLOAK_TIMEOUT.  Route attachment
+# is level-triggered; verify the traffic path separately (see
+# holos/README.md).
 wait_keycloak() {
   kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
     wait keycloak/keycloak --for=condition=Ready --timeout="${KEYCLOAK_TIMEOUT}"
+  kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
+    wait keycloakrealmimport/holos --for=condition=Done --timeout="${KEYCLOAK_TIMEOUT}"
 }
 
 if ! command -v kubectl >/dev/null 2>&1; then

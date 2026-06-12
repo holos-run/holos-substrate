@@ -243,8 +243,8 @@ platform: {
 			// last in scripts/apply: its CRs need the operator reconciling
 			// and the keycloak-db Cluster reachable, and its Certificate
 			// needs the cert-manager webhook admitting — hence the retried
-			// apply — with a gate on the Keycloak CR Ready condition as the
-			// Layer 1 smoke check.
+			// apply — with gates on the Keycloak CR Ready and realm import
+			// Done conditions as the Layer 1 smoke check.
 			(#ComponentTemplate & {inputs: {
 				name:      "keycloak"
 				component: "instance"
