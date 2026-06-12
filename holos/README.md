@@ -284,8 +284,9 @@ UUID=$(curl -fsS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application
   -X POST https://quay.holos.localhost/api/v1/repository/holos/sample/notification/ \
   -d '{"event": "repo_push", "method": "webhook",
        "config": {"url": "http://quay-echo.quay.svc:8080/"},
-       "eventConfig": {}, "title": "verify-webhook"}' | jq -r .uuid)
-test -n "$UUID"  # guard: an empty UUID would POST to .../notification//test below
+       "eventConfig": {}, "title": "verify-webhook"}' | jq -er .uuid)
+# Guard: an empty UUID would POST to .../notification//test below.
+: "${UUID:?notification create failed — empty UUID}"
 # Fire the built-in test first:
 curl -fsS -o /dev/null -H "Authorization: Bearer $TOKEN" \
   -X POST "https://quay.holos.localhost/api/v1/repository/holos/sample/notification/$UUID/test"
@@ -357,10 +358,12 @@ Verify the databases on the live cluster after `scripts/apply`:
 kubectl get cluster -A                       # both: Cluster in healthy state
 kubectl -n keycloak get secret keycloak-db-app
 kubectl -n quay get secret quay-db-app
-kubectl -n keycloak exec "$(kubectl -n keycloak get pod -l cnpg.io/cluster=keycloak-db -o name)" -- \
-  psql -U postgres -c 'SELECT 1'
-kubectl -n quay exec "$(kubectl -n quay get pod -l cnpg.io/cluster=quay-db -o name)" -- \
-  psql -U postgres -c 'SELECT 1'
+KC_POD=$(kubectl -n keycloak get pod \
+  -l cnpg.io/cluster=keycloak-db,cnpg.io/instanceRole=primary -o name | head -n1)
+QUAY_POD=$(kubectl -n quay get pod \
+  -l cnpg.io/cluster=quay-db,cnpg.io/instanceRole=primary -o name | head -n1)
+kubectl -n keycloak exec "$KC_POD" -- psql -U postgres -c 'SELECT 1'
+kubectl -n quay exec "$QUAY_POD" -- psql -U postgres -c 'SELECT 1'
 ```
 
 To exercise the same path the consuming service uses — the `-rw` Service
