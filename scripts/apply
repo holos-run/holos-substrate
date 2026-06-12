@@ -70,6 +70,36 @@ ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
 KEYCLOAK_TIMEOUT="${KEYCLOAK_TIMEOUT:-600s}"
 QUAY_TIMEOUT="${QUAY_TIMEOUT:-900s}"
 
+# Convert a kubectl-style duration (bare seconds, or h/m/s components like
+# 300s, 5m, or 1h30m) to whole seconds for shell arithmetic.  Rejects
+# anything else — including sub-second units — with a clear error.
+duration_seconds() {
+  local duration="$1" rest="$1" total=0
+  if [[ "${duration}" =~ ^[0-9]+$ ]]; then
+    echo "${duration}"
+    return 0
+  fi
+  while [[ "${rest}" =~ ^([0-9]+)([hms]) ]]; do
+    case "${BASH_REMATCH[2]}" in
+      h) total=$((total + BASH_REMATCH[1] * 3600)) ;;
+      m) total=$((total + BASH_REMATCH[1] * 60)) ;;
+      s) total=$((total + BASH_REMATCH[1])) ;;
+    esac
+    rest="${rest:${#BASH_REMATCH[0]}}"
+  done
+  if [[ -n "${rest}" ]]; then
+    echo "ERROR: cannot parse duration '${duration}' (expected e.g. 300s, 5m, 1h30m)." >&2
+    return 1
+  fi
+  echo "${total}"
+}
+
+# wait_quay's poll loop needs ROLLOUT_TIMEOUT as whole seconds for its
+# deadline arithmetic (the other gates hand their timeouts verbatim to
+# kubectl).  Parse it up front so a malformed override fails the run
+# immediately rather than crashing the final gate after a long bootstrap.
+ROLLOUT_TIMEOUT_SECONDS="$(duration_seconds "${ROLLOUT_TIMEOUT}")" || exit 1
+
 # Platform components, in apply order.  The order encodes the six ordering
 # rules documented in holos/README.md: namespaces first, CRDs before their
 # controllers, istiod before the Gateway, the ambient data plane before
@@ -269,36 +299,44 @@ wait_keycloak() {
 # rather than blocking the full ROLLOUT_TIMEOUT before erroring.  The Job
 # carries a ttlSecondsAfterFinished, so absence is tolerated — already
 # garbage-collected on a long-bootstrapped cluster (or mid-poll), with the
-# Secret it created still in place — and --ignore-not-found makes that
+# Secret it created still in place (a Job that Failed and was then
+# garbage-collected is indistinguishable; that failure surfaces as the
+# rollout timeout below) — and --ignore-not-found makes that
 # discrimination structural: absent yields empty output with exit 0, while
-# any other lookup failure (RBAC, API error) exits nonzero and fails the
-# gate rather than silently skipping it.  Then the Deployment rollout:
+# a persistent lookup failure (RBAC, API error) fails the gate rather than
+# silently skipping it.  Then the Deployment rollout:
 # QUAY_TIMEOUT must cover the first pull of the large multi-arch
 # quay.io/projectquay/quay image, the init container, and the database
 # schema migrations inside the pod's own 600s startupProbe budget, hence
 # its default exceeds that budget.  Route attachment is level-triggered;
 # verify the traffic path separately (see holos/README.md).
 wait_quay() {
-  local job=job/quay-secret-keys-bootstrap job_state
-  # ROLLOUT_TIMEOUT is a kubectl duration in seconds (e.g. 300s); the poll
-  # deadline arithmetic needs the bare number.
-  local deadline=$((SECONDS + ${ROLLOUT_TIMEOUT%s}))
+  local job=job/quay-secret-keys-bootstrap job_state lookup_failures=0
+  local deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
   while true; do
     # One read captures both existence and state: absent yields empty
     # output; present yields the Job name followed by one Type=Status line
     # per status condition.
-    if ! job_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace quay \
+    if job_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace quay \
       get "${job}" --ignore-not-found -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
-      echo "ERROR: cannot query ${job}." >&2
-      return 1
-    fi
-    if [[ -z "${job_state}" ]] || grep -q '^Complete=True$' <<<"${job_state}"; then
-      break
-    fi
-    if grep -q '^Failed=True$' <<<"${job_state}"; then
-      echo "ERROR: ${job} failed; inspect it with:" >&2
-      echo "       kubectl --context ${KUBE_CONTEXT} --namespace quay describe ${job}" >&2
-      return 1
+      lookup_failures=0
+      if [[ -z "${job_state}" ]] || grep -q '^Complete=True$' <<<"${job_state}"; then
+        break
+      fi
+      if grep -q '^Failed=True$' <<<"${job_state}"; then
+        echo "ERROR: ${job} failed; inspect it with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} --namespace quay describe ${job}" >&2
+        return 1
+      fi
+    else
+      # kubectl's own stderr has already flowed through above.  A single
+      # failed read may be a transient apiserver or network blip — only a
+      # persistent failure (e.g. RBAC) aborts the gate.
+      lookup_failures=$((lookup_failures + 1))
+      if ((lookup_failures >= 3)); then
+        echo "ERROR: cannot query ${job}: ${lookup_failures} consecutive lookup failures." >&2
+        return 1
+      fi
     fi
     if ((SECONDS >= deadline)); then
       echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for ${job} to complete." >&2
