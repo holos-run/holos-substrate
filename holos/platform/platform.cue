@@ -270,6 +270,39 @@ platform: {
 				cluster:   CLUSTER.name
 				labels: app: "quay"
 			}}).output
+
+			// argocd-crds renders the Argo CD CRDs (applications,
+			// applicationsets, appprojects in group argoproj.io) from the
+			// upstream source tree at the pinned app version.  CRDs are
+			// isolated components labeled crds: "true" so they apply before
+			// the controllers that depend on them.  The core install is the
+			// argocd component below; both share the version pin in
+			// components/argocd/argocd.cue.
+			(#ComponentTemplate & {inputs: {
+				name:      "argocd-crds"
+				component: "crds"
+				prefix:    "components/argocd"
+				cluster:   CLUSTER.name
+				labels: {
+					app:  "argocd"
+					crds: "true"
+				}
+			}}).output
+
+			// argocd renders the Argo CD core install — application
+			// controller, repo server, API/UI server, and single-instance
+			// redis — from the upstream argo-cd Helm chart with a laptop
+			// footprint, plus the HTTPRoute pair attaching the UI to the
+			// shared Gateway at argocd.holos.localhost.  Render-only in this
+			// phase (HOL-1186): integration into scripts/apply with health
+			// gates lands in the next phase (HOL-1187).
+			(#ComponentTemplate & {inputs: {
+				name:      "argocd"
+				component: "controller"
+				prefix:    "components/argocd"
+				cluster:   CLUSTER.name
+				labels: app: "argocd"
+			}}).output
 		}
 	}
 }

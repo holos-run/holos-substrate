@@ -122,4 +122,17 @@ namespaces: {
 	// URLs and registry restart resilience both work through ambient
 	// interception, so Quay needs no Keycloak-style exception.
 	quay: _ambient: true
+
+	// argocd hosts the Argo CD core install (application controller, repo
+	// server, server, redis); its workloads enroll in the ambient mesh per
+	// the platform convention, following the quay and cert-manager
+	// precedent.  The reference platform runs Argo CD in ambient with the
+	// server behind the shared Gateway (server.insecure: "true" — the
+	// Gateway terminates TLS), so no Keycloak-style exception is needed.
+	//
+	// Keep this name in sync with ArgoCDNamespace in
+	// components/argocd/argocd.cue: that file is an ancestor only of the
+	// argocd leaf components, so it cannot be referenced from here.
+	// argocd.cue asserts at render time that its value is registered here.
+	argocd: _ambient: true
 }
