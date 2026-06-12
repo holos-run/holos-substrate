@@ -168,9 +168,10 @@ image and runs the database schema migrations, so each wait gets a more
 generous timeout (`KEYCLOAK_TIMEOUT`, default 600s) than the rollout
 gates. `quay` applies last because it needs the `quay-db` `Cluster`
 reachable — already gated Ready in the `cnpg-clusters` step — and its gate
-waits on the `quay` Deployment rollout with its own generous timeout
-(`QUAY_TIMEOUT`, default 600s), since the first pull of the Quay image is
-large and the first start runs Quay's database schema migrations.
+waits on the secret-keys bootstrap Job and then on the `quay` Deployment
+rollout with its own generous timeout (`QUAY_TIMEOUT`, default 900s),
+since the first pull of the Quay image is large and the first start runs
+Quay's database schema migrations.
 
 The first rule exists because nothing orders an apply batch by kind:
 kubectl submits the files sequentially in lexical order, so a single

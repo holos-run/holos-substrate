@@ -43,10 +43,10 @@
 #                      image and runs DB migrations, so it gets a more
 #                      generous budget than ROLLOUT_TIMEOUT)
 #   QUAY_TIMEOUT     — timeout for the quay Deployment rollout gate
-#                      (default: 600s; the first pull of the Quay image is
-#                      large and the first start runs DB schema migrations,
-#                      so it gets a more generous budget than
-#                      ROLLOUT_TIMEOUT)
+#                      (default: 900s; the gate must cover the first pull
+#                      of the large Quay image plus the pod's own 600s
+#                      startupProbe budget for DB schema migrations, so it
+#                      gets a more generous budget than ROLLOUT_TIMEOUT)
 #
 # Prerequisites:
 #   - kubectl, with a context pointing at the target cluster
@@ -68,7 +68,7 @@ COMPONENTS_DIR="${REPO_ROOT}/holos/deploy/clusters/k3d-holos/components"
 CRD_TIMEOUT="${CRD_TIMEOUT:-120s}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
 KEYCLOAK_TIMEOUT="${KEYCLOAK_TIMEOUT:-600s}"
-QUAY_TIMEOUT="${QUAY_TIMEOUT:-600s}"
+QUAY_TIMEOUT="${QUAY_TIMEOUT:-900s}"
 
 # Platform components, in apply order.  The order encodes the six ordering
 # rules documented in holos/README.md: namespaces first, CRDs before their
@@ -263,20 +263,28 @@ wait_keycloak() {
 
 # quay: the Quay smoke check.  First the secret-keys bootstrap Job — the
 # pod's initContainer cannot resolve its Secret env until it completes, so
-# a failed Job surfaces here as a sharp error instead of a generic rollout
-# timeout; the Job carries a ttlSecondsAfterFinished, so tolerate it being
-# absent (already garbage-collected on a long-bootstrapped cluster, with
-# the Secret it created still in place).  Then the Deployment rollout: the
-# first start pulls the large multi-arch quay.io/projectquay/quay image
-# and runs the database schema migrations against quay-db, so it gets the
-# more generous QUAY_TIMEOUT.  Route attachment is level-triggered; verify
-# the traffic path separately (see holos/README.md).
+# gating here names the actual culprit in the error instead of a generic
+# rollout timeout (a Failed Job still blocks the full wait before
+# erroring).  The Job carries a ttlSecondsAfterFinished, so a NotFound is
+# tolerated — already garbage-collected on a long-bootstrapped cluster,
+# with the Secret it created still in place — but any other lookup failure
+# (RBAC, API error) fails the gate rather than silently skipping it.  Then
+# the Deployment rollout: QUAY_TIMEOUT must cover the first pull of the
+# large multi-arch quay.io/projectquay/quay image, the init container, and
+# the database schema migrations inside the pod's own 600s startupProbe
+# budget, hence its default exceeds that budget.  Route attachment is
+# level-triggered; verify the traffic path separately (see
+# holos/README.md).
 wait_quay() {
-  if kubectl --context "${KUBE_CONTEXT}" --namespace quay \
-    get job/quay-secret-keys-bootstrap >/dev/null 2>&1; then
+  local job_lookup
+  if job_lookup=$(kubectl --context "${KUBE_CONTEXT}" --namespace quay \
+    get job/quay-secret-keys-bootstrap -o name 2>&1); then
     kubectl --context "${KUBE_CONTEXT}" --namespace quay \
       wait job/quay-secret-keys-bootstrap --for=condition=Complete \
       --timeout="${ROLLOUT_TIMEOUT}"
+  elif [[ "${job_lookup}" != *"NotFound"* ]]; then
+    echo "ERROR: cannot query job/quay-secret-keys-bootstrap: ${job_lookup}" >&2
+    return 1
   fi
   kubectl --context "${KUBE_CONTEXT}" --namespace quay \
     rollout status deployment/quay --timeout="${QUAY_TIMEOUT}"

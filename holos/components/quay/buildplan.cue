@@ -210,14 +210,21 @@ let CONFIG_TEMPLATE_CM = {
 	data: "config.yaml": CONFIG_YAML
 }
 
+// The bootstrap resources carry their own app.kubernetes.io/name — NOT the
+// Quay Deployment's — because the quay Service selects on that label: a
+// probe-less bootstrap pod labeled like the Quay pod would become a dead
+// Service endpoint for the seconds it runs whenever the Job re-runs after
+// TTL garbage collection.
+let BOOTSTRAP_METADATA = {
+	name:      BOOTSTRAP
+	namespace: NAMESPACE
+	labels: "app.kubernetes.io/name": BOOTSTRAP
+}
+
 let BOOTSTRAP_SERVICE_ACCOUNT = {
 	apiVersion: "v1"
 	kind:       "ServiceAccount"
-	metadata: {
-		name:      BOOTSTRAP
-		namespace: NAMESPACE
-		labels: "app.kubernetes.io/name": NAME
-	}
+	metadata:   BOOTSTRAP_METADATA
 }
 
 // Scoped to the one Secret the Job manages: get is restricted to the
@@ -228,11 +235,7 @@ let BOOTSTRAP_SERVICE_ACCOUNT = {
 let BOOTSTRAP_ROLE = {
 	apiVersion: "rbac.authorization.k8s.io/v1"
 	kind:       "Role"
-	metadata: {
-		name:      BOOTSTRAP
-		namespace: NAMESPACE
-		labels: "app.kubernetes.io/name": NAME
-	}
+	metadata:   BOOTSTRAP_METADATA
 	rules: [
 		{
 			apiGroups: [""]
@@ -251,11 +254,7 @@ let BOOTSTRAP_ROLE = {
 let BOOTSTRAP_ROLE_BINDING = {
 	apiVersion: "rbac.authorization.k8s.io/v1"
 	kind:       "RoleBinding"
-	metadata: {
-		name:      BOOTSTRAP
-		namespace: NAMESPACE
-		labels: "app.kubernetes.io/name": NAME
-	}
+	metadata:   BOOTSTRAP_METADATA
 	roleRef: {
 		apiGroup: "rbac.authorization.k8s.io"
 		kind:     "Role"
@@ -279,11 +278,7 @@ let BOOTSTRAP_ROLE_BINDING = {
 let BOOTSTRAP_JOB = {
 	apiVersion: "batch/v1"
 	kind:       "Job"
-	metadata: {
-		name:      BOOTSTRAP
-		namespace: NAMESPACE
-		labels: "app.kubernetes.io/name": NAME
-	}
+	metadata:   BOOTSTRAP_METADATA
 	spec: {
 		backoffLimit: 3
 		// A day keeps the Job's logs around for debugging a fresh
@@ -291,7 +286,9 @@ let BOOTSTRAP_JOB = {
 		// caveat above for routine re-applies.
 		ttlSecondsAfterFinished: 86400
 		template: {
-			metadata: labels: "app.kubernetes.io/name": NAME
+			// The distinct label matters here most of all: the quay
+			// Service must never select this pod (see BOOTSTRAP_METADATA).
+			metadata: labels: BOOTSTRAP_METADATA.labels
 			spec: {
 				serviceAccountName: BOOTSTRAP
 				restartPolicy:      "Never"
@@ -426,12 +423,24 @@ let REDIS_SERVICE = {
 	}
 }
 
+// The Quay Deployment's dedicated identity.  It exists for precision, not
+// permissions: it carries no role bindings (the mounted token satisfies
+// Quay's KubernetesConfigProvider, which only needs the token file to
+// exist), and the Redis AuthorizationPolicy below pins to this principal,
+// so a future pod that omits serviceAccountName never silently gains
+// Redis access via the namespace default ServiceAccount.
+let QUAY_SERVICE_ACCOUNT = {
+	apiVersion: "v1"
+	kind:       "ServiceAccount"
+	metadata:   METADATA
+}
+
 // Redis runs without auth, so make the in-cluster-only claim true by
 // construction: the quay namespace is ambient-enrolled
 // (holos/namespaces.cue), ztunnel enforces L4 authorization, and this
-// policy allows only the Quay pod's identity — the namespace default
-// ServiceAccount it runs as — to connect.  Kubelet health probes are
-// exempt from ambient capture, so the TCP probes above keep working.
+// policy allows only the Quay pod's identity — the dedicated quay
+// ServiceAccount above — to connect.  Kubelet health probes are exempt
+// from ambient capture, so the TCP probes above keep working.
 let REDIS_AUTHZ = {
 	apiVersion: "security.istio.io/v1"
 	kind:       "AuthorizationPolicy"
@@ -444,7 +453,7 @@ let REDIS_AUTHZ = {
 		selector: matchLabels: REDIS_METADATA.labels
 		action: "ALLOW"
 		rules: [{
-			from: [{source: principals: ["cluster.local/ns/\(NAMESPACE)/sa/default"]}]
+			from: [{source: principals: ["cluster.local/ns/\(NAMESPACE)/sa/\(QUAY_SERVICE_ACCOUNT.metadata.name)"]}]
 		}]
 	}
 }
@@ -483,15 +492,17 @@ let DEPLOYMENT = {
 		template: {
 			metadata: labels: METADATA.labels
 			spec: {
-				// The ServiceAccount token IS mounted (the default), unlike
-				// the other pods in this component: Quay selects its
-				// KubernetesConfigProvider whenever KUBERNETES_SERVICE_HOST
-				// is set — which the kubelet always injects — and that
-				// provider refuses to start without a token file (verified
-				// on the live cluster: "Cannot load Kubernetes service
-				// account token").  The token is inert: the namespace
-				// default ServiceAccount has no role bindings, so it grants
-				// no API access.
+				// The dedicated ServiceAccount pins the pod's mesh identity
+				// for the Redis AuthorizationPolicy.  Its token IS mounted
+				// (the default), unlike the other pods in this component:
+				// Quay selects its KubernetesConfigProvider whenever
+				// KUBERNETES_SERVICE_HOST is set — which the kubelet always
+				// injects — and that provider refuses to start without a
+				// token file (verified on the live cluster: "Cannot load
+				// Kubernetes service account token").  The token is inert:
+				// the ServiceAccount has no role bindings, so it grants no
+				// API access.
+				serviceAccountName: QUAY_SERVICE_ACCOUNT.metadata.name
 				// The Quay image config declares USER 1001 (verified with
 				// the VERSION pin above), so runAsNonRoot validates without
 				// forcing a uid the image layout doesn't expect.
@@ -759,11 +770,14 @@ userDefinedBuildPlan: {
 				// hand-authored resources validate against the vendored
 				// Kubernetes and Gateway API schemas at render time.
 				resources: #Resources & {
-					ConfigMap: (CONFIG_TEMPLATE_CM.metadata.name):             CONFIG_TEMPLATE_CM
-					ServiceAccount: (BOOTSTRAP_SERVICE_ACCOUNT.metadata.name): BOOTSTRAP_SERVICE_ACCOUNT
-					Role: (BOOTSTRAP_ROLE.metadata.name):                      BOOTSTRAP_ROLE
-					RoleBinding: (BOOTSTRAP_ROLE_BINDING.metadata.name):       BOOTSTRAP_ROLE_BINDING
-					Job: (BOOTSTRAP_JOB.metadata.name):                        BOOTSTRAP_JOB
+					ConfigMap: (CONFIG_TEMPLATE_CM.metadata.name): CONFIG_TEMPLATE_CM
+					ServiceAccount: {
+						(BOOTSTRAP_SERVICE_ACCOUNT.metadata.name): BOOTSTRAP_SERVICE_ACCOUNT
+						(QUAY_SERVICE_ACCOUNT.metadata.name):      QUAY_SERVICE_ACCOUNT
+					}
+					Role: (BOOTSTRAP_ROLE.metadata.name):                BOOTSTRAP_ROLE
+					RoleBinding: (BOOTSTRAP_ROLE_BINDING.metadata.name): BOOTSTRAP_ROLE_BINDING
+					Job: (BOOTSTRAP_JOB.metadata.name):                  BOOTSTRAP_JOB
 					Deployment: {
 						(DEPLOYMENT.metadata.name):       DEPLOYMENT
 						(REDIS_DEPLOYMENT.metadata.name): REDIS_DEPLOYMENT

@@ -122,6 +122,7 @@ spec:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
+      serviceAccountName: quay
       volumes:
       - configMap:
           name: quay-config-template

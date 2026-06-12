@@ -11,7 +11,7 @@ spec:
   - from:
     - source:
         principals:
-        - cluster.local/ns/quay/sa/default
+        - cluster.local/ns/quay/sa/quay
   selector:
     matchLabels:
       app.kubernetes.io/name: quay-redis
