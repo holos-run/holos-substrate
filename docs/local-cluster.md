@@ -126,10 +126,11 @@ resource applies. It is idempotent, so it is safe to re-run at any time.
 See
 [How rendered manifests reach the cluster](../holos/README.md#how-rendered-manifests-reach-the-cluster)
 for the apply-order rationale and the `--force-conflicts` and webhook
-caveats. The final gate waits for the Keycloak CR to report Ready and the
-`holos` realm import to complete, so the first run takes several minutes
-while images pull and Keycloak runs its database schema migrations
-(`KEYCLOAK_TIMEOUT`, default 600s).
+caveats. The late gates wait for the Keycloak CR to report Ready, the
+`holos` realm import to complete, and the `quay` Deployment to roll out,
+so the first run takes several minutes while images pull and Keycloak and
+Quay run their database schema migrations (`KEYCLOAK_TIMEOUT`, default
+600s; `QUAY_TIMEOUT`, default 900s).
 
 When the script completes, the platform serves ports 80 and 443 and the
 `echo` smoke-test workload answers at `https://echo.holos.localhost/`
@@ -174,6 +175,66 @@ check — see
 [Keycloak admin credentials and verification](../holos/README.md#keycloak-admin-credentials-and-verification);
 for the database contract, see
 [Postgres credentials and connection contract](../holos/README.md#postgres-credentials-and-connection-contract).
+
+## Verify Quay
+
+`scripts/apply` brings the Quay registry up at
+`https://quay.holos.localhost`, but a fresh registry has no users.
+Bootstrap it once:
+
+```bash
+scripts/quay-init
+```
+
+The script is idempotent — a second run exits 0 without changing state.
+It creates the initial `admin` user, the `holos` organization, and the
+`holos+robot` robot account (a member of a `creators` team, so pushes
+auto-create repositories under `holos/`), and stores the generated
+credentials in Secrets in the `quay` namespace — nothing secret is
+committed to this repository, mirroring the Keycloak
+`keycloak-initial-admin` pattern:
+
+```bash
+kubectl -n quay get secret quay-initial-admin -o json \
+  | jq '.data | map_values(@base64d)'      # admin UI login + API token
+kubectl -n quay get secret quay-robot-pull  # dockerconfigjson for pull consumers
+```
+
+Verify the registry with a push from the host. Log in as the robot —
+the one-liner extracts the robot token from the pull Secret:
+
+```bash
+kubectl -n quay get secret quay-robot-pull -o jsonpath='{.data.\.dockerconfigjson}' \
+  | base64 -d | jq -r '.auths["quay.holos.localhost"].auth' | base64 -d | cut -d: -f2- \
+  | docker login quay.holos.localhost -u 'holos+robot' --password-stdin
+```
+
+Then push — the repository does not exist yet; the robot's `creators`
+team membership auto-creates it:
+
+```bash
+docker pull busybox
+docker tag busybox quay.holos.localhost/holos/sample:test
+docker push quay.holos.localhost/holos/sample:test
+```
+
+Confirm the pushed tag in the Quay UI: log in at
+`https://quay.holos.localhost` with the `quay-initial-admin` credentials
+and find `holos/sample` under the `holos` organization (repositories
+auto-created by push are private).
+
+> **Docker trust note:** on the MVP target — OrbStack on Apple silicon
+> ([ADR-7](adr/ADR-7.md)) — OrbStack syncs the macOS keychain trust store
+> into its Docker daemon, so the mkcert root installed by
+> `scripts/local-ca` is already trusted and `docker push` just works. With
+> Docker Desktop instead place the CA at
+> `~/.docker/certs.d/quay.holos.localhost/ca.crt`
+> (`mkcert -CAROOT` prints the directory containing `rootCA.pem`).
+
+In-cluster pulls of `quay.holos.localhost/...` images by the k3d nodes'
+containerd are out of scope here — node-level DNS and CA trust for the
+registry hostname is a separate concern. `scripts/quay-init` only
+provisions the credentials and the `quay-robot-pull` pull Secret.
 
 ## Reset the Cluster
 

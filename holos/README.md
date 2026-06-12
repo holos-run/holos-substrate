@@ -247,6 +247,18 @@ reconciled from the `KeycloakRealmImport` CR — see the caveat in
 and the stub in
 [docs/placeholders.md](docs/placeholders.md#keycloak-realm-reconciliation).
 
+### Quay bootstrap and credentials
+
+Quay has no operator to bootstrap users the way the Keycloak operator
+does, so `scripts/quay-init` fills that role: run it once after
+`scripts/apply` to create the initial `admin` user, the `holos`
+organization, and the `holos+robot` robot account, with the generated
+credentials stored in the `quay-initial-admin` and `quay-robot-pull`
+Secrets (`quay` namespace) — never committed to this repository. The
+script is idempotent. See the
+[Verify Quay](../docs/local-cluster.md#verify-quay) section of the local
+cluster guide for the bootstrap and the `docker push` verification flow.
+
 ### Postgres credentials and connection contract
 
 The `cnpg-clusters` component provisions one Postgres `Cluster` per
