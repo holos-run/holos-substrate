@@ -1,9 +1,9 @@
 package holos
 
-// This file is a CUE ancestor of the two Keycloak operator leaf components
-// (operator-crds, operator), so each component instance includes it without
-// imports.  It holds the single Keycloak version pin and the namespace
-// shared by both.
+// This file is a CUE ancestor of the three Keycloak leaf components
+// (operator-crds, operator, instance), so each component instance includes
+// it without imports.  It holds the single Keycloak version pin and the
+// namespace shared by all of them.
 //
 // Deployment-method decision: the Keycloak Operator was chosen over a plain
 // StatefulSet/Deployment of the quay.io/keycloak/keycloak image.  The
@@ -25,12 +25,14 @@ package holos
 // asset with its own read-thru-cache script, caching it as
 // manifests/bundle.<VERSION>.yaml, committed.
 
-// KeycloakVersion pins Keycloak for both components: the CRD and operator
-// manifest URLs and cache filenames used by each leaf's read-thru-cache
-// derive from it, and the operator Deployment deploys the same version of
-// the server (its RELATED_IMAGE_KEYCLOAK env var pins
-// quay.io/keycloak/keycloak:<VERSION>), so the operator and the Keycloak
-// server image stay on the same version line by construction.  26.6.3 is
+// KeycloakVersion pins Keycloak once for every leaf: the CRD and operator
+// manifest URLs and cache filenames used by the operator leaves'
+// read-thru-cache scripts derive from it, and the operator Deployment
+// deploys the same version of the server the instance leaf's Keycloak CR
+// requests (its RELATED_IMAGE_KEYCLOAK env var pins
+// quay.io/keycloak/keycloak:<VERSION>, and the CR sets no image field), so
+// the operator and the Keycloak server image stay on the same version line
+// by construction.  26.6.3 is
 // the current 26.6.x patch release (checked against
 // https://github.com/keycloak/keycloak/releases 2026-06-11; the reference
 // platform pins 26.6.2 on the same minor).  Both
