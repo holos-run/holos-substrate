@@ -185,8 +185,11 @@ let REALM_IMPORT = {
 }
 
 // Cross-namespace attachment to the shared Gateway is allowed because its
-// listener sets allowedRoutes.namespaces.from: All (istio-gateway
-// component).
+// listeners set allowedRoutes.namespaces.from: All (istio-gateway
+// component).  sectionName binds this route to the https listener only:
+// Keycloak carries credentials, so it must never be served over the
+// plaintext http listener — the companion route below redirects port 80 to
+// HTTPS instead.
 let HTTPROUTE = {
 	apiVersion: "gateway.networking.k8s.io/v1"
 	kind:       "HTTPRoute"
@@ -196,8 +199,9 @@ let HTTPROUTE = {
 	}
 	spec: {
 		parentRefs: [{
-			name:      "default"
-			namespace: GATEWAY_NAMESPACE
+			name:        "default"
+			namespace:   GATEWAY_NAMESPACE
+			sectionName: "https"
 		}]
 		hostnames: [HOSTNAME]
 		rules: [{
@@ -205,6 +209,37 @@ let HTTPROUTE = {
 			backendRefs: [{
 				name: SERVICE
 				port: HTTPS_PORT
+			}]
+		}]
+	}
+}
+
+// Companion to HTTPROUTE above: bound to the http listener only, it
+// permanently redirects every plaintext request for the Keycloak hostname
+// to HTTPS, so no login or admin traffic can transit port 80.  A
+// RequestRedirect filter terminates the request at the Gateway; no
+// backendRefs.
+let HTTPROUTE_REDIRECT = {
+	apiVersion: "gateway.networking.k8s.io/v1"
+	kind:       "HTTPRoute"
+	metadata: {
+		name:      "\(NAME)-redirect-http"
+		namespace: NAMESPACE
+	}
+	spec: {
+		parentRefs: [{
+			name:        "default"
+			namespace:   GATEWAY_NAMESPACE
+			sectionName: "http"
+		}]
+		hostnames: [HOSTNAME]
+		rules: [{
+			filters: [{
+				type: "RequestRedirect"
+				requestRedirect: {
+					scheme:     "https"
+					statusCode: 301
+				}
 			}]
 		}]
 	}
@@ -218,15 +253,19 @@ let HTTPROUTE = {
 // gateway proxy needs it, and scoping it prevents surprising other mesh
 // clients of the Service.
 //
-// insecureSkipVerify: the gateway proxy cannot verify the backend
-// certificate against the local CA without the CA bundle in a Secret in
-// istio-gateways readable via SDS, and the mkcert root is host-local —
-// staged into the cert-manager namespace only, by scripts/local-ca, never
-// committed — so there is no declarative way to place it here today.  The
-// reference platform accepts the same trade-off in production; for the
-// local MVP the hop stays encrypted but unverified.  Tighten by verifying
-// against the CA (credentialName) when a CA-distribution mechanism (e.g.
-// trust-manager) or the experimental-channel BackendTLSPolicy lands.
+// Unlike the reference platform (which sets insecureSkipVerify), the
+// gateway verifies the backend certificate against the local CA:
+// credentialName references the wildcard-holos-localhost Secret the
+// istio-gateway component's Certificate writes in this same namespace —
+// cert-manager CA issuers include the signing CA in the issued Secret's
+// ca.crt key, and Istio's SDS reads ca.crt from a TLS-type Secret as the
+// trust anchor for SIMPLE-mode origination (the Secret must live in the
+// gateway proxy's namespace, which is why the wildcard Secret is usable
+// and the keycloak-tls Secret is not).  subjectAltNames pins the expected
+// backend identity to the Service FQDN, present in the keycloak-tls
+// certificate's dnsNames; sni makes the gateway present that same name so
+// verification stays deterministic.  Replace with the standard-channel
+// BackendTLSPolicy when the pinned Gateway API version ships it.
 let DESTINATION_RULE = {
 	apiVersion: "networking.istio.io/v1"
 	kind:       "DestinationRule"
@@ -238,8 +277,10 @@ let DESTINATION_RULE = {
 		host: "\(SERVICE).\(NAMESPACE).svc.cluster.local"
 		exportTo: ["."]
 		trafficPolicy: tls: {
-			mode:               "SIMPLE"
-			insecureSkipVerify: true
+			mode:           "SIMPLE"
+			credentialName: "wildcard-holos-localhost"
+			sni:            "\(SERVICE).\(NAMESPACE).svc.cluster.local"
+			subjectAltNames: ["\(SERVICE).\(NAMESPACE).svc.cluster.local"]
 		}
 	}
 }
@@ -262,7 +303,10 @@ userDefinedBuildPlan: {
 					Certificate: (CERTIFICATE.metadata.name):          CERTIFICATE
 					Keycloak: (KEYCLOAK.metadata.name):                KEYCLOAK
 					KeycloakRealmImport: (REALM_IMPORT.metadata.name): REALM_IMPORT
-					HTTPRoute: (HTTPROUTE.metadata.name):              HTTPROUTE
+					HTTPRoute: {
+						(HTTPROUTE.metadata.name):          HTTPROUTE
+						(HTTPROUTE_REDIRECT.metadata.name): HTTPROUTE_REDIRECT
+					}
 					DestinationRule: (DESTINATION_RULE.metadata.name): DESTINATION_RULE
 				}
 			}]
