@@ -1,0 +1,16 @@
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: keycloak-service
+  namespace: istio-gateways
+spec:
+  exportTo:
+  - .
+  host: keycloak-service.keycloak.svc.cluster.local
+  trafficPolicy:
+    tls:
+      credentialName: wildcard-holos-localhost
+      mode: SIMPLE
+      sni: keycloak-service.keycloak.svc.cluster.local
+      subjectAltNames:
+      - keycloak-service.keycloak.svc.cluster.local

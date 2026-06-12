@@ -81,8 +81,9 @@ kubectl apply --server-side --force-conflicts -f holos/deploy/clusters/k3d-holos
 and waits only on the critical dependencies between components — CRD
 establishment, the istiod rollout, the ambient data-plane DaemonSets, the
 cert-manager webhook rollout, the CNPG operator rollout, the Postgres
-`Cluster` Ready conditions, and the Keycloak operator rollout — plus a wait
-on the `echo` Deployment as a smoke check; nothing else.
+`Cluster` Ready conditions, and the Keycloak operator rollout — plus waits
+on the `echo` Deployment and the `Keycloak` CR Ready and realm import Done
+conditions as smoke checks; nothing else.
 
 Apply order matters beyond "CRD components first". The script applies the
 Layer 0 components in this order:
@@ -112,6 +113,11 @@ Layer 0 components in this order:
 16. `keycloak-operator` — the Keycloak operator, in the `keycloak`
     namespace (deliberately not ambient-enrolled, see
     [namespaces.cue](namespaces.cue))
+17. `keycloak` — the Keycloak server instance: the `Keycloak` CR backed by
+    the `keycloak-db` Postgres `Cluster`, its TLS `Certificate`, the
+    declarative `holos` realm import, the `HTTPRoute` attaching it to the
+    shared Gateway at `auth.holos.localhost`, and the `DestinationRule`
+    that re-encrypts the Gateway→Keycloak hop
 
 The order encodes six rules: the `namespaces` component applies first, so
 every Namespace exists before any component that populates it;
@@ -139,11 +145,49 @@ is gated on each `Cluster`'s `Ready` condition because the Keycloak phase
 applies a Keycloak CR that needs a reachable database.
 `keycloak-operator-crds` and `keycloak-operator` trail `cnpg-clusters`: the
 Keycloak operator depends only on its own CRDs and the `keycloak`
-namespace, and the Keycloak phase applies `Keycloak` and
+namespace, and the `keycloak` component applies `Keycloak` and
 `KeycloakRealmImport` CRs that need both the operator reconciling — hence
 the gate on its Deployment rollout — and the `keycloak-db` `Cluster`
 reachable, so appending the pair after the database keeps the dependency
-chain linear.
+chain linear. `keycloak` applies last: its CRs need everything above, and
+it creates a `cert-manager.io` `Certificate`, so its apply retries through
+the same transient webhook admission window as `local-ca` and
+`istio-gateway`. Its gate waits on the `Keycloak` CR Ready condition and
+then on the `holos` `KeycloakRealmImport` Done condition as the Layer 1
+smoke check, so a bootstrap cannot report success while the realm import
+Job is still running or has failed — the first start pulls the server
+image and runs the database schema migrations, so each wait gets a more
+generous timeout (`KEYCLOAK_TIMEOUT`, default 600s) than the rollout
+gates.
+
+### Keycloak admin credentials and verification
+
+The Keycloak operator bootstraps the initial admin user itself and stores
+the generated credentials in the `keycloak-initial-admin` Secret (keys
+`username` and `password`) on first reconcile — no credentials are
+committed to this repository. Retrieve them:
+
+```bash
+kubectl -n keycloak get secret keycloak-initial-admin -o json \
+  | jq '.data | map_values(@base64d)'
+```
+
+Verify Keycloak on the live cluster after `scripts/apply`:
+
+```bash
+kubectl -n keycloak wait keycloak/keycloak --for=condition=Ready --timeout=600s
+curl -fsSI https://auth.holos.localhost/        # trusted chain via the mkcert root
+curl -fs https://auth.holos.localhost/realms/holos/.well-known/openid-configuration | jq .issuer
+# log in to https://auth.holos.localhost/admin/ with the credentials above
+```
+
+State lives in the `keycloak-db` Postgres `Cluster`, not the pod: deleting
+the Keycloak pod (`kubectl -n keycloak delete pod -l
+app.kubernetes.io/managed-by=keycloak-operator`) loses nothing — after the
+operator restarts it, the `holos` realm and admin login still work. Note
+the realm import is bootstrap-only: the operator's import Job skips when
+the realm already exists, so post-bootstrap realm changes are not
+reconciled from the `KeycloakRealmImport` CR.
 
 ### Postgres credentials and connection contract
 

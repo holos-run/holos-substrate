@@ -1,0 +1,40 @@
+apiVersion: k8s.keycloak.org/v2beta1
+kind: Keycloak
+metadata:
+  name: keycloak
+  namespace: keycloak
+spec:
+  db:
+    database: keycloak
+    host: keycloak-db-rw
+    passwordSecret:
+      key: password
+      name: keycloak-db-app
+    port: 5432
+    usernameSecret:
+      key: username
+      name: keycloak-db-app
+    vendor: postgres
+  hostname:
+    backchannelDynamic: true
+    hostname: https://auth.holos.localhost
+    strict: false
+  http:
+    httpsPort: 8443
+    tlsSecret: keycloak-tls
+  ingress:
+    enabled: false
+  instances: 1
+  proxy:
+    headers: xforwarded
+  resources:
+    limits:
+      memory: 1Gi
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  unsupported:
+    podTemplate:
+      metadata:
+        labels:
+          istio.io/dataplane-mode: none

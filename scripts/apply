@@ -11,8 +11,10 @@
 # resources, the CNPG operator rollout before the cnpg-clusters component's
 # postgresql.cnpg.io Cluster resources (its admission webhooks fail
 # closed), Cluster readiness before the Keycloak phase's database
-# consumer, and the Keycloak operator rollout before the next phase's
-# k8s.keycloak.org custom resources.  The README is the canonical
+# consumer, the Keycloak operator rollout before the keycloak component's
+# k8s.keycloak.org custom resources, and the Keycloak CR Ready and realm
+# import Done conditions as the Layer 1 smoke check.  The README is the
+# canonical
 # explanation of why the order is
 # what it is; this script encodes exactly that order.
 #
@@ -34,6 +36,11 @@
 #                      is informed consent to target another context)
 #   CRD_TIMEOUT      — kubectl wait timeout for CRD establishment (default: 120s)
 #   ROLLOUT_TIMEOUT  — rollout status timeout (default: 300s)
+#   KEYCLOAK_TIMEOUT — timeout for each Keycloak gate: the Keycloak CR
+#                      Ready condition and the realm import Done condition
+#                      (default: 600s; the first start pulls the server
+#                      image and runs DB migrations, so it gets a more
+#                      generous budget than ROLLOUT_TIMEOUT)
 #
 # Prerequisites:
 #   - kubectl, with a context pointing at the target cluster
@@ -54,6 +61,7 @@ COMPONENTS_DIR="${REPO_ROOT}/holos/deploy/clusters/k3d-holos/components"
 # CRD establishment is fast; rollouts may pull images on first run.
 CRD_TIMEOUT="${CRD_TIMEOUT:-120s}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
+KEYCLOAK_TIMEOUT="${KEYCLOAK_TIMEOUT:-600s}"
 
 # Layer 0 components, in apply order.  The order encodes the six ordering
 # rules documented in holos/README.md: namespaces first, CRDs before their
@@ -67,9 +75,12 @@ ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
 # operator's fail-closed webhook serving before they can apply.
 # keycloak-operator-crds and keycloak-operator trail cnpg-clusters: the
 # Keycloak operator depends only on its own CRDs and the keycloak
-# namespace, and the next phase's Keycloak CR needs both the operator
-# reconciling and the keycloak-db Cluster reachable, so gating the operator
-# rollout after the database keeps the dependency chain linear.
+# namespace, and the keycloak component's Keycloak CR needs both the
+# operator reconciling and the keycloak-db Cluster reachable, so gating the
+# operator rollout after the database keeps the dependency chain linear.
+# keycloak applies last: its k8s.keycloak.org CRs need the operator
+# reconciling and its cert-manager.io Certificate needs the cert-manager
+# webhook admitting (hence the retried apply, like local-ca).
 COMPONENTS=(
   namespaces
   gateway-api
@@ -87,6 +98,7 @@ COMPONENTS=(
   cnpg-clusters
   keycloak-operator-crds
   keycloak-operator
+  keycloak
 )
 
 # local-ca and istio-gateway create cert-manager.io resources (ClusterIssuer,
@@ -97,10 +109,11 @@ COMPONENTS=(
 # instead of aborting the bootstrap.  cnpg-clusters has the same shape of
 # window: the CNPG operator's fail-closed webhooks may briefly reject
 # postgresql.cnpg.io resources after the controller-manager rollout is
-# Available, so its apply retries too.
+# Available, so its apply retries too.  keycloak creates a cert-manager.io
+# Certificate, so it shares the cert-manager webhook retry window.
 apply_attempts() {
   case "$1" in
-    local-ca | istio-gateway | cnpg-clusters) echo 10 ;;
+    local-ca | istio-gateway | cnpg-clusters | keycloak) echo 10 ;;
     *) echo 1 ;;
   esac
 }
@@ -209,13 +222,32 @@ wait_keycloak_operator_crds() {
   wait_crds_established keycloak-operator-crds
 }
 
-# keycloak-operator: the next phase applies Keycloak and KeycloakRealmImport
-# CRs that need the operator reconciling, so gate on its rollout.  The first
-# pull of the multi-arch quay.io/keycloak/keycloak-operator image may be
-# slow — ROLLOUT_TIMEOUT covers it.
+# keycloak-operator: the keycloak component applies Keycloak and
+# KeycloakRealmImport CRs that need the operator reconciling, so gate on its
+# rollout.  The first pull of the multi-arch
+# quay.io/keycloak/keycloak-operator image may be slow — ROLLOUT_TIMEOUT
+# covers it.
 wait_keycloak_operator() {
   kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
     rollout status deployment/keycloak-operator --timeout="${ROLLOUT_TIMEOUT}"
+}
+
+# keycloak: the Layer 1 smoke check.  First the Keycloak CR Ready condition
+# — the server started against the CNPG database with its TLS certificate —
+# then the KeycloakRealmImport Done condition, so the script cannot exit
+# successfully while the holos realm import Job is still running or has
+# failed (a failed import never reaches Done and times out here; the
+# operator's import Job only starts once the server is Ready, hence the
+# wait order).  The first reconcile pulls the multi-arch
+# quay.io/keycloak/keycloak image and runs the database schema migrations,
+# so both waits get the more generous KEYCLOAK_TIMEOUT.  Route attachment
+# is level-triggered; verify the traffic path separately (see
+# holos/README.md).
+wait_keycloak() {
+  kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
+    wait keycloak/keycloak --for=condition=Ready --timeout="${KEYCLOAK_TIMEOUT}"
+  kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
+    wait keycloakrealmimport/holos --for=condition=Done --timeout="${KEYCLOAK_TIMEOUT}"
 }
 
 if ! command -v kubectl >/dev/null 2>&1; then

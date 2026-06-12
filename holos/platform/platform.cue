@@ -235,6 +235,23 @@ platform: {
 				cluster:   CLUSTER.name
 				labels: app: "keycloak"
 			}}).output
+
+			// keycloak emits the Keycloak server instance: the Keycloak CR,
+			// its TLS Certificate, the declarative holos realm import, the
+			// HTTPRoute attaching it to the shared Gateway, and the
+			// DestinationRule for the Gateway→Keycloak TLS hop.  Applies
+			// last in scripts/apply: its CRs need the operator reconciling
+			// and the keycloak-db Cluster reachable, and its Certificate
+			// needs the cert-manager webhook admitting — hence the retried
+			// apply — with gates on the Keycloak CR Ready and realm import
+			// Done conditions as the Layer 1 smoke check.
+			(#ComponentTemplate & {inputs: {
+				name:      "keycloak"
+				component: "instance"
+				prefix:    "components/keycloak"
+				cluster:   CLUSTER.name
+				labels: app: "keycloak"
+			}}).output
 		}
 	}
 }
