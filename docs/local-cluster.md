@@ -419,16 +419,25 @@ kubectl -n nats run nats-get-tasks --rm -i --restart=Never --image=natsio/nats-b
   nats --server "$SERVER" stream get TASKS --last-for=tasks.deploy
 ```
 
-**Idempotency under redelivery.** The subscriber sets the JetStream
-`Nats-Msg-Id` dedupe header on each publish, so a redelivered raw event collapses
-to a single task on `tasks.deploy`, while a later genuine push of the same tag
-(a distinct WEBHOOKS stream sequence) is not swallowed. Confirm the stream did
-not accumulate duplicates after a single push:
+**Idempotency header.** The dedupe that protects against redelivery lives on
+each published message: the subscriber stamps a `Nats-Msg-Id` header of
+`<WEBHOOKS-stream-sequence>:<idempotencyKey>`, and JetStream's per-stream
+deduplication window collapses any republish carrying the same id (the effect
+when a redelivered raw event is re-processed) while still admitting a later
+genuine push of the same tag, which arrives at a distinct WEBHOOKS sequence and
+so a distinct id. Inspect the header on the task the push above produced — it is
+the observable evidence of the dedupe contract (forcing an actual raw-event
+redelivery from the CLI is not a simple step; see the
+[DeployTask contract](../holos/README.md#webhook-subscriber-and-deploytask-contract)
+for the full durability story):
 
 ```bash
-kubectl -n nats run nats-info-tasks --rm -i --restart=Never --image=natsio/nats-box:0.19.7 -- \
-  nats --server "$SERVER" stream info TASKS        # Messages reflects one task per pushed tag
+kubectl -n nats run nats-get-tasks-hdr --rm -i --restart=Never --image=natsio/nats-box:0.19.7 -- \
+  nats --server "$SERVER" stream get TASKS --last-for=tasks.deploy   # Headers show Nats-Msg-Id: <seq>:<key>
 ```
+
+Because the subject is a WorkQueue, a single push leaves exactly one task per
+pushed tag on `tasks.deploy` — no duplicates accumulate from normal processing.
 
 **Poison messages are Term'd, not redelivered.** An unparseable or
 unknown-source body cannot be turned into a task, so the subscriber `Term`s it

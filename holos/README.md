@@ -649,8 +649,8 @@ top-level prefixes, one per stream:
 | Subject | Published by | Meaning |
 |---------|--------------|---------|
 | `webhooks.quay` | Webhook receiver ([ADR-9](../docs/adr/ADR-9.md)) | Raw Quay repository-push webhook bodies, written verbatim with no parsing |
-| `tasks.render` | Webhook subscriber ([ADR-10](../docs/adr/ADR-10.md)) | Normalized **render task** — an app-image push matched an `Application`'s app-image repository ([ADR-13](../docs/adr/ADR-13.md)) |
-| `tasks.deploy` | Webhook subscriber ([ADR-10](../docs/adr/ADR-10.md)) | Normalized **deploy task** — a config-image push matched an `Application`'s configuration repository ([ADR-13](../docs/adr/ADR-13.md)) |
+| `tasks.deploy` | Webhook subscriber ([ADR-10](../docs/adr/ADR-10.md)) | Normalized **deploy task** ([DeployTask contract](#webhook-subscriber-and-deploytask-contract)) — the **only** subject the shipped subscriber emits; per [ADR-13](../docs/adr/ADR-13.md) the eventual design reserves it for a config-image push matched to an `Application`'s configuration repository |
+| `tasks.render` | Webhook subscriber ([ADR-10](../docs/adr/ADR-10.md)) | Normalized **render task** — an app-image push matched an `Application`'s app-image repository ([ADR-13](../docs/adr/ADR-13.md)). **Not yet emitted**: the KRM-matching routing that produces it is deferred (see the [subscriber contract](#webhook-subscriber-and-deploytask-contract)) |
 
 The streams capture these with wildcard subjects (`webhooks.>`, `tasks.>`) so
 the receiver and subscriber can introduce additional sources or task types
@@ -658,7 +658,11 @@ without re-provisioning a stream. The `webhooks.>` wildcard deliberately
 matches ADR-13's `webhooks.quay` producer subject rather than the narrower
 `webhooks.raw.<source>` sketched in the M0 planning notes, which predates
 ADR-13 and would not match `webhooks.quay`. [ADR-13](../docs/adr/ADR-13.md)
-defines the render-vs-deploy task split.
+defines the render-vs-deploy task split; the shipped subscriber implements only
+the direct `tasks.deploy` slice — it performs no KRM match and publishes every
+parsed tag as a `DeployTask`, so `tasks.render` and the match-driven routing of
+`tasks.deploy` are deferred (see the
+[subscriber contract](#webhook-subscriber-and-deploytask-contract)).
 
 **Stream definitions.** The `nats-stream-bootstrap` Job creates both streams
 with WorkQueue retention (each message is delivered to exactly one consumer
@@ -928,12 +932,16 @@ DeployTask per tag, each with its own `tag` and its own idempotency key
 ([ADR-13](../docs/adr/ADR-13.md), "one task per pushed tag").
 
 The **idempotency key** is the hex-encoded SHA-256 of the length-prefixed
-`(source, repository, tag, docker_url)` tuple, so it is stable across
-redeliveries of the same raw event yet distinct between separate pushes (even of
-the same mutable tag). The JetStream publish carries it qualified by the WEBHOOKS
-stream sequence as the `Nats-Msg-Id` dedupe header (see durability below), not by
-itself — the bare key omits any per-event component and would collapse two
-genuine pushes of the same tag.
+`(source, repository, tag, docker_url)` tuple, so it is **stable across
+redeliveries of the same raw event**: a redelivered Quay push yields a
+byte-identical key, letting the deployer deduplicate without coordinating state.
+It is deliberately **not** push-unique — two separate pushes of the same tag to
+the same repository hash to the same key, because the tuple carries no per-event
+component. JetStream publish dedupe therefore uses the key qualified by the
+WEBHOOKS stream sequence as the `Nats-Msg-Id` header (see durability below), not
+the bare key — the stream sequence is the per-event identity that distinguishes
+two genuine pushes of the same tag, which the bare key alone would otherwise
+collapse.
 
 **Durability and retry story.** The subscriber consumes through a **durable
 pull consumer** (`webhook-subscriber`) on the `WEBHOOKS` stream with explicit
