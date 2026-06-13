@@ -759,7 +759,8 @@ planning notes. The subject prefix, listen address, and max body size are
 configurable via flags or `HOLOS_PAAS_*` environment variables (see
 `webhook-receiver --help`).
 
-**Status codes.**
+**Status codes** (the handler's contract; see the ingress note below for which
+of these are reachable at `hooks.holos.localhost`):
 
 | Code | Meaning |
 |------|---------|
@@ -767,8 +768,16 @@ configurable via flags or `HOLOS_PAAS_*` environment variables (see
 | `503 Service Unavailable` | The publish failed or NATS is unreachable — the event is **not** stored, so the sender must retry |
 | `413 Request Entity Too Large` | The body exceeded the configured `--max-body-bytes` (default 1 MiB) and was rejected before any publish |
 | `400 Bad Request` | The body could not be read (e.g. a truncated request) |
-| `404 Not Found` | The path did not match `/webhooks/{source}` — the Go 1.22 `ServeMux` `{source}` segment matches exactly one path element, so `/webhooks/quay/extra`, `/webhooks/` with an empty source, and any non-`/webhooks/` path get `404` even though the HTTPRoute forwards the whole `/webhooks/` prefix |
+| `404 Not Found` | The path did not match `/webhooks/{source}` — the Go 1.22 `ServeMux` `{source}` segment matches exactly one path element, so `/webhooks/quay/extra` and `/webhooks/` with an empty source get `404` |
 | `405 Method Not Allowed` | A matching path with a method other than `POST` (e.g. `GET /webhooks/quay`) |
+
+The `HTTPRoute` at `hooks.holos.localhost` forwards **only** `POST` requests
+with the `/webhooks/` prefix (it matches `method: POST`, `path prefix
+/webhooks/`). So externally a non-`POST` method or a non-`/webhooks/` path is
+rejected by the Gateway and never reaches the handler — the `404`/`405` rows
+above describe the handler's own behavior, exercised either by a request the
+Gateway does forward (e.g. `POST /webhooks/quay/extra` → `404`) or by reaching
+the ClusterIP `Service` directly in-cluster.
 
 **Body + header framing.** The raw request body becomes the NATS message
 payload verbatim. A small, provider-agnostic allowlist of HTTP headers is copied

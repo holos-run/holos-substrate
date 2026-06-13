@@ -150,22 +150,28 @@ unauthenticated local-only posture are documented in
 with end-to-end verification in
 [`docs/local-cluster.md`](../local-cluster.md#verify-the-webhook-receiver).
 
-**Planning hints / work to flesh out:**
+**Original planning hints (all resolved — see ADR-9 revision 2):**
 
-- Subject name + stream config (replicas, max age/bytes, duplicate window).
-- Framing: raw body as payload, useful HTTP headers as NATS headers.
-- Edge auth / signature verification (reject forged senders cheaply here).
-- Ack semantics matching the chosen registry's retry expectations.
+- Subject name + stream config (replicas, max age/bytes, duplicate window) →
+  `webhooks.<source>` on the `WEBHOOKS` WorkQueue stream; explicit stream
+  limits owned by the NATS backbone issues.
+- Framing: raw body as payload, curated HTTP headers as NATS headers.
+- Edge auth / signature verification → deferred to the subscriber for the MVP;
+  edge verification tracked as [HOL-1200](https://linear.app/holos-run/issue/HOL-1200).
+- Ack semantics: `202` only after the JetStream `PubAck`, `503` (sender retry)
+  when the publish fails.
 
 **Acceptance criteria:**
 
 - A webhook POST is persisted to JetStream and acked before downstream runs.
 - If JetStream is unavailable, the receiver returns an error so the sender retries.
 
-Both verified live on the k3d-holos cluster in HOL-1198. Edge signature
-verification is deferred to a future enhancement
-([HOL-1200](https://linear.app/holos-run/issue/HOL-1200)); for the MVP the
-receiver is unauthenticated and reachable only on the local cluster.
+Both verified live on the k3d-holos cluster in HOL-1198. For the MVP the
+receiver is **unauthenticated**: from outside the cluster it is exposed only at
+`hooks.holos.localhost` through the shared Gateway, and its in-cluster ClusterIP
+Service has no ingress policy (consistent with the no-in-cluster-auth posture).
+Edge signature verification is a deferred future enhancement
+([HOL-1200](https://linear.app/holos-run/issue/HOL-1200)).
 
 ---
 
