@@ -43,6 +43,45 @@ let NAMESPACE = "nats" & #RegisteredNamespace
 
 let NAME = "nats"
 
+// The NATS server runs without authentication this phase (MVP posture), so
+// "in-cluster clients only" cannot rely on the broker itself — Istio ambient
+// enrollment (holos/namespaces.cue) provides mTLS transport and L4 identity,
+// but not default-deny access control.  This AuthorizationPolicy makes the
+// in-cluster-only claim true by construction the same way the quay component's
+// REDIS_AUTHZ does for unauthenticated Redis: it selects the NATS pods and
+// ALLOWs only same-namespace sources, so arbitrary cross-namespace pods cannot
+// reach the unauthenticated client port (4222) or the monitoring endpoint
+// (8222) — Codex flagged both as cluster-wide-reachable without a policy.
+// Kubelet health probes are exempt from ambient capture, so the StatefulSet's
+// /healthz probes on the monitor port keep working.  The next phase (HOL-1193)
+// extends this to ALLOW the specific producer/consumer ServiceAccounts in
+// other namespaces as clients are introduced.
+let AUTHZ = {
+	apiVersion: "security.istio.io/v1"
+	kind:       "AuthorizationPolicy"
+	metadata: {
+		name:      NAME
+		namespace: NAMESPACE
+		labels: "app.kubernetes.io/name": NAME
+	}
+	spec: {
+		// The chart's StatefulSet pod labels (verified against the rendered
+		// statefulset-nats.yaml; re-verify when bumping NATSChartVersion).
+		selector: matchLabels: {
+			"app.kubernetes.io/name":      NAME
+			"app.kubernetes.io/instance":  NAME
+			"app.kubernetes.io/component": NAME
+		}
+		action: "ALLOW"
+		// Allow only sources in the nats namespace.  An ALLOW policy with a
+		// rule denies everything the rule does not match, so cross-namespace
+		// pods are rejected until HOL-1193 adds their principals explicitly.
+		rules: [{
+			from: [{source: namespaces: [NAMESPACE]}]
+		}]
+	}
+}
+
 userDefinedBuildPlan: {
 	metadata: name: NAME
 	spec: artifacts: manifests: {
@@ -125,6 +164,15 @@ userDefinedBuildPlan: {
 						// runs as its own Job, not from this pod.
 						natsBox: enabled: false
 					}
+				}
+			}, {
+				kind:   "Resources"
+				output: "resources.gen.yaml"
+				// Unify with #Resources (holos/resources.cue) so the
+				// hand-authored AuthorizationPolicy validates against the
+				// vendored Istio schema at render time.
+				resources: #Resources & {
+					AuthorizationPolicy: (AUTHZ.metadata.name): AUTHZ
 				}
 			}]
 			transformers: [
