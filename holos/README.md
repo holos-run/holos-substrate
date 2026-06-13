@@ -766,7 +766,9 @@ configurable via flags or `HOLOS_PAAS_*` environment variables (see
 | `202 Accepted` | The body was published **and** the JetStream `PubAck` returned — the event is durably stored on the `WEBHOOKS` stream |
 | `503 Service Unavailable` | The publish failed or NATS is unreachable — the event is **not** stored, so the sender must retry |
 | `413 Request Entity Too Large` | The body exceeded the configured `--max-body-bytes` (default 1 MiB) and was rejected before any publish |
-| `400` / `405` | Body read error, or a method/path other than `POST /webhooks/{source}` |
+| `400 Bad Request` | The body could not be read (e.g. a truncated request) |
+| `404 Not Found` | The path did not match `/webhooks/{source}` — the Go 1.22 `ServeMux` `{source}` segment matches exactly one path element, so `/webhooks/quay/extra`, `/webhooks/` with an empty source, and any non-`/webhooks/` path get `404` even though the HTTPRoute forwards the whole `/webhooks/` prefix |
+| `405 Method Not Allowed` | A matching path with a method other than `POST` (e.g. `GET /webhooks/quay`) |
 
 **Body + header framing.** The raw request body becomes the NATS message
 payload verbatim. A small, provider-agnostic allowlist of HTTP headers is copied
