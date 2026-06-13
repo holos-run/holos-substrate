@@ -361,10 +361,13 @@ pre_keycloak_config() {
 # always creates a fresh Job and this gate waits on a genuinely new run — never a
 # stale Complete Job from an earlier apply (including a revert to a previously
 # applied config within the TTL window).  The Job name is read from the rendered
-# manifest the apply step just used — the single committed job-*.yaml under the
-# component's deploy directory — so the gate waits on exactly that Job (its name
-# carries the config hash) rather than label-matching, which keeps the gate
-# robust even if a delete ever leaves a terminating same-label Job mid-poll.
+# manifest the apply step just used — the single committed
+# job-keycloak-config-*.yaml under the component's deploy directory — so the gate
+# waits on exactly that Job (its name carries the config hash) rather than
+# label-matching, which keeps the gate robust even if a delete ever leaves a
+# terminating same-label Job mid-poll.  The glob is scoped to the reconcile Job's
+# keycloak-config- prefix so the component's other Jobs (the quay-oidc secret
+# bootstrap, rendered as job-quay-oidc-bootstrap.yaml) never match it.
 #
 # The Job is polled instead of handed to `kubectl wait --for=condition=Complete`
 # so a Failed Job fails the gate on the next poll rather than blocking the full
@@ -381,11 +384,13 @@ wait_keycloak_config() {
   local job_state lookup_failures=0
   # Resolve the rendered Job's name from the committed manifest the apply just
   # used, so the gate waits on exactly that Job (its name carries the config
-  # hash).  Exactly one job-*.yaml renders per apply; fail clearly if that
-  # assumption breaks rather than silently waiting on the wrong object.
-  local job_file job_files=("${COMPONENTS_DIR}/keycloak-config"/job-*.yaml)
+  # hash).  Exactly one job-keycloak-config-*.yaml renders per apply (the
+  # reconcile Job); the prefix excludes the component's quay-oidc bootstrap Job.
+  # Fail clearly if that assumption breaks rather than silently waiting on the
+  # wrong object.
+  local job_file job_files=("${COMPONENTS_DIR}/keycloak-config"/job-keycloak-config-*.yaml)
   if [[ ${#job_files[@]} -ne 1 || ! -e "${job_files[0]}" ]]; then
-    echo "ERROR: expected exactly one keycloak-config job manifest, found ${#job_files[@]}." >&2
+    echo "ERROR: expected exactly one keycloak-config reconcile job manifest, found ${#job_files[@]}." >&2
     return 1
   fi
   job_file="${job_files[0]}"
@@ -435,6 +440,35 @@ wait_keycloak_config() {
       return 1
     fi
     sleep 5
+  done
+
+  # The quay-oidc bootstrap Job (job-quay-oidc-bootstrap.yaml) generates the
+  # shared OIDC client secret once and writes the quay-oidc Secret into BOTH the
+  # keycloak namespace (consumed by the reconcile Job above) and the quay
+  # namespace (consumed by the Quay Deployment in HOL-1219).  The reconcile Job
+  # only reads the keycloak-side copy, so a partial bootstrap failure that wrote
+  # the keycloak Secret but not the quay one would let the reconcile Job
+  # complete while leaving the quay namespace without its credential.  Verify
+  # both copies exist before considering keycloak-config done, naming the gap
+  # here instead of letting it surface as a confusing failure two components
+  # later in quay.  The Secret's existence — not the bootstrap Job's liveness —
+  # is the actual contract (the Job carries a ttlSecondsAfterFinished and may be
+  # GC'd), so this checks the Secrets directly and tolerates an absent Job.
+  local ns
+  for ns in keycloak quay; do
+    local secret_deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+    while true; do
+      if kubectl --context "${KUBE_CONTEXT}" --namespace "${ns}" \
+        get secret quay-oidc --request-timeout=10s >/dev/null 2>&1; then
+        break
+      fi
+      if ((SECONDS >= secret_deadline)); then
+        echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for the quay-oidc Secret in namespace ${ns}; inspect the bootstrap Job with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} --namespace keycloak describe job/quay-oidc-bootstrap" >&2
+        return 1
+      fi
+      sleep 5
+    done
   done
 }
 
