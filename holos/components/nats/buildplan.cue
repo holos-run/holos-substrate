@@ -180,7 +180,7 @@ let BOOTSTRAP_SCRIPT = """
 // ttlSecondsAfterFinished garbage-collects it a day after completion — after
 // that a re-apply recreates the Job, which converges the already-created
 // streams and exits 0.  Only a pod-template change within the TTL window
-// (e.g. editing STREAMS or BOOTSTRAP_SCRIPT) requires deleting the old Job
+// (e.g. editing BOOTSTRAP_SCRIPT) requires deleting the old Job
 // first (kubectl -n nats delete job nats-stream-bootstrap) — the streams it
 // created survive in JetStream's file store, and the new Job converges them.
 let BOOTSTRAP_JOB = {
@@ -217,9 +217,15 @@ let BOOTSTRAP_JOB = {
 					name:  "bootstrap"
 					image: NATS_BOX_IMAGE
 					command: ["/bin/sh", "-c", BOOTSTRAP_SCRIPT]
-					// The nats CLI writes its context/state under $HOME; point
-					// it at the writable emptyDir since the root filesystem is
-					// read-only (the quay bootstrap precedent).
+					// The nats-box image's working directory is /root (mode
+					// 700, owned by root), which uid 65534 cannot even stat —
+					// and the nats CLI stats the working directory while
+					// validating a stream config, so `stream add` fails with
+					// "stat .: permission denied" from /root.  Run from /tmp
+					// (the writable emptyDir) instead so the stat — and the
+					// CLI's context/state writes under $HOME, also pointed at
+					// /tmp — succeed under the read-only root filesystem.
+					workingDir: "/tmp"
 					env: [{
 						name:  "HOME"
 						value: "/tmp"

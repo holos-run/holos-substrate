@@ -67,6 +67,7 @@ spec:
         volumeMounts:
         - mountPath: /tmp
           name: tmp
+        workingDir: /tmp
       restartPolicy: Never
       securityContext:
         runAsGroup: 65534
