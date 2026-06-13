@@ -121,13 +121,31 @@ jobs:
       - name: buf lint
         run: buf lint
 
-      # buf breaking makes a wire-incompatible schema change a build failure
-      # against the merge base rather than a production surprise on the
-      # at-least-once pipeline (ADR-14). Skipped on push to main, where there is
-      # no PR base to diff against.
-      - name: buf breaking
+      # Fetch the PR base branch so buf breaking can diff against it, and detect
+      # whether the base already has a Buf module. buf breaking errors with "had
+      # no .proto files" when the base predates the Buf module (e.g. the very PR
+      # that introduces protobuf support), so the breaking check below is gated
+      # on the base actually carrying buf.yaml.
+      - name: detect base Buf module
         if: github.event_name == 'pull_request'
-        run: buf breaking --against "https://github.com/${{ github.repository }}.git#branch=${{ github.base_ref }}"
+        id: base_buf
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin "${{ github.base_ref }}"
+          if git cat-file -e "origin/${{ github.base_ref }}:buf.yaml" 2>/dev/null; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "Base branch ${{ github.base_ref }} has no buf.yaml; skipping buf breaking (nothing to break against)."
+          fi
+
+      # buf breaking makes a wire-incompatible schema change a build failure
+      # against the PR base rather than a production surprise on the
+      # at-least-once pipeline (ADR-14). Skipped on push to main (no PR base) and
+      # on the PR that first introduces the Buf module (no base module to diff).
+      - name: buf breaking
+        if: github.event_name == 'pull_request' && steps.base_buf.outputs.present == 'true'
+        run: buf breaking --against ".git#branch=origin/${{ github.base_ref }}"
 
       # The .proto under proto/ is the single source of truth; the Go under
       # internal/gen/ is a generated build output that must match it. The script

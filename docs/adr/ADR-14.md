@@ -120,8 +120,17 @@ by hand.**
 ### The MVP message set
 
 Three messages cover the MVP's two-loop flow ([ADR-13](ADR-13.md)). The
-following are illustrative sketches — the committed `.proto` is the source of
-truth.
+following are illustrative sketches — the committed
+[`proto/holos/paas/pipeline/v1alpha1/pipeline.proto`](../../proto/holos/paas/pipeline/v1alpha1/pipeline.proto)
+is the source of truth and authoritative on field names and numbers. As
+implemented for HOL-1206 the sketches were refined: each task message carries an
+in-band `int32 schema_version = 1` (so a consumer can fail closed on an unknown
+version even though the package path is the coarse version), the remaining
+fields are renumbered after it, and `DeployTask`'s configuration repository is
+the general `repository` field rather than a `config_repository` field —
+KRM-match-driven routing that distinguishes a config push from an app push is
+deferred (ADR-13). Read the `.proto`, not these sketches, for the exact wire
+contract.
 
 **1. Raw webhook — `QuayRepositoryPush`.** The typed model of Quay's
 `repository_push` notification ([ADR-8](ADR-8.md)), the parse target for the raw
