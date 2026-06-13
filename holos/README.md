@@ -679,7 +679,8 @@ consume-and-ack:
 
 ```bash
 kubectl -n nats run nats-box --rm -it --restart=Never --image=natsio/nats-box:0.19.7 -- sh
-# inside the pod (SERVER=nats://nats.nats.svc.cluster.local:4222):
+# inside the pod:
+SERVER=nats://nats.nats.svc.cluster.local:4222
 nats --server "$SERVER" pub webhooks.quay 'quay-event'   # Published — accepted by WEBHOOKS
 nats --server "$SERVER" stream info WEBHOOKS             # Messages: 1
 # in another terminal, restart the server pod:
