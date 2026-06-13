@@ -525,8 +525,12 @@ let QUAY_OIDC_BOOTSTRAP = "quay-oidc-bootstrap"
 
 // The bootstrap resources carry their own app.kubernetes.io/name — NOT the
 // keycloak-config Job's NAME — so the wait_keycloak_config gate's
-// label-independent name resolution and the pre_keycloak_config delete (which
-// selects app.kubernetes.io/name=keycloak-config) never touch this Job.
+// label-independent name resolution and the keycloak-config-Job delete in
+// pre_keycloak_config (which selects app.kubernetes.io/name=keycloak-config)
+// never touch this Job.  pre_keycloak_config issues a SEPARATE delete selecting
+// app.kubernetes.io/name=quay-oidc-bootstrap so this Job, too, re-runs on every
+// apply (its name is constant, with no config hash to force a fresh Job), which
+// re-runs a previously Failed bootstrap and lets the gate observe its outcome.
 let QUAY_OIDC_BOOTSTRAP_METADATA = {
 	name:      QUAY_OIDC_BOOTSTRAP
 	namespace: NAMESPACE
@@ -668,14 +672,15 @@ let QUAY_OIDC_BOOTSTRAP_ROLE_QUAY = QUAY_OIDC_BOOTSTRAP_ROLE & {#namespace: QUAY
 let QUAY_OIDC_BOOTSTRAP_ROLE_BINDING_KEYCLOAK = QUAY_OIDC_BOOTSTRAP_ROLE_BINDING & {#namespace: NAMESPACE}
 let QUAY_OIDC_BOOTSTRAP_ROLE_BINDING_QUAY = QUAY_OIDC_BOOTSTRAP_ROLE_BINDING & {#namespace: QUAY_NAMESPACE}
 
-// CAVEAT: a completed Job's pod template is immutable.  Server-side re-apply of
-// this unchanged spec is a no-op while the Job exists, and
-// ttlSecondsAfterFinished garbage-collects it a day after completion — after
-// that a re-apply recreates the Job, which exits 0 against the existing Secret
-// in each namespace.  Only a pod-template change within the TTL window requires
-// deleting the old Job first (kubectl -n keycloak delete job
-// quay-oidc-bootstrap) — the Secrets it created survive, and the new Job exits 0
-// without touching them.  The quay-secret-keys-bootstrap precedent.
+// A completed Job's pod template is immutable, so a plain re-apply of this
+// unchanged spec is a no-op while the Job exists.  Unlike the quay
+// quay-secret-keys-bootstrap, this Job is deleted and recreated on every apply
+// by pre_keycloak_config (see scripts/apply), so it always re-runs: a forward
+// spec change, a previously Failed run, and a routine re-apply all get a fresh
+// Job, and wait_keycloak_config can observe its outcome.  The Job is idempotent
+// — it exits 0 leaving existing Secrets untouched (the create-if-absent script
+// above) — and the Secrets are separate objects that survive the Job deletion,
+// so the generate-once guarantee holds across re-runs.
 let QUAY_OIDC_BOOTSTRAP_JOB = {
 	apiVersion: "batch/v1"
 	kind:       "Job"
