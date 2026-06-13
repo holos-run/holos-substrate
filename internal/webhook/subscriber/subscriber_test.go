@@ -222,6 +222,121 @@ func TestSubscriber_UnknownSourceTerminated(t *testing.T) {
 	}
 }
 
+// failingPublisher always returns err from Publish.
+type failingPublisher struct{ err error }
+
+func (f failingPublisher) Publish(context.Context, string, []byte, natsgo.Header) error {
+	return f.err
+}
+
+// fakeMsg is a minimal jetstream.Msg recording how it was settled. It
+// implements only the methods the Consumer calls.
+type fakeMsg struct {
+	data         []byte
+	subject      string
+	headers      natsgo.Header
+	numDelivered uint64
+
+	acked      bool
+	nakd       bool
+	nakDelay   time.Duration
+	nakDelayed bool
+	termd      bool
+}
+
+func (m *fakeMsg) Metadata() (*jetstream.MsgMetadata, error) {
+	return &jetstream.MsgMetadata{
+		NumDelivered: m.numDelivered,
+		Sequence:     jetstream.SequencePair{Stream: 42},
+	}, nil
+}
+func (m *fakeMsg) Data() []byte           { return m.data }
+func (m *fakeMsg) Headers() natsgo.Header { return m.headers }
+func (m *fakeMsg) Subject() string        { return m.subject }
+func (m *fakeMsg) Reply() string          { return "" }
+func (m *fakeMsg) Ack() error             { m.acked = true; return nil }
+func (m *fakeMsg) DoubleAck(context.Context) error {
+	m.acked = true
+	return nil
+}
+func (m *fakeMsg) Nak() error { m.nakd = true; return nil }
+func (m *fakeMsg) NakWithDelay(d time.Duration) error {
+	m.nakd = true
+	m.nakDelayed = true
+	m.nakDelay = d
+	return nil
+}
+func (m *fakeMsg) InProgress() error { return nil }
+func (m *fakeMsg) Term() error       { m.termd = true; return nil }
+func (m *fakeMsg) TermWithReason(string) error {
+	m.termd = true
+	return nil
+}
+
+// TestHandle_PublishFailureNaksWithBackoff asserts a transient publish failure
+// on a non-final delivery is Nak'd *with* the configured backoff delay (not a
+// bare instant Nak), so the bounded MaxDeliver budget is not burned through
+// instantly.
+func TestHandle_PublishFailureNaksWithBackoff(t *testing.T) {
+	c := New(Config{
+		Publisher:  failingPublisher{err: context.DeadlineExceeded},
+		Registry:   DefaultRegistry(),
+		Logger:     slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		MaxDeliver: 5,
+		NakBackoff: 3 * time.Second,
+	})
+	msg := &fakeMsg{
+		data:         []byte(`{"repository":"holos/sample-app","updated_tags":["v2"]}`),
+		subject:      "webhooks.quay",
+		numDelivered: 1,
+	}
+	c.Handle(msg)
+
+	if !msg.nakDelayed {
+		t.Error("publish failure must Nak with delay, not a bare Nak")
+	}
+	if msg.nakDelay != 3*time.Second {
+		t.Errorf("nak delay = %v, want 3s", msg.nakDelay)
+	}
+	if msg.termd || msg.acked {
+		t.Error("non-final delivery must not be Term'd or Ack'd")
+	}
+}
+
+// TestHandle_PublishFailureFinalDeliveryTerminates asserts that on the final
+// delivery a still-failing publish Terminates the message (it stops being
+// redelivered) rather than Nak-looping forever.
+func TestHandle_PublishFailureFinalDeliveryTerminates(t *testing.T) {
+	c := New(Config{
+		Publisher:  failingPublisher{err: context.DeadlineExceeded},
+		Registry:   DefaultRegistry(),
+		Logger:     slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		MaxDeliver: 5,
+	})
+	msg := &fakeMsg{
+		data:         []byte(`{"repository":"holos/sample-app","updated_tags":["v2"]}`),
+		subject:      "webhooks.quay",
+		numDelivered: 5, // final permitted delivery
+	}
+	c.Handle(msg)
+
+	if !msg.termd {
+		t.Error("final-delivery publish failure must Term the message")
+	}
+	if msg.nakd || msg.acked {
+		t.Error("final-delivery failure must not Nak or Ack")
+	}
+}
+
+// TestNewDefaultsNakBackoff asserts the fallback backoff is applied when none
+// is configured, so a zero-value Config never yields an instant Nak loop.
+func TestNewDefaultsNakBackoff(t *testing.T) {
+	c := New(Config{Publisher: failingPublisher{err: context.DeadlineExceeded}})
+	if c.nakBackoff != fallbackNakBackoff {
+		t.Errorf("nakBackoff = %v, want fallback %v", c.nakBackoff, fallbackNakBackoff)
+	}
+}
+
 // TestHealthEndpoints covers the liveness/readiness handlers.
 func TestHealthEndpoints(t *testing.T) {
 	t.Run("healthz always 200", func(t *testing.T) {

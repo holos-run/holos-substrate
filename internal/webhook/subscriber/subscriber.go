@@ -25,6 +25,15 @@ import (
 // delivery into an effectively-once DeployTask publish (ADR-13 idempotency).
 const natsMsgIDHeader = "Nats-Msg-Id"
 
+// fallbackNakBackoff is the redelivery delay applied to a transient publish
+// failure when no backoff is configured. A bare Nak redelivers immediately, so
+// a persistently-failing transient condition would burn through MaxDeliver in
+// milliseconds and Term an otherwise-valid event almost instantly. A non-trivial
+// delay spaces redeliveries out so the bounded MaxDeliver budget spans a real
+// outage window, giving a transient NATS/publish problem time to clear before
+// the event is given up on.
+const fallbackNakBackoff = 5 * time.Second
+
 // dedupeID derives the JetStream dedupe identity for one tag's DeployTask from
 // the raw event it was parsed from. It MUST be:
 //
@@ -71,6 +80,11 @@ type Config struct {
 	// configured MaxDeliver. A value <= 0 disables the final-delivery Term and
 	// the loop always Naks transient failures.
 	MaxDeliver int
+	// NakBackoff is the delay before a Nak'd message is redelivered. It spaces
+	// out the bounded MaxDeliver budget so a transient outage has time to clear
+	// rather than exhausting all redeliveries instantly. Defaults to
+	// [fallbackNakBackoff] when <= 0.
+	NakBackoff time.Duration
 }
 
 // Consumer drives the subscriber consume loop: for each raw webhook message it
@@ -85,6 +99,7 @@ type Consumer struct {
 	log        *slog.Logger
 	now        func() time.Time
 	maxDeliver int
+	nakBackoff time.Duration
 }
 
 // New returns a Consumer for cfg, applying defaults for the optional fields.
@@ -101,12 +116,17 @@ func New(cfg Config) *Consumer {
 	if now == nil {
 		now = time.Now
 	}
+	nakBackoff := cfg.NakBackoff
+	if nakBackoff <= 0 {
+		nakBackoff = fallbackNakBackoff
+	}
 	return &Consumer{
 		pub:        cfg.Publisher,
 		registry:   reg,
 		log:        log,
 		now:        now,
 		maxDeliver: cfg.MaxDeliver,
+		nakBackoff: nakBackoff,
 	}
 }
 
@@ -159,8 +179,8 @@ func (c *Consumer) Handle(msg jetstream.Msg) {
 	md, err := msg.Metadata()
 	if err != nil {
 		c.log.Warn("naking message for redelivery: metadata unavailable",
-			"subject", subject, "source", source, "error", err)
-		if nerr := msg.Nak(); nerr != nil {
+			"subject", subject, "source", source, "backoff", c.nakBackoff.String(), "error", err)
+		if nerr := msg.NakWithDelay(c.nakBackoff); nerr != nil {
 			c.log.Error("naking message", "subject", subject, "source", source, "error", nerr)
 		}
 		return
@@ -208,8 +228,12 @@ func (c *Consumer) nakOrTerm(msg jetstream.Msg, subject, source string, streamSe
 		return
 	}
 	c.log.Warn("naking message for redelivery: publish failed",
-		"subject", subject, "source", source, "stream_seq", streamSeq, "tag", tag, "error", cause)
-	if err := msg.Nak(); err != nil {
+		"subject", subject, "source", source, "stream_seq", streamSeq, "tag", tag,
+		"backoff", c.nakBackoff.String(), "error", cause)
+	// NakWithDelay (vs. a bare Nak) spaces redeliveries by nakBackoff so the
+	// bounded MaxDeliver budget spans a real outage window rather than being
+	// burned through instantly (which would Term a valid event).
+	if err := msg.NakWithDelay(c.nakBackoff); err != nil {
 		c.log.Error("naking message", "subject", subject, "source", source, "error", err)
 	}
 }

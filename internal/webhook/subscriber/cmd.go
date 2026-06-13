@@ -25,6 +25,7 @@ const (
 	defaultFilterSubject = "webhooks.>"
 	defaultMaxDeliver    = 5
 	defaultAckWait       = 30 * time.Second
+	defaultNakBackoff    = 5 * time.Second
 	shutdownTimeout      = 10 * time.Second
 )
 
@@ -37,6 +38,7 @@ type options struct {
 	filterSubject string
 	maxDeliver    int64
 	ackWait       time.Duration
+	nakBackoff    time.Duration
 }
 
 // NewCommand returns the "webhook-subscriber" cobra subcommand. It connects to
@@ -55,6 +57,7 @@ func NewCommand() *cobra.Command {
 		filterSubject: envOr("HOLOS_PAAS_FILTER_SUBJECT", defaultFilterSubject),
 		maxDeliver:    envInt64Or("HOLOS_PAAS_MAX_DELIVER", defaultMaxDeliver),
 		ackWait:       envDurationOr("HOLOS_PAAS_ACK_WAIT", defaultAckWait),
+		nakBackoff:    envDurationOr("HOLOS_PAAS_NAK_BACKOFF", defaultNakBackoff),
 	}
 
 	cmd := &cobra.Command{
@@ -88,6 +91,8 @@ func NewCommand() *cobra.Command {
 		"maximum redeliveries before a message is terminated (env HOLOS_PAAS_MAX_DELIVER)")
 	f.DurationVar(&opts.ackWait, "ack-wait", opts.ackWait,
 		"how long the server waits for an ack before redelivering (env HOLOS_PAAS_ACK_WAIT)")
+	f.DurationVar(&opts.nakBackoff, "nak-backoff", opts.nakBackoff,
+		"delay before a Nak'd message is redelivered, spacing the MaxDeliver budget (env HOLOS_PAAS_NAK_BACKOFF)")
 
 	return cmd
 }
@@ -108,6 +113,9 @@ func runSubscriber(ctx context.Context, opts *options) error {
 	}
 	if opts.ackWait <= 0 {
 		return fmt.Errorf("ack-wait must be > 0, got %s (env HOLOS_PAAS_ACK_WAIT)", opts.ackWait)
+	}
+	if opts.nakBackoff <= 0 {
+		return fmt.Errorf("nak-backoff must be > 0, got %s (env HOLOS_PAAS_NAK_BACKOFF)", opts.nakBackoff)
 	}
 
 	// Cancel ctx on SIGINT/SIGTERM for graceful shutdown.
@@ -132,6 +140,7 @@ func runSubscriber(ctx context.Context, opts *options) error {
 		Registry:   DefaultRegistry(),
 		Logger:     log,
 		MaxDeliver: int(opts.maxDeliver),
+		NakBackoff: opts.nakBackoff,
 	})
 
 	consumption, err := conn.Consume(ctx, nats.ConsumerConfig{
