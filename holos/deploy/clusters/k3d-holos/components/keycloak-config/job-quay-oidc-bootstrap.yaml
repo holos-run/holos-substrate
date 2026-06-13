@@ -21,18 +21,32 @@ spec:
           random_secret() {
             head -c 256 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c 1-48
           }
-          # Reuse an existing secret value from either namespace so the two copies
-          # always match even if one was created by a prior partial run.
-          existing=""
-          for ns in keycloak quay; do
-            if kubectl -n "$ns" get secret quay-oidc >/dev/null 2>&1; then
-              existing="$(kubectl -n "$ns" get secret quay-oidc \
-                -o jsonpath='{.data.client_secret}' | base64 -d)"
-              break
+          read_secret() {
+            # Echo the decoded client_secret if the Secret exists in $1, else nothing.
+            if kubectl -n "$1" get secret quay-oidc >/dev/null 2>&1; then
+              kubectl -n "$1" get secret quay-oidc \
+                -o jsonpath='{.data.client_secret}' | base64 -d
             fi
-          done
-          if [ -n "$existing" ]; then
-            CLIENT_SECRET="$existing"
+          }
+          KC_SECRET="$(read_secret keycloak)"
+          QUAY_SECRET="$(read_secret quay)"
+          # If both copies already exist they MUST carry the same value — Keycloak and
+          # Quay authenticate with the same client secret.  A mismatch (e.g. the two
+          # namespaces were seeded independently) cannot be silently reconciled by a
+          # create-if-absent Job that never overwrites, so fail loudly and let an
+          # operator delete the wrong copy rather than leaving the two sides
+          # permanently disagreeing.
+          if [ -n "$KC_SECRET" ] && [ -n "$QUAY_SECRET" ] && [ "$KC_SECRET" != "$QUAY_SECRET" ]; then
+            echo "ERROR: quay-oidc differs between the keycloak and quay namespaces." >&2
+            echo "       Delete the incorrect copy so this Job can re-create it from the surviving one." >&2
+            exit 1
+          fi
+          # Reuse whichever copy exists (they match by the check above) so a partial
+          # prior run is completed with the same value; otherwise generate once.
+          if [ -n "$KC_SECRET" ]; then
+            CLIENT_SECRET="$KC_SECRET"
+          elif [ -n "$QUAY_SECRET" ]; then
+            CLIENT_SECRET="$QUAY_SECRET"
           else
             CLIENT_SECRET="$(random_secret)"
           fi

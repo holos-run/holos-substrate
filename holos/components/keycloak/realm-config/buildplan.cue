@@ -55,10 +55,11 @@ let KeycloakConfigCLIImage = "docker.io/adorsys/keycloak-config-cli:6.5.1-26.5.5
 // alpine-based, providing the /bin/sh the Job script needs (the version-matched
 // rancher/kubectl image is scratch-based — no shell).  This matches the pin the
 // quay component uses for its quay-secret-keys bootstrap
-// (components/quay/buildplan.cue); the Job performs only core/v1 Secret
-// get/create, which are version-stable, so the +/-1 minor skew against the live
-// server (v1.31.5+k3s1) is acceptable.  Re-check available tags against the
-// cluster version before bumping.
+// (components/quay/buildplan.cue).  1.33.3 is the oldest tag the alpine/kubectl
+// repository publishes; it exceeds the kubectl +/-1 minor skew recommendation
+// against the live server (v1.31.5+k3s1, two minors back) but the Job performs
+// only core/v1 Secret get/create, which are version-stable.  Re-check available
+// tags against the cluster version before bumping.
 let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 
 // The operator names the Keycloak Service "<cr-name>-service"; with CR name
@@ -446,6 +447,19 @@ let CONFIG_JOB = {
 							name:  "IMPORT_FILES_LOCATIONS"
 							value: "/config/holos.json"
 						},
+						// HOL-1218: enable keycloak-config-cli's $(env:...)
+						// variable substitution so the quay client's
+						// secret: "$(env:QUAY_OIDC_CLIENT_SECRET)" is replaced
+						// with the bootstrapped value at import time.  The CLI
+						// defaults this to false (import.var-substitution.enabled),
+						// which would otherwise import the literal placeholder
+						// string as the confidential client secret.  Substitution
+						// only touches $(...) tokens, so the rest of the realm JSON
+						// (which contains none) is unaffected.
+						{
+							name:  "IMPORT_VARSUBSTITUTION_ENABLED"
+							value: "true"
+						},
 						// keycloak-config-cli is a Spring Boot app; point its
 						// writable temp directory at the /tmp emptyDir so the
 						// read-only root filesystem does not block it.
@@ -534,18 +548,32 @@ let QUAY_OIDC_BOOTSTRAP_SCRIPT = """
 	random_secret() {
 	  head -c 256 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c 1-48
 	}
-	# Reuse an existing secret value from either namespace so the two copies
-	# always match even if one was created by a prior partial run.
-	existing=""
-	for ns in \(NAMESPACE) \(QUAY_NAMESPACE); do
-	  if kubectl -n "$ns" get secret \(QUAY_OIDC_SECRET) >/dev/null 2>&1; then
-	    existing="$(kubectl -n "$ns" get secret \(QUAY_OIDC_SECRET) \\
-	      -o jsonpath='{.data.\(QUAY_OIDC_SECRET_KEY)}' | base64 -d)"
-	    break
+	read_secret() {
+	  # Echo the decoded client_secret if the Secret exists in $1, else nothing.
+	  if kubectl -n "$1" get secret \(QUAY_OIDC_SECRET) >/dev/null 2>&1; then
+	    kubectl -n "$1" get secret \(QUAY_OIDC_SECRET) \\
+	      -o jsonpath='{.data.\(QUAY_OIDC_SECRET_KEY)}' | base64 -d
 	  fi
-	done
-	if [ -n "$existing" ]; then
-	  CLIENT_SECRET="$existing"
+	}
+	KC_SECRET="$(read_secret \(NAMESPACE))"
+	QUAY_SECRET="$(read_secret \(QUAY_NAMESPACE))"
+	# If both copies already exist they MUST carry the same value — Keycloak and
+	# Quay authenticate with the same client secret.  A mismatch (e.g. the two
+	# namespaces were seeded independently) cannot be silently reconciled by a
+	# create-if-absent Job that never overwrites, so fail loudly and let an
+	# operator delete the wrong copy rather than leaving the two sides
+	# permanently disagreeing.
+	if [ -n "$KC_SECRET" ] && [ -n "$QUAY_SECRET" ] && [ "$KC_SECRET" != "$QUAY_SECRET" ]; then
+	  echo "ERROR: \(QUAY_OIDC_SECRET) differs between the \(NAMESPACE) and \(QUAY_NAMESPACE) namespaces." >&2
+	  echo "       Delete the incorrect copy so this Job can re-create it from the surviving one." >&2
+	  exit 1
+	fi
+	# Reuse whichever copy exists (they match by the check above) so a partial
+	# prior run is completed with the same value; otherwise generate once.
+	if [ -n "$KC_SECRET" ]; then
+	  CLIENT_SECRET="$KC_SECRET"
+	elif [ -n "$QUAY_SECRET" ]; then
+	  CLIENT_SECRET="$QUAY_SECRET"
 	else
 	  CLIENT_SECRET="$(random_secret)"
 	fi

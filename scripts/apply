@@ -349,6 +349,17 @@ pre_keycloak_config() {
   kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
     delete job -l app.kubernetes.io/name=keycloak-config \
     --ignore-not-found --cascade=foreground --wait --request-timeout=60s
+  # Also delete the quay-oidc secret bootstrap Job for the same reason: its name
+  # is constant (no config hash), so a prior Complete OR Failed Job is never
+  # re-run by apply.  A Failed bootstrap that never created the quay-oidc Secret
+  # would otherwise wedge wait_keycloak_config forever.  The Job is idempotent
+  # (it exits 0 leaving existing Secrets untouched), so recreating it on every
+  # apply just re-verifies — and repairs a missing — copy in either namespace.
+  # The Secrets it created survive the Job deletion (they are separate objects),
+  # so the generate-once guarantee holds.
+  kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
+    delete job -l app.kubernetes.io/name=quay-oidc-bootstrap \
+    --ignore-not-found --cascade=foreground --wait --request-timeout=60s
 }
 
 # keycloak-config: the realm-reconciliation smoke check.  The keycloak-config-cli
