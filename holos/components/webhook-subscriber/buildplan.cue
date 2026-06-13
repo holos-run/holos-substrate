@@ -25,7 +25,7 @@ package holos
 // The :dev tag matches the Makefile's IMAGE_TAG default (docker-build /
 // docker-push); bump it here in lockstep when publishing a new tag.  The image
 // is built for linux/arm64 (the cluster is k3d on OrbStack/Apple silicon).
-let IMAGE = k3d-registry.holos.localhost:5100/holos-paas:dev"
+let IMAGE = "k3d-registry.holos.localhost:5100/holos-paas:dev"
 
 // The #RegisteredNamespace constraint (holos/namespaces.cue) turns silent
 // drift between this literal and the registry entry into a render failure: if
