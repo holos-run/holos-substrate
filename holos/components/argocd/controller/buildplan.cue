@@ -85,7 +85,7 @@ let HTTPROUTE = {
 	}
 	spec: {
 		parentRefs: [{
-			name:        "default"
+			name:        GATEWAY_NAME
 			namespace:   GATEWAY_NAMESPACE
 			sectionName: "https"
 		}]
@@ -113,7 +113,7 @@ let HTTPROUTE_REDIRECT = {
 	}
 	spec: {
 		parentRefs: [{
-			name:        "default"
+			name:        GATEWAY_NAME
 			namespace:   GATEWAY_NAMESPACE
 			sectionName: "http"
 		}]
@@ -316,6 +316,28 @@ userDefinedBuildPlan: {
 							// reference platform pattern) from OIDC_CONFIG
 							// above.
 							cm: {
+								// Keep the chart's built-in admin account
+								// enabled as deliberate local break-glass
+								// access, NOT a silent chart default: this is
+								// the local k3d MVP cluster, and a clean
+								// bootstrap has no platform-owner realm user
+								// yet, so disabling admin here would lock the
+								// operator out of the UI until they create one
+								// in Keycloak.  The account is constrained by
+								// scope: argocd-server generates its password
+								// into argocd-initial-admin-secret (in-cluster,
+								// not committed) and the UI is reachable only
+								// through the shared Gateway at
+								// argocd.holos.localhost (→ 127.0.0.1, never off
+								// the host).  Keycloak SSO + the groups-claim
+								// RBAC below is the authoritative path for every
+								// real user; when a production cluster is
+								// established (the production deployment area
+								// placeholder in holos/docs/placeholders.md),
+								// set this to "false" so Keycloak is the only
+								// way in.
+								"admin.enabled": "true"
+
 								"oidc.config": yaml.Marshal(OIDC_CONFIG)
 
 								// Accept the local-CA/mkcert backend cert on
