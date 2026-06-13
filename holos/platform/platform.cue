@@ -303,6 +303,19 @@ platform: {
 				cluster:   CLUSTER.name
 				labels: app: "argocd"
 			}}).output
+
+			// nats renders the NATS JetStream server — a single-replica
+			// StatefulSet with filesystem-backed JetStream on a local-path
+			// PVC, a headless Service and a client Service — from the
+			// official upstream NATS Helm chart with a laptop footprint.
+			// Render-only in this phase (HOL-1192): integration into
+			// scripts/apply and the WorkQueue stream creation land in the
+			// next phase (HOL-1193).
+			(#ComponentTemplate & {inputs: {
+				component: "nats"
+				cluster:   CLUSTER.name
+				labels: app: "nats"
+			}}).output
 		}
 	}
 }

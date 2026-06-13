@@ -135,4 +135,17 @@ namespaces: {
 	// argocd leaf components, so it cannot be referenced from here.
 	// argocd.cue asserts at render time that its value is registered here.
 	argocd: _ambient: true
+
+	// nats hosts the single-replica NATS JetStream server
+	// (components/nats); its workloads enroll in the ambient mesh per the
+	// platform convention, following the quay and argocd precedent for
+	// single-replica in-cluster services.  NATS runs without authentication
+	// in this MVP phase, so the in-cluster-only posture relies on the mesh:
+	// ztunnel captures client traffic (port 4222) over HBONE and enforces L4
+	// authorization, and nothing in the cluster reaches NATS from outside the
+	// mesh.  If client traffic is later found not to traverse ambient capture
+	// cleanly, fall back to a Keycloak-style `_ambient: false` exception with
+	// a rationale comment here — see the exceptions section of
+	// holos/docs/mesh-enrollment.md.
+	nats: _ambient: true
 }
