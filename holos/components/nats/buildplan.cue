@@ -8,11 +8,14 @@ package holos
 // instance) with clustering disabled.  No authentication is configured this
 // phase (MVP posture); NATS listens for in-cluster clients only on port 4222.
 //
-// Render-only in this phase (HOL-1192): the component is registered in the
-// platform and renders into the committed deploy tree, but is NOT yet added
-// to scripts/apply and no streams are created — those land in the next phase
-// (HOL-1193).  This mirrors the Argo CD bring-up split (render-only in
-// HOL-1186, apply integration in HOL-1187).
+// The server was brought up render-only in HOL-1192 (registered in the
+// platform, rendered into the committed deploy tree).  This phase (HOL-1193)
+// makes the backbone live and self-bootstrapping: it adds the stream
+// bootstrap Job below — which creates the two file-backed WorkQueue streams
+// (WEBHOOKS, TASKS) idempotently — and integrates the component into
+// scripts/apply with a wait_nats() gate (the bootstrap Job completion plus
+// the StatefulSet rollout).  This mirrors the Argo CD bring-up split
+// (render-only in HOL-1186, apply integration in HOL-1187).
 //
 // The nats Namespace — including its ambient mesh enrollment label — is
 // registered in the central namespaces registry (holos/namespaces.cue) and
@@ -115,11 +118,17 @@ let BOOTSTRAP_METADATA = {
 // The bootstrap script: create the two file-backed WorkQueue streams the
 // platform's NATS backbone needs (HOL-1120) idempotently against the
 // in-cluster NATS client endpoint.  WEBHOOKS ingests raw inbound webhooks
-// (subjects webhooks.raw.>) and TASKS carries internal work (subjects
-// tasks.>).  WorkQueue retention holds each message until a consumer acks it
-// and then removes it; file storage persists the queue across a NATS pod
-// restart.  Keep the stream names/subjects in sync with the subject
-// hierarchy documented in HOL-1194.
+// (subjects webhooks.>) and TASKS carries internal work (subjects tasks.>).
+// The webhooks.> wildcard captures the documented producer subject
+// webhooks.quay (ADR-13's "Raw event published to NATS: webhooks.quay on
+// WEBHOOKS"), so a publish from the receiver matches this stream rather than
+// being rejected; the narrower webhooks.raw.> the issue quoted from HOL-1120
+// predates ADR-13 and would not match webhooks.quay.  tasks.> likewise
+// captures tasks.render and tasks.deploy (ADR-13).  WorkQueue retention holds
+// each message until a consumer acks it and then removes it; file storage
+// persists the queue across a NATS pod restart.  Keep the stream
+// names/subjects in sync with ADR-13 and the subject hierarchy documented in
+// HOL-1194.
 //
 // Idempotency has two layers so the Job is safe to re-run under
 // `kubectl apply` (and after TTL garbage collection):
@@ -162,15 +171,21 @@ let BOOTSTRAP_SCRIPT = """
 	  subjects="$2"
 	  if nats --server "${SERVER}" stream info "${name}" >/dev/null 2>&1; then
 	    echo "Stream ${name} exists; converging config."
+	    # `stream edit` only accepts mutable fields: --storage is rejected
+	    # ("unknown long flag '--storage'") because a stream's storage backend
+	    # is immutable after creation, so converge only the subjects (and
+	    # re-assert the retention policy, which edit does accept).  The
+	    # storage=file guarantee is established by `stream add` below and never
+	    # changes.
 	    nats --server "${SERVER}" stream edit --force \\
-	      --subjects="${subjects}" --retention=work --storage=file "${name}"
+	      --subjects="${subjects}" --retention=work "${name}"
 	  else
 	    echo "Creating stream ${name}."
 	    nats --server "${SERVER}" stream add --defaults \\
 	      --subjects="${subjects}" --retention=work --storage=file "${name}"
 	  fi
 	}
-	converge_stream WEBHOOKS 'webhooks.raw.>'
+	converge_stream WEBHOOKS 'webhooks.>'
 	converge_stream TASKS 'tasks.>'
 	echo "Stream bootstrap complete."
 	"""

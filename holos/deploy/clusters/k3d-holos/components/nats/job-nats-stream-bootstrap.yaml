@@ -36,15 +36,21 @@ spec:
             subjects="$2"
             if nats --server "${SERVER}" stream info "${name}" >/dev/null 2>&1; then
               echo "Stream ${name} exists; converging config."
+              # `stream edit` only accepts mutable fields: --storage is rejected
+              # ("unknown long flag '--storage'") because a stream's storage backend
+              # is immutable after creation, so converge only the subjects (and
+              # re-assert the retention policy, which edit does accept).  The
+              # storage=file guarantee is established by `stream add` below and never
+              # changes.
               nats --server "${SERVER}" stream edit --force \
-                --subjects="${subjects}" --retention=work --storage=file "${name}"
+                --subjects="${subjects}" --retention=work "${name}"
             else
               echo "Creating stream ${name}."
               nats --server "${SERVER}" stream add --defaults \
                 --subjects="${subjects}" --retention=work --storage=file "${name}"
             fi
           }
-          converge_stream WEBHOOKS 'webhooks.raw.>'
+          converge_stream WEBHOOKS 'webhooks.>'
           converge_stream TASKS 'tasks.>'
           echo "Stream bootstrap complete."
         env:
