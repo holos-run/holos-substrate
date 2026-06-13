@@ -1,14 +1,14 @@
 # Core Platform Principles
 
-| Metadata | Value             |
-|----------|-------------------|
-| Date     | 2026-06-06        |
-| Author   | @jeffmccune       |
-| Status   | `Proposed`        |
-| Tags     | api, principles   |
+| Metadata | Value           |
+| -------- | --------------- |
+| Date     | 2026-06-06      |
+| Author   | @jeffmccune     |
+| Status   | `Accepted`      |
+| Tags     | api, principles |
 
 | Revision | Date       | Author      | Info           |
-|----------|------------|-------------|----------------|
+| -------- | ---------- | ----------- | -------------- |
 | 1        | 2026-06-06 | @jeffmccune | Initial design |
 
 ## Context and Problem Statement

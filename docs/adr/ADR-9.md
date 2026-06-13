@@ -1,16 +1,16 @@
 # Webhook Receiver: Thin NATS Ingress
 
-| Metadata | Value                   |
-|----------|-------------------------|
-| Date     | 2026-06-09              |
-| Author   | @jeffmccune             |
-| Status   | `Partially Implemented` |
-| Tags     | webhook, nats, ingress  |
-| Updates  | ADR-6                   |
+| Metadata | Value                  |
+| -------- | ---------------------- |
+| Date     | 2026-06-09             |
+| Author   | @jeffmccune            |
+| Status   | `Approved`             |
+| Tags     | webhook, nats, ingress |
+| Updates  | ADR-6                  |
 
-| Revision | Date       | Author      | Info           |
-|----------|------------|-------------|----------------|
-| 1        | 2026-06-09 | @jeffmccune | Initial design |
+| Revision | Date       | Author      | Info                                                                                                                                                                                                                                                                                                                                 |
+| -------- | ---------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1        | 2026-06-09 | @jeffmccune | Initial design                                                                                                                                                                                                                                                                                                                       |
 | 2        | 2026-06-13 | @jeffmccune | Resolved the milestone planning note: subject `webhooks.<source>` on the `WEBHOOKS` WorkQueue stream, raw body as payload with a curated header allowlist as NATS headers, ack-after-`PubAck` semantics (`202`/`503`), and edge auth deferred to the subscriber (HOL-1200). Receiver implemented (HOL-1196) and deployed (HOL-1198). |
 
 ## Context and Problem Statement

@@ -1,16 +1,16 @@
 # Deployer Task Subscriber and the Application Resource
 
-| Metadata | Value                          |
-|----------|--------------------------------|
-| Date     | 2026-06-09                     |
-| Author   | @jeffmccune                    |
-| Status   | `Proposed`                     |
-| Tags     | api, deployer, gitops          |
-| Updates  | ADR-6                          |
+| Metadata | Value                 |
+| -------- | --------------------- |
+| Date     | 2026-06-09            |
+| Author   | @jeffmccune           |
+| Status   | `Approved`            |
+| Tags     | api, deployer, gitops |
+| Updates  | ADR-6                 |
 
-| Revision | Date       | Author      | Info           |
-|----------|------------|-------------|----------------|
-| 1        | 2026-06-09 | @jeffmccune | Initial design |
+| Revision | Date       | Author      | Info                                                                                                                                   |
+| -------- | ---------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| 1        | 2026-06-09 | @jeffmccune | Initial design                                                                                                                         |
 | 2        | 2026-06-12 | @jeffmccune | Refined by [ADR-13](ADR-13.md): OCI rendered-manifests delivery moves into the MVP; only Git write-back and SoD gating remain deferred |
 
 ## Context and Problem Statement

@@ -1,15 +1,15 @@
 # MVP Heroku-Style Deployment Pipeline
 
-| Metadata | Value                          |
-|----------|--------------------------------|
-| Date     | 2026-06-09                     |
-| Author   | @jeffmccune                    |
-| Status   | `Proposed`                     |
-| Tags     | pipeline, mvp, nats, deployer  |
+| Metadata | Value                         |
+| -------- | ----------------------------- |
+| Date     | 2026-06-09                    |
+| Author   | @jeffmccune                   |
+| Status   | `Approved`                    |
+| Tags     | pipeline, mvp, nats, deployer |
 
-| Revision | Date       | Author      | Info           |
-|----------|------------|-------------|----------------|
-| 1        | 2026-06-09 | @jeffmccune | Initial design |
+| Revision | Date       | Author      | Info                                                                                             |
+| -------- | ---------- | ----------- | ------------------------------------------------------------------------------------------------ |
+| 1        | 2026-06-09 | @jeffmccune | Initial design                                                                                   |
 | 2        | 2026-06-12 | @jeffmccune | Refined by [ADR-13](ADR-13.md): end-to-end two-loop flow; render & publish becomes a sixth stage |
 
 ## Context and Problem Statement

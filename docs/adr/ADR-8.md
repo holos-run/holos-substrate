@@ -1,15 +1,15 @@
 # Container Registry and Image Tagging
 
 | Metadata | Value                    |
-|----------|--------------------------|
+| -------- | ------------------------ |
 | Date     | 2026-06-09               |
 | Author   | @jeffmccune              |
-| Status   | `Proposed`               |
+| Status   | `Approved`               |
 | Tags     | registry, build, webhook |
 | Updates  | ADR-6                    |
 
 | Revision | Date       | Author      | Info           |
-|----------|------------|-------------|----------------|
+| -------- | ---------- | ----------- | -------------- |
 | 1        | 2026-06-09 | @jeffmccune | Initial design |
 
 ## Context and Problem Statement

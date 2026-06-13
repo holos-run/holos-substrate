@@ -1,17 +1,17 @@
 # End-to-End MVP Deployment Flow: Two Registry-Event Loops
 
 | Metadata | Value                            |
-|----------|----------------------------------|
+| -------- | -------------------------------- |
 | Date     | 2026-06-12                       |
 | Author   | @jeffmccune                      |
-| Status   | `Proposed`                       |
+| Status   | `Approved`                       |
 | Tags     | pipeline, mvp, nats, oci, argocd |
 | Updates  | ADR-6, ADR-10, ADR-11            |
 
-| Revision | Date       | Author      | Info           |
-|----------|------------|-------------|----------------|
-| 1        | 2026-06-12 | @jeffmccune | Initial design |
-| 2        | 2026-06-12 | @jeffmccune | Clarify routing invariants and config digest lookup |
+| Revision | Date       | Author      | Info                                                                                                                                                                       |
+| -------- | ---------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1        | 2026-06-12 | @jeffmccune | Initial design                                                                                                                                                             |
+| 2        | 2026-06-12 | @jeffmccune | Clarify routing invariants and config digest lookup                                                                                                                        |
 | 3        | 2026-06-13 | @jeffmccune | The `RenderTask`/`DeployTask` message schemas are specified by [ADR-14](ADR-14.md): ConnectRPC protobuf definitions with the `.proto` as the source of truth, Go generated |
 
 ## Context and Problem Statement
@@ -155,19 +155,19 @@ sequenceDiagram
 
 ### Step-by-step mapping
 
-| #  | User-visible step                          | Component                          | Subject / repository                         |
-|----|--------------------------------------------|------------------------------------|----------------------------------------------|
-| 1  | `docker push` of a new app image tag       | Product engineer                   | Quay app repo (e.g. `holos/sample-app:v2`)    |
-| 2  | Push-notification webhook for the new tag  | Quay ([ADR-8](ADR-8.md))           | `POST /webhooks/quay`                         |
-| 3  | Raw event published to NATS                | Receiver ([ADR-9](ADR-9.md))       | `webhooks.quay` on `WEBHOOKS` (WorkQueue)     |
-| 4  | Event matched to a managed application     | Subscriber ([ADR-10](ADR-10.md))   | `Application.spec` app image repository       |
-| 5  | CUE template rendered with the new tag     | Render subscriber (this ADR)       | `holos render platform --inject`              |
-| 6  | Rendered YAML stored as an OCI image       | Render subscriber (ORAS)           | local `deploy/` → OCI artifact                |
-| 7  | Config image pushed to a sibling repo      | Render subscriber                  | Quay config repo (`holos/sample-app-config:v2`) |
-| 8  | Push-event webhook for the config image    | Quay                               | `POST /webhooks/quay`                         |
-| 9  | Relayed to NATS                            | Receiver ([ADR-9](ADR-9.md))       | `webhooks.quay` on `WEBHOOKS` (WorkQueue)     |
-| 10 | Config tag matched against the KRM object  | Subscriber + deployer ([ADR-11](ADR-11.md)) | `Application.spec` config repository → `tasks.deploy` |
-| 11 | Argo CD fetches the config image, applies  | Application controller + Argo CD   | `targetRevision` → `oci://…-config@sha256:…`  |
+| #   | User-visible step                         | Component                                   | Subject / repository                                  |
+| --- | ----------------------------------------- | ------------------------------------------- | ----------------------------------------------------- |
+| 1   | `docker push` of a new app image tag      | Product engineer                            | Quay app repo (e.g. `holos/sample-app:v2`)            |
+| 2   | Push-notification webhook for the new tag | Quay ([ADR-8](ADR-8.md))                    | `POST /webhooks/quay`                                 |
+| 3   | Raw event published to NATS               | Receiver ([ADR-9](ADR-9.md))                | `webhooks.quay` on `WEBHOOKS` (WorkQueue)             |
+| 4   | Event matched to a managed application    | Subscriber ([ADR-10](ADR-10.md))            | `Application.spec` app image repository               |
+| 5   | CUE template rendered with the new tag    | Render subscriber (this ADR)                | `holos render platform --inject`                      |
+| 6   | Rendered YAML stored as an OCI image      | Render subscriber (ORAS)                    | local `deploy/` → OCI artifact                        |
+| 7   | Config image pushed to a sibling repo     | Render subscriber                           | Quay config repo (`holos/sample-app-config:v2`)       |
+| 8   | Push-event webhook for the config image   | Quay                                        | `POST /webhooks/quay`                                 |
+| 9   | Relayed to NATS                           | Receiver ([ADR-9](ADR-9.md))                | `webhooks.quay` on `WEBHOOKS` (WorkQueue)             |
+| 10  | Config tag matched against the KRM object | Subscriber + deployer ([ADR-11](ADR-11.md)) | `Application.spec` config repository → `tasks.deploy` |
+| 11  | Argo CD fetches the config image, applies | Application controller + Argo CD            | `targetRevision` → `oci://…-config@sha256:…`          |
 
 ### Loop 1 — render and publish
 
@@ -298,13 +298,13 @@ through the registry notification, deliberately:
 Every hop is at-least-once; every consumer is durable on a file-backed
 WorkQueue stream ([ADR-6](ADR-6.md)). Per hop:
 
-| Hop | Consumer behavior |
-|-----|-------------------|
-| Receiver → `webhooks.quay` | Publish-then-ack to Quay; a JetStream publish failure returns 5xx so Quay retries ([ADR-9](ADR-9.md)). |
-| Webhook subscriber | Parse, match, resolve required digests, publish task, ack. Unparseable body or ambiguous repository match → dead-letter publish then `Term()`. No `Application` match → ack and drop (logged). Config digest lookup authz/authn failure → dead-letter then `Term()`; missing tag or registry transient → `Nak()` with backoff, then dead-letter after `MaxDeliver`. |
-| Render subscriber | Pull consumer, `AckExplicit`, `MaxAckPending=1`; `AckWait` ≈ 60s with `InProgress()` heartbeats during render+push; `MaxDeliver` ≈ 5 with backoff; deterministic render failure → dead-letter then `Term()`. Ack only after the push succeeds. The digest-verified tag-exists fast path makes redelivery cheap. |
-| Deployer | Single idempotent KRM write; same version → no-op; ack after write ([ADR-11](ADR-11.md)). |
-| Argo CD | Digest-pinned `targetRevision`; no polling; sync retries are Argo CD's own. |
+| Hop                        | Consumer behavior                                                                                                                                                                                                                                                                                                                                                   |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Receiver → `webhooks.quay` | Publish-then-ack to Quay; a JetStream publish failure returns 5xx so Quay retries ([ADR-9](ADR-9.md)).                                                                                                                                                                                                                                                              |
+| Webhook subscriber         | Parse, match, resolve required digests, publish task, ack. Unparseable body or ambiguous repository match → dead-letter publish then `Term()`. No `Application` match → ack and drop (logged). Config digest lookup authz/authn failure → dead-letter then `Term()`; missing tag or registry transient → `Nak()` with backoff, then dead-letter after `MaxDeliver`. |
+| Render subscriber          | Pull consumer, `AckExplicit`, `MaxAckPending=1`; `AckWait` ≈ 60s with `InProgress()` heartbeats during render+push; `MaxDeliver` ≈ 5 with backoff; deterministic render failure → dead-letter then `Term()`. Ack only after the push succeeds. The digest-verified tag-exists fast path makes redelivery cheap.                                                     |
+| Deployer                   | Single idempotent KRM write; same version → no-op; ack after write ([ADR-11](ADR-11.md)).                                                                                                                                                                                                                                                                           |
+| Argo CD                    | Digest-pinned `targetRevision`; no polling; sync retries are Argo CD's own.                                                                                                                                                                                                                                                                                         |
 
 > **Planning note for the milestone:** specify the `Application` schema
 > fields this flow relies on (app image repository, config repository —

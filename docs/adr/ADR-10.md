@@ -1,18 +1,18 @@
 # Webhook Subscriber: Parse and Dispatch
 
 | Metadata | Value                     |
-|----------|---------------------------|
+| -------- | ------------------------- |
 | Date     | 2026-06-09                |
 | Author   | @jeffmccune               |
-| Status   | `Proposed`                |
+| Status   | `Approved`                |
 | Tags     | webhook, nats, subscriber |
 | Updates  | ADR-6                     |
 
-| Revision | Date       | Author      | Info           |
-|----------|------------|-------------|----------------|
-| 1        | 2026-06-09 | @jeffmccune | Initial design |
-| 2        | 2026-06-12 | @jeffmccune | Refined by [ADR-13](ADR-13.md): the subscriber routes by KRM match, emitting a render task or a deployer task |
-| 3        | 2026-06-13 | @jeffmccune | The task message schema planning note is resolved by [ADR-14](ADR-14.md): messages are ConnectRPC protobuf definitions with the `.proto` as the source of truth |
+| Revision | Date       | Author      | Info                                                                                                                                                                                                                                                                                               |
+| -------- | ---------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1        | 2026-06-09 | @jeffmccune | Initial design                                                                                                                                                                                                                                                                                     |
+| 2        | 2026-06-12 | @jeffmccune | Refined by [ADR-13](ADR-13.md): the subscriber routes by KRM match, emitting a render task or a deployer task                                                                                                                                                                                      |
+| 3        | 2026-06-13 | @jeffmccune | The task message schema planning note is resolved by [ADR-14](ADR-14.md): messages are ConnectRPC protobuf definitions with the `.proto` as the source of truth                                                                                                                                    |
 | 4        | 2026-06-13 | @jeffmccune | Records the shipped MVP slice (HOL-1201): direct parse → `DeployTask` → publish on `tasks.deploy`, with KRM-matching routing, digest resolution, and a durable dead-letter subject explicitly deferred — see [Implemented MVP slice and deferred scope](#implemented-mvp-slice-and-deferred-scope) |
 
 ## Context and Problem Statement

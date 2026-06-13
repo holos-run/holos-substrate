@@ -1,15 +1,15 @@
 # Multi-Tenancy
 
-| Metadata | Value                |
-|----------|----------------------|
-| Date     | 2026-06-06           |
-| Author   | @jeffmccune          |
-| Status   | `Proposed`           |
-| Tags     | api, multi-tenancy   |
-| Updates  | ADR-2                |
+| Metadata | Value              |
+| -------- | ------------------ |
+| Date     | 2026-06-06         |
+| Author   | @jeffmccune        |
+| Status   | `Proposed`         |
+| Tags     | api, multi-tenancy |
+| Updates  | ADR-2              |
 
 | Revision | Date       | Author      | Info           |
-|----------|------------|-------------|----------------|
+| -------- | ---------- | ----------- | -------------- |
 | 1        | 2026-06-06 | @jeffmccune | Initial design |
 
 ## Context and Problem Statement

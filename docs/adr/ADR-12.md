@@ -1,15 +1,15 @@
 # Repository Layout for Multiple Go Services
 
-| Metadata | Value                          |
-|----------|--------------------------------|
-| Date     | 2026-06-10                     |
-| Author   | @jeffmccune                    |
-| Status   | `Proposed`                     |
-| Tags     | layout, conventions, build     |
+| Metadata | Value                      |
+| -------- | -------------------------- |
+| Date     | 2026-06-10                 |
+| Author   | @jeffmccune                |
+| Status   | `Approved`                 |
+| Tags     | layout, conventions, build |
 
-| Revision | Date       | Author      | Info           |
-|----------|------------|-------------|----------------|
-| 1        | 2026-06-10 | @jeffmccune | Initial design |
+| Revision | Date       | Author      | Info                                                     |
+| -------- | ---------- | ----------- | -------------------------------------------------------- |
+| 1        | 2026-06-10 | @jeffmccune | Initial design                                           |
 | 2        | 2026-06-11 | @jeffmccune | Add `holos/deploy/` and `holos/docs/` to the layout tree |
 
 ## Context and Problem Statement

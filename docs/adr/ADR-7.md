@@ -1,15 +1,15 @@
 # KubeRay Reference Workload on k3d
 
-| Metadata | Value                       |
-|----------|-----------------------------|
-| Date     | 2026-06-09                  |
-| Author   | @jeffmccune                 |
-| Status   | `Proposed`                  |
+| Metadata | Value                          |
+| -------- | ------------------------------ |
+| Date     | 2026-06-09                     |
+| Author   | @jeffmccune                    |
+| Status   | `Proposed`                     |
 | Tags     | workload, reference-app, build |
-| Updates  | ADR-6                       |
+| Updates  | ADR-6                          |
 
 | Revision | Date       | Author      | Info           |
-|----------|------------|-------------|----------------|
+| -------- | ---------- | ----------- | -------------- |
 | 1        | 2026-06-09 | @jeffmccune | Initial design |
 
 ## Context and Problem Statement

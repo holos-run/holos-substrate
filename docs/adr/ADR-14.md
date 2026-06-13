@@ -1,15 +1,15 @@
 # Message Schemas via ConnectRPC Protobuf Definitions
 
-| Metadata | Value                          |
-|----------|--------------------------------|
-| Date     | 2026-06-13                     |
-| Author   | @jeffmccune                    |
-| Status   | `Proposed`                     |
+| Metadata | Value                            |
+| -------- | -------------------------------- |
+| Date     | 2026-06-13                       |
+| Author   | @jeffmccune                      |
+| Status   | `Accepted`                       |
 | Tags     | api, nats, protobuf, conventions |
-| Updates  | ADR-10, ADR-13                 |
+| Updates  | ADR-10, ADR-13                   |
 
 | Revision | Date       | Author      | Info           |
-|----------|------------|-------------|----------------|
+| -------- | ---------- | ----------- | -------------- |
 | 1        | 2026-06-13 | @jeffmccune | Initial design |
 
 ## Context and Problem Statement

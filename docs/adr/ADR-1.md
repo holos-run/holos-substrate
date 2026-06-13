@@ -1,14 +1,14 @@
 # Project Resource
 
 | Metadata | Value              |
-|----------|--------------------|
+| -------- | ------------------ |
 | Date     | 2026-06-06         |
 | Author   | @jeffmccune        |
-| Status   | `Proposed`         |
+| Status   | `Accepted`         |
 | Tags     | api, multi-tenancy |
 
 | Revision | Date       | Author      | Info           |
-|----------|------------|-------------|----------------|
+| -------- | ---------- | ----------- | -------------- |
 | 1        | 2026-06-06 | @jeffmccune | Initial design |
 
 ## Context and Problem Statement
