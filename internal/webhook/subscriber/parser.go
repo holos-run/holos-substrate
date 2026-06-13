@@ -23,6 +23,15 @@ import (
 // given the same source, headers, and body they return the same tasks (modulo
 // the wall-clock receivedAt), with no network or registry access.
 //
+// Scope boundary (ADR-13): this layer performs source decoding only. It does
+// not match the event to an Application, route between tasks.render and
+// tasks.deploy, or resolve a manifest digest — all of that is deferred to
+// later phases. A parser returns the mechanically-derived tasks; the Phase 2
+// consumer (HOL-1203) is responsible for KRM matching, routing, and digest
+// resolution before publishing. Keeping those concerns out of the parser is
+// what lets this package stay NATS- and Kubernetes-free and trivially
+// testable.
+//
 // A malformed or unparseable body must return a non-nil, descriptive error and
 // no tasks. The error is typed by intent only at this layer; the Term-vs-Nak
 // delivery decision lives in Phase 2 (ADR-13).

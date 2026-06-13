@@ -55,8 +55,11 @@ type DeployTask struct {
 	// App is the application name derived mechanically from the repository
 	// (see [AppFromRepository]); it is the last path segment of the
 	// repository. This is a derivation only — no Application KRM lookup
-	// happens here; matching a task to an Application is deferred work
-	// (ADR-13).
+	// happens here; matching a task to an Application (and disambiguating a
+	// config repository such as "sample-app-config" from its owning
+	// Application) is deferred KRM-matching work (ADR-13, HOL-1201 scope).
+	// The deferred matcher may overwrite App with the matched Application
+	// identity without a contract break.
 	App string `json:"app"`
 
 	// Repository is the source repository the image was pushed to, e.g.
