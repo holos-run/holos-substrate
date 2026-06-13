@@ -17,24 +17,33 @@ before adding a service, an API group, or moving directories. The evidence
 behind the layout is in
 [Research: Repository Layouts for Multiple Go Services](docs/research/go-multi-service-repo-layout.md).
 
-The first service realizing this layout is the **webhook receiver**
-([ADR-9](docs/adr/ADR-9.md)):
+The first services realizing this layout are the **webhook receiver**
+([ADR-9](docs/adr/ADR-9.md)) and the **webhook subscriber**
+([ADR-10](docs/adr/ADR-10.md)):
 
 ```text
 cmd/holos-paas/            # the multi-service binary (cobra root command)
 internal/                  # all implementation
 ├── nats/                  # the JetStream publisher/connection helper
-└── webhook/receiver/      # the webhook-receiver subcommand and HTTP handler
+├── task/                  # the DeployTask wire contract (ADR-10/ADR-11)
+└── webhook/
+    ├── receiver/          # the webhook-receiver subcommand and HTTP handler
+    └── subscriber/        # the webhook-subscriber subcommand, Quay parser, consumer
 Makefile                   # go fmt/vet/test and the container image targets
 Dockerfile                 # two-stage cross-compile → distroless runtime
 holos/                     # Holos CUE deployment configuration and policy
 ```
 
-The service's HTTP contract, durability story, and unauthenticated local-only
+The receiver's HTTP contract, durability story, and unauthenticated local-only
 posture are documented in
 [holos/README.md](holos/README.md#webhook-receiver-and-service-contract); its
 end-to-end verification steps are in
-[docs/local-cluster.md](docs/local-cluster.md#verify-the-webhook-receiver).
+[docs/local-cluster.md](docs/local-cluster.md#verify-the-webhook-receiver). The
+subscriber's DeployTask schema, durability/retry story, and deferred-scope
+decisions are documented in
+[holos/README.md](holos/README.md#webhook-subscriber-and-deploytask-contract);
+its verification steps are in
+[docs/local-cluster.md](docs/local-cluster.md#verify-the-webhook-subscriber).
 
 ## Documentation index
 
@@ -52,7 +61,7 @@ end-to-end verification steps are in
 - [holos/README.md](holos/README.md) — orientation to the Holos CUE
   directory: layout, clusters, how rendered manifests are applied (the
   apply-order rationale), and the Keycloak, Postgres, Quay, NATS JetStream,
-  and webhook-receiver verification steps and service contracts.
+  webhook-receiver, and webhook-subscriber verification steps and contracts.
 - [holos/docs/component-guidelines.md](holos/docs/component-guidelines.md)
   — how to add a Holos component: anatomy, guardrails, and the
   render-then-commit workflow.

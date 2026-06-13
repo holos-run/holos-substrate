@@ -367,6 +367,113 @@ kubectl -n webhook-receiver rollout restart deployment/webhook-receiver
 kubectl -n webhook-receiver rollout status deployment/webhook-receiver
 ```
 
+## Verify the webhook subscriber
+
+`scripts/apply` also brings up the `webhook-subscriber` — the durable JetStream
+consumer that drains the raw events the receiver stored on the `WEBHOOKS` stream,
+parses each into one or more `DeployTask`s, and publishes them to the `TASKS`
+stream on `tasks.deploy`. Unlike the receiver it serves no inbound business
+traffic (no `Service`, no `HTTPRoute`); it connects to NATS only. See
+[Webhook subscriber and DeployTask contract](../holos/README.md#webhook-subscriber-and-deploytask-contract)
+for the full DeployTask schema, the durability/retry story, and the
+deferred-scope decisions.
+
+First confirm the rollout is Ready and `/readyz` reports connected to NATS:
+
+```bash
+kubectl -n webhook-subscriber rollout status deployment/webhook-subscriber --timeout=120s
+```
+
+**End-to-end parse and dispatch.** POST a captured Quay `repo_push` payload to
+the receiver and confirm a `DeployTask` appears on `tasks.deploy`. Subscribe to
+the `TASKS` subjects from a throwaway `nats-box` pod (the same image the NATS
+bootstrap Job uses), then POST through the Gateway:
+
+```bash
+SERVER=nats://nats.nats.svc.cluster.local:4222
+# In one terminal, subscribe to the TASKS subjects:
+kubectl -n nats run nats-sub-tasks --rm -it --restart=Never --image=natsio/nats-box:0.19.7 -- \
+  nats --server "$SERVER" sub 'tasks.>'
+
+# In another terminal, POST a Quay repo_push payload and expect 202 Accepted:
+cat > /tmp/quay-push.json <<'JSON'
+{"repository":"holos/sample-app","namespace":"holos","name":"sample-app",
+ "docker_url":"quay.holos.localhost/holos/sample-app","updated_tags":["v2"]}
+JSON
+curl -fsS -o /dev/null -w '%{http_code}\n' \
+  -H 'Content-Type: application/json' \
+  -X POST --data-binary @/tmp/quay-push.json \
+  https://hooks.holos.localhost/webhooks/quay        # 202
+```
+
+The receiver publishes the raw body to `webhooks.quay`; the subscriber consumes
+it, parses it, and publishes a `DeployTask` — so the `nats sub 'tasks.>'`
+terminal prints one message on subject `tasks.deploy` whose JSON body carries
+`schemaVersion`, `idempotencyKey`, `app` (`sample-app`), `repository`
+(`holos/sample-app`), `tag` (`v2`), `source` (`quay`), and `receivedAt` (a
+`repo_push` listing several `updated_tags` yields one message per tag). You can
+also read the latest task back off the `TASKS` stream:
+
+```bash
+kubectl -n nats run nats-get-tasks --rm -i --restart=Never --image=natsio/nats-box:0.19.7 -- \
+  nats --server "$SERVER" stream get TASKS --last-for=tasks.deploy
+```
+
+**Idempotency header.** The dedupe that protects against redelivery lives on
+each published message: the subscriber stamps a `Nats-Msg-Id` header of
+`<WEBHOOKS-stream-sequence>:<idempotencyKey>`, and JetStream's per-stream
+deduplication window collapses any republish carrying the same id (the effect
+when a redelivered raw event is re-processed) while still admitting a later
+genuine push of the same tag, which arrives at a distinct WEBHOOKS sequence and
+so a distinct id. Inspect the header on the task the push above produced — it is
+the observable evidence of the dedupe contract (forcing an actual raw-event
+redelivery from the CLI is not a simple step; see the
+[DeployTask contract](../holos/README.md#webhook-subscriber-and-deploytask-contract)
+for the full durability story):
+
+```bash
+kubectl -n nats run nats-get-tasks-hdr --rm -i --restart=Never --image=natsio/nats-box:0.19.7 -- \
+  nats --server "$SERVER" stream get TASKS --last-for=tasks.deploy   # Headers show Nats-Msg-Id: <seq>:<key>
+```
+
+Because the subject is a WorkQueue, a single push leaves exactly one task per
+pushed tag on `tasks.deploy` — no duplicates accumulate from normal processing.
+
+**Poison messages are Term'd, not redelivered.** An unparseable or
+unknown-source body cannot be turned into a task, so the subscriber `Term`s it
+(after logging the raw payload base64-encoded under `raw_base64`) rather than
+wedging the WorkQueue. Record the `TASKS` message count first, POST a body the
+Quay parser rejects, then confirm the count is **unchanged** (no task was
+published) and the subscriber logged the termination:
+
+```bash
+# Baseline count before the poison POST:
+BEFORE=$(kubectl -n nats run nats-cnt --rm -i --restart=Never --image=natsio/nats-box:0.19.7 -- \
+  nats --server "$SERVER" stream info TASKS --json | jq '.state.messages')
+
+echo '{"not":"a quay push"}' > /tmp/bad.json
+curl -fsS -o /dev/null -w '%{http_code}\n' \
+  -H 'Content-Type: application/json' \
+  -X POST --data-binary @/tmp/bad.json \
+  https://hooks.holos.localhost/webhooks/quay        # 202 (the receiver still stores the raw body)
+
+# The subscriber Terms the unparseable event, so TASKS does not grow:
+AFTER=$(kubectl -n nats run nats-cnt --rm -i --restart=Never --image=natsio/nats-box:0.19.7 -- \
+  nats --server "$SERVER" stream info TASKS --json | jq '.state.messages')
+echo "TASKS messages: before=$BEFORE after=$AFTER (expect equal — no task published)"
+kubectl -n webhook-subscriber logs deployment/webhook-subscriber | grep 'terminating message'
+```
+
+**Iterating on the subscriber image.** Like the receiver, the Deployment pulls
+the **mutable** `:dev` tag with `imagePullPolicy: Always`, so after rebuilding
+the image push it and restart the Deployment to pull it:
+
+```bash
+make docker-push
+kubectl -n webhook-subscriber rollout restart deployment/webhook-subscriber
+kubectl -n webhook-subscriber rollout status deployment/webhook-subscriber
+```
+
 ## Reset the Cluster
 
 To reset to a clean state:

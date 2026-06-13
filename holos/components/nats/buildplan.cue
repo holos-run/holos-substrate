@@ -56,18 +56,19 @@ let NAME = "nats"
 // reach the unauthenticated client port (4222) or the monitoring endpoint
 // (8222) — Codex flagged both as cluster-wide-reachable without a policy.
 // Kubelet health probes are exempt from ambient capture, so the StatefulSet's
-// /healthz probes on the monitor port keep working.  A later phase extends
-// this to ALLOW the specific producer/consumer ServiceAccounts in other
-// namespaces as the receiver/subscriber clients (HOL-1122/1123/1124) are
-// introduced.
+// /healthz probes on the monitor port keep working.  The webhook-receiver
+// (HOL-1198) and webhook-subscriber (HOL-1204) namespaces are now ALLOWed as
+// clients on the client port (rules 2 and 3 below); tightening those from
+// namespace- to per-ServiceAccount granularity, once NATS gains in-cluster
+// authentication, is the remaining future work.
 //
 // RECEIVER_NAMESPACE is the webhook-receiver component's namespace
 // (holos/components/webhook-receiver/buildplan.cue), added to the ALLOW rule's
 // source namespaces so the receiver may publish raw webhook bodies to the
 // WEBHOOKS stream from its own namespace (HOL-1198).  Namespace-granularity is
 // the right scope this MVP phase — NATS is unauthenticated, so there is no
-// principal to bind to yet; the per-ServiceAccount tightening is the
-// HOL-1122/1123/1124 work noted above.  Unifying with #RegisteredNamespace
+// principal to bind to yet; the per-ServiceAccount tightening is the future
+// work noted above.  Unifying with #RegisteredNamespace
 // makes a rename or removal of that namespace a render failure here rather than
 // a silent cross-namespace deny at the client port.
 let RECEIVER_NAMESPACE = "webhook-receiver" & #RegisteredNamespace
@@ -79,7 +80,7 @@ let RECEIVER_NAMESPACE = "webhook-receiver" & #RegisteredNamespace
 // WEBHOOKS and publishes DeployTasks to TASKS, both on the client port (4222).
 // Like the receiver this is namespace-granularity, the right scope this MVP
 // phase — NATS is unauthenticated, so there is no principal to bind to yet;
-// the per-ServiceAccount tightening is the HOL-1122/1123/1124 work noted
+// the per-ServiceAccount tightening is the future work noted
 // above.  Unifying with #RegisteredNamespace makes a rename or removal of that
 // namespace a render failure here rather than a silent cross-namespace deny at
 // the client port.
@@ -102,8 +103,10 @@ let AUTHZ = {
 		}
 		action: "ALLOW"
 		// Three rules, each least-privilege.  An ALLOW policy denies everything
-		// no rule matches, so every other cross-namespace pod is rejected until
-		// a later phase adds the remaining principals explicitly (HOL-1124).
+		// no rule matches, so every other cross-namespace pod is rejected.  The
+		// receiver and subscriber namespaces are both admitted explicitly below;
+		// tightening them to per-ServiceAccount principals is future work, once
+		// NATS gains in-cluster authentication.
 		//
 		//   1. Same-namespace sources reach every port: the bootstrap Job below
 		//      runs in this namespace and needs the client port (4222) to create
