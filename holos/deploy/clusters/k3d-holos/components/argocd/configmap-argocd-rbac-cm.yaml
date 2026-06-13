@@ -1,6 +1,10 @@
 apiVersion: v1
 data:
-  policy.csv: ""
+  policy.csv: |-
+    g, platform-owner, role:admin
+    g, platform-viewer, role:readonly
+    g, platform-editor, role:readonly
+    g, authenticated, role:readonly
   policy.default: ""
   policy.matchMode: glob
   scopes: '[groups]'

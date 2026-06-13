@@ -1,5 +1,10 @@
 package holos
 
+import (
+	"strings"
+	"encoding/yaml"
+)
+
 // argocd renders the Argo CD core install — application controller, repo
 // server, API/UI server, and single-instance redis — from the upstream
 // argo-cd Helm chart, with a laptop footprint (ADR-7: a single local
@@ -17,6 +22,22 @@ package holos
 // serve plain HTTP behind the Gateway; the argocd namespace is
 // ambient-enrolled (holos/namespaces.cue), so the Gateway→server hop is
 // secured by the mesh.
+//
+// SSO: Argo CD authenticates against the Keycloak holos realm with OIDC
+// using the Authorization Code flow + PKCE (S256).  The public argocd
+// client — no client secret — is provisioned declaratively by the
+// keycloak-config component (components/keycloak/realm-config), which also
+// emits the groups claim carrying both Keycloak group names and realm-role
+// names.  configs.cm "oidc.config" below points Argo CD at that issuer and
+// client; configs.rbac maps the realm roles to Argo CD roles
+// (platform-owner → admin, platform-viewer/editor → readonly).  The
+// backchannel OIDC path (discovery/JWKS/token) runs in-cluster: the
+// coredns-custom component (components/coredns-custom) rewrites the issuer
+// hostname auth.holos.localhost to the shared Istio gateway Service so
+// argocd-server reaches Keycloak through the same Gateway→Keycloak
+// re-encrypt path browsers use, and "oidc.tls.insecure.skip.verify" accepts
+// the per-machine local-CA cert on that hop (the local-only MVP posture
+// documented below).
 
 let NAME = "argocd"
 
@@ -95,6 +116,47 @@ let HTTPROUTE_REDIRECT = {
 	}
 }
 
+// OIDC_CONFIG is the argocd-cm "oidc.config" block, YAML-marshalled below
+// (the reference platform's encoding/yaml.Marshal pattern).  A public PKCE
+// client: Argo CD's UI and CLI cannot hold a secret, so they use the
+// Authorization Code flow with PKCE (S256) and carry NO clientSecret.  The
+// issuer is Keycloak's public hostname (its hostname.hostname is
+// https://auth.holos.localhost, so the iss claim matches), the holos realm
+// discovery endpoint.  clientID "argocd" is the public client the
+// keycloak-config component provisions; requestedScopes includes "groups"
+// and requestedIDTokenClaims makes the groups claim essential so the ID
+// token always carries the group/realm-role membership Argo CD's RBAC keys
+// on.
+let OIDC_CONFIG = {
+	name:                     "Keycloak"
+	issuer:                   "https://auth.holos.localhost/realms/holos"
+	clientID:                 "argocd"
+	enablePKCEAuthentication: true
+	requestedScopes: ["openid", "profile", "email", "groups"]
+	requestedIDTokenClaims: groups: essential: true
+}
+
+// POLICIES maps Keycloak group/realm-role membership to Argo CD roles, the
+// reference platform's _POLICIES shape adapted to this platform's three
+// managed roles.  Argo CD matches the g, <subject>, <role> rules against the
+// groups claim (configs.rbac scopes: "[groups]" below), which the
+// keycloak-config component populates with both group names and realm-role
+// names.
+//   - platform-owner → role:admin (AC #5): full Argo CD admin.
+//   - platform-viewer → role:readonly (AC #6).
+//   - platform-editor → role:readonly: Argo CD ships no native "editor"
+//     role, so readonly is the safe default for this managed role until a
+//     custom role is defined; documented here rather than silently dropped.
+//   - authenticated → role:readonly: every realm user is bound to the
+//     authenticated default group (keycloak-config), so this grants baseline
+//     read access to any successfully authenticated user.
+let POLICIES = [
+	"g, platform-owner, role:admin",
+	"g, platform-viewer, role:readonly",
+	"g, platform-editor, role:readonly",
+	"g, authenticated, role:readonly",
+]
+
 userDefinedBuildPlan: {
 	metadata: name: NAME
 	spec: artifacts: manifests: {
@@ -143,8 +205,12 @@ userDefinedBuildPlan: {
 						// redirect configuration; it must match the HTTPRoute
 						// hostname above.
 						global: domain: HOSTNAME
-						// No SSO in this phase: the local admin user (chart
-						// default) signs in to the UI.
+						// SSO is OIDC against the Keycloak holos realm
+						// (configs.cm "oidc.config" below) using PKCE, not dex:
+						// dex is a bundled OIDC broker for upstream IdPs that
+						// cannot do OIDC directly, but Keycloak is a first-class
+						// OIDC provider, so Argo CD talks to it directly and dex
+						// renders no pods.
 						dex: enabled: false
 						// The notifications controller is out of scope per
 						// HOL-1185.
@@ -179,10 +245,53 @@ userDefinedBuildPlan: {
 							autoscaling: enabled: false
 							pdb: enabled:         false
 						}
-						// The shared Gateway terminates TLS (the HTTPRoute
-						// pair above); argocd-server serves plain HTTP
-						// behind it.
-						configs: params: "server.insecure": "true"
+						configs: {
+							// The shared Gateway terminates TLS (the
+							// HTTPRoute pair above); argocd-server serves
+							// plain HTTP behind it.
+							params: "server.insecure": "true"
+
+							// argocd-cm: OIDC SSO against the Keycloak holos
+							// realm.  oidc.config is YAML-marshalled (the
+							// reference platform pattern) from OIDC_CONFIG
+							// above.
+							cm: {
+								"oidc.config": yaml.Marshal(OIDC_CONFIG)
+
+								// Accept the local-CA/mkcert backend cert on
+								// the argocd-server → Keycloak backchannel
+								// hop (OIDC discovery/JWKS/token).  Local-only
+								// MVP posture: the mkcert root CA is
+								// per-machine and cannot be embedded at
+								// render time deterministically, so a
+								// render-time rootCA trust anchor is not
+								// available — this mirrors the reference
+								// platform's insecureSkipVerify on the
+								// Keycloak DestinationRule.  Future
+								// production work: replace with oidc.config
+								// rootCA trust (pin the cluster CA bundle)
+								// once a non-mkcert issuer is in play — see
+								// the production deployment area placeholder
+								// in holos/docs/placeholders.md.
+								"oidc.tls.insecure.skip.verify": "true"
+							}
+
+							// argocd-rbac-cm: map Keycloak group/realm-role
+							// membership (the groups claim) to Argo CD roles.
+							rbac: {
+								// Join the g, rules with real newlines into
+								// the single policy.csv string.
+								"policy.csv": strings.Join(POLICIES, "\n")
+								// No implicit access: the explicit g, rules
+								// in policy.csv are the only grants.  An
+								// unmatched subject gets nothing.
+								"policy.default": ""
+								// Match g, subjects against the groups claim,
+								// which the keycloak-config client populates
+								// with both group names and realm-role names.
+								"scopes": "[groups]"
+							}
+						}
 					}
 				}
 			}, {

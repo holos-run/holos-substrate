@@ -1,0 +1,11 @@
+apiVersion: v1
+data:
+    auth.server: |
+        auth.holos.localhost {
+            rewrite name auth.holos.localhost default-istio.istio-gateways.svc.cluster.local
+            forward . /etc/resolv.conf
+        }
+kind: ConfigMap
+metadata:
+    name: coredns-custom
+    namespace: kube-system
