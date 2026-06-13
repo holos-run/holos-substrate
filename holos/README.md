@@ -727,3 +727,103 @@ info` and converges an existing stream's mutable config with
 `ttlSecondsAfterFinished` garbage-collects the completed Job, or after a
 `kubectl -n nats delete job nats-stream-bootstrap` and re-apply) converges the
 already-created streams and exits 0 without re-creating them.
+
+### Webhook receiver and service contract
+
+The `webhook-receiver` component ([ADR-9](../docs/adr/ADR-9.md)) is the thin
+HTTP ingress that fronts the NATS backbone: it accepts an inbound registry
+webhook and publishes the **raw, unmodified body** to the `WEBHOOKS` WorkQueue
+stream, performing no parsing — every interpretation is deferred to the
+subscriber ([ADR-10](../docs/adr/ADR-10.md)). It runs the locally built
+`holos-paas` image (`webhook-receiver` subcommand) as a `Deployment` + `Service`
+in the ambient-enrolled `webhook-receiver` namespace, with an `HTTPRoute`
+attaching it to the shared Gateway at `hooks.holos.localhost`. This section is
+the stable service contract its senders (the Quay registry, [ADR-13](../docs/adr/ADR-13.md))
+and the downstream subscriber connect against.
+
+**HTTP contract.**
+
+| Aspect | Value |
+|--------|-------|
+| Ingress hostname | `hooks.holos.localhost` (→ `127.0.0.1`, local cluster only) |
+| Webhook endpoint | `POST /webhooks/{source}` — `{source}` names the sender (e.g. `quay`) |
+| Publish subject | `<prefix>.<source>`, prefix defaults to `webhooks` → e.g. `webhooks.quay` |
+| Target stream | `WEBHOOKS` (`webhooks.>`), file-backed WorkQueue |
+| Liveness probe | `GET /healthz` — always `200` while the process is up |
+| Readiness probe | `GET /readyz` — `200` only when connected to NATS, else `503` |
+
+The publish subject is `webhooks.<source>`, matching [ADR-13](../docs/adr/ADR-13.md)'s
+`webhooks.quay` producer subject and the `WEBHOOKS` stream's `webhooks.>`
+capture — not the narrower `webhooks.raw.<source>` from the superseded M0
+planning notes. The subject prefix, listen address, and max body size are
+configurable via flags or `HOLOS_PAAS_*` environment variables (see
+`webhook-receiver --help`).
+
+**Status codes.**
+
+| Code | Meaning |
+|------|---------|
+| `202 Accepted` | The body was published **and** the JetStream `PubAck` returned — the event is durably stored on the `WEBHOOKS` stream |
+| `503 Service Unavailable` | The publish failed or NATS is unreachable — the event is **not** stored, so the sender must retry |
+| `413 Request Entity Too Large` | The body exceeded the configured `--max-body-bytes` (default 1 MiB) and was rejected before any publish |
+| `400` / `405` | Body read error, or a method/path other than `POST /webhooks/{source}` |
+
+**Body + header framing.** The raw request body becomes the NATS message
+payload verbatim. A small, provider-agnostic allowlist of HTTP headers is copied
+onto the message as NATS headers so the subscriber can route and verify without
+the receiver having parsed anything; only headers present on the request are
+forwarded:
+
+| HTTP header | Purpose |
+|-------------|---------|
+| `Content-Type` | the body's media type, for the subscriber to parse it |
+| `X-Github-Event` / `X-Event-Type` | event-type dispatch without decoding the body |
+| `X-Github-Delivery` / `X-Delivery-Id` | delivery id for idempotency and end-to-end tracing |
+| `X-Hub-Signature-256` / `X-Signature` | sender signature, carried through for verification against the raw body |
+
+**Durability story.** The receiver is thin, so its only failure mode is failing
+to persist to JetStream. It therefore acks the sender (`202`) **only after** the
+publish is acked by JetStream, and returns `503` when the publish fails or NATS
+is unavailable. A `5xx` makes the sender (the registry) retry, so an accepted
+event is never silently dropped: once NATS returns, the retried delivery lands
+on the file-backed `WEBHOOKS` WorkQueue stream and is not lost. Durability is
+owned by the stream — the receiver's contract is simply "`202` means stored".
+The pod connects with an **unbounded reconnect budget** (`MaxReconnects(-1)`), so
+it rides out arbitrarily long NATS outages: `/readyz` reports `503` while
+disconnected (failing the readiness gate and removing the pod from the Service's
+endpoints) and recovers on reconnect without a restart. This is the live
+resolution of [ADR-9](../docs/adr/ADR-9.md)'s milestone planning note.
+
+**Security posture: unauthenticated, local-only (MVP).** The receiver performs
+**no authentication** for the MVP — it neither verifies provider signatures nor
+requires a token. The endpoint is safe because it is reachable only at
+`hooks.holos.localhost`, which resolves to `127.0.0.1` and is served by the
+shared Istio Gateway on the local k3d cluster; it is never exposed off the
+machine. Its namespace is ambient-enrolled
+([mesh-enrollment.md](docs/mesh-enrollment.md)) and the `nats`
+`AuthorizationPolicy` admits the `webhook-receiver` namespace to **only** the
+NATS client port (`4222`), never the monitoring endpoint. The only in-handler
+abuse bound is the configurable max body size. The signature headers are carried
+through verbatim so verification can move to the edge later: edge signature
+verification (reject forged senders before publishing) is a future enhancement
+tracked by [HOL-1200](https://linear.app/holos-run/issue/HOL-1200) and stubbed in
+[docs/placeholders.md](docs/placeholders.md#webhook-edge-signature-verification).
+
+**Dev-loop image refresh.** The Deployment pulls
+`registry.holos.localhost:5100/holos-paas:dev` with `imagePullPolicy: Always`.
+The `:dev` tag is **mutable** (a deliberate tradeoff for the local dev loop:
+[ADR-8](../docs/adr/ADR-8.md) prefers immutable tags for delivery, but the dev
+loop rebuilds the same tag), so the cluster does not redeploy on its own when the
+tag's content changes. After rebuilding and pushing the image, restart the
+Deployment to pull the new `:dev`:
+
+```bash
+make docker-push
+kubectl -n webhook-receiver rollout restart deployment/webhook-receiver
+kubectl -n webhook-receiver rollout status deployment/webhook-receiver
+```
+
+**Verification.** See the
+[Verify the webhook receiver](../docs/local-cluster.md#verify-the-webhook-receiver)
+section of the local cluster guide for the end-to-end `curl`/`nats` checks,
+including the `503`-and-retry durability check.

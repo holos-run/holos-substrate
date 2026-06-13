@@ -64,7 +64,9 @@ service answers `200` on `/healthz` and, once connected, `200` on `/readyz`.
 - [docs/local-cluster.md](docs/local-cluster.md) — the local quick start:
   create the cluster and apply the platform.
 - [holos/README.md](holos/README.md) — the Holos CUE deployment
-  configuration: layout, apply-order rationale, and caveats.
+  configuration: layout, apply-order rationale, caveats, and the platform
+  service contracts (including the
+  [webhook receiver](holos/README.md#webhook-receiver-and-service-contract)).
 
 ## License
 

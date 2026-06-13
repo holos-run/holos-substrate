@@ -112,6 +112,25 @@ The receiver and subscriber components (HOL-1122/1123/1124) will extend the
 same `AuthorizationPolicy` to allow their specific ServiceAccounts as they
 land.
 
+## Webhook edge signature verification
+
+The webhook receiver ([`internal/webhook/receiver/`](../../internal/webhook/receiver/receiver.go),
+deployed by [`components/webhook-receiver/`](../components/webhook-receiver/buildplan.cue))
+is deliberately **thin** ([ADR-9](../../docs/adr/ADR-9.md)): it publishes the
+raw request body to `webhooks.<source>` and acks the sender, performing **no
+authentication**. Signature verification was deferred to the subscriber
+([ADR-10](../../docs/adr/ADR-10.md)) for the MVP — the receiver carries the
+signature headers (`X-Hub-Signature-256` / `X-Signature`) through verbatim so a
+later stage can authenticate the sender against the raw body. Until then the
+endpoint relies on network controls: it is reachable only at
+`hooks.holos.localhost` (→ `127.0.0.1`) behind the ambient mesh, never exposed
+off the local cluster, plus the configurable max-body-size bound. Moving
+verification to the **edge** — rejecting forged senders with `401`/`403` before
+they are ever enqueued, with a provider-pluggable HMAC check and a configurable
+secret — is tracked by
+[HOL-1200](https://linear.app/holos-run/issue/HOL-1200) and recorded as the
+edge-auth resolution in [ADR-9](../../docs/adr/ADR-9.md)'s revision 2.
+
 ## Production deployment area
 
 The only registered cluster is the local `k3d-holos` development cluster.
