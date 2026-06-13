@@ -87,9 +87,12 @@ available.
 > - **Edge auth.** Signature verification is **deferred to the subscriber**
 >   ([ADR-10](ADR-10.md)) for the MVP: the receiver performs no authentication
 >   and carries the signature header through verbatim. Until verification lands
->   the endpoint relies on network controls — it is reachable only at
->   `hooks.holos.localhost` (→ `127.0.0.1`) behind the ambient mesh, never
->   exposed off the local cluster — plus the configurable max-body-size bound.
+>   the endpoint relies on network reachability plus the configurable
+>   max-body-size bound: from outside the cluster it is exposed only at
+>   `hooks.holos.localhost` (→ `127.0.0.1`) through the shared Gateway, never off
+>   the local machine, but its in-cluster ClusterIP `Service` carries no ingress
+>   policy, so any in-cluster workload can also enqueue a body — accepted under
+>   the MVP's no-in-cluster-auth posture, not a boundary for untrusted tenants.
 >   Moving verification to the edge (reject forged senders before publishing) is
 >   tracked as [HOL-1200](https://linear.app/holos-run/issue/HOL-1200) and
 >   stubbed in

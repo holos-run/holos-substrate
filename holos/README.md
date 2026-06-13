@@ -798,15 +798,28 @@ resolution of [ADR-9](../docs/adr/ADR-9.md)'s milestone planning note.
 **no authentication** for the MVP — it neither verifies provider signatures nor
 requires a token, so **any** client that can reach the endpoint can enqueue an
 arbitrary body onto the `WEBHOOKS` stream. The MVP relies entirely on network
-reachability to bound exposure: the endpoint is reachable only at
-`hooks.holos.localhost`, which resolves to `127.0.0.1` and is served by the
-shared Istio Gateway on the local k3d cluster, and is never exposed off the
-machine. That is a containment boundary, not an authentication boundary — any
-local process (or a browser POST to the trusted `*.holos.localhost` origin) can
-still submit a forged webhook; the only in-handler abuse bound is the
-configurable max body size, which caps a single request's contribution to the
-WorkQueue. Defense-in-depth at the transport layer: the namespace is
-ambient-enrolled ([mesh-enrollment.md](docs/mesh-enrollment.md)) and the `nats`
+reachability to bound exposure, on two surfaces:
+
+- **External.** The endpoint is reachable from outside the cluster only at
+  `hooks.holos.localhost`, which resolves to `127.0.0.1` and is served by the
+  shared Istio Gateway on the local k3d cluster; it is never exposed off the
+  machine. Even there, localhost is a containment boundary, not an
+  authentication one — any local process (or a browser POST to the trusted
+  `*.holos.localhost` origin) can submit a forged webhook.
+- **In-cluster.** The component also renders a plain ClusterIP `Service`
+  (`webhook-receiver.webhook-receiver.svc:8080`) with **no receiver-side
+  `AuthorizationPolicy` or NetworkPolicy** restricting callers, so any
+  in-cluster workload that can reach it can likewise enqueue an arbitrary body.
+  This is consistent with the MVP's deliberate no-in-cluster-auth posture for
+  the NATS backbone (see
+  [NATS JetStream backbone](#nats-jetstream-backbone-and-connection-contract)),
+  where every in-cluster client is already trusted; it is **not** a boundary to
+  rely on once untrusted tenant workloads exist.
+
+The only in-handler abuse bound on either surface is the configurable max body
+size, which caps a single request's contribution to the WorkQueue.
+Defense-in-depth at the transport layer: the namespace is ambient-enrolled
+([mesh-enrollment.md](docs/mesh-enrollment.md)) and the `nats`
 `AuthorizationPolicy` admits the `webhook-receiver` namespace to **only** the
 NATS client port (`4222`), never the monitoring endpoint. The signature headers
 are carried through verbatim so verification can move to the edge later: edge

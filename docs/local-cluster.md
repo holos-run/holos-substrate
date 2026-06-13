@@ -283,10 +283,15 @@ that publishes raw inbound webhook bodies to the NATS `WEBHOOKS` WorkQueue
 stream — see
 [Webhook receiver and service contract](../holos/README.md#webhook-receiver-and-service-contract)
 for the full contract (status codes, header framing, the durability story, and
-the unauthenticated local-only posture). It is reachable only at
-`hooks.holos.localhost` → `127.0.0.1` behind the ambient mesh and performs no
-authentication in the MVP; edge signature verification is a future enhancement
-([HOL-1200](https://linear.app/holos-run/issue/HOL-1200)).
+the unauthenticated local-only posture). It performs no authentication in the
+MVP: from outside the cluster it is reachable only at `hooks.holos.localhost` →
+`127.0.0.1` through the shared Gateway, but its in-cluster ClusterIP `Service`
+has no ingress policy, so any in-cluster workload can also enqueue a body —
+consistent with the MVP's no-in-cluster-auth posture. Edge signature
+verification is a future enhancement
+([HOL-1200](https://linear.app/holos-run/issue/HOL-1200)); see the
+[security posture](../holos/README.md#webhook-receiver-and-service-contract) for
+both surfaces.
 
 First confirm the rollout is Ready and `/readyz` reports connected to NATS:
 

@@ -122,9 +122,12 @@ authentication**. Signature verification was deferred to the subscriber
 ([ADR-10](../../docs/adr/ADR-10.md)) for the MVP — the receiver carries the
 signature headers (`X-Hub-Signature-256` / `X-Signature`) through verbatim so a
 later stage can authenticate the sender against the raw body. Until then the
-endpoint relies on network controls: it is reachable only at
-`hooks.holos.localhost` (→ `127.0.0.1`) behind the ambient mesh, never exposed
-off the local cluster, plus the configurable max-body-size bound. Moving
+endpoint relies on network reachability plus the configurable max-body-size
+bound: from outside the cluster it is exposed only at `hooks.holos.localhost`
+(→ `127.0.0.1`) through the shared Gateway, never off the local machine, while
+its in-cluster ClusterIP `Service` carries no ingress policy and any in-cluster
+workload can also enqueue a body — accepted under the MVP's no-in-cluster-auth
+posture, not a boundary to rely on once untrusted tenant workloads exist. Moving
 verification to the **edge** — rejecting forged senders with `401`/`403` before
 they are ever enqueued, with a provider-pluggable HMAC check and a configurable
 secret — is tracked by
