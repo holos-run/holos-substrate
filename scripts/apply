@@ -132,11 +132,16 @@ ROLLOUT_TIMEOUT_SECONDS="$(duration_seconds "${ROLLOUT_TIMEOUT}")" || exit 1
 # that nothing during bootstrap depends on (its producers and consumers are
 # separate components that land later), so appending it keeps the
 # established order stable — the same rationale as argocd.
-# webhook-receiver closes the sequence: it publishes into the NATS WEBHOOKS
-# stream, so it trails nats (whose gate confirms the stream bootstrap Job
+# webhook-receiver trails nats: it publishes into the NATS WEBHOOKS
+# stream, so it follows nats (whose gate confirms the stream bootstrap Job
 # completed and the server is Ready) — its /readyz gate cannot pass until NATS
 # is reachable.  Its HTTPRoute attaches to the shared Gateway; attachment is
-# level-triggered, so route order does not matter.
+# level-triggered, so route order does not matter.  webhook-subscriber closes
+# the sequence: it is the durable JetStream consumer draining WEBHOOKS and
+# publishing DeployTasks to TASKS, so it likewise trails nats (its /readyz gate
+# cannot pass until NATS is reachable); it has no Service or HTTPRoute, and
+# nothing during bootstrap depends on it, so appending it keeps the order
+# stable.
 COMPONENTS=(
   namespaces
   gateway-api
@@ -160,6 +165,7 @@ COMPONENTS=(
   argocd
   nats
   webhook-receiver
+  webhook-subscriber
 )
 
 # local-ca and istio-gateway create cert-manager.io resources (ClusterIssuer,
@@ -492,6 +498,45 @@ wait_webhook_receiver() {
     if grep -qE 'ImagePull|ErrImagePull|ImagePullBackOff' <<<"${waiting}"; then
       echo "ERROR: webhook-receiver cannot pull its image" \
         "(${waiting//$'\n'/ }).  This is the only component that runs a locally" >&2
+      echo "       built image; build and push it to the k3d registry first:" >&2
+      echo "         make docker-push" >&2
+      echo "       then re-run scripts/apply (see docs/local-cluster.md)." >&2
+    fi
+    return 1
+  fi
+}
+
+# webhook-subscriber: the consumer-side smoke check.  Its readinessProbe hits
+# /readyz, which reports Ready only once the pod is connected to NATS, so a
+# successful rollout confirms the enrolled workload started under ambient
+# capture and the mesh AuthorizationPolicy permits its consume/publish on the
+# NATS client port.  Unlike the receiver it has no Service or HTTPRoute, so
+# there is no traffic path to verify separately.  Gating after nats matters: a
+# subscriber scheduled before the NATS server is serving would sit unready
+# until it reconnects, so the nats gate ahead of this one keeps the rollout
+# fast.
+#
+# Like webhook-receiver it runs the locally built image
+# (registry.holos.localhost:5100/holos-paas:dev), so a fresh `scripts/apply` on
+# a cluster that has not yet had the image pushed stalls at ImagePullBackOff.
+# Detect that specific failure on a stalled rollout and name the actual fix
+# (`make docker-push`) instead of letting it expire as a generic rollout
+# timeout.  See the quick-start (docs/local-cluster.md) and holos/README.md.
+wait_webhook_subscriber() {
+  if ! kubectl --context "${KUBE_CONTEXT}" --namespace webhook-subscriber \
+    rollout status deployment/webhook-subscriber --timeout="${ROLLOUT_TIMEOUT}"; then
+    # On timeout, surface an image-pull failure as the likely cause: it is the
+    # one this component introduces and the rollout-status error alone does not
+    # name it.  The waiting-reason read is best-effort — a missing pod or empty
+    # output simply falls through to the generic guidance.
+    local waiting
+    waiting=$(kubectl --context "${KUBE_CONTEXT}" --namespace webhook-subscriber \
+      get pods -l app.kubernetes.io/name=webhook-subscriber \
+      -o jsonpath='{range .items[*].status.containerStatuses[*]}{.state.waiting.reason}{"\n"}{end}' \
+      2>/dev/null || true)
+    if grep -qE 'ImagePull|ErrImagePull|ImagePullBackOff' <<<"${waiting}"; then
+      echo "ERROR: webhook-subscriber cannot pull its image" \
+        "(${waiting//$'\n'/ }).  Like webhook-receiver it runs a locally" >&2
       echo "       built image; build and push it to the k3d registry first:" >&2
       echo "         make docker-push" >&2
       echo "       then re-run scripts/apply (see docs/local-cluster.md)." >&2
