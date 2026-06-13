@@ -94,6 +94,24 @@ tracks it; the scope boundary is noted in the
 [Verify Quay](../../docs/local-cluster.md#verify-quay) section of the
 local cluster guide and in `scripts/quay-init`.
 
+## NATS in-cluster authentication
+
+The `nats` JetStream backbone ([`components/nats/`](../components/nats/buildplan.cue))
+runs with **no authentication** inside the cluster for the MVP: any
+in-cluster client that can reach the client port (`4222`) may publish and
+subscribe. The rationale is reachability — NATS is in-cluster only (no
+`HTTPRoute`, never exposed outside the cluster), the `nats` namespace is
+ambient-enrolled for mTLS transport identity, and an `AuthorizationPolicy`
+restricts the client and monitoring ports to same-namespace sources until the
+receiver/subscriber principals are added explicitly. NATS account/user
+authentication (e.g. NKEYs or a credentials file per producer/consumer) is
+deferred to a later issue; the connection contract and the deferred posture
+are documented in
+[`holos/README.md`](../README.md#nats-jetstream-backbone-and-connection-contract).
+The receiver and subscriber components (HOL-1122/1123/1124) will extend the
+same `AuthorizationPolicy` to allow their specific ServiceAccounts as they
+land.
+
 ## Production deployment area
 
 The only registered cluster is the local `k3d-holos` development cluster.

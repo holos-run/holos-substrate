@@ -48,18 +48,39 @@ parallel once M0 exists and is the input to M2 and M5.
 **ADR:** [ADR-6 — MVP Heroku-Style Deployment Pipeline](../adr/ADR-6.md)
 **Goal:** the event-driven substrate every other milestone plugs into.
 
-**Planning hints / work to flesh out:**
+**Status: delivered.** The `nats` component
+([`holos/components/nats/`](../../holos/components/nats/buildplan.cue)) renders
+a file-backed JetStream `StatefulSet` and a bootstrap `Job` that creates the
+two WorkQueue streams, integrated into `scripts/apply` with a `wait_nats()`
+gate (HOL-1192, HOL-1193). The subject hierarchy, stream definitions, MVP
+auth posture, and in-cluster connection contract are documented in
+[`holos/README.md`](../../holos/README.md#nats-jetstream-backbone-and-connection-contract);
+the subject naming convention follows [ADR-13](../adr/ADR-13.md)
+(`webhooks.quay` on `WEBHOOKS`, `tasks.render` / `tasks.deploy` on `TASKS`).
 
-- Stand up a NATS JetStream deployment usable from k3d (in-cluster or sidecar).
-- Decide stream/subject naming conventions shared across stages.
-- Establish the durable, file-backed **WorkQueue** stream for webhook ingress.
-- Define how components connect/authenticate to NATS locally.
-- Add a developer `make` target (or compose file) to bring the backbone up.
+**Work that landed:**
+
+- Stood up a single-replica NATS JetStream `StatefulSet` usable from k3d,
+  with file-backed persistence on a local-path PVC.
+- Subject/stream naming convention decided in [ADR-13](../adr/ADR-13.md) and
+  documented as the platform contract in `holos/README.md`.
+- Established the durable, file-backed **WorkQueue** streams `WEBHOOKS`
+  (`webhooks.>`) and `TASKS` (`tasks.>`), created idempotently by the
+  bootstrap Job.
+- Connection contract (`nats://nats.nats.svc.cluster.local:4222`) documented;
+  the MVP posture is **no in-cluster authentication** (deferred — see
+  [placeholders.md](../../holos/docs/placeholders.md#nats-in-cluster-authentication)).
+- Brought up by `scripts/apply` (no separate `make` target needed — the
+  platform shares one apply path).
 
 **Acceptance criteria:**
 
 - A message published to the ingress subject survives a broker restart.
 - A single consumer receives each message exactly once and removes it on ack.
+
+Both verified live on the k3d-holos cluster in HOL-1193; the verification
+commands are in
+[`holos/README.md`](../../holos/README.md#nats-jetstream-backbone-and-connection-contract).
 
 ---
 

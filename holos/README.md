@@ -594,3 +594,106 @@ kubectl -n keycloak run psql-verify --rm -i --restart=Never \
   --image=ghcr.io/cloudnative-pg/postgresql:18.1 --env="URI=$URI" -- \
   psql "$URI" -c 'SELECT current_user, current_database()'
 ```
+
+### NATS JetStream backbone and connection contract
+
+The `nats` component is the platform's event-driven backbone
+([ADR-6](../docs/adr/ADR-6.md)): a single-replica `nats` `StatefulSet` with
+file-backed JetStream, plus a `nats-stream-bootstrap` `Job` that idempotently
+creates the two WorkQueue streams the pipeline runs on. This section is the
+stable contract the downstream receiver and subscriber components
+(HOL-1122/1123/1124) connect against; the
+[two-loop deployment flow](../docs/adr/ADR-13.md) is the authoritative source
+for which producer publishes to which subject.
+
+**Subject hierarchy.** The platform's subjects are organized under two
+top-level prefixes, one per stream:
+
+| Subject | Published by | Meaning |
+|---------|--------------|---------|
+| `webhooks.quay` | Webhook receiver ([ADR-9](../docs/adr/ADR-9.md)) | Raw Quay repository-push webhook bodies, written verbatim with no parsing |
+| `tasks.render` | Webhook subscriber ([ADR-10](../docs/adr/ADR-10.md)) | Normalized **render task** — an app-image push matched an `Application`'s app-image repository ([ADR-13](../docs/adr/ADR-13.md)) |
+| `tasks.deploy` | Webhook subscriber ([ADR-10](../docs/adr/ADR-10.md)) | Normalized **deploy task** — a config-image push matched an `Application`'s configuration repository ([ADR-13](../docs/adr/ADR-13.md)) |
+
+The streams capture these with wildcard subjects (`webhooks.>`, `tasks.>`) so
+the receiver and subscriber can introduce additional sources or task types
+without re-provisioning a stream. The `webhooks.>` wildcard deliberately
+matches ADR-13's `webhooks.quay` producer subject rather than the narrower
+`webhooks.raw.<source>` sketched in the M0 planning notes, which predates
+ADR-13 and would not match `webhooks.quay`; cite ADR-13 for the
+render-vs-deploy task split.
+
+**Stream definitions.** The `nats-stream-bootstrap` Job creates both streams
+with WorkQueue retention (each message is delivered to exactly one consumer
+and removed on ack — at-least-once processing with no unbounded backlog) and
+file storage (the queue survives a NATS pod restart):
+
+| Stream | Subjects | Retention | Storage |
+|--------|----------|-----------|---------|
+| `WEBHOOKS` | `webhooks.>` | `WorkQueue` | `file` |
+| `TASKS` | `tasks.>` | `WorkQueue` | `file` |
+
+**MVP auth posture: no in-cluster authentication (deferred).** The NATS server
+runs with **no authentication** for the MVP — any in-cluster client that can
+reach the client port may publish and subscribe. The rationale is
+reachability: NATS listens for in-cluster clients only (it attaches no
+`HTTPRoute` to the shared Gateway and is never exposed outside the cluster),
+and the `nats` namespace is ambient-enrolled
+([mesh-enrollment.md](docs/mesh-enrollment.md)) so the client hop carries mTLS
+transport identity at L4. To make the in-cluster-only claim hold by
+construction, the component ships an `AuthorizationPolicy` that ALLOWs only
+same-namespace sources to the client port (4222) and the monitoring endpoint
+(8222); cross-namespace producers and consumers are admitted explicitly as
+the receiver/subscriber components (HOL-1122/1123/1124) land. NATS account/user
+authentication inside the cluster is deliberately deferred to a later issue.
+
+**In-cluster connection contract.** Clients connect to the chart's client
+`Service` on the NATS client port:
+
+| Endpoint | Value |
+|----------|-------|
+| Connection URL | `nats://nats.nats.svc.cluster.local:4222` |
+| Service / namespace | `nats` Service in the `nats` namespace |
+| Client port | `4222` |
+| Streams | `WEBHOOKS` (`webhooks.>`), `TASKS` (`tasks.>`) |
+
+Verify the backbone on the live cluster after `scripts/apply`. The
+`nats`-CLI commands run from a throwaway `nats-box` pod against the in-cluster
+URL above (the bootstrap Job uses the same `natsio/nats-box` image):
+
+```bash
+SERVER=nats://nats.nats.svc.cluster.local:4222
+kubectl -n nats rollout status statefulset/nats --timeout=300s
+kubectl -n nats logs job/nats-stream-bootstrap        # "Stream bootstrap complete."
+
+# Stream shape — WorkQueue retention and file storage on both streams:
+kubectl -n nats run nats-verify --rm -i --restart=Never \
+  --image=natsio/nats-box:0.19.7 -- \
+  nats --server "$SERVER" stream info WEBHOOKS         # Retention: WorkQueue, Storage: File, Subjects: webhooks.>
+```
+
+To prove retention-with-restart-survival and WorkQueue removal-after-ack — the
+two behaviors [ADR-6](../docs/adr/ADR-6.md) depends on — run an interactive
+`nats-box` pod and exercise a publish, a NATS pod restart, then a
+consume-and-ack:
+
+```bash
+kubectl -n nats run nats-box --rm -it --restart=Never --image=natsio/nats-box:0.19.7 -- sh
+# inside the pod (SERVER=nats://nats.nats.svc.cluster.local:4222):
+nats --server "$SERVER" pub webhooks.quay 'quay-event'   # Published — accepted by WEBHOOKS
+nats --server "$SERVER" stream info WEBHOOKS             # Messages: 1
+# in another terminal, restart the server pod:
+#   kubectl -n nats delete pod nats-0
+#   kubectl -n nats rollout status statefulset/nats
+nats --server "$SERVER" stream info WEBHOOKS             # Messages: 1 (survived restart — file storage)
+nats --server "$SERVER" consumer add WEBHOOKS test --pull --ack=explicit --deliver=all --defaults
+nats --server "$SERVER" consumer next WEBHOOKS test --count=1 --ack   # "quay-event"; Acknowledged
+nats --server "$SERVER" stream info WEBHOOKS             # Messages: 0 (WorkQueue: removed after ack)
+```
+
+The bootstrap Job is idempotent: it gates `nats stream add` on `nats stream
+info` and converges an existing stream's mutable config with
+`nats stream edit --force`, so re-running it (after the
+`ttlSecondsAfterFinished` garbage-collects the completed Job, or after a
+`kubectl -n nats delete job nats-stream-bootstrap` and re-apply) converges the
+already-created streams and exits 0 without re-creating them.
