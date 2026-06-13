@@ -134,7 +134,14 @@ Three pieces of the eventual design are **explicitly deferred** pending the
   (base64-encoded under `raw_base64`) rather than written to a durable
   dead-letter subject/stream. The dedicated dead-letter subject is a larger,
   ADR-scoped addition deferred beyond this phase.
+- **Protobuf message schema ([ADR-14](ADR-14.md)).** The shipped slice marshals
+  the `DeployTask` Go struct (`internal/task`) to **JSON** on `tasks.deploy`.
+  ADR-14 (Proposed) decides messages will be ConnectRPC protobuf with the
+  `.proto` as the source of truth and a binary payload; migrating the wire form
+  to protobuf is deferred. Until then `internal/task/task.go` is the authoritative
+  schema for the shipped slice.
 
 None of the deferred work is a contract break: the `DeployTask` shape already
 carries `digest` and a `schemaVersion`, so the deferred resolution and routing
-can populate or extend tasks without bumping the schema.
+can populate or extend tasks without bumping the schema (the protobuf migration
+is a deliberate ADR-14 wire-format change, tracked there).

@@ -442,15 +442,25 @@ pushed tag on `tasks.deploy` — no duplicates accumulate from normal processing
 **Poison messages are Term'd, not redelivered.** An unparseable or
 unknown-source body cannot be turned into a task, so the subscriber `Term`s it
 (after logging the raw payload base64-encoded under `raw_base64`) rather than
-wedging the WorkQueue. POST a body the Quay parser rejects and confirm no task
-appears on `tasks.deploy` and the subscriber logs the termination:
+wedging the WorkQueue. Record the `TASKS` message count first, POST a body the
+Quay parser rejects, then confirm the count is **unchanged** (no task was
+published) and the subscriber logged the termination:
 
 ```bash
+# Baseline count before the poison POST:
+BEFORE=$(kubectl -n nats run nats-cnt --rm -i --restart=Never --image=natsio/nats-box:0.19.7 -- \
+  nats --server "$SERVER" stream info TASKS --json | jq '.state.messages')
+
 echo '{"not":"a quay push"}' > /tmp/bad.json
 curl -fsS -o /dev/null -w '%{http_code}\n' \
   -H 'Content-Type: application/json' \
   -X POST --data-binary @/tmp/bad.json \
-  https://hooks.holos.localhost/webhooks/quay        # 202 (the receiver still stores it)
+  https://hooks.holos.localhost/webhooks/quay        # 202 (the receiver still stores the raw body)
+
+# The subscriber Terms the unparseable event, so TASKS does not grow:
+AFTER=$(kubectl -n nats run nats-cnt --rm -i --restart=Never --image=natsio/nats-box:0.19.7 -- \
+  nats --server "$SERVER" stream info TASKS --json | jq '.state.messages')
+echo "TASKS messages: before=$BEFORE after=$AFTER (expect equal — no task published)"
 kubectl -n webhook-subscriber logs deployment/webhook-subscriber | grep 'terminating message'
 ```
 

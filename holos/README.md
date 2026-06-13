@@ -902,11 +902,17 @@ its consumer (the deployer) connect against, and the canonical home of the
 DeployTask field table referenced by [ADR-10](../docs/adr/ADR-10.md) and
 [ADR-11](../docs/adr/ADR-11.md).
 
-**DeployTask schema.** The DeployTask is a versioned wire contract defined in
-[`internal/task/task.go`](../internal/task/task.go) (`package task`), the `.go`
-source of which is authoritative — changing its shape is an ADR-level change
-(bump `SchemaVersion`, revise ADR-10/ADR-11). It is JSON-marshaled onto
-`tasks.deploy`:
+**DeployTask schema.** The DeployTask is a versioned wire contract. In the
+shipped MVP slice it is a Go struct defined in
+[`internal/task/task.go`](../internal/task/task.go) (`package task`),
+**JSON-marshaled** onto `tasks.deploy`; for this slice that `.go` source is
+authoritative and changing its shape is an ADR-level change (bump
+`SchemaVersion`, revise ADR-10/ADR-11). [ADR-14](../docs/adr/ADR-14.md)
+(Proposed) decides that NATS messages will instead be specified as ConnectRPC
+protobuf with the `.proto` as the source of truth and a binary protobuf payload;
+that migration is **deferred** and not part of the shipped slice, so today's
+on-the-wire form is JSON of the struct below — re-derive this table from the
+`.proto` once ADR-14 lands. The fields:
 
 | Field | JSON key | Type | Meaning |
 |-------|----------|------|---------|
