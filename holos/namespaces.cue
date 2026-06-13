@@ -148,4 +148,16 @@ namespaces: {
 	// a rationale comment here — see the exceptions section of
 	// holos/docs/mesh-enrollment.md.
 	nats: _ambient: true
+
+	// webhook-receiver hosts the thin HTTP ingress that publishes raw webhook
+	// bodies to the NATS WEBHOOKS stream (components/webhook-receiver); its
+	// workloads enroll in the ambient mesh per the platform convention,
+	// following the quay, argocd, and nats precedent for single in-cluster
+	// services.  Enrollment is load-bearing here, not just convention: the
+	// receiver publishes cross-namespace into nats, and the nats
+	// AuthorizationPolicy (components/nats/buildplan.cue) ALLOWs this namespace
+	// as a source — that policy only takes effect when both peers are captured
+	// by ztunnel, so an unenrolled receiver would be denied at the NATS client
+	// port.
+	"webhook-receiver": _ambient: true
 }

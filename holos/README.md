@@ -84,8 +84,9 @@ establishment, the istiod rollout, the ambient data-plane DaemonSets, the
 cert-manager webhook rollout, the CNPG operator rollout, the Postgres
 `Cluster` Ready conditions, and the Keycloak operator rollout — plus waits
 on the `echo` Deployment, the `Keycloak` CR Ready and realm import Done
-conditions, the `quay` Deployment rollout, and the Argo CD workload
-rollouts as smoke checks; nothing else.
+conditions, the `quay` Deployment rollout, the Argo CD workload rollouts,
+the `nats` stream-bootstrap Job and StatefulSet rollout, and the
+`webhook-receiver` Deployment rollout as smoke checks; nothing else.
 
 Apply order matters beyond "CRD components first". The script applies the
 platform components in this order — everything through `echo` is the
@@ -136,6 +137,10 @@ platform service:
     `StatefulSet` with file-backed JetStream, plus the
     `nats-stream-bootstrap` `Job` that idempotently creates the `WEBHOOKS`
     (`webhooks.>`) and `TASKS` (`tasks.>`) file-backed WorkQueue streams
+22. `webhook-receiver` — the thin HTTP ingress that publishes raw inbound
+    webhook bodies to the NATS `WEBHOOKS` stream: a `Deployment` running the
+    `holos-paas` image (`webhook-receiver` subcommand), a `Service`, and an
+    `HTTPRoute` attaching it to the shared Gateway at `hooks.holos.localhost`
 
 The order encodes six rules: the `namespaces` component applies first, so
 every Namespace exists before any component that populates it;
@@ -197,7 +202,18 @@ that land later), so appending it keeps the established order stable — the
 same rationale as `argocd`. Its gate first polls the `nats-stream-bootstrap`
 Job to completion — the `wait_quay` Job-poll pattern, so a failure names the
 Job rather than a generic rollout timeout — and then waits the `nats`
-`StatefulSet` rollout as the NATS backbone smoke check.
+`StatefulSet` rollout as the NATS backbone smoke check. `webhook-receiver`
+closes the sequence: it publishes into the NATS `WEBHOOKS` stream, so it
+trails `nats` — its `readinessProbe` hits `/readyz`, which reports Ready only
+once the pod is connected to NATS, so its rollout gate cannot pass until the
+`nats` server is serving and the mesh `AuthorizationPolicy` (extended to
+ALLOW the `webhook-receiver` namespace as a client source) admits its publish.
+Gating it after `nats` keeps that rollout fast rather than leaving the
+receiver unready while it reconnects. Its `HTTPRoute` attaches to the shared
+Gateway at `hooks.holos.localhost`; attachment is level-triggered, so route
+order does not matter — verify the end-to-end traffic path
+(`curl https://hooks.holos.localhost/webhooks/<source>` → raw body on
+`webhooks.<source>`) separately.
 
 The first rule exists because nothing orders an apply batch by kind:
 kubectl submits the files sequentially in lexical order, so a single
@@ -650,9 +666,11 @@ and the `nats` namespace is ambient-enrolled
 ([mesh-enrollment.md](docs/mesh-enrollment.md)) so the client hop carries mTLS
 transport identity at L4. To make the in-cluster-only claim hold by
 construction, the component ships an `AuthorizationPolicy` that ALLOWs only
-same-namespace sources to the client port (4222) and the monitoring endpoint
-(8222); cross-namespace producers and consumers are admitted explicitly as
-the receiver/subscriber components (HOL-1122/1123/1124) land. NATS account/user
+the `nats` namespace and the `webhook-receiver` namespace as sources to the
+client port (4222) and the monitoring endpoint (8222); the receiver namespace
+was added (HOL-1198) so the deployed `webhook-receiver` may publish to the
+`WEBHOOKS` stream, and the remaining cross-namespace subscribers are admitted
+explicitly as those components (HOL-1123/1124) land. NATS account/user
 authentication inside the cluster is deliberately deferred to a later issue.
 
 **In-cluster connection contract.** Clients connect to the chart's client

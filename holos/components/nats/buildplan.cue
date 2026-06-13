@@ -60,6 +60,17 @@ let NAME = "nats"
 // this to ALLOW the specific producer/consumer ServiceAccounts in other
 // namespaces as the receiver/subscriber clients (HOL-1122/1123/1124) are
 // introduced.
+//
+// RECEIVER_NAMESPACE is the webhook-receiver component's namespace
+// (holos/components/webhook-receiver/buildplan.cue), added to the ALLOW rule's
+// source namespaces so the receiver may publish raw webhook bodies to the
+// WEBHOOKS stream from its own namespace (HOL-1198).  Namespace-granularity is
+// the right scope this MVP phase — NATS is unauthenticated, so there is no
+// principal to bind to yet; the per-ServiceAccount tightening is the
+// HOL-1122/1123/1124 work noted above.  Unifying with #RegisteredNamespace
+// makes a rename or removal of that namespace a render failure here rather than
+// a silent cross-namespace deny at the client port.
+let RECEIVER_NAMESPACE = "webhook-receiver" & #RegisteredNamespace
 let AUTHZ = {
 	apiVersion: "security.istio.io/v1"
 	kind:       "AuthorizationPolicy"
@@ -77,14 +88,16 @@ let AUTHZ = {
 			"app.kubernetes.io/component": NAME
 		}
 		action: "ALLOW"
-		// Allow only sources in the nats namespace.  An ALLOW policy with a
-		// rule denies everything the rule does not match, so cross-namespace
-		// pods are rejected until a later phase adds the receiver/subscriber
-		// principals explicitly (HOL-1122/1123/1124).  The bootstrap Job below
-		// runs in this namespace, so it is allowed to reach the client port to
-		// create the streams.
+		// Allow sources in the nats namespace and the webhook-receiver
+		// namespace.  An ALLOW policy with a rule denies everything the rule
+		// does not match, so every other cross-namespace pod is rejected until
+		// a later phase adds the remaining subscriber principals explicitly
+		// (HOL-1123/1124).  The bootstrap Job below runs in the nats namespace,
+		// so it is allowed to reach the client port to create the streams; the
+		// webhook-receiver namespace is allowed so the receiver can publish to
+		// the WEBHOOKS stream (HOL-1198).
 		rules: [{
-			from: [{source: namespaces: [NAMESPACE]}]
+			from: [{source: namespaces: [NAMESPACE, RECEIVER_NAMESPACE]}]
 		}]
 	}
 }
