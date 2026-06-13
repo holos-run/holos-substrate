@@ -132,7 +132,9 @@ ROLLOUT_TIMEOUT_SECONDS="$(duration_seconds "${ROLLOUT_TIMEOUT}")" || exit 1
 # appending it keeps the established order stable.  argocd-crds and argocd
 # close the sequence: CRDs before the controllers that need the types (the
 # same guardrail as the other *-crds pairs), and Argo CD depends only on
-# the Gateway its HTTPRoutes attach to — nothing downstream depends on it
+# the Gateway its HTTPRoutes attach to — its OIDC backchannel reaches the
+# Keycloak issuer through a ServiceEntry it ships itself (resolved by the
+# mesh, applied with the component) — nothing downstream depends on it
 # during bootstrap — so appending the pair keeps the established order
 # stable.  nats precedes webhook-receiver: it is a Layer 2 backbone service
 # that nothing during bootstrap depends on (its producers and consumers are
