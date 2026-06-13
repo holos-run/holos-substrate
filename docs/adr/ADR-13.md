@@ -12,6 +12,7 @@
 |----------|------------|-------------|----------------|
 | 1        | 2026-06-12 | @jeffmccune | Initial design |
 | 2        | 2026-06-12 | @jeffmccune | Clarify routing invariants and config digest lookup |
+| 3        | 2026-06-13 | @jeffmccune | The `RenderTask`/`DeployTask` message schemas are specified by [ADR-14](ADR-14.md): ConnectRPC protobuf definitions with the `.proto` as the source of truth, Go generated |
 
 ## Context and Problem Statement
 
