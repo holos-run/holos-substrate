@@ -469,9 +469,35 @@ wait_nats() {
 # separately (see holos/README.md).  Gating after nats matters: a receiver
 # scheduled before the NATS server is serving would sit unready until it
 # reconnects, so the nats gate ahead of this one keeps the rollout fast.
+#
+# Unlike every other component, this one runs a locally built image
+# (registry.holos.localhost:5100/holos-paas:dev) rather than an upstream one,
+# so a fresh `scripts/apply` on a cluster that has not yet had the image pushed
+# stalls at ImagePullBackOff.  Detect that specific failure on a stalled
+# rollout and name the actual fix (`make docker-push`) instead of letting it
+# expire as a generic rollout timeout.  See the quick-start
+# (docs/local-cluster.md) and holos/README.md.
 wait_webhook_receiver() {
-  kubectl --context "${KUBE_CONTEXT}" --namespace webhook-receiver \
-    rollout status deployment/webhook-receiver --timeout="${ROLLOUT_TIMEOUT}"
+  if ! kubectl --context "${KUBE_CONTEXT}" --namespace webhook-receiver \
+    rollout status deployment/webhook-receiver --timeout="${ROLLOUT_TIMEOUT}"; then
+    # On timeout, surface an image-pull failure as the likely cause: it is the
+    # one this component introduces and the rollout-status error alone does not
+    # name it.  The waiting-reason read is best-effort — a missing pod or empty
+    # output simply falls through to the generic guidance.
+    local waiting
+    waiting=$(kubectl --context "${KUBE_CONTEXT}" --namespace webhook-receiver \
+      get pods -l app.kubernetes.io/name=webhook-receiver \
+      -o jsonpath='{range .items[*].status.containerStatuses[*]}{.state.waiting.reason}{"\n"}{end}' \
+      2>/dev/null || true)
+    if grep -qE 'ImagePull|ErrImagePull|ImagePullBackOff' <<<"${waiting}"; then
+      echo "ERROR: webhook-receiver cannot pull its image" \
+        "(${waiting//$'\n'/ }).  This is the only component that runs a locally" >&2
+      echo "       built image; build and push it to the k3d registry first:" >&2
+      echo "         make docker-push" >&2
+      echo "       then re-run scripts/apply (see docs/local-cluster.md)." >&2
+    fi
+    return 1
+  fi
 }
 
 if ! command -v kubectl >/dev/null 2>&1; then

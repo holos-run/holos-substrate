@@ -666,12 +666,14 @@ reachability: NATS listens for in-cluster clients only (it attaches no
 and the `nats` namespace is ambient-enrolled
 ([mesh-enrollment.md](docs/mesh-enrollment.md)) so the client hop carries mTLS
 transport identity at L4. To make the in-cluster-only claim hold by
-construction, the component ships an `AuthorizationPolicy` that ALLOWs only
-the `nats` namespace and the `webhook-receiver` namespace as sources to the
-client port (4222) and the monitoring endpoint (8222); the receiver namespace
-was added (HOL-1198) so the deployed `webhook-receiver` may publish to the
-`WEBHOOKS` stream, and the remaining cross-namespace subscribers are admitted
-explicitly as those components (HOL-1123/1124) land. NATS account/user
+construction, the component ships an `AuthorizationPolicy` with two
+least-privilege rules: same-namespace (`nats`) sources reach every port — the
+client port (4222) for the bootstrap Job and the monitoring endpoint (8222) —
+while the `webhook-receiver` namespace (added in HOL-1198 so the deployed
+`webhook-receiver` may publish to the `WEBHOOKS` stream) reaches **only** the
+client port (4222), never the unauthenticated monitoring endpoint. The
+remaining cross-namespace subscribers are admitted explicitly, similarly
+scoped, as those components (HOL-1123/1124) land. NATS account/user
 authentication inside the cluster is deliberately deferred to a later issue.
 
 **In-cluster connection contract.** Clients connect to the chart's client
