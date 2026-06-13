@@ -273,6 +273,100 @@ until the gitops Application projection is enabled (see
 For the full verification steps and the service contract, see
 [Argo CD admin credentials and verification](../holos/README.md#argo-cd-admin-credentials-and-verification).
 
+## Verify the webhook receiver
+
+`scripts/apply` brings the `webhook-receiver` up at
+`https://hooks.holos.localhost` (the only component running the locally built
+`holos-paas` image, pushed by `make docker-push` in the
+[Apply the Platform](#apply-the-platform) step). It is the thin HTTP ingress
+that publishes raw inbound webhook bodies to the NATS `WEBHOOKS` WorkQueue
+stream — see
+[Webhook receiver and service contract](../holos/README.md#webhook-receiver-and-service-contract)
+for the full contract (status codes, header framing, the durability story, and
+the unauthenticated local-only posture). It performs no authentication in the
+MVP: from outside the cluster it is reachable only at `hooks.holos.localhost` →
+`127.0.0.1` through the shared Gateway, but its in-cluster ClusterIP `Service`
+has no ingress policy, so any in-cluster workload can also enqueue a body —
+consistent with the MVP's no-in-cluster-auth posture. Edge signature
+verification is a future enhancement
+([HOL-1200](https://linear.app/holos-run/issue/HOL-1200)); see the
+[security posture](../holos/README.md#webhook-receiver-and-service-contract) for
+both surfaces.
+
+First confirm the rollout is Ready and `/readyz` reports connected to NATS:
+
+```bash
+kubectl -n webhook-receiver rollout status deployment/webhook-receiver --timeout=120s
+```
+
+**End-to-end publish.** POST a payload and confirm the **exact raw body** lands
+on `webhooks.quay`. Subscribe from a throwaway `nats-box` pod (the same image the
+NATS bootstrap Job uses), then POST through the Gateway:
+
+```bash
+SERVER=nats://nats.nats.svc.cluster.local:4222
+# In one terminal, subscribe to the WEBHOOKS subjects:
+kubectl -n nats run nats-sub --rm -it --restart=Never --image=natsio/nats-box:0.19.7 -- \
+  nats --server "$SERVER" sub 'webhooks.>'
+
+# In another terminal, POST a payload and expect 202 Accepted:
+echo '{"name":"sample","docker_url":"quay.holos.localhost/holos/sample"}' > /tmp/payload.json
+curl -fsS -o /dev/null -w '%{http_code}\n' \
+  -H 'Content-Type: application/json' \
+  -X POST --data-binary @/tmp/payload.json \
+  https://hooks.holos.localhost/webhooks/quay        # 202
+```
+
+The `nats sub` terminal prints one message on subject `webhooks.quay` whose body
+is the exact bytes of `payload.json` and whose headers include the forwarded
+`Content-Type`. You can also read it back off the stream:
+
+```bash
+kubectl -n nats run nats-get --rm -i --restart=Never --image=natsio/nats-box:0.19.7 -- \
+  nats --server "$SERVER" stream get WEBHOOKS --last-for=webhooks.quay
+```
+
+**Durability under a NATS outage (`503` → retry → not lost).** Scale NATS down,
+confirm the receiver returns `503` (and `/readyz` goes unready), then scale NATS
+back up and confirm a retried POST lands on the stream — proving an accepted
+event is never dropped:
+
+```bash
+kubectl -n nats scale statefulset/nats --replicas=0
+kubectl -n nats rollout status statefulset/nats --timeout=120s   # scaled to 0
+
+# The receiver cannot publish, so it returns 503 (the signal that makes a real
+# sender retry). Omit curl's -f here: a non-2xx is the expected result, and -f
+# would make curl exit non-zero and abort a set -e shell:
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  -H 'Content-Type: application/json' \
+  -X POST --data-binary @/tmp/payload.json \
+  https://hooks.holos.localhost/webhooks/quay        # 503
+
+# Bring NATS back and let the receiver reconnect (unbounded reconnect budget):
+kubectl -n nats scale statefulset/nats --replicas=1
+kubectl -n nats rollout status statefulset/nats --timeout=300s
+kubectl -n webhook-receiver wait pod -l app.kubernetes.io/name=webhook-receiver \
+  --for=condition=Ready --timeout=120s
+
+# The retried delivery now succeeds and lands on the file-backed WorkQueue:
+curl -fsS -o /dev/null -w '%{http_code}\n' \
+  -H 'Content-Type: application/json' \
+  -X POST --data-binary @/tmp/payload.json \
+  https://hooks.holos.localhost/webhooks/quay        # 202
+```
+
+**Iterating on the receiver image.** The Deployment pulls the **mutable** `:dev`
+tag with `imagePullPolicy: Always`, so after rebuilding the image the cluster
+does not redeploy on its own. Push the new image and restart the Deployment to
+pull it:
+
+```bash
+make docker-push
+kubectl -n webhook-receiver rollout restart deployment/webhook-receiver
+kubectl -n webhook-receiver rollout status deployment/webhook-receiver
+```
+
 ## Reset the Cluster
 
 To reset to a clean state:

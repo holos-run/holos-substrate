@@ -134,17 +134,44 @@ push observable via a webhook.
 **Goal:** a thin HTTP endpoint that writes the **raw** webhook body to the NATS
 WorkQueue stream and acks the sender — no parsing.
 
-**Planning hints / work to flesh out:**
+**Status: delivered.** The webhook receiver is implemented as the
+`webhook-receiver` subcommand of the `holos-paas` binary
+([`internal/webhook/receiver/`](../../internal/webhook/receiver/receiver.go),
+HOL-1196), shipped as an arm64 distroless image (HOL-1197), and deployed as the
+`webhook-receiver` Holos component on the shared Gateway at
+`hooks.holos.localhost`, with the NATS `AuthorizationPolicy` extended to admit
+its namespace (HOL-1198). It publishes the raw body to `webhooks.<source>` on the
+`WEBHOOKS` WorkQueue stream and acks the sender only after the JetStream
+`PubAck`. The ADR-9 milestone planning note (subject naming, body+headers
+framing, ack semantics, edge-auth location) is resolved in
+[ADR-9](../adr/ADR-9.md) revision 2; the service contract, durability story, and
+unauthenticated local-only posture are documented in
+[`holos/README.md`](../../holos/README.md#webhook-receiver-and-service-contract),
+with end-to-end verification in
+[`docs/local-cluster.md`](../local-cluster.md#verify-the-webhook-receiver).
 
-- Subject name + stream config (replicas, max age/bytes, duplicate window).
-- Framing: raw body as payload, useful HTTP headers as NATS headers.
-- Edge auth / signature verification (reject forged senders cheaply here).
-- Ack semantics matching the chosen registry's retry expectations.
+**Original planning hints (all resolved — see ADR-9 revision 2):**
+
+- Subject name + stream config (replicas, max age/bytes, duplicate window) →
+  `webhooks.<source>` on the `WEBHOOKS` WorkQueue stream; explicit stream
+  limits owned by the NATS backbone issues.
+- Framing: raw body as payload, curated HTTP headers as NATS headers.
+- Edge auth / signature verification → deferred to the subscriber for the MVP;
+  edge verification tracked as [HOL-1200](https://linear.app/holos-run/issue/HOL-1200).
+- Ack semantics: `202` only after the JetStream `PubAck`, `503` (sender retry)
+  when the publish fails.
 
 **Acceptance criteria:**
 
 - A webhook POST is persisted to JetStream and acked before downstream runs.
 - If JetStream is unavailable, the receiver returns an error so the sender retries.
+
+Both verified live on the k3d-holos cluster in HOL-1198. For the MVP the
+receiver is **unauthenticated**: from outside the cluster it is exposed only at
+`hooks.holos.localhost` through the shared Gateway, and its in-cluster ClusterIP
+Service has no ingress policy (consistent with the no-in-cluster-auth posture).
+Edge signature verification is a deferred future enhancement
+([HOL-1200](https://linear.app/holos-run/issue/HOL-1200)).
 
 ---
 

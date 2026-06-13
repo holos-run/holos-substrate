@@ -4,13 +4,14 @@
 |----------|-------------------------|
 | Date     | 2026-06-09              |
 | Author   | @jeffmccune             |
-| Status   | `Proposed`              |
+| Status   | `Partially Implemented` |
 | Tags     | webhook, nats, ingress  |
 | Updates  | ADR-6                   |
 
 | Revision | Date       | Author      | Info           |
 |----------|------------|-------------|----------------|
 | 1        | 2026-06-09 | @jeffmccune | Initial design |
+| 2        | 2026-06-13 | @jeffmccune | Resolved the milestone planning note: subject `webhooks.<source>` on the `WEBHOOKS` WorkQueue stream, raw body as payload with a curated header allowlist as NATS headers, ack-after-`PubAck` semantics (`202`/`503`), and edge auth deferred to the subscriber (HOL-1200). Receiver implemented (HOL-1196) and deployed (HOL-1198). |
 
 ## Context and Problem Statement
 
@@ -48,12 +49,54 @@ JetStream; in that case it returns an error so the registry retries. This is the
 narrowest possible ingress surface and the easiest stage to make highly
 available.
 
-> **Planning note for the milestone:** specify the subject name and stream
-> configuration (replicas, max age/bytes, duplicate window), how the raw body and
-> useful HTTP headers are framed into the NATS message (e.g. body as payload,
-> headers as NATS headers), webhook authentication/signature verification at the
-> edge (even though parsing is deferred, rejecting forged senders is cheap here),
-> and the ack semantics the chosen registry expects.
+> **Milestone resolution (revision 2):** the M3 planning note is resolved as
+> follows; the receiver is implemented in HOL-1196 and deployed in HOL-1198.
+>
+> - **Subject naming.** The publish subject is `<prefix>.<source>` where
+>   `<prefix>` defaults to `webhooks` and `<source>` is the `{source}` path
+>   segment — e.g. `POST /webhooks/quay` publishes to `webhooks.quay`. This
+>   matches [ADR-13](ADR-13.md)'s `webhooks.quay` producer subject; the
+>   narrower `webhooks.raw.<source>` sketched in the M0 notes is **not** used,
+>   because it predates ADR-13 and does not match ADR-13's `webhooks.quay`
+>   producer subject — the receiver and subscriber must agree on a single
+>   subject. (The `WEBHOOKS` stream's `webhooks.>` capture subject would match
+>   either form, since terminal `>` matches all remaining tokens; the
+>   constraint is the producer/consumer subject agreement, not the stream
+>   capture.)
+> - **Stream configuration.** The subject is backed by the `WEBHOOKS`
+>   file-backed **WorkQueue** stream (`webhooks.>`) provisioned by the NATS
+>   `nats-stream-bootstrap` Job ([ADR-6](ADR-6.md)). Explicit size/age limits,
+>   the duplicate window, and the consumer configuration are owned by the NATS
+>   backbone and subscriber issues — see the
+>   [stream definitions](../../holos/README.md#nats-jetstream-backbone-and-connection-contract).
+> - **Body + headers framing.** The raw request body is published verbatim as
+>   the NATS message payload (no parsing). A small, provider-agnostic allowlist
+>   of HTTP headers is copied onto the message as NATS headers
+>   (`Content-Type`, `X-Github-Event` / `X-Event-Type`,
+>   `X-Github-Delivery` / `X-Delivery-Id`,
+>   `X-Hub-Signature-256` / `X-Signature`); only headers present on the request
+>   are forwarded. The signature headers are carried through so the chosen
+>   verification location can authenticate the sender against the raw body.
+> - **Ack semantics.** The receiver acks the sender with `202 Accepted` **only
+>   after** the JetStream `PubAck`, and returns `503 Service Unavailable` when
+>   the publish fails or NATS is unreachable. A `5xx` makes the sender (the
+>   registry) retry, so an accepted event is never silently dropped — durability
+>   is owned by the file-backed WorkQueue stream and the receiver's contract is
+>   "`202` means stored". An oversized body is rejected with `413` before any
+>   publish.
+> - **Edge auth.** Signature verification is **deferred to the subscriber**
+>   ([ADR-10](ADR-10.md)) for the MVP: the receiver performs no authentication
+>   and carries the signature header through verbatim. Until verification lands
+>   the endpoint relies on network reachability plus the configurable
+>   max-body-size bound: from outside the cluster it is exposed only at
+>   `hooks.holos.localhost` (→ `127.0.0.1`) through the shared Gateway, never off
+>   the local machine, but its in-cluster ClusterIP `Service` carries no ingress
+>   policy, so any in-cluster workload can also enqueue a body — accepted under
+>   the MVP's no-in-cluster-auth posture, not a boundary for untrusted tenants.
+>   Moving verification to the edge (reject forged senders before publishing) is
+>   tracked as [HOL-1200](https://linear.app/holos-run/issue/HOL-1200) and
+>   stubbed in
+>   [placeholders.md](../../holos/docs/placeholders.md#webhook-edge-signature-verification).
 
 ## Decision
 
@@ -71,8 +114,9 @@ available.
 - The ingress surface is minimal and easy to make highly available, since it has
   almost no logic to get wrong.
 - Storing raw, unauthenticated-by-meaning bodies means signature verification (if
-  any) must happen either at the edge or in the subscriber; the milestone must
-  choose and document where.
+  any) must happen either at the edge or in the subscriber. The milestone chose
+  the subscriber for the MVP (revision 2): the receiver is unauthenticated and
+  relies on network controls until edge verification lands ([HOL-1200](https://linear.app/holos-run/issue/HOL-1200)).
 - A WorkQueue stream gives exactly-one-consumer semantics, which is correct for
   the MVP but means scaling the subscriber requires JetStream consumer groups
   rather than naive fan-out.
