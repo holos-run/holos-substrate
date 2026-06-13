@@ -620,8 +620,8 @@ the receiver and subscriber can introduce additional sources or task types
 without re-provisioning a stream. The `webhooks.>` wildcard deliberately
 matches ADR-13's `webhooks.quay` producer subject rather than the narrower
 `webhooks.raw.<source>` sketched in the M0 planning notes, which predates
-ADR-13 and would not match `webhooks.quay`; cite ADR-13 for the
-render-vs-deploy task split.
+ADR-13 and would not match `webhooks.quay`. [ADR-13](../docs/adr/ADR-13.md)
+defines the render-vs-deploy task split.
 
 **Stream definitions.** The `nats-stream-bootstrap` Job creates both streams
 with WorkQueue retention (each message is delivered to exactly one consumer
