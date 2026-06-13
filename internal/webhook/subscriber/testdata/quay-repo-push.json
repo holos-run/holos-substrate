@@ -1,0 +1,11 @@
+{
+  "name": "sample-app",
+  "repository": "holos/sample-app",
+  "namespace": "holos",
+  "docker_url": "quay.example.com/holos/sample-app",
+  "homepage": "https://quay.example.com/repository/holos/sample-app",
+  "updated_tags": [
+    "v2",
+    "latest"
+  ]
+}
