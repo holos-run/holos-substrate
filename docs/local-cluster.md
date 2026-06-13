@@ -55,7 +55,7 @@ scripts/local-k3d
 
 This creates:
 
-- A local registry at `registry.holos.localhost:5100`
+- A local registry at `k3d-registry.holos.localhost:5100`
 - A k3d cluster named `holos` with ports 80 and 443 forwarded to the load
   balancer and Traefik disabled
 
@@ -77,19 +77,6 @@ cluster structure. The cluster name, registry hostname, and registry port are
 passed at runtime by `scripts/local-k3d` (positional name argument and
 `--registry-use`), so `CLUSTER_NAME`, `REGISTRY_NAME`, and `REGISTRY_PORT`
 are fully honored without editing `k3d/config.yaml`.
-
-**Environment variable overrides:**
-
-| Variable        | Default                     | Description                                  |
-|-----------------|-----------------------------|----------------------------------------------|
-| `CLUSTER_NAME`  | `holos`                     | Cluster name (honored at creation and reset) |
-| `REGISTRY_NAME` | `registry.holos.localhost`  | Registry hostname (honored at creation)      |
-| `REGISTRY_PORT` | `5100`                      | Registry host port (honored at creation)     |
-
-> **Note:** only one cluster created from this config can exist at a time —
-> the config binds host ports 80 and 443, so creating a second cluster under a
-> different `CLUSTER_NAME` fails with a port conflict until the first is
-> deleted.
 
 ## Setup Trusted TLS
 
@@ -503,5 +490,5 @@ Remove the cluster entirely:
 
 ```bash
 k3d cluster delete holos
-k3d registry delete registry.holos.localhost
+k3d registry delete k3d-registry.holos.localhost
 ```

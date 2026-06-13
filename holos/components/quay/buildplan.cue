@@ -67,7 +67,7 @@ let PORT = 8080
 // listener hostname and resolves to 127.0.0.1 on the host per
 // docs/local-cluster.md, and the Keycloak realm's placeholder quay client
 // already lists https://quay.holos.localhost/* as a redirect URI.
-// registry.holos.localhost is deliberately NOT used: that name belongs to
+// k3d-registry.holos.localhost is deliberately NOT used: that name belongs to
 // the k3d bootstrap registry on port 5100 (scripts/local-k3d).
 let HOSTNAME = "quay.holos.localhost"
 

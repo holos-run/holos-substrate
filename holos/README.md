@@ -595,10 +595,10 @@ consuming service, in that service's namespace. CNPG generates the
 credentials and connection endpoints with conventional names — this is the
 contract the Keycloak and Quay components consume:
 
-| Cluster | Namespace | Credentials Secret | Read-write Service |
-|---------|-----------|--------------------|--------------------|
-| `keycloak-db` | `keycloak` | `keycloak-db-app` | `keycloak-db-rw.keycloak.svc:5432` |
-| `quay-db` | `quay` | `quay-db-app` | `quay-db-rw.quay.svc:5432` |
+| Cluster       | Namespace  | Credentials Secret | Read-write Service                 |
+| ------------- | ---------- | ------------------ | ---------------------------------- |
+| `keycloak-db` | `keycloak` | `keycloak-db-app`  | `keycloak-db-rw.keycloak.svc:5432` |
+| `quay-db`     | `quay`     | `quay-db-app`      | `quay-db-rw.quay.svc:5432`         |
 
 Each `<cluster>-app` Secret carries the keys `username`, `password`,
 `dbname`, `host`, `port`, `uri`, and `jdbc-uri`.
@@ -646,11 +646,11 @@ for which producer publishes to which subject.
 **Subject hierarchy.** The platform's subjects are organized under two
 top-level prefixes, one per stream:
 
-| Subject | Published by | Meaning |
-|---------|--------------|---------|
-| `webhooks.quay` | Webhook receiver ([ADR-9](../docs/adr/ADR-9.md)) | Raw Quay repository-push webhook bodies, written verbatim with no parsing |
-| `tasks.deploy` | Webhook subscriber ([ADR-10](../docs/adr/ADR-10.md)) | Normalized **deploy task** ([DeployTask contract](#webhook-subscriber-and-deploytask-contract)) — the **only** subject the shipped subscriber emits; per [ADR-13](../docs/adr/ADR-13.md) the eventual design reserves it for a config-image push matched to an `Application`'s configuration repository |
-| `tasks.render` | Webhook subscriber ([ADR-10](../docs/adr/ADR-10.md)) | Normalized **render task** — an app-image push matched an `Application`'s app-image repository ([ADR-13](../docs/adr/ADR-13.md)). **Not yet emitted**: the KRM-matching routing that produces it is deferred (see the [subscriber contract](#webhook-subscriber-and-deploytask-contract)) |
+| Subject         | Published by                                         | Meaning                                                                                                                                                                                                                                                                                                 |
+| --------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `webhooks.quay` | Webhook receiver ([ADR-9](../docs/adr/ADR-9.md))     | Raw Quay repository-push webhook bodies, written verbatim with no parsing                                                                                                                                                                                                                               |
+| `tasks.deploy`  | Webhook subscriber ([ADR-10](../docs/adr/ADR-10.md)) | Normalized **deploy task** ([DeployTask contract](#webhook-subscriber-and-deploytask-contract)) — the **only** subject the shipped subscriber emits; per [ADR-13](../docs/adr/ADR-13.md) the eventual design reserves it for a config-image push matched to an `Application`'s configuration repository |
+| `tasks.render`  | Webhook subscriber ([ADR-10](../docs/adr/ADR-10.md)) | Normalized **render task** — an app-image push matched an `Application`'s app-image repository ([ADR-13](../docs/adr/ADR-13.md)). **Not yet emitted**: the KRM-matching routing that produces it is deferred (see the [subscriber contract](#webhook-subscriber-and-deploytask-contract))               |
 
 The streams capture these with wildcard subjects (`webhooks.>`, `tasks.>`) so
 the receiver and subscriber can introduce additional sources or task types
@@ -669,10 +669,10 @@ with WorkQueue retention (each message is delivered to exactly one consumer
 and removed once acked, so handled events never accumulate — at-least-once
 processing) and file storage (the queue survives a NATS pod restart):
 
-| Stream | Subjects | Retention | Storage |
-|--------|----------|-----------|---------|
-| `WEBHOOKS` | `webhooks.>` | `WorkQueue` | `file` |
-| `TASKS` | `tasks.>` | `WorkQueue` | `file` |
+| Stream     | Subjects     | Retention   | Storage |
+| ---------- | ------------ | ----------- | ------- |
+| `WEBHOOKS` | `webhooks.>` | `WorkQueue` | `file`  |
+| `TASKS`    | `tasks.>`    | `WorkQueue` | `file`  |
 
 The streams are created with the CLI defaults for size and age limits
 (`max_msgs`, `max_bytes`, `max_age` all unbounded), so WorkQueue retention
@@ -706,12 +706,12 @@ deliberately deferred to a later issue.
 **In-cluster connection contract.** Clients connect to the chart's client
 `Service` on the NATS client port:
 
-| Endpoint | Value |
-|----------|-------|
-| Connection URL | `nats://nats.nats.svc.cluster.local:4222` |
-| Service / namespace | `nats` Service in the `nats` namespace |
-| Client port | `4222` |
-| Streams | `WEBHOOKS` (`webhooks.>`), `TASKS` (`tasks.>`) |
+| Endpoint            | Value                                          |
+| ------------------- | ---------------------------------------------- |
+| Connection URL      | `nats://nats.nats.svc.cluster.local:4222`      |
+| Service / namespace | `nats` Service in the `nats` namespace         |
+| Client port         | `4222`                                         |
+| Streams             | `WEBHOOKS` (`webhooks.>`), `TASKS` (`tasks.>`) |
 
 Verify the backbone on the live cluster after `scripts/apply`. The
 `nats`-CLI commands run from a throwaway `nats-box` pod against the in-cluster
@@ -770,14 +770,14 @@ and the downstream subscriber connect against.
 
 **HTTP contract.**
 
-| Aspect | Value |
-|--------|-------|
-| Ingress hostname | `hooks.holos.localhost` (→ `127.0.0.1`, local cluster only) |
-| Webhook endpoint | `POST /webhooks/{source}` — `{source}` names the sender (e.g. `quay`) |
-| Publish subject | `<prefix>.<source>`, prefix defaults to `webhooks` → e.g. `webhooks.quay` |
-| Target stream | `WEBHOOKS` (`webhooks.>`), file-backed WorkQueue |
-| Liveness probe | `GET /healthz` — always `200` while the process is up |
-| Readiness probe | `GET /readyz` — `200` only when connected to NATS, else `503` |
+| Aspect           | Value                                                                     |
+| ---------------- | ------------------------------------------------------------------------- |
+| Ingress hostname | `hooks.holos.localhost` (→ `127.0.0.1`, local cluster only)               |
+| Webhook endpoint | `POST /webhooks/{source}` — `{source}` names the sender (e.g. `quay`)     |
+| Publish subject  | `<prefix>.<source>`, prefix defaults to `webhooks` → e.g. `webhooks.quay` |
+| Target stream    | `WEBHOOKS` (`webhooks.>`), file-backed WorkQueue                          |
+| Liveness probe   | `GET /healthz` — always `200` while the process is up                     |
+| Readiness probe  | `GET /readyz` — `200` only when connected to NATS, else `503`             |
 
 The publish subject is `webhooks.<source>`, matching [ADR-13](../docs/adr/ADR-13.md)'s
 `webhooks.quay` producer subject and the `WEBHOOKS` stream's `webhooks.>`
@@ -789,14 +789,14 @@ configurable via flags or `HOLOS_PAAS_*` environment variables (see
 **Status codes** (the handler's contract; see the ingress note below for which
 of these are reachable at `hooks.holos.localhost`):
 
-| Code | Meaning |
-|------|---------|
-| `202 Accepted` | The body was published **and** the JetStream `PubAck` returned — the event is durably stored on the `WEBHOOKS` stream |
-| `503 Service Unavailable` | The publish failed or NATS is unreachable — the event is **not** stored, so the sender must retry |
-| `413 Request Entity Too Large` | The body exceeded the configured `--max-body-bytes` (default 1 MiB) and was rejected before any publish |
-| `400 Bad Request` | The body could not be read (e.g. a truncated request) |
-| `404 Not Found` | The path did not match `/webhooks/{source}` — the Go 1.22 `ServeMux` `{source}` segment matches exactly one path element, so `/webhooks/quay/extra` and `/webhooks/` with an empty source get `404` |
-| `405 Method Not Allowed` | A matching path with a method other than `POST` (e.g. `GET /webhooks/quay`) |
+| Code                           | Meaning                                                                                                                                                                                             |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `202 Accepted`                 | The body was published **and** the JetStream `PubAck` returned — the event is durably stored on the `WEBHOOKS` stream                                                                               |
+| `503 Service Unavailable`      | The publish failed or NATS is unreachable — the event is **not** stored, so the sender must retry                                                                                                   |
+| `413 Request Entity Too Large` | The body exceeded the configured `--max-body-bytes` (default 1 MiB) and was rejected before any publish                                                                                             |
+| `400 Bad Request`              | The body could not be read (e.g. a truncated request)                                                                                                                                               |
+| `404 Not Found`                | The path did not match `/webhooks/{source}` — the Go 1.22 `ServeMux` `{source}` segment matches exactly one path element, so `/webhooks/quay/extra` and `/webhooks/` with an empty source get `404` |
+| `405 Method Not Allowed`       | A matching path with a method other than `POST` (e.g. `GET /webhooks/quay`)                                                                                                                         |
 
 The `HTTPRoute` at `hooks.holos.localhost` forwards **only** `POST` requests
 with the `/webhooks/` prefix (it matches `method: POST`, `path prefix
@@ -812,11 +812,11 @@ onto the message as NATS headers so the subscriber can route and verify without
 the receiver having parsed anything; only headers present on the request are
 forwarded:
 
-| HTTP header | Purpose |
-|-------------|---------|
-| `Content-Type` | the body's media type, for the subscriber to parse it |
-| `X-Github-Event` / `X-Event-Type` | event-type dispatch without decoding the body |
-| `X-Github-Delivery` / `X-Delivery-Id` | delivery id for idempotency and end-to-end tracing |
+| HTTP header                           | Purpose                                                                 |
+| ------------------------------------- | ----------------------------------------------------------------------- |
+| `Content-Type`                        | the body's media type, for the subscriber to parse it                   |
+| `X-Github-Event` / `X-Event-Type`     | event-type dispatch without decoding the body                           |
+| `X-Github-Delivery` / `X-Delivery-Id` | delivery id for idempotency and end-to-end tracing                      |
 | `X-Hub-Signature-256` / `X-Signature` | sender signature, carried through for verification against the raw body |
 
 **Durability story.** The receiver is thin, so its only failure mode is failing
@@ -867,7 +867,7 @@ tracked by [HOL-1200](https://linear.app/holos-run/issue/HOL-1200) and stubbed i
 [docs/placeholders.md](docs/placeholders.md#webhook-edge-signature-verification).
 
 **Dev-loop image refresh.** The Deployment pulls
-`registry.holos.localhost:5100/holos-paas:dev` with `imagePullPolicy: Always`.
+`k3d-registry.holos.localhost:5100/holos-paas:dev` with `imagePullPolicy: Always`.
 The `:dev` tag is **mutable** (a deliberate tradeoff for the local dev loop:
 [ADR-8](../docs/adr/ADR-8.md) prefers immutable tags for delivery, but the dev
 loop rebuilds the same tag), so the cluster does not redeploy on its own when the
@@ -914,23 +914,23 @@ that migration is **deferred** and not part of the shipped slice, so today's
 on-the-wire form is JSON of the struct below — re-derive this table from the
 `.proto` once ADR-14 lands. The fields:
 
-| Field | JSON key | Type | Meaning |
-|-------|----------|------|---------|
-| Schema version | `schemaVersion` | int | The contract version (currently `1`); a consumer reading an unknown future version must fail closed |
-| Idempotency key | `idempotencyKey` | string | Stable, deterministic key derived from the source event — a redelivered raw event yields a byte-identical key so the deployer can deduplicate without coordinating state (no timestamp or random component) |
-| App | `app` | string | Application name derived **mechanically** as the last `/`-segment of the repository (e.g. `holos/sample-app` → `sample-app`); a derivation only — no `Application` KRM lookup happens here (deferred, see below) |
-| Repository | `repository` | string | The source repository the image was pushed to, e.g. `holos/sample-app` |
-| Tag | `tag` | string | The single image tag this task deploys, e.g. `v2` |
-| Digest | `digest` | string | The resolved manifest digest when known; `omitempty`. Quay's `repo_push` payload carries no digest and registry digest resolution is deferred, so it is currently empty |
-| Source | `source` | string | The webhook source token the event arrived from, e.g. `quay` |
-| Received at | `receivedAt` | RFC 3339 time | Wall-clock time the subscriber observed the source event — informational/observability only, deliberately **excluded** from the idempotency key so redeliveries stay byte-identical |
+| Field           | JSON key         | Type          | Meaning                                                                                                                                                                                                          |
+| --------------- | ---------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Schema version  | `schemaVersion`  | int           | The contract version (currently `1`); a consumer reading an unknown future version must fail closed                                                                                                              |
+| Idempotency key | `idempotencyKey` | string        | Stable, deterministic key derived from the source event — a redelivered raw event yields a byte-identical key so the deployer can deduplicate without coordinating state (no timestamp or random component)      |
+| App             | `app`            | string        | Application name derived **mechanically** as the last `/`-segment of the repository (e.g. `holos/sample-app` → `sample-app`); a derivation only — no `Application` KRM lookup happens here (deferred, see below) |
+| Repository      | `repository`     | string        | The source repository the image was pushed to, e.g. `holos/sample-app`                                                                                                                                           |
+| Tag             | `tag`            | string        | The single image tag this task deploys, e.g. `v2`                                                                                                                                                                |
+| Digest          | `digest`         | string        | The resolved manifest digest when known; `omitempty`. Quay's `repo_push` payload carries no digest and registry digest resolution is deferred, so it is currently empty                                          |
+| Source          | `source`         | string        | The webhook source token the event arrived from, e.g. `quay`                                                                                                                                                     |
+| Received at     | `receivedAt`     | RFC 3339 time | Wall-clock time the subscriber observed the source event — informational/observability only, deliberately **excluded** from the idempotency key so redeliveries stay byte-identical                              |
 
-| Aspect | Value |
-|--------|-------|
-| Publish subject | `tasks.deploy` (`task.DeploySubject`) |
-| Target stream | `TASKS` (`tasks.>`), file-backed WorkQueue |
-| Consumed by | the deployer ([ADR-11](../docs/adr/ADR-11.md)) |
-| Schema version | `1` (`task.SchemaVersion`) |
+| Aspect          | Value                                          |
+| --------------- | ---------------------------------------------- |
+| Publish subject | `tasks.deploy` (`task.DeploySubject`)          |
+| Target stream   | `TASKS` (`tasks.>`), file-backed WorkQueue     |
+| Consumed by     | the deployer ([ADR-11](../docs/adr/ADR-11.md)) |
+| Schema version  | `1` (`task.SchemaVersion`)                     |
 
 **One task per pushed tag.** A single source event fans out to **one DeployTask
 per tag**: a Quay `repo_push` listing several tags in `updated_tags` produces one

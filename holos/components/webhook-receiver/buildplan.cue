@@ -18,13 +18,14 @@ package holos
 // are captured by ztunnel.
 
 // IMAGE pins the holos-paas image published to the in-cluster k3d registry by
-// HOL-1197 (registry.holos.localhost:5100/holos-paas).  The cluster is created
-// with --registry-use registry.holos.localhost:5100, so images pushed to
-// registry.holos.localhost:5100 are pullable in-cluster (docs/local-cluster.md).
-// The :dev tag matches the Makefile's IMAGE_TAG default (docker-build /
-// docker-push); bump it here in lockstep when publishing a new tag.  The image
-// is built for linux/arm64 (the cluster is k3d on OrbStack/Apple silicon).
-let IMAGE = "registry.holos.localhost:5100/holos-paas:dev"
+// HOL-1197 (k3d-registry.holos.localhost:5100/holos-paas).  The cluster is
+// created with --registry-use k3d-registry.holos.localhost:5100, so images
+// pushed to k3d-registry.holos.localhost:5100 are pullable in-cluster
+// (docs/local-cluster.md).  The :dev tag matches the Makefile's IMAGE_TAG
+// default (docker-build / docker-push); bump it here in lockstep when
+// publishing a new tag.  The image is built for linux/arm64 (the cluster is k3d
+// on OrbStack/Apple silicon).
+let IMAGE = "k3d-registry.holos.localhost:5100/holos-paas:dev"
 
 // The #RegisteredNamespace constraint (holos/namespaces.cue) turns silent
 // drift between this literal and the registry entry into a render failure: if

@@ -17,11 +17,6 @@
 #
 # After creating the cluster, run scripts/local-ca to set up trusted TLS.
 #
-# Environment variable overrides:
-#   CLUSTER_NAME   — cluster name             (default: holos)
-#   REGISTRY_NAME  — registry hostname        (default: registry.holos.localhost)
-#   REGISTRY_PORT  — registry host port       (default: 5100)
-#
 # The static cluster shape (port mappings, k3s args) lives in k3d/config.yaml.
 # Cluster name, registry attachment, and registry port are all passed at runtime
 # (positional NAME argument and --registry-use) so all three env vars are fully
@@ -29,9 +24,11 @@
 
 set -euo pipefail
 
-CLUSTER_NAME="${CLUSTER_NAME:-holos}"
-REGISTRY_NAME="${REGISTRY_NAME:-registry.holos.localhost}"
-REGISTRY_PORT="${REGISTRY_PORT:-5100}"
+CLUSTER_NAME="holos"
+REGISTRY_NAME="registry.holos.localhost"
+# NOTE: k3d adds a prefix, accessible at k3d-registry.holos.localhost
+K3D_REGISTRY_NAME="k3d-registry.holos.localhost"
+REGISTRY_PORT="5100"
 
 # Resolve the repo root so this script works from any working directory.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -70,8 +67,8 @@ if k3d cluster list -o json | jq -e --arg name "${CLUSTER_NAME}" '.[] | select(.
 fi
 
 # Create local registry if it doesn't exist.
-if ! k3d registry list -o json | jq -e --arg name "${REGISTRY_NAME}" '.[] | select(.name == $name)' >/dev/null; then
-  echo "Creating registry '${REGISTRY_NAME}' on port ${REGISTRY_PORT}..."
+if ! k3d registry list -o json | jq -e --arg name "${K3D_REGISTRY_NAME}" '.[] | select(.name == $name)' >/dev/null; then
+  echo "Creating registry '${K3D_REGISTRY_NAME}' on port ${REGISTRY_PORT}..."
   k3d registry create "${REGISTRY_NAME}" --port "${REGISTRY_PORT}"
 fi
 
@@ -81,7 +78,7 @@ fi
 echo "Creating cluster '${CLUSTER_NAME}' from ${REPO_ROOT}/k3d/config.yaml..."
 k3d cluster create "${CLUSTER_NAME}" \
   --config "${REPO_ROOT}/k3d/config.yaml" \
-  --registry-use "${REGISTRY_NAME}:${REGISTRY_PORT}"
+  --registry-use "${K3D_REGISTRY_NAME}:${REGISTRY_PORT}"
 
 echo "Cluster '${CLUSTER_NAME}' created successfully."
 echo "Run scripts/local-ca to set up trusted TLS certificates."

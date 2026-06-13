@@ -3,10 +3,10 @@
 
 # Container image coordinates. Override IMAGE_REPO/IMAGE_TAG to publish
 # elsewhere; the default targets the local k3d in-cluster registry
-# (registry.holos.localhost:5100, see docs/local-cluster.md) so a pushed image
+# (k3d-registry.holos.localhost:5100, see docs/local-cluster.md) so a pushed image
 # is pullable by the cluster. PLATFORM defaults to linux/arm64 because the local
 # k3d cluster runs on Apple Silicon; override for other architectures.
-IMAGE_REPO ?= registry.holos.localhost:5100/holos-paas
+IMAGE_REPO ?= k3d-registry.holos.localhost:5100/holos-paas
 IMAGE_TAG  ?= dev
 IMAGE      ?= $(IMAGE_REPO):$(IMAGE_TAG)
 PLATFORM   ?= linux/arm64
