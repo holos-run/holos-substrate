@@ -12,6 +12,7 @@
 |----------|------------|-------------|----------------|
 | 1        | 2026-06-09 | @jeffmccune | Initial design |
 | 2        | 2026-06-12 | @jeffmccune | Refined by [ADR-13](ADR-13.md): the subscriber routes by KRM match, emitting a render task or a deployer task |
+| 3        | 2026-06-13 | @jeffmccune | The task message schema planning note is resolved by [ADR-14](ADR-14.md): messages are ConnectRPC protobuf definitions with the `.proto` as the source of truth |
 
 ## Context and Problem Statement
 

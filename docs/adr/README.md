@@ -42,6 +42,7 @@ to the template above.
 | [ADR-11](ADR-11.md) | api, deployer, gitops | Deployer updates the Application's config-image version; Git write-back/SoD deferred |
 | [ADR-12](ADR-12.md) | layout, conventions, build | Single-module monorepo layout for multiple Go services and Holos CUE |
 | [ADR-13](ADR-13.md) | pipeline, mvp, nats, oci, argocd | End-to-end MVP deployment flow: two registry-event loops through render and Argo CD |
+| [ADR-14](ADR-14.md) | api, nats, protobuf, conventions | NATS message schemas are ConnectRPC protobuf definitions; the `.proto` is the source of truth, Go is generated |
 
 ## Status values
 
