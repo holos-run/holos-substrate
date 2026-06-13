@@ -4,6 +4,20 @@ data:
   application.instanceLabelKey: argocd.argoproj.io/instance
   application.sync.impersonation.enabled: "false"
   exec.enabled: "false"
+  oidc.config: |
+    name: Keycloak
+    issuer: https://auth.holos.localhost/realms/holos
+    clientID: argocd
+    enablePKCEAuthentication: true
+    requestedScopes:
+      - openid
+      - profile
+      - email
+      - groups
+    requestedIDTokenClaims:
+      groups:
+        essential: true
+  oidc.tls.insecure.skip.verify: "true"
   resource.customizations.ignoreResourceUpdates.ConfigMap: |
     jqPathExpressions:
       # Ignore the cluster-autoscaler status
