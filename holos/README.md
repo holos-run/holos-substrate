@@ -867,7 +867,7 @@ tracked by [HOL-1200](https://linear.app/holos-run/issue/HOL-1200) and stubbed i
 [docs/placeholders.md](docs/placeholders.md#webhook-edge-signature-verification).
 
 **Dev-loop image refresh.** The Deployment pulls
-`k3d-registry.holos.localhost:5000/holos-paas:dev` with `imagePullPolicy: Always`.
+`quay.holos.localhost/holos/holos-paas:dev` with `imagePullPolicy: Always`.
 The `:dev` tag is **mutable** (a deliberate tradeoff for the local dev loop:
 [ADR-8](../docs/adr/ADR-8.md) prefers immutable tags for delivery, but the dev
 loop rebuilds the same tag), so the cluster does not redeploy on its own when the

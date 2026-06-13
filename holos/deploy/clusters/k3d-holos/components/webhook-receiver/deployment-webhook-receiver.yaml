@@ -19,7 +19,7 @@ spec:
       containers:
       - args:
         - webhook-receiver
-        image: k3d-registry.holos.localhost:5000/holos-paas:dev
+        image: quay.holos.localhost/holos/holos-paas:dev
         imagePullPolicy: Always
         livenessProbe:
           httpGet:

@@ -55,7 +55,7 @@ scripts/local-k3d
 
 This creates:
 
-- A local registry at `k3d-registry.holos.localhost:5000`
+- A local registry at `quay.holos.localhost/holos`
 - A k3d cluster named `holos` with ports 80 and 443 forwarded to the load
   balancer and Traefik disabled
 

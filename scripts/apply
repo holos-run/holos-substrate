@@ -477,7 +477,7 @@ wait_nats() {
 # reconnects, so the nats gate ahead of this one keeps the rollout fast.
 #
 # Unlike every other component, this one runs a locally built image
-# k3d-registry.holos.localhost:5000/holos-paas:dev) rather than an upstream one,
+# quay.holos.localhost/holos/holos-paas:dev) rather than an upstream one,
 # so a fresh `scripts/apply` on a cluster that has not yet had the image pushed
 # stalls at ImagePullBackOff.  Detect that specific failure on a stalled
 # rollout and name the actual fix (`make docker-push`) instead of letting it
@@ -517,7 +517,7 @@ wait_webhook_receiver() {
 # fast.
 #
 # Like webhook-receiver it runs the locally built image
-# k3d-registry.holos.localhost:5000/holos-paas:dev), so a fresh `scripts/apply` on
+# quay.holos.localhost/holos/holos-paas:dev), so a fresh `scripts/apply` on
 # a cluster that has not yet had the image pushed stalls at ImagePullBackOff.
 # Detect that specific failure on a stalled rollout and name the actual fix
 # (`make docker-push`) instead of letting it expire as a generic rollout
