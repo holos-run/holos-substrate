@@ -32,12 +32,14 @@ import (
 // client; configs.rbac maps the realm roles to Argo CD roles
 // (platform-owner → admin, platform-viewer/editor → readonly).  The
 // backchannel OIDC path (discovery/JWKS/token) runs in-cluster: the
-// coredns-custom component (components/coredns-custom) rewrites the issuer
-// hostname auth.holos.localhost to the shared Istio gateway Service so
-// argocd-server reaches Keycloak through the same Gateway→Keycloak
-// re-encrypt path browsers use, and "oidc.tls.insecure.skip.verify" accepts
-// the per-machine local-CA cert on that hop (the local-only MVP posture
-// documented below).
+// SERVICE_ENTRY below makes the issuer hostname auth.holos.localhost a
+// service the mesh resolves to the shared Istio gateway, so argocd-server
+// reaches Keycloak through the same Gateway→Keycloak re-encrypt path
+// browsers use (the quay-holos-localhost ServiceEntry pattern — a plain
+// CoreDNS rewrite cannot work because ztunnel's DNS proxy special-cases
+// *.localhost before CoreDNS sees the query, see the SERVICE_ENTRY comment),
+// and "oidc.tls.insecure.skip.verify" accepts the per-machine local-CA cert
+// on that hop (the local-only MVP posture documented below).
 
 let NAME = "argocd"
 
@@ -48,6 +50,18 @@ let HOSTNAME = "argocd.holos.localhost"
 
 // The shared Gateway's namespace (components/istio-gateway).
 let GATEWAY_NAMESPACE = "istio-gateways"
+
+// The shared Gateway's name (components/istio-gateway).  Feeds both the
+// HTTPRoute parentRefs and the SERVICE_ENTRY endpoint below; nothing ties
+// the literal to the istio-gateway component at render time, so a Gateway
+// rename surfaces only at runtime — update both components together (the
+// quay component's GATEWAY_NAME note).
+let GATEWAY_NAME = "default"
+
+// The Keycloak issuer hostname (components/keycloak/instance HOSTNAME and the
+// OIDC_CONFIG issuer below).  argocd-server's OIDC backchannel must resolve
+// and route this name in-cluster — see SERVICE_ENTRY.
+let ISSUER_HOSTNAME = "auth.holos.localhost"
 
 // The chart names the API/UI Service argocd-server and serves HTTP on
 // service port 80 (server.service.servicePortHttp, the chart default) when
@@ -156,6 +170,52 @@ let POLICIES = [
 	"g, platform-editor, role:readonly",
 	"g, authenticated, role:readonly",
 ]
+
+// SERVICE_ENTRY makes the Keycloak issuer hostname auth.holos.localhost a
+// service the mesh resolves, so argocd-server's server-side OIDC calls
+// (discovery/JWKS/token) reach Keycloak in-cluster.  This is the
+// quay-holos-localhost ServiceEntry pattern (components/quay/buildplan.cue),
+// applied here for the same reason: the argocd namespace is ambient-enrolled
+// (holos/namespaces.cue), and *.localhost names resolve to loopback both
+// upstream of CoreDNS (the host resolver implements RFC 6761) and inside
+// ztunnel's DNS proxy (AMBIENT_DNS_CAPTURE is enabled and ztunnel's resolver
+// special-cases *.localhost before forwarding), so a CoreDNS rewrite never
+// sees queries from enrolled pods — a plain DNS override cannot fix this.
+// The ServiceEntry fixes both layers at once: it makes the hostname a
+// service the mesh knows, so ztunnel answers enrolled pods' queries with the
+// auto-allocated VIP and routes connections to that VIP to the shared
+// Gateway, which terminates TLS for *.holos.localhost and routes by
+// SNI/Host to the keycloak HTTPRoute — argocd-server traverses the exact
+// host path browsers use, and the existing Gateway→Keycloak DestinationRule
+// re-encrypts to the backend, so the issuer serves
+// https://auth.holos.localhost/realms/holos end-to-end and the iss claim
+// matches OIDC_CONFIG.issuer.  protocol TLS keeps ztunnel at L4 (the Gateway
+// terminates TLS, then re-encrypts); resolution DNS tracks the Gateway
+// Service by name so the entry survives ClusterIP changes — the
+// "<gateway>-istio" Service name is Istio's gateway auto-deployment
+// convention, coupled to GATEWAY_NAME above.  Lives in the argocd namespace
+// (the consumer); exportTo is left at its mesh-wide default, harmless since
+// only argocd-server resolves this issuer hostname.
+let SERVICE_ENTRY = {
+	apiVersion: "networking.istio.io/v1"
+	kind:       "ServiceEntry"
+	metadata: {
+		name:      "auth-holos-localhost"
+		namespace: ArgoCDNamespace
+	}
+	spec: {
+		hosts: [ISSUER_HOSTNAME]
+		ports: [{
+			number:   443
+			name:     "tls"
+			protocol: "TLS"
+		}]
+		resolution: "DNS"
+		endpoints: [{
+			address: "\(GATEWAY_NAME)-istio.\(GATEWAY_NAMESPACE).svc.cluster.local"
+		}]
+	}
+}
 
 userDefinedBuildPlan: {
 	metadata: name: NAME
@@ -305,6 +365,7 @@ userDefinedBuildPlan: {
 						(HTTPROUTE.metadata.name):          HTTPROUTE
 						(HTTPROUTE_REDIRECT.metadata.name): HTTPROUTE_REDIRECT
 					}
+					ServiceEntry: (SERVICE_ENTRY.metadata.name): SERVICE_ENTRY
 				}
 			}]
 			transformers: [

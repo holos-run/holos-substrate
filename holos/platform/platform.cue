@@ -290,22 +290,6 @@ platform: {
 				labels: app: "quay"
 			}}).output
 
-			// coredns-custom emits the cluster-wide CoreDNS override (a
-			// coredns-custom ConfigMap in kube-system) that rewrites the
-			// Keycloak issuer hostname auth.holos.localhost to the shared
-			// Istio gateway Service, so the Argo CD OIDC backchannel
-			// resolves the issuer in-cluster.  Registered before argocd: the
-			// override must be in place when argocd-server first performs
-			// OIDC discovery, and CoreDNS hot-reloads the ConfigMap, so
-			// applying it ahead of the consumer keeps the dependency
-			// explicit.  It depends only on the shared Gateway's
-			// auto-provisioned Service name; nothing else downstream needs it.
-			(#ComponentTemplate & {inputs: {
-				component: "coredns-custom"
-				cluster:   CLUSTER.name
-				labels: app: "argocd"
-			}}).output
-
 			// argocd-crds renders the Argo CD CRDs (applications,
 			// applicationsets, appprojects in group argoproj.io) from the
 			// upstream source tree at the pinned app version.  CRDs are

@@ -129,17 +129,12 @@ ROLLOUT_TIMEOUT_SECONDS="$(duration_seconds "${ROLLOUT_TIMEOUT}")" || exit 1
 # waits on the Job completing.  quay trails
 # keycloak-config: it needs the quay-db Cluster reachable (gated Ready in the
 # cnpg-clusters step) and attaches routes to the shared Gateway, so
-# appending it keeps the established order stable.  coredns-custom trails
-# quay: it emits the cluster-wide CoreDNS override (a coredns-custom
-# ConfigMap in kube-system) that rewrites the Keycloak issuer hostname to
-# the shared Istio gateway Service so the Argo CD OIDC backchannel resolves
-# in-cluster — it must apply before argocd so the override is in place when
-# argocd-server first performs OIDC discovery, and it depends only on the
-# Gateway's auto-provisioned Service name.  argocd-crds and argocd
+# appending it keeps the established order stable.  argocd-crds and argocd
 # close the sequence: CRDs before the controllers that need the types (the
 # same guardrail as the other *-crds pairs), and Argo CD depends only on
-# the Gateway its HTTPRoutes attach to and the coredns-custom override
-# applied just before it — nothing downstream depends on it
+# the Gateway its HTTPRoutes attach to — its OIDC backchannel reaches the
+# Keycloak issuer through a ServiceEntry it ships itself (resolved by the
+# mesh, applied with the component) — nothing downstream depends on it
 # during bootstrap — so appending the pair keeps the established order
 # stable.  nats precedes webhook-receiver: it is a Layer 2 backbone service
 # that nothing during bootstrap depends on (its producers and consumers are
@@ -175,7 +170,6 @@ COMPONENTS=(
   keycloak
   keycloak-config
   quay
-  coredns-custom
   argocd-crds
   argocd
   nats
