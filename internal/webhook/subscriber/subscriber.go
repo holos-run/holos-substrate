@@ -2,12 +2,14 @@ package subscriber
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +24,26 @@ import (
 // TASKS stream within its dedupe window, turning the at-least-once raw-event
 // delivery into an effectively-once DeployTask publish (ADR-13 idempotency).
 const natsMsgIDHeader = "Nats-Msg-Id"
+
+// dedupeID derives the JetStream dedupe identity for one tag's DeployTask from
+// the raw event it was parsed from. It MUST be:
+//
+//   - stable across redeliveries of the same raw webhook message, so a
+//     redelivered partial-success publish is collapsed; and
+//   - distinct between separate webhook pushes, even of the same mutable tag,
+//     so a later legitimate push of (say) "latest" is NOT silently swallowed as
+//     a duplicate of the earlier one.
+//
+// The WEBHOOKS stream sequence (streamSeq) is exactly this raw-event identity:
+// JetStream assigns it once when the receiver publishes the event and preserves
+// it across every redelivery, while two distinct pushes always land at distinct
+// sequences. Qualifying it with the per-tag idempotency key gives each tag's
+// task within a single multi-tag event its own stable, distinct dedupe ID. The
+// DeployTask idempotency key alone is unsuitable: it omits any per-event
+// component, so it would collapse two genuine pushes of the same tag.
+func dedupeID(streamSeq uint64, idempotencyKey string) string {
+	return strconv.FormatUint(streamSeq, 10) + ":" + idempotencyKey
+}
 
 // Publisher publishes a marshaled DeployTask to JetStream. It is satisfied by
 // [github.com/holos-run/holos-paas/internal/nats.Conn]; the narrow interface
@@ -117,27 +139,43 @@ func httpHeader(h natsgo.Header) http.Header {
 //   - Publish/NATS failure → Nak for redelivery, unless this is the final
 //     delivery (delivery count == MaxDeliver), in which case it is Term'd with a
 //     logged reason so it stops being redelivered. Every task carries a
-//     Nats-Msg-Id dedupe header so a redelivered partial success is collapsed by
-//     JetStream on the TASKS stream.
+//     Nats-Msg-Id dedupe header keyed on the raw event's WEBHOOKS stream
+//     sequence (see dedupeID) so a redelivered partial success is collapsed by
+//     JetStream on the TASKS stream without swallowing a later genuine push of
+//     the same tag.
 //   - All publishes acked → Ack: the raw message is removed from the WorkQueue.
 func (c *Consumer) Handle(msg jetstream.Msg) {
 	ctx := context.Background()
 	subject := msg.Subject()
 	source := sourceFromSubject(subject)
 
+	// The WEBHOOKS stream sequence is the raw event's stable identity (see
+	// dedupeID): identical on every redelivery, distinct per push. It also
+	// labels every termination log so a Term'd event is traceable to its exact
+	// stream offset. A missing sequence (metadata unavailable) is transient and
+	// Nak'd rather than published with a degraded dedupe ID — publishing without
+	// a correct dedupe ID risks either dropping a real push or failing to
+	// collapse a redelivery.
+	md, err := msg.Metadata()
+	if err != nil {
+		c.log.Warn("naking message for redelivery: metadata unavailable",
+			"subject", subject, "source", source, "error", err)
+		if nerr := msg.Nak(); nerr != nil {
+			c.log.Error("naking message", "subject", subject, "source", source, "error", nerr)
+		}
+		return
+	}
+	streamSeq := md.Sequence.Stream
+
 	parser, found := c.registry.Lookup(source)
 	if !found {
-		c.log.Error("terminating message: unknown webhook source",
-			"subject", subject, "source", source)
-		c.term(msg, subject)
+		c.terminate(msg, subject, source, streamSeq, msg.Data(), "unknown webhook source", nil)
 		return
 	}
 
 	tasks, err := parser.Parse(source, httpHeader(msg.Headers()), msg.Data(), c.now())
 	if err != nil {
-		c.log.Error("terminating message: parse error",
-			"subject", subject, "source", source, "error", err)
-		c.term(msg, subject)
+		c.terminate(msg, subject, source, streamSeq, msg.Data(), "parse error", err)
 		return
 	}
 
@@ -146,14 +184,12 @@ func (c *Consumer) Handle(msg jetstream.Msg) {
 		if err != nil {
 			// A marshal failure is deterministic for a given task, so
 			// redelivery cannot help: terminate rather than wedge the queue.
-			c.log.Error("terminating message: marshaling DeployTask",
-				"subject", subject, "source", source, "tag", t.Tag, "error", err)
-			c.term(msg, subject)
+			c.terminate(msg, subject, source, streamSeq, msg.Data(), "marshaling DeployTask", err, "tag", t.Tag)
 			return
 		}
-		hdr := natsgo.Header{natsMsgIDHeader: []string{t.IdempotencyKey}}
+		hdr := natsgo.Header{natsMsgIDHeader: []string{dedupeID(streamSeq, t.IdempotencyKey)}}
 		if err := c.pub.Publish(ctx, task.DeploySubject, body, hdr); err != nil {
-			c.nakOrTerm(msg, subject, source, t.Tag, err)
+			c.nakOrTerm(msg, subject, source, streamSeq, t.Tag, err)
 			return
 		}
 	}
@@ -165,17 +201,46 @@ func (c *Consumer) Handle(msg jetstream.Msg) {
 
 // nakOrTerm handles a transient publish failure: Nak for redelivery, or Term on
 // the final delivery so a persistently failing message stops being redelivered.
-func (c *Consumer) nakOrTerm(msg jetstream.Msg, subject, source, tag string, cause error) {
+func (c *Consumer) nakOrTerm(msg jetstream.Msg, subject, source string, streamSeq uint64, tag string, cause error) {
 	if c.isFinalDelivery(msg) {
-		c.log.Error("terminating message: publish failed on final delivery",
-			"subject", subject, "source", source, "tag", tag, "error", cause)
-		c.term(msg, subject)
+		c.terminate(msg, subject, source, streamSeq, msg.Data(),
+			"publish failed on final delivery", cause, "tag", tag)
 		return
 	}
 	c.log.Warn("naking message for redelivery: publish failed",
-		"subject", subject, "source", source, "tag", tag, "error", cause)
+		"subject", subject, "source", source, "stream_seq", streamSeq, "tag", tag, "error", cause)
 	if err := msg.Nak(); err != nil {
 		c.log.Error("naking message", "subject", subject, "source", source, "error", err)
+	}
+}
+
+// terminate logs the full raw payload at error level — a log-backed
+// dead-letter so a Term'd event remains recoverable for diagnosis or manual
+// replay — and then Terms the message so a poison payload never wedges the
+// WorkQueue (HOL-1123 AC2). The payload is captured base64-encoded under
+// "raw_base64" so binary/multiline bodies survive structured logging intact.
+//
+// Durable dead-lettering to a dedicated subject/stream (ADR-13's dead-letter
+// subject) is a larger, ADR-scoped addition deferred beyond this phase; until
+// it lands, this log line is the recovery record. reason names why the message
+// was terminated; cause is the underlying error when one exists (nil for the
+// unknown-source case). extra appends additional structured key/value pairs.
+func (c *Consumer) terminate(msg jetstream.Msg, subject, source string, streamSeq uint64, raw []byte, reason string, cause error, extra ...any) {
+	args := []any{
+		"subject", subject,
+		"source", source,
+		"stream_seq", streamSeq,
+		"reason", reason,
+		"raw_base64", base64.StdEncoding.EncodeToString(raw),
+	}
+	if cause != nil {
+		args = append(args, "error", cause)
+	}
+	args = append(args, extra...)
+	c.log.Error("terminating message", args...)
+	if err := msg.Term(); err != nil {
+		c.log.Error("terminating message: Term failed",
+			"subject", subject, "source", source, "stream_seq", streamSeq, "error", err)
 	}
 }
 
@@ -193,13 +258,6 @@ func (c *Consumer) isFinalDelivery(msg jetstream.Msg) bool {
 		return false
 	}
 	return md.NumDelivered >= uint64(c.maxDeliver)
-}
-
-// term settles msg with Term, logging any settlement error.
-func (c *Consumer) term(msg jetstream.Msg, subject string) {
-	if err := msg.Term(); err != nil {
-		c.log.Error("terminating message", "subject", subject, "error", err)
-	}
 }
 
 // marshalTask serializes a DeployTask to its JSON wire form for publishing to

@@ -2,6 +2,7 @@ package subscriber
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -93,6 +94,59 @@ func TestSubscriber_GoldenDeployTask(t *testing.T) {
 	env.requireWebhooksEmpty(t)
 }
 
+// TestDedupeID asserts the dedupe identity is stable for a given raw event
+// (same stream sequence) yet distinct across separate pushes of the same tag
+// (different stream sequence) — the property that keeps a redelivery collapsed
+// without swallowing a later genuine push.
+func TestDedupeID(t *testing.T) {
+	key := task.IdempotencyKey("quay", "holos/sample-app", "latest", "")
+	if a, b := dedupeID(7, key), dedupeID(7, key); a != b {
+		t.Errorf("dedupeID not stable for the same stream seq: %q != %q", a, b)
+	}
+	if a, b := dedupeID(7, key), dedupeID(8, key); a == b {
+		t.Errorf("dedupeID collided across stream sequences: both %q", a)
+	}
+	// Distinct tags within one event must also differ.
+	k1 := task.IdempotencyKey("quay", "holos/sample-app", "v2", "")
+	k2 := task.IdempotencyKey("quay", "holos/sample-app", "latest", "")
+	if dedupeID(7, k1) == dedupeID(7, k2) {
+		t.Error("dedupeID collided across tags within one event")
+	}
+}
+
+// TestSubscriber_RepeatedTagPushNotCollapsed is the regression test for the
+// dedupe bug: two separate webhook pushes of the same single tag must each
+// produce a DeployTask on tasks.deploy. They land at distinct WEBHOOKS stream
+// sequences, so their dedupe IDs differ and JetStream does not collapse the
+// second as a duplicate of the first.
+func TestSubscriber_RepeatedTagPushNotCollapsed(t *testing.T) {
+	env := newTestEnv(t)
+
+	payload := []byte(`{"repository":"holos/sample-app","namespace":"holos","name":"sample-app","docker_url":"quay.example.com/holos/sample-app","updated_tags":["latest"]}`)
+	for i := 0; i < 2; i++ {
+		if err := env.conn.Publish(env.ctx, "webhooks.quay", payload, nil); err != nil {
+			t.Fatalf("publishing push %d: %v", i, err)
+		}
+	}
+
+	consumer := New(Config{
+		Publisher:  env.conn,
+		Registry:   DefaultRegistry(),
+		Logger:     slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		MaxDeliver: 5,
+	})
+	env.startConsumer(t, consumer)
+
+	// Both pushes must surface a DeployTask despite sharing the same tag.
+	tasks := env.collectDeployTasks(t, 2)
+	for _, dt := range tasks {
+		if dt.Tag != "latest" {
+			t.Errorf("unexpected tag %q, want latest", dt.Tag)
+		}
+	}
+	env.requireWebhooksEmpty(t)
+}
+
 // TestSubscriber_MalformedTerminated is the malformed-payload integration test:
 // an undecodable payload published to webhooks.quay is terminated (not
 // redelivered forever), produces no message on tasks.deploy, and logs a reason.
@@ -121,13 +175,17 @@ func TestSubscriber_MalformedTerminated(t *testing.T) {
 		t.Fatalf("a DeployTask was published for a malformed payload: %q", msg.Data())
 	}
 
-	// A reason must be logged naming the subject.
+	// A reason must be logged naming the subject, and the raw payload must be
+	// captured (the log-backed dead-letter) so the event is recoverable.
+	wantRaw := base64.StdEncoding.EncodeToString([]byte("{"))
 	if err := eventually(5*time.Second, func() bool {
 		rec, ok := logs.find(slog.LevelError, "terminating message")
 		if !ok {
 			return false
 		}
-		return rec.attr("subject") == "webhooks.quay"
+		return rec.attr("subject") == "webhooks.quay" &&
+			rec.attr("reason") == "parse error" &&
+			rec.attr("raw_base64") == wantRaw
 	}); err != nil {
 		t.Fatalf("no termination reason logged for the malformed payload; records: %s", logs.dump())
 	}
@@ -156,8 +214,9 @@ func TestSubscriber_UnknownSourceTerminated(t *testing.T) {
 		t.Fatalf("a DeployTask was published for an unknown source: %q", msg.Data())
 	}
 	if err := eventually(5*time.Second, func() bool {
-		rec, ok := logs.find(slog.LevelError, "terminating message: unknown webhook source")
-		return ok && rec.attr("source") == "github"
+		rec, ok := logs.find(slog.LevelError, "terminating message")
+		return ok && rec.attr("source") == "github" &&
+			rec.attr("reason") == "unknown webhook source"
 	}); err != nil {
 		t.Fatalf("no unknown-source termination logged; records: %s", logs.dump())
 	}
@@ -300,9 +359,11 @@ func (e *testEnv) collectDeployTasks(t *testing.T, n int) []task.DeployTask {
 		if err := json.Unmarshal(msg.Data(), &dt); err != nil {
 			t.Fatalf("decoding DeployTask: %v (body %q)", err, msg.Data())
 		}
-		// The dedupe header must carry the idempotency key.
-		if got := msg.Headers().Get(natsMsgIDHeader); got != dt.IdempotencyKey {
-			t.Errorf("Nats-Msg-Id = %q, want idempotency key %q", got, dt.IdempotencyKey)
+		// The dedupe header must be the stream-sequence-qualified dedupe ID,
+		// i.e. "<streamSeq>:<idempotencyKey>" — stable per raw event, distinct
+		// per push (see dedupeID).
+		if got := msg.Headers().Get(natsMsgIDHeader); !strings.HasSuffix(got, ":"+dt.IdempotencyKey) {
+			t.Errorf("Nats-Msg-Id = %q, want suffix %q", got, ":"+dt.IdempotencyKey)
 		}
 		out = append(out, dt)
 		_ = msg.Ack()

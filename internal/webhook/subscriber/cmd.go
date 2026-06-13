@@ -2,6 +2,7 @@ package subscriber
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -95,6 +96,19 @@ func NewCommand() *cobra.Command {
 // health endpoints until ctx is canceled.
 func runSubscriber(ctx context.Context, opts *options) error {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+
+	// Validate the redelivery bounds before binding the consumer. NATS
+	// normalizes MaxDeliver: 0 to *unlimited* delivery, and the subscriber's
+	// final-delivery Term logic is disabled for a non-positive bound — so a
+	// zero or negative value (e.g. a typo'd HOLOS_PAAS_MAX_DELIVER) would create
+	// an infinite redelivery loop, defeating the bounded-delivery contract that
+	// keeps a poison message from wedging the WorkQueue. Fail fast instead.
+	if opts.maxDeliver <= 0 {
+		return fmt.Errorf("max-deliver must be > 0, got %d (env HOLOS_PAAS_MAX_DELIVER)", opts.maxDeliver)
+	}
+	if opts.ackWait <= 0 {
+		return fmt.Errorf("ack-wait must be > 0, got %s (env HOLOS_PAAS_ACK_WAIT)", opts.ackWait)
+	}
 
 	// Cancel ctx on SIGINT/SIGTERM for graceful shutdown.
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
