@@ -105,9 +105,10 @@ by hand.**
 ### Encoding on the wire
 
 - **`tasks.render` and `tasks.deploy` carry binary protobuf** — the serialized
-  `RenderTask` / `DeployTask` message *is* the NATS payload. The schema version
-  is carried by the proto package path; a message-type NATS header MAY be set for
-  routing and observability.
+  `RenderTask` / `DeployTask` message *is* the NATS payload. The coarse API
+  version is carried by the proto package path (`v1alpha1`), with a finer
+  in-band `schema_version` field so a consumer can fail closed on an unknown
+  revision; a message-type NATS header MAY be set for routing and observability.
 - **The raw webhook stays the provider's own format.** [ADR-9](ADR-9.md) keeps
   the receiver thin: it publishes Quay's raw JSON body to `webhooks.quay`
   verbatim and parses nothing. We do not control Quay's wire format, so the
