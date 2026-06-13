@@ -13,6 +13,7 @@
 | 1        | 2026-06-09 | @jeffmccune | Initial design |
 | 2        | 2026-06-12 | @jeffmccune | Refined by [ADR-13](ADR-13.md): the subscriber routes by KRM match, emitting a render task or a deployer task |
 | 3        | 2026-06-13 | @jeffmccune | The task message schema planning note is resolved by [ADR-14](ADR-14.md): messages are ConnectRPC protobuf definitions with the `.proto` as the source of truth |
+| 4        | 2026-06-13 | @jeffmccune | Records the shipped MVP slice (HOL-1201): direct parse → `DeployTask` → publish on `tasks.deploy`, with KRM-matching routing, digest resolution, and a durable dead-letter subject explicitly deferred — see [Implemented MVP slice and deferred scope](#implemented-mvp-slice-and-deferred-scope) |
 
 ## Context and Problem Statement
 
@@ -103,3 +104,37 @@ Two simplifications are **deliberately deferred**:
   the MVP beyond what the deployer surfaces on the `Application` resource.
 - Because delivery is at-least-once ([ADR-9](ADR-9.md)), the deployer task must
   carry an idempotency key or the deployer must be idempotent ([ADR-11](ADR-11.md)).
+
+## Implemented MVP slice and deferred scope
+
+The shipped subscriber (HOL-1201, code in `internal/webhook/subscriber` and the
+`DeployTask` contract in `internal/task`) implements a deliberately narrow slice
+of the design above: it **directly parses** each raw Quay `repo_push` event into
+one `DeployTask` per pushed tag and **publishes every task to `tasks.deploy`** on
+the `TASKS` stream — it does not yet perform the KRM match this ADR describes.
+The `DeployTask` field table, the durability/retry story (durable consumer on
+`WEBHOOKS`, ack-after-publish, bounded `Nak` redelivery, `Term`-and-log on poison
+messages, and `Nats-Msg-Id` publish dedupe), and the verification steps are
+documented in
+[holos/README.md](../../holos/README.md#webhook-subscriber-and-deploytask-contract).
+
+Three pieces of the eventual design are **explicitly deferred** pending the
+`Application` resource and the deployer ([ADR-11](ADR-11.md)):
+
+- **KRM-matching routing.** The split between a `RenderTask` (`tasks.render`,
+  for an application-image push) and a `DeployTask` (`tasks.deploy`, for a
+  configuration-image push) per [ADR-13](ADR-13.md) requires matching the
+  event's repository against `Application` resources. Until that lands, the
+  subscriber always emits a `DeployTask`; the `App` field is a mechanical
+  last-segment derivation, not a matched `Application` identity.
+- **Registry digest resolution.** Quay's `repo_push` payload carries no manifest
+  digest, so the `digest` field is currently empty (`omitempty`); resolving and
+  populating it is deferred.
+- **Durable dead-lettering.** Poison messages are `Term`'d and logged
+  (base64-encoded under `raw_base64`) rather than written to a durable
+  dead-letter subject/stream. The dedicated dead-letter subject is a larger,
+  ADR-scoped addition deferred beyond this phase.
+
+None of the deferred work is a contract break: the `DeployTask` shape already
+carries `digest` and a `schemaVersion`, so the deferred resolution and routing
+can populate or extend tasks without bumping the schema.
