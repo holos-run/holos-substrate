@@ -16,6 +16,7 @@ spec:
     - name: webhook-receiver
       port: 8080
     matches:
-    - path:
+    - method: POST
+      path:
         type: PathPrefix
         value: /webhooks/

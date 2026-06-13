@@ -12,7 +12,14 @@ spec:
     - source:
         namespaces:
         - nats
+  - from:
+    - source:
+        namespaces:
         - webhook-receiver
+    to:
+    - operation:
+        ports:
+        - "4222"
   selector:
     matchLabels:
       app.kubernetes.io/component: nats

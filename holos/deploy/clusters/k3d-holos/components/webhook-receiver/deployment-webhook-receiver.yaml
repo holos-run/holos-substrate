@@ -20,6 +20,7 @@ spec:
       - args:
         - webhook-receiver
         image: registry.holos.localhost:5100/holos-paas:dev
+        imagePullPolicy: Always
         livenessProbe:
           httpGet:
             path: /healthz

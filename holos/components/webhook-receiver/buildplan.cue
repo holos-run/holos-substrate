@@ -83,6 +83,19 @@ userDefinedBuildPlan: {
 									containers: [{
 										name:  NAME
 										image: IMAGE
+										// The :dev tag is mutable: `make docker-push`
+										// overwrites it in the registry without
+										// changing this spec, so a re-apply is a
+										// no-op for the Deployment.  Always pull so a
+										// pod (re)start picks up the freshly pushed
+										// image rather than a stale layer cached on
+										// the node under IfNotPresent (the k3s
+										// default for a non-:latest tag) — without
+										// this, scripts/apply's rollout gate can pass
+										// against an old image.  Pin to a content
+										// digest instead of a mutable tag if this is
+										// ever promoted past the local k3d cluster.
+										imagePullPolicy: "Always"
 										// The image ENTRYPOINT is the holos-paas
 										// binary; the service is selected by the
 										// subcommand arg.  The NATS URL defaults to
@@ -176,13 +189,21 @@ userDefinedBuildPlan: {
 								// because the body is opaque and the receiver
 								// authenticates/authorizes nothing it forwards —
 								// keeping the Gateway surface to exactly the
-								// ingest prefix is the minimal route.  /healthz
-								// and /readyz are deliberately NOT routed through
-								// the Gateway: they are kubelet-facing probes
-								// (exempt from ambient capture), so exposing them
+								// ingest prefix is the minimal route.  The match
+								// pins method POST too, so the Gateway forwards
+								// only the verb the receiver contract serves
+								// (the handler 405s every other method anyway —
+								// this keeps the route aligned with the API and
+								// drops other verbs at the edge).  /healthz and
+								// /readyz are deliberately NOT routed through the
+								// Gateway: they are kubelet-facing probes (exempt
+								// from ambient capture), so exposing them
 								// externally would only widen the surface.
 								matches: [
-									{path: {type: "PathPrefix", value: "/webhooks/"}},
+									{
+										path: {type: "PathPrefix", value: "/webhooks/"}
+										method: "POST"
+									},
 								]
 								backendRefs: [{
 									name: NAME

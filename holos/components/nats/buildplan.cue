@@ -88,17 +88,30 @@ let AUTHZ = {
 			"app.kubernetes.io/component": NAME
 		}
 		action: "ALLOW"
-		// Allow sources in the nats namespace and the webhook-receiver
-		// namespace.  An ALLOW policy with a rule denies everything the rule
-		// does not match, so every other cross-namespace pod is rejected until
-		// a later phase adds the remaining subscriber principals explicitly
-		// (HOL-1123/1124).  The bootstrap Job below runs in the nats namespace,
-		// so it is allowed to reach the client port to create the streams; the
-		// webhook-receiver namespace is allowed so the receiver can publish to
-		// the WEBHOOKS stream (HOL-1198).
-		rules: [{
-			from: [{source: namespaces: [NAMESPACE, RECEIVER_NAMESPACE]}]
-		}]
+		// Two rules, each least-privilege.  An ALLOW policy denies everything no
+		// rule matches, so every other cross-namespace pod is rejected until a
+		// later phase adds the remaining subscriber principals explicitly
+		// (HOL-1123/1124).
+		//
+		//   1. Same-namespace sources reach every port: the bootstrap Job below
+		//      runs in this namespace and needs the client port (4222) to create
+		//      the streams, and in-namespace operators may scrape the monitoring
+		//      endpoint (8222).
+		//   2. The webhook-receiver namespace (HOL-1198) reaches ONLY the client
+		//      port (4222) so it can publish to the WEBHOOKS stream — it has no
+		//      business on the unauthenticated monitoring endpoint (8222), so the
+		//      to.operation.ports restriction keeps that surface same-namespace
+		//      only.  The port is a string because Istio matches operation ports
+		//      as strings.
+		rules: [
+			{
+				from: [{source: namespaces: [NAMESPACE]}]
+			},
+			{
+				from: [{source: namespaces: [RECEIVER_NAMESPACE]}]
+				to: [{operation: ports: ["4222"]}]
+			},
+		]
 	}
 }
 

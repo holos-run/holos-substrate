@@ -212,8 +212,9 @@ Gating it after `nats` keeps that rollout fast rather than leaving the
 receiver unready while it reconnects. Its `HTTPRoute` attaches to the shared
 Gateway at `hooks.holos.localhost`; attachment is level-triggered, so route
 order does not matter — verify the end-to-end traffic path
-(`curl https://hooks.holos.localhost/webhooks/<source>` → raw body on
-`webhooks.<source>`) separately.
+(`curl -X POST --data-binary @payload.json https://hooks.holos.localhost/webhooks/<source>`
+→ the exact raw body on `webhooks.<source>`) separately. The route matches
+`POST /webhooks/` only, so a bodyless `GET` does not exercise it.
 
 The first rule exists because nothing orders an apply batch by kind:
 kubectl submits the files sequentially in lexical order, so a single
