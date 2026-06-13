@@ -1,0 +1,22 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/name: quay-oidc-bootstrap
+  name: quay-oidc-bootstrap-keycloak
+  namespace: keycloak
+rules:
+- apiGroups:
+  - ""
+  resourceNames:
+  - quay-oidc
+  resources:
+  - secrets
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create

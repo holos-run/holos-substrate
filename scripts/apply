@@ -351,6 +351,17 @@ pre_keycloak_config() {
   kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
     delete job -l app.kubernetes.io/name=keycloak-config \
     --ignore-not-found --cascade=foreground --wait --request-timeout=60s
+  # Also delete the quay-oidc secret bootstrap Job for the same reason: its name
+  # is constant (no config hash), so a prior Complete OR Failed Job is never
+  # re-run by apply.  A Failed bootstrap that never created the quay-oidc Secret
+  # would otherwise wedge wait_keycloak_config forever.  The Job is idempotent
+  # (it exits 0 leaving existing Secrets untouched), so recreating it on every
+  # apply just re-verifies — and repairs a missing — copy in either namespace.
+  # The Secrets it created survive the Job deletion (they are separate objects),
+  # so the generate-once guarantee holds.
+  kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
+    delete job -l app.kubernetes.io/name=quay-oidc-bootstrap \
+    --ignore-not-found --cascade=foreground --wait --request-timeout=60s
 }
 
 # keycloak-config: the realm-reconciliation smoke check.  The keycloak-config-cli
@@ -363,10 +374,13 @@ pre_keycloak_config() {
 # always creates a fresh Job and this gate waits on a genuinely new run — never a
 # stale Complete Job from an earlier apply (including a revert to a previously
 # applied config within the TTL window).  The Job name is read from the rendered
-# manifest the apply step just used — the single committed job-*.yaml under the
-# component's deploy directory — so the gate waits on exactly that Job (its name
-# carries the config hash) rather than label-matching, which keeps the gate
-# robust even if a delete ever leaves a terminating same-label Job mid-poll.
+# manifest the apply step just used — the single committed
+# job-keycloak-config-*.yaml under the component's deploy directory — so the gate
+# waits on exactly that Job (its name carries the config hash) rather than
+# label-matching, which keeps the gate robust even if a delete ever leaves a
+# terminating same-label Job mid-poll.  The glob is scoped to the reconcile Job's
+# keycloak-config- prefix so the component's other Jobs (the quay-oidc secret
+# bootstrap, rendered as job-quay-oidc-bootstrap.yaml) never match it.
 #
 # The Job is polled instead of handed to `kubectl wait --for=condition=Complete`
 # so a Failed Job fails the gate on the next poll rather than blocking the full
@@ -383,11 +397,13 @@ wait_keycloak_config() {
   local job_state lookup_failures=0
   # Resolve the rendered Job's name from the committed manifest the apply just
   # used, so the gate waits on exactly that Job (its name carries the config
-  # hash).  Exactly one job-*.yaml renders per apply; fail clearly if that
-  # assumption breaks rather than silently waiting on the wrong object.
-  local job_file job_files=("${COMPONENTS_DIR}/keycloak-config"/job-*.yaml)
+  # hash).  Exactly one job-keycloak-config-*.yaml renders per apply (the
+  # reconcile Job); the prefix excludes the component's quay-oidc bootstrap Job.
+  # Fail clearly if that assumption breaks rather than silently waiting on the
+  # wrong object.
+  local job_file job_files=("${COMPONENTS_DIR}/keycloak-config"/job-keycloak-config-*.yaml)
   if [[ ${#job_files[@]} -ne 1 || ! -e "${job_files[0]}" ]]; then
-    echo "ERROR: expected exactly one keycloak-config job manifest, found ${#job_files[@]}." >&2
+    echo "ERROR: expected exactly one keycloak-config reconcile job manifest, found ${#job_files[@]}." >&2
     return 1
   fi
   job_file="${job_files[0]}"
@@ -437,6 +453,71 @@ wait_keycloak_config() {
       return 1
     fi
     sleep 5
+  done
+
+  # The quay-oidc bootstrap Job (job-quay-oidc-bootstrap.yaml) generates the
+  # shared OIDC client secret once and writes the quay-oidc Secret into BOTH the
+  # keycloak namespace (consumed by the reconcile Job above) and the quay
+  # namespace (consumed by the Quay Deployment in HOL-1219).  The reconcile Job
+  # only reads the keycloak-side copy, so a bootstrap that does not fully succeed
+  # — a partial write that left one namespace without the Secret, or a mismatch
+  # between two pre-existing copies that the Job exits non-zero on — would
+  # otherwise let the reconcile Job complete while leaving the quay side wrong.
+  #
+  # Gate the bootstrap Job's own outcome first: pre_keycloak_config recreates it
+  # on every apply, so it is present here, and a Failed Job (including the
+  # mismatch-detection exit) fails the gate by name instead of surfacing two
+  # components later in quay.  The Job carries a ttlSecondsAfterFinished, so an
+  # absent Job is tolerated (already GC'd on a long-lived session) and falls
+  # through to the Secret check below.  Polled rather than `kubectl wait` so a
+  # Failed Job fails on the next poll instead of blocking the full timeout.
+  local boot_state boot_lookup_failures=0
+  local boot_deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+  while true; do
+    if boot_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
+      get job/quay-oidc-bootstrap --ignore-not-found --request-timeout=10s \
+      -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
+      boot_lookup_failures=0
+      if [[ -z "${boot_state}" ]] || grep -q '^Complete=True$' <<<"${boot_state}"; then
+        break
+      fi
+      if grep -q '^Failed=True$' <<<"${boot_state}"; then
+        echo "ERROR: job/quay-oidc-bootstrap failed (e.g. the quay-oidc Secret differs between namespaces); inspect it with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} --namespace keycloak describe job/quay-oidc-bootstrap" >&2
+        return 1
+      fi
+    else
+      boot_lookup_failures=$((boot_lookup_failures + 1))
+      if ((boot_lookup_failures >= 3)); then
+        echo "ERROR: cannot query job/quay-oidc-bootstrap: ${boot_lookup_failures} consecutive lookup failures." >&2
+        return 1
+      fi
+    fi
+    if ((SECONDS >= boot_deadline)); then
+      echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for job/quay-oidc-bootstrap to complete." >&2
+      return 1
+    fi
+    sleep 5
+  done
+
+  # Defense in depth for the GC'd-Job case above: the Secret's existence in both
+  # namespaces is the actual contract Phase 2 (HOL-1219) depends on, so verify it
+  # directly even when the bootstrap Job is gone.
+  local ns
+  for ns in keycloak quay; do
+    local secret_deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+    while true; do
+      if kubectl --context "${KUBE_CONTEXT}" --namespace "${ns}" \
+        get secret quay-oidc --request-timeout=10s >/dev/null 2>&1; then
+        break
+      fi
+      if ((SECONDS >= secret_deadline)); then
+        echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for the quay-oidc Secret in namespace ${ns}; inspect the bootstrap Job with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} --namespace keycloak describe job/quay-oidc-bootstrap" >&2
+        return 1
+      fi
+      sleep 5
+    done
   done
 }
 
