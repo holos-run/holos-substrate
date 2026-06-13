@@ -84,9 +84,10 @@ establishment, the istiod rollout, the ambient data-plane DaemonSets, the
 cert-manager webhook rollout, the CNPG operator rollout, the Postgres
 `Cluster` Ready conditions, and the Keycloak operator rollout — plus waits
 on the `echo` Deployment, the `Keycloak` CR Ready and realm import Done
-conditions, the `quay` Deployment rollout, the Argo CD workload rollouts,
-the `nats` stream-bootstrap Job and StatefulSet rollout, and the
-`webhook-receiver` Deployment rollout as smoke checks; nothing else.
+conditions, the `keycloak-config` realm-reconciliation Job, the `quay`
+Deployment rollout, the Argo CD workload rollouts, the `nats`
+stream-bootstrap Job and StatefulSet rollout, and the `webhook-receiver`
+Deployment rollout as smoke checks; nothing else.
 
 Apply order matters beyond "CRD components first". The script applies the
 platform components in this order — everything through `echo` is the
@@ -123,25 +124,37 @@ platform service:
     declarative `holos` realm import, the `HTTPRoute` attaching it to the
     shared Gateway at `auth.holos.localhost`, and the `DestinationRule`
     that re-encrypts the Gateway→Keycloak hop
-18. `quay` — the Quay registry: the Quay `Deployment` backed by the
+18. `keycloak-config` — the realm-reconciliation `Job` that converges the
+    `holos` realm declaratively on every apply: the
+    [keycloak-config-cli](https://github.com/adorsys/keycloak-config-cli)
+    `Job` (in the `keycloak` namespace) plus the `ConfigMap` carrying its
+    import document. It layers the platform's realm roles
+    (`platform-owner`, `platform-editor`, `platform-viewer`), the
+    `authenticated` default group, and the public PKCE `argocd` OIDC client
+    onto the realm shell the `keycloak` phase bootstraps. See
+    [keycloak-config: realm reconciliation](#keycloak-config-realm-reconciliation)
+19. `quay` — the Quay registry: the Quay `Deployment` backed by the
     `quay-db` Postgres `Cluster` and a minimal `quay-redis` Deployment,
     with blob storage on a local-path PVC and the `HTTPRoute` pair
     attaching it to the shared Gateway at `quay.holos.localhost`
-19. `argocd-crds` — the Argo CD CRDs (`crds: "true"`): `applications`,
+20. `argocd-crds` — the Argo CD CRDs (`crds: "true"`): `applications`,
     `applicationsets`, and `appprojects` in group `argoproj.io`
-20. `argocd` — the Argo CD core install: the application-controller
-    `StatefulSet`, the repo-server, server, and redis `Deployment`s, and
-    the `HTTPRoute` pair attaching the UI to the shared Gateway at
-    `argocd.holos.localhost`
-21. `nats` — the NATS JetStream backbone: the single-replica `nats`
+21. `argocd` — the Argo CD core install: the application-controller
+    `StatefulSet`, the repo-server, server, and redis `Deployment`s, the
+    `HTTPRoute` pair attaching the UI to the shared Gateway at
+    `argocd.holos.localhost`, and the `ServiceEntry` that resolves the
+    Keycloak issuer hostname `auth.holos.localhost` in-cluster for the
+    OIDC backchannel (see
+    [Argo CD admin credentials and verification](#argo-cd-admin-credentials-and-verification))
+22. `nats` — the NATS JetStream backbone: the single-replica `nats`
     `StatefulSet` with file-backed JetStream, plus the
     `nats-stream-bootstrap` `Job` that idempotently creates the `WEBHOOKS`
     (`webhooks.>`) and `TASKS` (`tasks.>`) file-backed WorkQueue streams
-22. `webhook-receiver` — the thin HTTP ingress that publishes raw inbound
+23. `webhook-receiver` — the thin HTTP ingress that publishes raw inbound
     webhook bodies to the NATS `WEBHOOKS` stream: a `Deployment` running the
     `holos-paas` image (`webhook-receiver` subcommand), a `Service`, and an
     `HTTPRoute` attaching it to the shared Gateway at `hooks.holos.localhost`
-23. `webhook-subscriber` — the durable JetStream consumer that drains the
+24. `webhook-subscriber` — the durable JetStream consumer that drains the
     `WEBHOOKS` stream, parses each raw event into `DeployTask`s, and publishes
     them to the `TASKS` stream (`tasks.deploy`): a `Deployment` running the
     `holos-paas` image (`webhook-subscriber` subcommand) and **nothing else** —
@@ -186,7 +199,21 @@ smoke check, so a bootstrap cannot report success while the realm import
 Job is still running or has failed — the first start pulls the server
 image and runs the database schema migrations, so each wait gets a more
 generous timeout (`KEYCLOAK_TIMEOUT`, default 600s) than the rollout
-gates. `quay` trails `keycloak` because it needs the `quay-db` `Cluster`
+gates. `keycloak-config` trails `keycloak`: its keycloak-config-cli `Job`
+reconciles the `holos` realm against the live admin API, so the Keycloak
+server must be Ready and the realm shell imported (both gated by
+`wait_keycloak`) before it runs. A completed `Job`'s pod template is
+immutable and `kubectl apply` never re-runs an existing Complete `Job`, so
+a `pre_keycloak_config` hook deletes every `keycloak-config` `Job` (by the
+`app.kubernetes.io/name` label, `--cascade=foreground`) before the apply —
+the apply then always creates a fresh `Job` that re-runs the CLI, and
+because keycloak-config-cli converges idempotently, re-running on every
+apply is exactly the intended "reconcile on every apply" behavior. The
+`wait_keycloak_config` gate then polls that `Job` to completion (the
+`wait_quay` Job-poll pattern, so a failure names the `Job` rather than a
+generic timeout), reading its content-hashed name from the rendered
+manifest so it waits on exactly the `Job` the apply just created. `quay`
+trails `keycloak-config` because it needs the `quay-db` `Cluster`
 reachable — already gated Ready in the `cnpg-clusters` step — and its gate
 waits on the secret-keys bootstrap Job and then on the `quay` Deployment
 rollout with its own generous timeout (`QUAY_TIMEOUT`, default 900s),
@@ -304,13 +331,60 @@ curl -fs https://auth.holos.localhost/realms/holos/.well-known/openid-configurat
 State lives in the `keycloak-db` Postgres `Cluster`, not the pod: deleting
 the Keycloak pod (`kubectl -n keycloak delete pod -l
 app.kubernetes.io/managed-by=keycloak-operator`) loses nothing — after the
-operator restarts it, the `holos` realm and admin login still work. Note
-the realm import is bootstrap-only: the operator's import Job skips when
-the realm already exists, so post-bootstrap realm changes are not
-reconciled from the `KeycloakRealmImport` CR — see the caveat in
-[components/keycloak/instance/buildplan.cue](components/keycloak/instance/buildplan.cue)
-and the stub in
-[docs/placeholders.md](docs/placeholders.md#keycloak-realm-reconciliation).
+operator restarts it, the `holos` realm and admin login still work.
+
+The `KeycloakRealmImport` CR is bootstrap-only — the operator's import Job
+skips when the realm already exists, so post-bootstrap realm changes are
+not reconciled from the CR. That gap is closed by the `keycloak-config`
+component (below): the realm shell still bootstraps from the CR on a clean
+cluster, and `keycloak-config` then layers and keeps converged the managed
+objects (roles, the default group, the OIDC clients) the platform owns.
+
+#### keycloak-config: realm reconciliation
+
+The `keycloak-config` component
+([components/keycloak/realm-config/buildplan.cue](components/keycloak/realm-config/buildplan.cue))
+reconciles the `holos` realm declaratively on **every** `scripts/apply` with
+an idempotent [keycloak-config-cli](https://github.com/adorsys/keycloak-config-cli)
+`Job` (in the `keycloak` namespace). The CR's bootstrap-only import cannot
+carry post-bootstrap changes; this Job runs adorsys/keycloak-config-cli
+against the live admin API and converges the realm on every run, so editing
+the import document and re-applying is the supported way to evolve the
+realm. What it reconciles:
+
+- the three platform realm **roles** — `platform-owner`, `platform-editor`,
+  `platform-viewer`;
+- the `authenticated` **default group**, registered as a realm default so
+  every realm user is bound to it on creation (the baseline Argo CD
+  read-access subject);
+- the public PKCE **`argocd` OIDC client** (`publicClient: true`, no secret,
+  `pkce.code.challenge.method: S256`, the `argocd.holos.localhost` callback
+  redirect URIs), with two protocol mappers that both write a `groups`
+  claim: a group-membership mapper (bare names, e.g. `authenticated`) and a
+  realm-role mapper (e.g. `platform-owner`), so a single `groups` claim
+  carries both group and role membership for Argo CD RBAC to key on.
+
+The import document is authored in CUE and marshalled to JSON in a
+`ConfigMap` the Job mounts at `/config/holos.json`; it carries
+`realm: "holos"` only (no `enabled` or identity-provider fields), so it
+layers onto the realm shell the `KeycloakRealmImport` CR bootstraps without
+contending with it. keycloak-config-cli's default managed-import behavior is
+no-delete, so realm objects the Job does not declare are left untouched
+(full-realm purge is deliberately not enabled).
+
+**Idempotency and the apply gate.** A completed `Job`'s pod template is
+immutable and `kubectl apply` never re-runs an existing Complete `Job`, so
+the `Job`'s `metadata.name` carries an 8-char content hash of the import
+document and image, and `scripts/apply`'s `pre_keycloak_config` hook deletes
+every `keycloak-config` `Job` (by the `app.kubernetes.io/name=keycloak-config`
+label, `--cascade=foreground` so the dependent CLI pod is gone too) before
+the apply. The apply then always creates a fresh `Job` that re-runs the CLI;
+because the CLI converges idempotently, re-running on every apply is the
+intended behavior. The `wait_keycloak_config` gate polls that `Job` to
+completion — resolving its hashed name from the rendered manifest so it
+waits on exactly the `Job` just applied — and trails `wait_keycloak` (the
+realm shell must exist first). It sits between `keycloak` and `quay` in the
+apply order above.
 
 ### Quay bootstrap and credentials
 
@@ -407,13 +481,15 @@ OOMKills against its memory limit. See the env comment in
 The Argo CD UI is served at `https://argocd.holos.localhost` through the
 shared Gateway, which terminates TLS with the wildcard certificate — the
 server itself runs with `server.insecure: "true"` and a plain-HTTP backend,
-like the other routed services. The server bootstraps the initial `admin`
-user itself on first startup and stores the generated password in the
-`argocd-initial-admin-secret` Secret (`argocd` namespace, key `password`)
-— no credentials are committed to this repository, mirroring the Keycloak
-`keycloak-initial-admin` pattern. The Secret appears only after the first
-server start, so never gate on it ahead of the rollout. Retrieve the
-password:
+like the other routed services. Real users authenticate via **Keycloak
+SSO** (OIDC/PKCE, below); the chart's built-in `admin` account is kept
+enabled as deliberate local break-glass access. The server bootstraps the
+initial `admin` user itself on first startup and stores the generated
+password in the `argocd-initial-admin-secret` Secret (`argocd` namespace,
+key `password`) — no credentials are committed to this repository,
+mirroring the Keycloak `keycloak-initial-admin` pattern. The Secret appears
+only after the first server start, so never gate on it ahead of the
+rollout. Retrieve the password:
 
 ```bash
 kubectl -n argocd get secret argocd-initial-admin-secret \
@@ -441,6 +517,43 @@ enrolled pods report protocol `HBONE` in
 nothing yet: no `Application` resources are emitted until the gitops
 Application projection is enabled (see
 [docs/placeholders.md](docs/placeholders.md#argocd-gitops-delivery)).
+
+**Keycloak SSO (OIDC/PKCE).** Argo CD authenticates real users against the
+Keycloak `holos` realm using the Authorization Code flow with PKCE (S256),
+configured in `argocd-cm` `oidc.config`: `issuer:
+https://auth.holos.localhost/realms/holos`, `clientID: argocd`,
+`enablePKCEAuthentication: true`, and **no** client secret (the public
+`argocd` client provisioned by `keycloak-config`). `argocd-rbac-cm`
+`policy.csv` maps the `groups` claim — which carries both Keycloak group
+names and realm-role names — to Argo CD roles:
+
+| Keycloak group/role | Argo CD role |
+| --- | --- |
+| `platform-owner` | `role:admin` |
+| `platform-editor` | `role:readonly` (Argo CD has no native editor role) |
+| `platform-viewer` | `role:readonly` |
+| `authenticated` (default group) | `role:readonly` (baseline for any realm user) |
+
+with `policy.default: ""` (no implicit access) and `scopes: "[groups]"`.
+The `argocd-server` OIDC **backchannel** (discovery/JWKS/token) must reach
+the issuer in-cluster: the component ships a `ServiceEntry` that makes
+`auth.holos.localhost` resolve to the shared Istio ingress gateway, so the
+backchannel re-enters through the same Gateway→Keycloak path browsers use
+and the `iss` claim matches the configured issuer. The backchannel sets
+`oidc.tls.insecure.skip.verify: "true"` to accept the per-machine
+mkcert/local-CA backend cert — a local-only MVP posture (the mkcert root
+cannot be embedded at render time); production replaces it with `rootCA`
+trust (see the production deployment area placeholder in
+[docs/placeholders.md](docs/placeholders.md#production-deployment-area)).
+
+To verify SSO end to end: create a user in the `holos` realm
+(`https://auth.holos.localhost/admin/`), grant the `platform-owner` realm
+role, open `https://argocd.holos.localhost`, click **LOG IN VIA Keycloak**,
+complete the login, and confirm you land as an admin; a `platform-viewer`
+user lands read-only. Check `kubectl -n argocd logs deploy/argocd-server`
+shows no OIDC discovery/JWKS or x509 errors. The step-by-step walkthrough
+is in
+[docs/local-cluster.md](../docs/local-cluster.md#verify-argo-cd).
 
 ### Verify an OCI-source Application
 

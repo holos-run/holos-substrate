@@ -165,11 +165,13 @@ kubectl -n keycloak get secret keycloak-initial-admin -o json \
 ```
 
 Keycloak's state lives in the `keycloak-db` Postgres `Cluster`, not the
-pod, and the `holos` realm import is bootstrap-only: the operator's
-import Job skips when the realm already exists, so post-bootstrap realm
-changes are not reconciled from the `KeycloakRealmImport` CR (see the
-caveat in
-[`holos/components/keycloak/instance/buildplan.cue`](../holos/components/keycloak/instance/buildplan.cue)).
+pod. The `KeycloakRealmImport` CR only bootstraps the realm shell — the
+operator's import Job skips when the realm already exists — so the
+platform's realm roles, the `authenticated` default group, and the OIDC
+clients are reconciled on every `scripts/apply` by the `keycloak-config`
+keycloak-config-cli `Job` instead (see
+[`holos/components/keycloak/realm-config/buildplan.cue`](../holos/components/keycloak/realm-config/buildplan.cue)
+and [keycloak-config: realm reconciliation](../holos/README.md#keycloak-config-realm-reconciliation)).
 For the full verification steps — including the pod restart-survival
 check — see
 [Keycloak admin credentials and verification](../holos/README.md#keycloak-admin-credentials-and-verification);
@@ -246,7 +248,7 @@ and stubbed in
 The server generates the initial `admin` password on first startup and
 stores it in the `argocd-initial-admin-secret` Secret — no credentials are
 committed to this repository. Verify the UI answers with a
-browser-trusted certificate, then log in as `admin`:
+browser-trusted certificate, then log in as the break-glass `admin`:
 
 ```bash
 curl -fsSI https://argocd.holos.localhost/
@@ -254,10 +256,49 @@ kubectl -n argocd get secret argocd-initial-admin-secret \
   -o jsonpath='{.data.password}' | base64 -d; echo
 ```
 
+**Verify Keycloak SSO (OIDC/PKCE).** Real users sign in through Keycloak,
+not the `admin` account: Argo CD authenticates against the `holos` realm
+with the Authorization Code flow plus PKCE (the public `argocd` client the
+`keycloak-config` Job provisions), and maps the user's Keycloak realm role
+to an Argo CD role — `platform-owner` → admin, `platform-viewer` /
+`platform-editor` → read-only, and every authenticated realm user gets
+baseline read-only access via the `authenticated` default group.
+
+Create a realm user and grant it a platform role from the Keycloak admin
+console at `https://auth.holos.localhost/admin/` (credentials from the
+`keycloak-initial-admin` Secret, per [Verify Keycloak](#verify-keycloak)):
+in the `holos` realm, **Users → Add user** (set a username, then a password
+under **Credentials**, **Temporary: Off**), then **Role mapping → Assign
+role → Filter by realm roles → `platform-owner`**.
+
+Then log in to Argo CD as that user:
+
+```bash
+# Open the UI and click "LOG IN VIA Keycloak":
+open https://argocd.holos.localhost/
+```
+
+After completing the Keycloak login you land back in Argo CD as an
+**admin** (full access) because the user holds `platform-owner`. Repeat
+with a second user granted `platform-viewer` instead and confirm that
+session is **read-only** (the create/sync/delete actions are disabled).
+The `admin` break-glass account above still works independently of SSO.
+
+If the Keycloak button is missing or login fails, check the OIDC
+backchannel — `argocd-server` must reach the issuer in-cluster (a
+`ServiceEntry` resolves `auth.holos.localhost` to the ingress gateway):
+
+```bash
+kubectl -n argocd logs deploy/argocd-server | grep -iE 'oidc|x509|dial' || echo "no OIDC errors"
+```
+
+A clean run shows no OIDC discovery/JWKS or x509 errors.
+
 Argo CD reconciles nothing yet — no `Application` resources are emitted
 until the gitops Application projection is enabled (see
 [placeholders.md](../holos/docs/placeholders.md#argocd-gitops-delivery)).
-For the full verification steps and the service contract, see
+For the full verification steps, the SSO/RBAC configuration, and the
+service contract, see
 [Argo CD admin credentials and verification](../holos/README.md#argo-cd-admin-credentials-and-verification).
 
 ## Verify the webhook receiver

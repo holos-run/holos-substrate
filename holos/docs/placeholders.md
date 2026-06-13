@@ -79,11 +79,16 @@ carries a **disabled** placeholder `quay` client with no secret committed
 ([`components/keycloak/instance/`](../components/keycloak/instance/buildplan.cue)).
 [HOL-1183](https://linear.app/holos-run/issue/HOL-1183/featquay-oidc-login-via-the-keycloak-holos-realm)
 enables the client, provisions its secret without committing it, and sets
-Quay's OIDC configuration. Because the realm import is bootstrap-only,
-enabling the client on an existing cluster takes more than a CR edit — the
-work is effectively blocked on the
+Quay's OIDC configuration. The realm-reconciliation gap that once blocked
+this is now closed: the
 [Keycloak realm reconciliation](#keycloak-realm-reconciliation) mechanism
-above.
+above — the idempotent `keycloak-config` Job — converges realm changes on
+every `scripts/apply`, so HOL-1183 enables the `quay` client by adding it
+to that Job's import document (the `argocd` client is already managed there
+as the model to follow), and the change lands on an existing cluster on the
+next apply rather than requiring a manual admin-console edit. What remains
+deferred is the Quay-specific work itself: enabling the client, provisioning
+its secret, and wiring Quay's OIDC configuration.
 
 ## Node-level registry trust for in-cluster pulls
 
