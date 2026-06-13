@@ -86,6 +86,7 @@ func TestQuayParseMalformed(t *testing.T) {
 		"no updated_tags":    []byte(`{"repository":"holos/sample-app"}`),
 		"empty updated_tags": []byte(`{"repository":"holos/sample-app","updated_tags":[]}`),
 		"empty tag":          []byte(`{"repository":"holos/sample-app","updated_tags":[""]}`),
+		"empty app segment":  []byte(`{"repository":"holos/","updated_tags":["v1"]}`),
 		"empty body":         []byte(""),
 	}
 	for name, body := range cases {

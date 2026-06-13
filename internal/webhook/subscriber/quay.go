@@ -83,6 +83,13 @@ func (QuayParser) Parse(source string, hdr http.Header, body []byte, receivedAt 
 	if repository == "" {
 		return nil, fmt.Errorf("parsing quay repo_push payload: missing repository (no repository, namespace/name, or name field)")
 	}
+	// The DeployTask contract requires a non-empty app, derived mechanically
+	// from the repository's last path segment. A repository like "holos/"
+	// (trailing slash, empty final segment) is malformed: it would yield an
+	// empty app. Reject it here rather than emit an invalid task.
+	if task.AppFromRepository(repository) == "" {
+		return nil, fmt.Errorf("parsing quay repo_push payload: repository %q has an empty final path segment; cannot derive app", repository)
+	}
 	if len(payload.UpdatedTags) == 0 {
 		return nil, fmt.Errorf("parsing quay repo_push payload for repository %q: no updated_tags", repository)
 	}
