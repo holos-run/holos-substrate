@@ -1,0 +1,34 @@
+# Keep the build context small: the Dockerfile only needs go.mod/go.sum and the
+# Go source under cmd/ and internal/. Everything else is excluded.
+
+# VCS and tooling
+.git
+.github
+.gitignore
+.dockerignore
+.idea
+.vscode
+.claude
+
+# Build outputs and test artifacts
+bin/
+*.out
+coverage.*
+*.coverprofile
+
+# Holos CUE deployment config and rendered manifests — not needed to build the
+# binary, and holos/deploy is large.
+holos/
+
+# Local cluster tooling and scripts
+k3d/
+scripts/
+
+# Documentation
+docs/
+*.md
+LICENSE
+
+# OS cruft
+.DS_Store
+Thumbs.db

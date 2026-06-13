@@ -1,6 +1,16 @@
 # holos-paas Makefile. Target shapes mirror the sibling holos-controller and
 # holos-console Makefiles (see ADR-12).
 
+# Container image coordinates. Override IMAGE_REPO/IMAGE_TAG to publish
+# elsewhere; the default targets the local k3d in-cluster registry
+# (registry.holos.localhost:5100, see docs/local-cluster.md) so a pushed image
+# is pullable by the cluster. PLATFORM defaults to linux/arm64 because the local
+# k3d cluster runs on Apple Silicon; override for other architectures.
+IMAGE_REPO ?= registry.holos.localhost:5100/holos-paas
+IMAGE_TAG  ?= dev
+IMAGE      ?= $(IMAGE_REPO):$(IMAGE_TAG)
+PLATFORM   ?= linux/arm64
+
 .PHONY: all
 all: build
 
@@ -31,3 +41,15 @@ build: fmt vet ## Build the holos-paas binary.
 .PHONY: run
 run: ## Run the webhook receiver locally.
 	go run ./cmd/holos-paas webhook-receiver
+
+# The image targets use buildx so the builder stage runs on the native host
+# (BUILDPLATFORM) and the Go toolchain cross-compiles to $(PLATFORM) — no target
+# architecture emulation is required. docker-build loads the result into the
+# local Docker daemon; docker-push publishes it to the registry.
+.PHONY: docker-build
+docker-build: ## Build the container image for $(PLATFORM) tagged $(IMAGE).
+	docker buildx build --platform $(PLATFORM) -t $(IMAGE) --load .
+
+.PHONY: docker-push
+docker-push: ## Build for $(PLATFORM) and push $(IMAGE) to the registry.
+	docker buildx build --platform $(PLATFORM) -t $(IMAGE) --push .
