@@ -14,6 +14,7 @@
 | 2        | 2026-06-12 | @jeffmccune | Refined by [ADR-13](ADR-13.md): the subscriber routes by KRM match, emitting a render task or a deployer task                                                                                                                                                                                      |
 | 3        | 2026-06-13 | @jeffmccune | The task message schema planning note is resolved by [ADR-14](ADR-14.md): messages are ConnectRPC protobuf definitions with the `.proto` as the source of truth                                                                                                                                    |
 | 4        | 2026-06-13 | @jeffmccune | Records the shipped MVP slice (HOL-1201): direct parse → `DeployTask` → publish on `tasks.deploy`, with KRM-matching routing, digest resolution, and a durable dead-letter subject explicitly deferred — see [Implemented MVP slice and deferred scope](#implemented-mvp-slice-and-deferred-scope) |
+| 5        | 2026-06-13 | @jeffmccune | The `DeployTask` wire form is now binary protobuf per [ADR-14](ADR-14.md) (Accepted), generated from a committed `.proto`; the protobuf-schema migration is no longer deferred (HOL-1206) |
 
 ## Context and Problem Statement
 
@@ -125,23 +126,21 @@ Three pieces of the eventual design are **explicitly deferred** pending the
   for an application-image push) and a `DeployTask` (`tasks.deploy`, for a
   configuration-image push) per [ADR-13](ADR-13.md) requires matching the
   event's repository against `Application` resources. Until that lands, the
-  subscriber always emits a `DeployTask`; the `App` field is a mechanical
+  subscriber always emits a `DeployTask`; `application.name` is a mechanical
   last-segment derivation, not a matched `Application` identity.
 - **Registry digest resolution.** Quay's `repo_push` payload carries no manifest
-  digest, so the `digest` field is currently empty (`omitempty`); resolving and
+  digest, so the `digest` field is currently the empty string; resolving and
   populating it is deferred.
 - **Durable dead-lettering.** Poison messages are `Term`'d and logged
   (base64-encoded under `raw_base64`) rather than written to a durable
   dead-letter subject/stream. The dedicated dead-letter subject is a larger,
   ADR-scoped addition deferred beyond this phase.
-- **Protobuf message schema ([ADR-14](ADR-14.md)).** The shipped slice marshals
-  the `DeployTask` Go struct (`internal/task`) to **JSON** on `tasks.deploy`.
-  ADR-14 (Proposed) decides messages will be ConnectRPC protobuf with the
-  `.proto` as the source of truth and a binary payload; migrating the wire form
-  to protobuf is deferred. Until then `internal/task/task.go` is the authoritative
-  schema for the shipped slice.
 
-None of the deferred work is a contract break: the `DeployTask` shape already
-carries `digest` and a `schemaVersion`, so the deferred resolution and routing
-can populate or extend tasks without bumping the schema (the protobuf migration
-is a deliberate ADR-14 wire-format change, tracked there).
+The task message schema is **no longer deferred**: per [ADR-14](ADR-14.md)
+(Accepted) the `DeployTask` is a ConnectRPC/buf protobuf message — the `.proto`
+under `proto/holos/paas/pipeline/v1alpha1/` is the source of truth, the Go type
+is generated, and the subscriber publishes **binary protobuf** on `tasks.deploy`
+(HOL-1206). None of the remaining deferred work is a contract break: the
+`DeployTask` shape already carries `digest` and a `schema_version`, so the
+deferred resolution and routing can populate or extend tasks without bumping the
+schema.

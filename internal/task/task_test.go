@@ -1,96 +1,110 @@
 package task
 
 import (
-	"encoding/json"
-	"strings"
 	"testing"
 	"time"
+
+	pipelinev1alpha1 "github.com/holos-run/holos-paas/internal/gen/holos/paas/pipeline/v1alpha1"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 func TestNewDeployTaskFields(t *testing.T) {
 	receivedAt := time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC)
 	got := NewDeployTask("quay", "holos/sample-app", "v2", "quay.example.com/holos/sample-app", receivedAt)
 
-	if got.SchemaVersion != SchemaVersion {
-		t.Errorf("SchemaVersion = %d, want %d", got.SchemaVersion, SchemaVersion)
+	if got.GetSchemaVersion() != SchemaVersion {
+		t.Errorf("SchemaVersion = %d, want %d", got.GetSchemaVersion(), SchemaVersion)
 	}
-	if got.App != "sample-app" {
-		t.Errorf("App = %q, want %q", got.App, "sample-app")
+	if got.GetApplication().GetName() != "sample-app" {
+		t.Errorf("Application.Name = %q, want %q", got.GetApplication().GetName(), "sample-app")
 	}
-	if got.Repository != "holos/sample-app" {
-		t.Errorf("Repository = %q, want %q", got.Repository, "holos/sample-app")
+	if got.GetRepository() != "holos/sample-app" {
+		t.Errorf("Repository = %q, want %q", got.GetRepository(), "holos/sample-app")
 	}
-	if got.Tag != "v2" {
-		t.Errorf("Tag = %q, want %q", got.Tag, "v2")
+	if got.GetTag() != "v2" {
+		t.Errorf("Tag = %q, want %q", got.GetTag(), "v2")
 	}
-	if got.Source != "quay" {
-		t.Errorf("Source = %q, want %q", got.Source, "quay")
+	if got.GetSource() != "quay" {
+		t.Errorf("Source = %q, want %q", got.GetSource(), "quay")
 	}
-	if got.Digest != "" {
-		t.Errorf("Digest = %q, want empty", got.Digest)
+	if got.GetDigest() != "" {
+		t.Errorf("Digest = %q, want empty", got.GetDigest())
 	}
-	if !got.ReceivedAt.Equal(receivedAt) {
-		t.Errorf("ReceivedAt = %v, want %v", got.ReceivedAt, receivedAt)
+	if !got.GetReceivedAt().AsTime().Equal(receivedAt) {
+		t.Errorf("ReceivedAt = %v, want %v", got.GetReceivedAt().AsTime(), receivedAt)
 	}
-	if got.IdempotencyKey == "" {
+	if got.GetIdempotencyKey() == "" {
 		t.Error("IdempotencyKey is empty")
 	}
 }
 
-func TestDeployTaskJSONRoundTrip(t *testing.T) {
+// TestDeployTaskProtoRoundTrip is the ADR-14 wire-format test: a task marshaled
+// to binary protobuf decodes back to an equal message. This is the encoding the
+// subscriber publishes on tasks.deploy and the deployer consumes.
+func TestDeployTaskProtoRoundTrip(t *testing.T) {
 	receivedAt := time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC)
 	want := NewDeployTask("quay", "holos/sample-app", "v2", "", receivedAt)
 
-	b, err := json.Marshal(want)
+	b, err := proto.Marshal(want)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
 
-	var got DeployTask
-	if err := json.Unmarshal(b, &got); err != nil {
+	var got pipelinev1alpha1.DeployTask
+	if err := proto.Unmarshal(b, &got); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if got != want {
-		t.Errorf("round-trip mismatch:\n got = %#v\nwant = %#v", got, want)
+	if !proto.Equal(want, &got) {
+		t.Errorf("round-trip mismatch:\n got = %v\nwant = %v", &got, want)
 	}
 }
 
-// TestDeployTaskJSONShape pins the marshaled field names that form the wire
-// contract, including the embedded schema version and the digest omitempty.
-func TestDeployTaskJSONShape(t *testing.T) {
-	receivedAt := time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC)
-	b, err := json.Marshal(NewDeployTask("quay", "holos/sample-app", "v2", "", receivedAt))
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
+// TestDeployTaskFieldNumbers pins the wire-contract field numbers that form the
+// binary protobuf layout (ADR-14). The serialized bytes carry only field
+// numbers, so a renumbering is a wire break this test catches even when the Go
+// field names are unchanged.
+func TestDeployTaskFieldNumbers(t *testing.T) {
+	fields := pipelinev1alpha1.File_holos_paas_pipeline_v1alpha1_pipeline_proto.
+		Messages().ByName("DeployTask").Fields()
+	want := map[string]int32{
+		"schema_version":  1,
+		"idempotency_key": 2,
+		"application":     3,
+		"repository":      4,
+		"tag":             5,
+		"digest":          6,
+		"source":          7,
+		"received_at":     8,
 	}
-	var m map[string]any
-	if err := json.Unmarshal(b, &m); err != nil {
-		t.Fatalf("Unmarshal: %v", err)
+	if got := fields.Len(); got != len(want) {
+		t.Errorf("DeployTask has %d fields, want %d", got, len(want))
 	}
-
-	for _, key := range []string{"schemaVersion", "idempotencyKey", "app", "repository", "tag", "source", "receivedAt"} {
-		if _, ok := m[key]; !ok {
-			t.Errorf("marshaled task missing key %q; got %s", key, b)
+	for name, num := range want {
+		f := fields.ByName(protoreflect.Name(name))
+		if f == nil {
+			t.Errorf("DeployTask missing field %q", name)
+			continue
 		}
-	}
-	// digest is omitempty and unset here, so it must be absent.
-	if _, ok := m["digest"]; ok {
-		t.Errorf("digest must be omitted when empty; got %s", b)
-	}
-	if v, ok := m["schemaVersion"].(float64); !ok || int(v) != SchemaVersion {
-		t.Errorf("schemaVersion = %v, want %d", m["schemaVersion"], SchemaVersion)
+		if int32(f.Number()) != num {
+			t.Errorf("field %q number = %d, want %d", name, f.Number(), num)
+		}
 	}
 }
 
 func TestDeployTaskDigestMarshaledWhenSet(t *testing.T) {
 	task := NewDeployTask("quay", "holos/sample-app", "v2", "", time.Now())
 	task.Digest = "sha256:abc"
-	b, err := json.Marshal(task)
+	b, err := proto.Marshal(task)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	if !strings.Contains(string(b), `"digest":"sha256:abc"`) {
-		t.Errorf("digest not marshaled when set; got %s", b)
+	var got pipelinev1alpha1.DeployTask
+	if err := proto.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got.GetDigest() != "sha256:abc" {
+		t.Errorf("digest = %q, want %q", got.GetDigest(), "sha256:abc")
 	}
 }
 
@@ -106,8 +120,8 @@ func TestIdempotencyKeyStability(t *testing.T) {
 	// A task built from the same event carries the same key.
 	t1 := NewDeployTask("quay", "holos/sample-app", "v2", "quay.example.com/holos/sample-app", time.Now())
 	t2 := NewDeployTask("quay", "holos/sample-app", "v2", "quay.example.com/holos/sample-app", time.Now().Add(time.Hour))
-	if t1.IdempotencyKey != t2.IdempotencyKey {
-		t.Errorf("key depends on time: %q != %q", t1.IdempotencyKey, t2.IdempotencyKey)
+	if t1.GetIdempotencyKey() != t2.GetIdempotencyKey() {
+		t.Errorf("key depends on time: %q != %q", t1.GetIdempotencyKey(), t2.GetIdempotencyKey())
 	}
 }
 

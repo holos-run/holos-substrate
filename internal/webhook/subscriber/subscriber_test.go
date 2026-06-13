@@ -3,7 +3,6 @@ package subscriber
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +16,7 @@ import (
 	natstest "github.com/nats-io/nats-server/v2/test"
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"google.golang.org/protobuf/proto"
 
 	localnats "github.com/holos-run/holos-paas/internal/nats"
 	"github.com/holos-run/holos-paas/internal/task"
@@ -64,27 +64,27 @@ func TestSubscriber_GoldenDeployTask(t *testing.T) {
 	// The fixture lists two tags (v2, latest) → two DeployTasks on tasks.deploy.
 	tasks := env.collectDeployTasks(t, 2)
 
-	wantByTag := map[string]task.DeployTask{
+	wantByTag := map[string]*task.DeployTask{
 		"v2": task.NewDeployTask("quay", "holos/sample-app", "v2",
 			"quay.example.com/holos/sample-app", fixedNow),
 		"latest": task.NewDeployTask("quay", "holos/sample-app", "latest",
 			"quay.example.com/holos/sample-app", fixedNow),
 	}
 	for _, got := range tasks {
-		want, ok := wantByTag[got.Tag]
+		want, ok := wantByTag[got.GetTag()]
 		if !ok {
-			t.Fatalf("unexpected task for tag %q", got.Tag)
+			t.Fatalf("unexpected task for tag %q", got.GetTag())
 		}
-		if got != want {
-			t.Errorf("task for tag %q =\n  %+v\nwant\n  %+v", got.Tag, got, want)
+		if !proto.Equal(got, want) {
+			t.Errorf("task for tag %q =\n  %+v\nwant\n  %+v", got.GetTag(), got, want)
 		}
-		if got.App != "sample-app" {
-			t.Errorf("App = %q, want %q", got.App, "sample-app")
+		if got.GetApplication().GetName() != "sample-app" {
+			t.Errorf("Application.Name = %q, want %q", got.GetApplication().GetName(), "sample-app")
 		}
-		if got.SchemaVersion != task.SchemaVersion {
-			t.Errorf("SchemaVersion = %d, want %d", got.SchemaVersion, task.SchemaVersion)
+		if got.GetSchemaVersion() != task.SchemaVersion {
+			t.Errorf("SchemaVersion = %d, want %d", got.GetSchemaVersion(), task.SchemaVersion)
 		}
-		delete(wantByTag, got.Tag)
+		delete(wantByTag, got.GetTag())
 	}
 	if len(wantByTag) != 0 {
 		t.Errorf("missing DeployTasks for tags: %v", wantByTag)
@@ -140,8 +140,8 @@ func TestSubscriber_RepeatedTagPushNotCollapsed(t *testing.T) {
 	// Both pushes must surface a DeployTask despite sharing the same tag.
 	tasks := env.collectDeployTasks(t, 2)
 	for _, dt := range tasks {
-		if dt.Tag != "latest" {
-			t.Errorf("unexpected tag %q, want latest", dt.Tag)
+		if dt.GetTag() != "latest" {
+			t.Errorf("unexpected tag %q, want latest", dt.GetTag())
 		}
 	}
 	env.requireWebhooksEmpty(t)
@@ -460,10 +460,11 @@ func (e *testEnv) startConsumer(t *testing.T, c *Consumer) {
 }
 
 // collectDeployTasks fetches exactly n DeployTasks off tasks.deploy, decoding
-// and acking each. It fails the test if fewer than n arrive within the timeout.
-func (e *testEnv) collectDeployTasks(t *testing.T, n int) []task.DeployTask {
+// the binary protobuf payload (ADR-14) and acking each. It fails the test if
+// fewer than n arrive within the timeout.
+func (e *testEnv) collectDeployTasks(t *testing.T, n int) []*task.DeployTask {
 	t.Helper()
-	out := make([]task.DeployTask, 0, n)
+	out := make([]*task.DeployTask, 0, n)
 	deadline := time.Now().Add(10 * time.Second)
 	for len(out) < n && time.Now().Before(deadline) {
 		msg, err := e.deploy.Next(jetstream.FetchMaxWait(time.Second))
@@ -471,16 +472,16 @@ func (e *testEnv) collectDeployTasks(t *testing.T, n int) []task.DeployTask {
 			continue
 		}
 		var dt task.DeployTask
-		if err := json.Unmarshal(msg.Data(), &dt); err != nil {
+		if err := proto.Unmarshal(msg.Data(), &dt); err != nil {
 			t.Fatalf("decoding DeployTask: %v (body %q)", err, msg.Data())
 		}
 		// The dedupe header must be the stream-sequence-qualified dedupe ID,
 		// i.e. "<streamSeq>:<idempotencyKey>" — stable per raw event, distinct
 		// per push (see dedupeID).
-		if got := msg.Headers().Get(natsMsgIDHeader); !strings.HasSuffix(got, ":"+dt.IdempotencyKey) {
-			t.Errorf("Nats-Msg-Id = %q, want suffix %q", got, ":"+dt.IdempotencyKey)
+		if got := msg.Headers().Get(natsMsgIDHeader); !strings.HasSuffix(got, ":"+dt.GetIdempotencyKey()) {
+			t.Errorf("Nats-Msg-Id = %q, want suffix %q", got, ":"+dt.GetIdempotencyKey())
 		}
-		out = append(out, dt)
+		out = append(out, &dt)
 		_ = msg.Ack()
 	}
 	if len(out) != n {

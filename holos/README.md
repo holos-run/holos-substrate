@@ -902,28 +902,30 @@ its consumer (the deployer) connect against, and the canonical home of the
 DeployTask field table referenced by [ADR-10](../docs/adr/ADR-10.md) and
 [ADR-11](../docs/adr/ADR-11.md).
 
-**DeployTask schema.** The DeployTask is a versioned wire contract. In the
-shipped MVP slice it is a Go struct defined in
-[`internal/task/task.go`](../internal/task/task.go) (`package task`),
-**JSON-marshaled** onto `tasks.deploy`; for this slice that `.go` source is
-authoritative and changing its shape is an ADR-level change (bump
-`SchemaVersion`, revise ADR-10/ADR-11). [ADR-14](../docs/adr/ADR-14.md)
-(Proposed) decides that NATS messages will instead be specified as ConnectRPC
-protobuf with the `.proto` as the source of truth and a binary protobuf payload;
-that migration is **deferred** and not part of the shipped slice, so today's
-on-the-wire form is JSON of the struct below — re-derive this table from the
-`.proto` once ADR-14 lands. The fields:
+**DeployTask schema.** The DeployTask is a versioned wire contract specified as
+a ConnectRPC/buf protobuf message ([ADR-14](../docs/adr/ADR-14.md)). The
+`.proto` is the single source of truth:
+[`proto/holos/paas/pipeline/v1alpha1/pipeline.proto`](../proto/holos/paas/pipeline/v1alpha1/pipeline.proto)
+(package `holos.paas.pipeline.v1alpha1`); the Go type is **generated** from it
+into [`internal/gen/`](../internal/gen) and re-exported as `task.DeployTask` from
+[`internal/task/task.go`](../internal/task/task.go), which also owns the
+`DeploySubject`, `SchemaVersion`, and the idempotency-key helper. The message is
+**binary-protobuf-marshaled** onto `tasks.deploy` — `nats sub tasks.>` shows
+bytes, so eyeballing a task needs `protoc --decode` or the generated type.
+Changing its shape is an ADR-level change: edit the `.proto`, bump
+`schema_version`, and revise ADR-10/ADR-11/ADR-14; `buf breaking` gates a
+wire-incompatible change in CI. The fields:
 
-| Field           | JSON key         | Type          | Meaning                                                                                                                                                                                                          |
-| --------------- | ---------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Schema version  | `schemaVersion`  | int           | The contract version (currently `1`); a consumer reading an unknown future version must fail closed                                                                                                              |
-| Idempotency key | `idempotencyKey` | string        | Stable, deterministic key derived from the source event — a redelivered raw event yields a byte-identical key so the deployer can deduplicate without coordinating state (no timestamp or random component)      |
-| App             | `app`            | string        | Application name derived **mechanically** as the last `/`-segment of the repository (e.g. `holos/sample-app` → `sample-app`); a derivation only — no `Application` KRM lookup happens here (deferred, see below) |
-| Repository      | `repository`     | string        | The source repository the image was pushed to, e.g. `holos/sample-app`                                                                                                                                           |
-| Tag             | `tag`            | string        | The single image tag this task deploys, e.g. `v2`                                                                                                                                                                |
-| Digest          | `digest`         | string        | The resolved manifest digest when known; `omitempty`. Quay's `repo_push` payload carries no digest and registry digest resolution is deferred, so it is currently empty                                          |
-| Source          | `source`         | string        | The webhook source token the event arrived from, e.g. `quay`                                                                                                                                                     |
-| Received at     | `receivedAt`     | RFC 3339 time | Wall-clock time the subscriber observed the source event — informational/observability only, deliberately **excluded** from the idempotency key so redeliveries stay byte-identical                              |
+| Field           | proto field                 | Type                        | Meaning                                                                                                                                                                                                                              |
+| --------------- | --------------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Schema version  | `schema_version` (1)        | int32                       | The contract version (currently `1`); a consumer reading an unknown future version must fail closed                                                                                                                                  |
+| Idempotency key | `idempotency_key` (2)       | string                      | Stable, deterministic key derived from the source event — a redelivered raw event yields a byte-identical key so the deployer can deduplicate without coordinating state (no timestamp or random component)                          |
+| Application     | `application` (3)           | `ApplicationRef`            | Matched `Application` identity. The subscriber sets only `application.name`, derived **mechanically** as the last `/`-segment of the repository (e.g. `holos/sample-app` → `sample-app`); a derivation only — no `Application` KRM lookup happens here (deferred, see below) |
+| Repository      | `repository` (4)            | string                      | The source repository the image was pushed to, e.g. `holos/sample-app`                                                                                                                                                              |
+| Tag             | `tag` (5)                   | string                      | The single image tag this task deploys, e.g. `v2`                                                                                                                                                                                   |
+| Digest          | `digest` (6)                | string                      | The resolved manifest digest when known. Quay's `repo_push` payload carries no digest and registry digest resolution is deferred, so it is currently the empty string                                                               |
+| Source          | `source` (7)                | string                      | The webhook source token the event arrived from, e.g. `quay`                                                                                                                                                                        |
+| Received at     | `received_at` (8)           | `google.protobuf.Timestamp` | Wall-clock time the subscriber observed the source event — informational/observability only, deliberately **excluded** from the idempotency key so redeliveries stay byte-identical                                                  |
 
 | Aspect          | Value                                          |
 | --------------- | ---------------------------------------------- |

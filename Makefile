@@ -30,6 +30,10 @@ vet: ## Run go vet against code.
 lint: ## Run golangci-lint.
 	golangci-lint run
 
+.PHONY: generate
+generate: ## Generate Go from the .proto sources with buf (ADR-14).
+	buf generate
+
 .PHONY: test
 test: fmt vet ## Run tests with the race detector and coverage.
 	go test -race -coverprofile cover.out ./...

@@ -89,6 +89,71 @@ jobs:
         with:
           version: v2.8.0
 
+  proto:
+    name: Protobuf
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned to the full commit SHA of v4.3.1 for supply-chain hardening.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # go is needed to install protoc-gen-go (the buf.gen.yaml plugin) at the
+      # exact version go.mod pins, so the generated output is reproducible.
+      # Pinned to the full commit SHA of v5.2.0 for supply-chain hardening.
+      - uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+        with:
+          go-version-file: go.mod
+
+      # Install the code-gen plugin referenced by buf.gen.yaml at the module's
+      # protobuf version so `buf generate` renders byte-for-byte what a developer
+      # gets locally; a version skew would surface as a spurious diff below.
+      - name: install protoc-gen-go
+        run: |
+          set -euo pipefail
+          version="$(go list -m -f '{{.Version}}' google.golang.org/protobuf)"
+          go install "google.golang.org/protobuf/cmd/protoc-gen-go@${version}"
+
+      # Pinned to the full commit SHA of v1.50.0 for supply-chain hardening.
+      - uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
+        with:
+          github_token: ${{ github.token }}
+
+      # buf lint gates the .proto style conventions (ADR-14).
+      - name: buf lint
+        run: buf lint
+
+      # Fetch the PR base branch so buf breaking can diff against it, and detect
+      # whether the base already has a Buf module. buf breaking errors with "had
+      # no .proto files" when the base predates the Buf module (e.g. the very PR
+      # that introduces protobuf support), so the breaking check below is gated
+      # on the base actually carrying buf.yaml.
+      - name: detect base Buf module
+        if: github.event_name == 'pull_request'
+        id: base_buf
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin "${{ github.base_ref }}"
+          if git cat-file -e "origin/${{ github.base_ref }}:buf.yaml" 2>/dev/null; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "Base branch ${{ github.base_ref }} has no buf.yaml; skipping buf breaking (nothing to break against)."
+          fi
+
+      # buf breaking makes a wire-incompatible schema change a build failure
+      # against the PR base rather than a production surprise on the
+      # at-least-once pipeline (ADR-14). Skipped on push to main (no PR base) and
+      # on the PR that first introduces the Buf module (no base module to diff).
+      - name: buf breaking
+        if: github.event_name == 'pull_request' && steps.base_buf.outputs.present == 'true'
+        run: buf breaking --against ".git#branch=origin/${{ github.base_ref }}"
+
+      # The .proto under proto/ is the single source of truth; the Go under
+      # internal/gen/ is a generated build output that must match it. The script
+      # regenerates and fails on any diff — the same diff-clean gate
+      # scripts/render applies to rendered manifests (ADR-14).
+      - name: generated code is diff-clean
+        run: ./scripts/generate
+
   scripts:
     name: Shell scripts
     runs-on: ubuntu-latest

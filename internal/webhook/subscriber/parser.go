@@ -2,7 +2,8 @@
 // is the meaning-assigning half of the pipeline: the receiver (ADR-9) forwards
 // raw bodies unmodified, and this package decodes a source-specific payload
 // (e.g. a Quay repository push) into the well-known
-// [github.com/holos-run/holos-paas/internal/task.DeployTask] contract.
+// [github.com/holos-run/holos-paas/internal/task.DeployTask] contract — the
+// generated protobuf message published as binary on tasks.deploy (ADR-14).
 //
 // This package is deliberately free of any NATS or Kubernetes import so the
 // parsing logic stays trivially testable and reusable. Headers are modeled as
@@ -39,8 +40,9 @@ type Parser interface {
 	// Parse decodes body (with hdr as the request/message headers) into the
 	// DeployTasks it represents. source is the webhook source token (e.g.
 	// "quay") and is stamped onto each task. receivedAt is the time the event
-	// was observed and is copied verbatim onto each task.
-	Parse(source string, hdr http.Header, body []byte, receivedAt time.Time) ([]task.DeployTask, error)
+	// was observed and is copied verbatim onto each task. Tasks are returned as
+	// pointers to the generated protobuf message (ADR-14).
+	Parse(source string, hdr http.Header, body []byte, receivedAt time.Time) ([]*task.DeployTask, error)
 }
 
 // Registry maps a webhook source token (e.g. "quay") to the Parser that

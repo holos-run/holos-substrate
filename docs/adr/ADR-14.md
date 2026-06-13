@@ -8,9 +8,10 @@
 | Tags     | api, nats, protobuf, conventions |
 | Updates  | ADR-10, ADR-13                   |
 
-| Revision | Date       | Author      | Info           |
-| -------- | ---------- | ----------- | -------------- |
-| 1        | 2026-06-13 | @jeffmccune | Initial design |
+| Revision | Date       | Author      | Info                                            |
+| -------- | ---------- | ----------- | ----------------------------------------------- |
+| 1        | 2026-06-13 | @jeffmccune | Initial design                                  |
+| 2        | 2026-06-13 | @jeffmccune | Accepted; implemented for DeployTask (HOL-1206) |
 
 ## Context and Problem Statement
 
@@ -104,9 +105,10 @@ by hand.**
 ### Encoding on the wire
 
 - **`tasks.render` and `tasks.deploy` carry binary protobuf** — the serialized
-  `RenderTask` / `DeployTask` message *is* the NATS payload. The schema version
-  is carried by the proto package path; a message-type NATS header MAY be set for
-  routing and observability.
+  `RenderTask` / `DeployTask` message *is* the NATS payload. The coarse API
+  version is carried by the proto package path (`v1alpha1`), with a finer
+  in-band `schema_version` field so a consumer can fail closed on an unknown
+  revision; a message-type NATS header MAY be set for routing and observability.
 - **The raw webhook stays the provider's own format.** [ADR-9](ADR-9.md) keeps
   the receiver thin: it publishes Quay's raw JSON body to `webhooks.quay`
   verbatim and parses nothing. We do not control Quay's wire format, so the
@@ -119,8 +121,12 @@ by hand.**
 ### The MVP message set
 
 Three messages cover the MVP's two-loop flow ([ADR-13](ADR-13.md)). The
-following are illustrative sketches — the committed `.proto` is the source of
-truth.
+committed
+[`proto/holos/paas/pipeline/v1alpha1/pipeline.proto`](../../proto/holos/paas/pipeline/v1alpha1/pipeline.proto)
+is the source of truth and authoritative on field names and numbers; the
+following reproduce it. Note each task message carries an in-band
+`int32 schema_version = 1` so a consumer can fail closed on an unknown version
+even though the package path is the coarse version.
 
 **1. Raw webhook — `QuayRepositoryPush`.** The typed model of Quay's
 `repository_push` notification ([ADR-8](ADR-8.md)), the parse target for the raw
@@ -148,30 +154,32 @@ metadata.
 
 ```proto
 message RenderTask {
-  ApplicationRef application = 1;   // matched Application (name/namespace)
-  string repository = 2;            // normalized "<registry>/<namespace>/<repo>"
-  string tag = 3;                   // pushed app-image tag, e.g. "v2"
-  string idempotency_key = 4;       // derived from the source delivery
-  string source = 5;                // event source, e.g. "quay"
-  google.protobuf.Timestamp received_at = 6;
+  int32 schema_version = 1;         // contract version; consumer fails closed on an unknown value
+  string idempotency_key = 2;       // derived from the source delivery
+  ApplicationRef application = 3;   // matched Application (name/namespace)
+  string repository = 4;            // normalized "<registry>/<namespace>/<repo>"
+  string tag = 5;                   // pushed app-image tag, e.g. "v2"
+  string source = 6;                // event source, e.g. "quay"
+  google.protobuf.Timestamp received_at = 7;
 }
 ```
 
 **3. `DeployTask` — loop 2, published on `tasks.deploy`.** Emitted when an event
 repository matches an `Application`'s **configuration** repository
-([ADR-13](ADR-13.md)). Carries the matched application identity, the
-configuration repository, the tag, the **resolved immutable digest**, the
-idempotency key, and source metadata.
+([ADR-13](ADR-13.md)). Carries the matched application identity, the repository,
+the tag, the **resolved immutable digest**, the idempotency key, and source
+metadata.
 
 ```proto
 message DeployTask {
-  ApplicationRef application = 1;   // matched Application (name/namespace)
-  string config_repository = 2;     // normalized "<registry>/<namespace>/<repo>-config"
-  string tag = 3;                   // config-image tag (mirrors the app tag)
-  string digest = 4;                // resolved "sha256:…" — the value deployed
-  string idempotency_key = 5;       // derived from the source delivery
-  string source = 6;                // event source, e.g. "quay"
-  google.protobuf.Timestamp received_at = 7;
+  int32 schema_version = 1;         // contract version; consumer fails closed on an unknown value
+  string idempotency_key = 2;       // derived from the source delivery
+  ApplicationRef application = 3;   // matched Application (name/namespace)
+  string repository = 4;            // normalized "<registry>/<namespace>/<repo>"
+  string tag = 5;                   // image tag this task deploys, e.g. "v2"
+  string digest = 6;                // resolved "sha256:…" — the value deployed, when known
+  string source = 7;                // event source, e.g. "quay"
+  google.protobuf.Timestamp received_at = 8;
 }
 
 // ApplicationRef identifies the Application resource a task targets.
@@ -184,7 +192,12 @@ message ApplicationRef {
 These fields satisfy the contracts ADR-13 and HOL-1123 call for: application
 identity, repository, tag, digest (the immutable value loop 2 deploys), an
 idempotency key for at-least-once redelivery, and source-event metadata. The
-shared `ApplicationRef` keeps identity consistent across both task types.
+shared `ApplicationRef` keeps identity consistent across both task types. In the
+MVP slice the subscriber matches no `Application`, so it sets only
+`application.name` (the repository's last path segment) and leaves `digest`
+empty; KRM-match-driven routing — which would distinguish a configuration push
+on `tasks.deploy` from an app-image push on `tasks.render` — and digest
+resolution are deferred (ADR-13).
 
 ### Extensibility
 
