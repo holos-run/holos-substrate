@@ -137,16 +137,27 @@ let HTTPROUTE_REDIRECT = {
 // issuer is Keycloak's public hostname (its hostname.hostname is
 // https://auth.holos.localhost, so the iss claim matches), the holos realm
 // discovery endpoint.  clientID "argocd" is the public client the
-// keycloak-config component provisions; requestedScopes includes "groups"
-// and requestedIDTokenClaims makes the groups claim essential so the ID
-// token always carries the group/realm-role membership Argo CD's RBAC keys
-// on.
+// keycloak-config component provisions.
+//
+// requestedScopes deliberately does NOT include "groups": the
+// keycloak-config component (components/keycloak/realm-config) attaches the
+// group-membership and realm-role protocol mappers directly to the argocd
+// client's protocolMappers, not to a Keycloak client scope named "groups",
+// so the groups claim is emitted unconditionally on every token regardless
+// of the requested scopes.  Requesting a "groups" scope that is not a
+// registered client scope assigned to the client would make Keycloak reject
+// the authorization request with invalid_scope (Keycloak validates requested
+// scopes against the client's assigned default/optional client scopes), so
+// only the built-in scopes openid/profile/email — backed by Keycloak's
+// default client scopes — are requested.  requestedIDTokenClaims still marks
+// the groups claim essential so the ID token is guaranteed to carry the
+// group/realm-role membership Argo CD's RBAC keys on.
 let OIDC_CONFIG = {
 	name:                     "Keycloak"
 	issuer:                   "https://auth.holos.localhost/realms/holos"
 	clientID:                 "argocd"
 	enablePKCEAuthentication: true
-	requestedScopes: ["openid", "profile", "email", "groups"]
+	requestedScopes: ["openid", "profile", "email"]
 	requestedIDTokenClaims: groups: essential: true
 }
 

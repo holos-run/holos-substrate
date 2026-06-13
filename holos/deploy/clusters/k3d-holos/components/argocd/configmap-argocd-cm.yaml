@@ -13,7 +13,6 @@ data:
       - openid
       - profile
       - email
-      - groups
     requestedIDTokenClaims:
       groups:
         essential: true
