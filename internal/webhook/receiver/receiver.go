@@ -114,7 +114,8 @@ func (h *Handler) Mux() *http.ServeMux {
 // raw body. Until that lands, the endpoint must run behind network controls
 // (the in-cluster mesh / a trusted ingress); the only in-handler abuse bound is
 // the configurable max body size, which caps a single request's contribution to
-// the WorkQueue. Edge signature verification is tracked as a follow-up.
+// the WorkQueue. Edge signature verification is tracked as a follow-up
+// (HOL-1200).
 func (h *Handler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	source := r.PathValue("source")
 	subject := h.cfg.SubjectPrefix + "." + source
