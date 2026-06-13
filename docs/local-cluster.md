@@ -113,6 +113,16 @@ after a cluster reset without re-running `mkcert --install`.
 
 ## Apply the Platform
 
+Every platform component runs an upstream image except the
+`webhook-receiver`, which runs the locally built `holos-paas` image. Build
+and push it to the in-cluster k3d registry before applying, or the
+`webhook-receiver` rollout stalls at `ImagePullBackOff` (the gate detects this
+and points back here):
+
+```bash
+make docker-push
+```
+
 Apply the rendered platform manifests to the cluster:
 
 ```bash

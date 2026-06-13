@@ -60,6 +60,17 @@ let NAME = "nats"
 // this to ALLOW the specific producer/consumer ServiceAccounts in other
 // namespaces as the receiver/subscriber clients (HOL-1122/1123/1124) are
 // introduced.
+//
+// RECEIVER_NAMESPACE is the webhook-receiver component's namespace
+// (holos/components/webhook-receiver/buildplan.cue), added to the ALLOW rule's
+// source namespaces so the receiver may publish raw webhook bodies to the
+// WEBHOOKS stream from its own namespace (HOL-1198).  Namespace-granularity is
+// the right scope this MVP phase — NATS is unauthenticated, so there is no
+// principal to bind to yet; the per-ServiceAccount tightening is the
+// HOL-1122/1123/1124 work noted above.  Unifying with #RegisteredNamespace
+// makes a rename or removal of that namespace a render failure here rather than
+// a silent cross-namespace deny at the client port.
+let RECEIVER_NAMESPACE = "webhook-receiver" & #RegisteredNamespace
 let AUTHZ = {
 	apiVersion: "security.istio.io/v1"
 	kind:       "AuthorizationPolicy"
@@ -77,15 +88,30 @@ let AUTHZ = {
 			"app.kubernetes.io/component": NAME
 		}
 		action: "ALLOW"
-		// Allow only sources in the nats namespace.  An ALLOW policy with a
-		// rule denies everything the rule does not match, so cross-namespace
-		// pods are rejected until a later phase adds the receiver/subscriber
-		// principals explicitly (HOL-1122/1123/1124).  The bootstrap Job below
-		// runs in this namespace, so it is allowed to reach the client port to
-		// create the streams.
-		rules: [{
-			from: [{source: namespaces: [NAMESPACE]}]
-		}]
+		// Two rules, each least-privilege.  An ALLOW policy denies everything no
+		// rule matches, so every other cross-namespace pod is rejected until a
+		// later phase adds the remaining subscriber principals explicitly
+		// (HOL-1123/1124).
+		//
+		//   1. Same-namespace sources reach every port: the bootstrap Job below
+		//      runs in this namespace and needs the client port (4222) to create
+		//      the streams, and in-namespace operators may scrape the monitoring
+		//      endpoint (8222).
+		//   2. The webhook-receiver namespace (HOL-1198) reaches ONLY the client
+		//      port (4222) so it can publish to the WEBHOOKS stream — it has no
+		//      business on the unauthenticated monitoring endpoint (8222), so the
+		//      to.operation.ports restriction keeps that surface same-namespace
+		//      only.  The port is a string because Istio matches operation ports
+		//      as strings.
+		rules: [
+			{
+				from: [{source: namespaces: [NAMESPACE]}]
+			},
+			{
+				from: [{source: namespaces: [RECEIVER_NAMESPACE]}]
+				to: [{operation: ports: ["4222"]}]
+			},
+		]
 	}
 }
 

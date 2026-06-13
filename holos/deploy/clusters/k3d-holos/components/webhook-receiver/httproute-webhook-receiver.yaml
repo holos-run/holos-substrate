@@ -1,0 +1,22 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  labels:
+    app.kubernetes.io/name: webhook-receiver
+  name: webhook-receiver
+  namespace: webhook-receiver
+spec:
+  hostnames:
+  - hooks.holos.localhost
+  parentRefs:
+  - name: default
+    namespace: istio-gateways
+  rules:
+  - backendRefs:
+    - name: webhook-receiver
+      port: 8080
+    matches:
+    - method: POST
+      path:
+        type: PathPrefix
+        value: /webhooks/

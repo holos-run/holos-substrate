@@ -316,6 +316,23 @@ platform: {
 				cluster:   CLUSTER.name
 				labels: app: "nats"
 			}}).output
+
+			// webhook-receiver is the thin HTTP ingress that publishes raw
+			// inbound webhook bodies to the NATS WEBHOOKS stream: a Deployment
+			// running the holos-paas image (webhook-receiver subcommand), a
+			// Service, and an HTTPRoute attaching it to the shared Gateway at
+			// hooks.holos.localhost.  Registered after nats: it publishes into
+			// the NATS backbone, so the stream must exist for an end-to-end
+			// publish to land, and the nats AuthorizationPolicy ALLOWs this
+			// component's namespace as a client source.  Its HTTPRoute attaches
+			// to the istio-gateway component's Gateway; attachment is
+			// level-triggered, so apply order does not matter for the route
+			// itself.
+			(#ComponentTemplate & {inputs: {
+				component: "webhook-receiver"
+				cluster:   CLUSTER.name
+				labels: app: "webhook-receiver"
+			}}).output
 		}
 	}
 }
