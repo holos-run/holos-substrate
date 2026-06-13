@@ -324,22 +324,42 @@ wait_keycloak() {
     wait keycloakrealmimport/holos --for=condition=Done --timeout="${KEYCLOAK_TIMEOUT}"
 }
 
+# keycloak-config: ensure every apply runs a fresh realm reconcile.  A completed
+# Job's pod template is immutable and kubectl apply never re-runs an existing
+# Complete Job, so without this pre-apply delete a reconcile would be skipped
+# whenever the rendered Job already exists Complete on the cluster.  The Job's
+# name carries a content hash of the realm import document and image (the
+# realm-config component's CONFIG_HASH), which makes a forward config change
+# render a new name — but that alone does not cover reverting to a
+# previously-applied config within the Job's 24h TTL: the prior hash's Job would
+# still be present and Complete, and the apply would not re-run it (the residual
+# bug the round-2 review flagged).  Deleting every keycloak-config Job by label
+# before the apply closes the whole class: the apply always creates a brand-new
+# Job that runs the CLI, and because keycloak-config-cli converges idempotently,
+# re-running on every apply is exactly the intended "reconcile on every apply"
+# behavior.  --ignore-not-found tolerates the first apply (no Job yet) and the
+# post-TTL-GC case; --wait blocks until the old Job and its pods are gone so the
+# subsequent apply cannot collide with a terminating object of the same name.
+pre_keycloak_config() {
+  kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
+    delete job -l app.kubernetes.io/name=keycloak-config \
+    --ignore-not-found --wait --request-timeout=30s
+}
+
 # keycloak-config: the realm-reconciliation smoke check.  The keycloak-config-cli
 # Job converges the holos realm's three platform roles, the authenticated default
 # group, and the Argo CD OIDC client against the live admin API — the point of
 # this component — and the Job depends on the server serving, so gating here
 # names the actual culprit in the error instead of a generic timeout.
 #
-# The Job's name carries a content hash of the realm import document and image
-# tag (see the realm-config component's CONFIG_HASH), so a realm change renders a
-# DIFFERENT Job name and reconciles on the next apply rather than being masked by
-# a stale Complete Job.  This gate therefore must wait on exactly the Job that was
-# just applied, NOT on any Job matching the component label: after a config change
-# the previous (now stale) Complete Job still lingers under its own hash until TTL
-# GC, and a label-based poll could match its Complete status and pass before the
-# new Job has converged.  So the Job name is read from the rendered manifest the
-# apply step just used — the single committed job-*.yaml under the component's
-# deploy directory — tying the gate to precisely what was applied.
+# pre_keycloak_config above deletes any prior Job before the apply, so the apply
+# always creates a fresh Job and this gate waits on a genuinely new run — never a
+# stale Complete Job from an earlier apply (including a revert to a previously
+# applied config within the TTL window).  The Job name is read from the rendered
+# manifest the apply step just used — the single committed job-*.yaml under the
+# component's deploy directory — so the gate waits on exactly that Job (its name
+# carries the config hash) rather than label-matching, which keeps the gate
+# robust even if a delete ever leaves a terminating same-label Job mid-poll.
 #
 # The Job is polled instead of handed to `kubectl wait --for=condition=Complete`
 # so a Failed Job fails the gate on the next poll rather than blocking the full
@@ -677,6 +697,15 @@ fi
 
 for component in "${COMPONENTS[@]}"; do
   echo "==> ${component}"
+  # Optional pre-apply hook, run before the component's manifests apply (the
+  # mirror of the wait_<name> post-apply hook below).  Components without one
+  # simply define no function.  Used where an apply alone cannot guarantee the
+  # intended action — e.g. keycloak-config deletes its prior Job so every apply
+  # runs a fresh reconcile (a completed Job is otherwise never re-run).
+  pre_hook="pre_${component//-/_}"
+  if declare -F "${pre_hook}" >/dev/null; then
+    "${pre_hook}"
+  fi
   attempts="$(apply_attempts "${component}")"
   for ((attempt = 1; ; attempt++)); do
     if kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \

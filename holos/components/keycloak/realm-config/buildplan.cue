@@ -178,20 +178,19 @@ let CONFIG_MAP = {
 
 // CONFIG_HASH is a short content hash of everything that determines what the Job
 // converges: the realm import document and the image tag.  It is suffixed onto
-// the Job's metadata.name (JOB_NAME) so any change to the import document or the
-// image yields a NEW Job name.  This is the fix for the otherwise-silent
-// stale-completion trap: a completed Job's pod template is immutable, and the
-// ConfigMap is mounted by name (not by content), so editing holos.json without
-// changing the Job would leave the old Complete Job in place — kubectl apply
-// would see no change, never re-run keycloak-config-cli, and wait_keycloak_config
-// would pass on the stale completion, so the realm edit would not reconcile until
-// the day-long TTL GC removed the old Job.  By folding the content into the Job
-// name, an import change always produces a fresh Job that re-runs the CLI and
-// reconciles immediately; the previous Job's name no longer renders, so it simply
-// ages out via its own ttlSecondsAfterFinished.  Re-applying an UNCHANGED config
-// keeps the same name (a no-op while the Job exists; recreated and re-converged
-// after TTL GC), so routine idempotent re-applies are unaffected.  8 hex chars
-// (32 bits) is ample collision resistance for a single-tenant realm import.
+// the Job's metadata.name (JOB_NAME) so the rendered manifest is self-describing
+// — the name reveals which config a given Job ran — and so the deploy file name
+// changes visibly in review when the import document or image changes.
+//
+// Note: the hash is NOT what guarantees a reconcile runs.  A completed Job's pod
+// template is immutable and kubectl apply never re-runs an existing Complete Job,
+// so the actual "reconcile on every apply" guarantee comes from scripts/apply's
+// pre_keycloak_config hook, which deletes every keycloak-config Job (by the
+// app.kubernetes.io/name label) before the apply — covering forward edits AND
+// reverts to a previously-applied config within the Job's TTL window, which a
+// content-hash name alone would miss (the old hash's Complete Job would linger).
+// keycloak-config-cli converges idempotently, so re-running on every apply is the
+// intended behavior.  8 hex chars (32 bits) is ample for the naming role.
 let CONFIG_HASH = strings.SliceRunes(hex.Encode(sha256.Sum256(
 CONFIG_MAP.data["holos.json"]+"\n"+KeycloakConfigCLIImage)), 0, 8)
 
