@@ -61,6 +61,13 @@ behind the layout is in
 - Deployment configuration and policy are CUE rendered with
   `holos render platform`; `scripts/render` renders and verifies the
   committed `holos/deploy/` tree is diff-clean.
+- Go code lives in the single root module `github.com/holos-run/holos-paas`
+  laid out per [ADR-12](docs/adr/ADR-12.md): the multi-service binary under
+  `cmd/holos-paas/` (one cobra subcommand per service) and all
+  implementation under `internal/`. `make test` (gofmt, `go vet`, then the
+  race-enabled test suite) is the entry point; the `Go` job in
+  [.github/workflows/ci.yaml](.github/workflows/ci.yaml) runs it alongside
+  `golangci-lint`.
 - Label and annotation keys owned by the platform configuration layer —
   aspects of the holos configuration itself, independent of site-specific
   configuration — default to the `holos.run` domain (e.g.

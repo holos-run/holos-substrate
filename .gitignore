@@ -17,6 +17,9 @@ coverage.*
 *.coverprofile
 profile.cov
 
+# Compiled binary output (Makefile `build` target writes bin/holos-paas).
+/bin/
+
 # Go dependency directory.  Anchored to the repo root: Go vendoring only
 # creates vendor/ at the module root, and component-level vendor/ trees under
 # holos/components/ are committed Helm chart caches that must stay visible
