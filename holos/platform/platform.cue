@@ -253,6 +253,25 @@ platform: {
 				labels: app: "keycloak"
 			}}).output
 
+			// keycloak-config reconciles the holos realm with an idempotent
+			// keycloak-config-cli Job: the three platform roles, the
+			// authenticated default group, and the Argo CD OIDC public PKCE
+			// client with the group/realm-role protocol mappers.  Registered
+			// immediately after keycloak (instance): the realm shell must be
+			// bootstrapped by the instance component's KeycloakRealmImport,
+			// and the Keycloak server Ready, before this Job can converge the
+			// realm against the live admin API — scripts/apply gates on the
+			// Job completing.  Unlike the bootstrap-only KeycloakRealmImport,
+			// this Job reconciles on every apply, closing the "Keycloak realm
+			// reconciliation" placeholder.
+			(#ComponentTemplate & {inputs: {
+				name:      "keycloak-config"
+				component: "realm-config"
+				prefix:    "components/keycloak"
+				cluster:   CLUSTER.name
+				labels: app: "keycloak"
+			}}).output
+
 			// quay emits the Quay registry: the Quay Deployment (config
 			// rendered by an initContainer from the committed template plus
 			// the CNPG-generated quay-db credentials), its Service, the

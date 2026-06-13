@@ -14,7 +14,9 @@
 # closed), Cluster readiness before the Keycloak and Quay phases' database
 # consumers, the Keycloak operator rollout before the keycloak component's
 # k8s.keycloak.org custom resources, the Keycloak CR Ready and realm
-# import Done conditions as the Layer 1 smoke check, the quay
+# import Done conditions as the Layer 1 smoke check, the keycloak-config
+# realm-reconciliation Job completion (the keycloak-config-cli run that
+# converges the holos realm's roles, default group, and Argo CD client), the quay
 # Deployment rollout as the Quay smoke check, the Argo CD workload
 # rollouts as the Argo CD smoke check, and the NATS stream bootstrap
 # Job completion plus the NATS StatefulSet rollout as the NATS backbone
@@ -120,8 +122,12 @@ ROLLOUT_TIMEOUT_SECONDS="$(duration_seconds "${ROLLOUT_TIMEOUT}")" || exit 1
 # operator rollout after the database keeps the dependency chain linear.
 # keycloak trails the operator: its k8s.keycloak.org CRs need the operator
 # reconciling and its cert-manager.io Certificate needs the cert-manager
-# webhook admitting (hence the retried apply, like local-ca).  quay trails
-# keycloak: it needs the quay-db Cluster reachable (gated Ready in the
+# webhook admitting (hence the retried apply, like local-ca).  keycloak-config
+# trails keycloak: its keycloak-config-cli Job reconciles the holos realm
+# against the live admin API, so the Keycloak server must be Ready and the realm
+# shell imported (both gated by wait_keycloak) before it runs; its own gate
+# waits on the Job completing.  quay trails
+# keycloak-config: it needs the quay-db Cluster reachable (gated Ready in the
 # cnpg-clusters step) and attaches routes to the shared Gateway, so
 # appending it keeps the established order stable.  argocd-crds and argocd
 # close the sequence: CRDs before the controllers that need the types (the
@@ -160,6 +166,7 @@ COMPONENTS=(
   keycloak-operator-crds
   keycloak-operator
   keycloak
+  keycloak-config
   quay
   argocd-crds
   argocd
@@ -315,6 +322,60 @@ wait_keycloak() {
     wait keycloak/keycloak --for=condition=Ready --timeout="${KEYCLOAK_TIMEOUT}"
   kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
     wait keycloakrealmimport/holos --for=condition=Done --timeout="${KEYCLOAK_TIMEOUT}"
+}
+
+# keycloak-config: the realm-reconciliation smoke check.  The keycloak-config-cli
+# Job converges the holos realm's three platform roles, the authenticated default
+# group, and the Argo CD OIDC client against the live admin API — the point of
+# this component — and the Job depends on the server serving, so gating here
+# names the actual culprit in the error instead of a generic timeout.  The Job is
+# polled instead of handed to `kubectl wait --for=condition=Complete` so a Failed
+# Job fails the gate on the next poll rather than blocking the full
+# ROLLOUT_TIMEOUT before erroring.  The Job carries a ttlSecondsAfterFinished, so
+# absence is tolerated — already garbage-collected on a long-bootstrapped cluster
+# (or mid-poll), with the realm state it converged still in Keycloak's database —
+# and --ignore-not-found makes that discrimination structural: absent yields
+# empty output with exit 0, while a persistent lookup failure (RBAC, API error)
+# fails the gate rather than silently skipping it (the wait_nats/wait_quay
+# precedent).  The Job's own availability check retries until Keycloak answers, so
+# polling it while the server is still settling after wait_keycloak is safe: it
+# converges once the admin API responds.
+wait_keycloak_config() {
+  local job=job/keycloak-config job_state lookup_failures=0
+  local deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+  while true; do
+    # One read captures both existence and state: absent yields empty
+    # output; present yields the Job name followed by one Type=Status line
+    # per status condition.  --request-timeout bounds each poll so a hung
+    # apiserver connection cannot stall past the script-owned deadline.
+    if job_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
+      get "${job}" --ignore-not-found --request-timeout=10s \
+      -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
+      lookup_failures=0
+      if [[ -z "${job_state}" ]] || grep -q '^Complete=True$' <<<"${job_state}"; then
+        break
+      fi
+      if grep -q '^Failed=True$' <<<"${job_state}"; then
+        echo "ERROR: ${job} failed; inspect it with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} --namespace keycloak describe ${job}" >&2
+        return 1
+      fi
+    else
+      # kubectl's own stderr has already flowed through above.  A single
+      # failed read may be a transient apiserver or network blip — only a
+      # persistent failure (e.g. RBAC) aborts the gate.
+      lookup_failures=$((lookup_failures + 1))
+      if ((lookup_failures >= 3)); then
+        echo "ERROR: cannot query ${job}: ${lookup_failures} consecutive lookup failures." >&2
+        return 1
+      fi
+    fi
+    if ((SECONDS >= deadline)); then
+      echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for ${job} to complete." >&2
+      return 1
+    fi
+    sleep 5
+  done
 }
 
 # quay: the Quay smoke check.  First the secret-keys bootstrap Job — the
