@@ -104,6 +104,17 @@ func (h *Handler) Mux() *http.ServeMux {
 // or NATS is unavailable. A 5xx makes the sender (the registry) retry, so an
 // event is never silently dropped — durability is owned by the file-backed
 // WorkQueue stream, and the receiver's contract is "202 means stored".
+//
+// Authentication is deliberately NOT performed here. ADR-9 keeps the receiver
+// thin (no parsing, no business logic) and explicitly defers the
+// signature-verification location to the milestone, allowing it at the edge or
+// in the subscriber. This phase chooses to defer verification to the subscriber
+// (ADR-10): the signature header is carried through verbatim (see
+// [forwardedHeaders]) so the subscriber can authenticate the sender against the
+// raw body. Until that lands, the endpoint must run behind network controls
+// (the in-cluster mesh / a trusted ingress); the only in-handler abuse bound is
+// the configurable max body size, which caps a single request's contribution to
+// the WorkQueue. Edge signature verification is tracked as a follow-up.
 func (h *Handler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	source := r.PathValue("source")
 	subject := h.cfg.SubjectPrefix + "." + source
@@ -175,7 +186,19 @@ func selectHeaders(src http.Header) natsgo.Header {
 // (e.g. on SIGINT/SIGTERM), then gracefully drains in-flight requests within
 // shutdownTimeout. It returns nil on a clean shutdown.
 func (h *Handler) Serve(ctx context.Context, addr string, shutdownTimeout time.Duration) error {
-	srv := &http.Server{Addr: addr, Handler: h.Mux()}
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: h.Mux(),
+		// Bound the time a client may hold a connection. MaxBytesReader only
+		// caps the body after headers are read, so without these a slow client
+		// could pin a connection/goroutine indefinitely (Slowloris) against
+		// this durable ingress. WriteTimeout is generous because a publish
+		// blocks on the JetStream PubAck before the response is written.
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 
 	errCh := make(chan error, 1)
 	go func() {

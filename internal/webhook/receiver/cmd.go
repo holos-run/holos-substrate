@@ -84,6 +84,12 @@ func runReceiver(ctx context.Context, opts *options) error {
 	conn, err := nats.Connect(opts.natsURL,
 		natsgo.Name("holos-paas-webhook-receiver"),
 		natsgo.RetryOnFailedConnect(true),
+		// Reconnect forever. The default budget (60 attempts) would close the
+		// connection permanently after a ~2-minute outage, leaving the pod
+		// alive but unable to publish (and /readyz would correctly report 503,
+		// but the pod would never recover without a restart). An unbounded
+		// budget lets the receiver ride out arbitrarily long NATS outages.
+		natsgo.MaxReconnects(-1),
 	)
 	if err != nil {
 		return err
