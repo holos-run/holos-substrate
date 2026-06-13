@@ -15,8 +15,10 @@
 # consumers, the Keycloak operator rollout before the keycloak component's
 # k8s.keycloak.org custom resources, the Keycloak CR Ready and realm
 # import Done conditions as the Layer 1 smoke check, the quay
-# Deployment rollout as the Quay smoke check, and the Argo CD workload
-# rollouts as the Argo CD smoke check.  The README is the canonical
+# Deployment rollout as the Quay smoke check, the Argo CD workload
+# rollouts as the Argo CD smoke check, and the NATS stream bootstrap
+# Job completion plus the NATS StatefulSet rollout as the NATS backbone
+# smoke check.  The README is the canonical
 # explanation of why the order is what it is; this script encodes exactly
 # that order.
 #
@@ -126,7 +128,10 @@ ROLLOUT_TIMEOUT_SECONDS="$(duration_seconds "${ROLLOUT_TIMEOUT}")" || exit 1
 # same guardrail as the other *-crds pairs), and Argo CD depends only on
 # the Gateway its HTTPRoutes attach to — nothing downstream depends on it
 # during bootstrap — so appending the pair keeps the established order
-# stable.
+# stable.  nats closes the sequence: it is a Layer 2 backbone service that
+# nothing during bootstrap depends on (its producers and consumers are
+# separate components that land later), so appending it keeps the
+# established order stable — the same rationale as argocd.
 COMPONENTS=(
   namespaces
   gateway-api
@@ -148,6 +153,7 @@ COMPONENTS=(
   quay
   argocd-crds
   argocd
+  nats
 )
 
 # local-ca and istio-gateway create cert-manager.io resources (ClusterIssuer,
@@ -389,6 +395,63 @@ wait_argocd() {
     rollout status deployment/argocd-server --timeout="${ROLLOUT_TIMEOUT}"
   kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
     rollout status statefulset/argocd-application-controller --timeout="${ROLLOUT_TIMEOUT}"
+}
+
+# nats: the NATS backbone smoke check.  First the stream bootstrap Job — the
+# WEBHOOKS and TASKS WorkQueue streams it creates are the point of bringing
+# NATS up, and the Job depends on the server serving, so gating here names
+# the actual culprit in the error instead of a generic rollout timeout.  The
+# Job is polled instead of handed to `kubectl wait --for=condition=Complete`
+# so a Failed Job fails the gate on the next poll rather than blocking the
+# full ROLLOUT_TIMEOUT before erroring.  The Job carries a
+# ttlSecondsAfterFinished, so absence is tolerated — already garbage-collected
+# on a long-bootstrapped cluster (or mid-poll), with the streams it created
+# still in JetStream's file store — and --ignore-not-found makes that
+# discrimination structural: absent yields empty output with exit 0, while a
+# persistent lookup failure (RBAC, API error) fails the gate rather than
+# silently skipping it (the wait_quay precedent).  Then the StatefulSet
+# rollout confirms the server pod is Ready.  The Job's own script retries
+# until NATS is reachable, so polling the Job before the StatefulSet is fully
+# rolled out is safe: the Job converges once the server answers, and the
+# rollout wait then confirms readiness.
+wait_nats() {
+  local job=job/nats-stream-bootstrap job_state lookup_failures=0
+  local deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+  while true; do
+    # One read captures both existence and state: absent yields empty
+    # output; present yields the Job name followed by one Type=Status line
+    # per status condition.  --request-timeout bounds each poll so a hung
+    # apiserver connection cannot stall past the script-owned deadline.
+    if job_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace nats \
+      get "${job}" --ignore-not-found --request-timeout=10s \
+      -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
+      lookup_failures=0
+      if [[ -z "${job_state}" ]] || grep -q '^Complete=True$' <<<"${job_state}"; then
+        break
+      fi
+      if grep -q '^Failed=True$' <<<"${job_state}"; then
+        echo "ERROR: ${job} failed; inspect it with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} --namespace nats describe ${job}" >&2
+        return 1
+      fi
+    else
+      # kubectl's own stderr has already flowed through above.  A single
+      # failed read may be a transient apiserver or network blip — only a
+      # persistent failure (e.g. RBAC) aborts the gate.
+      lookup_failures=$((lookup_failures + 1))
+      if ((lookup_failures >= 3)); then
+        echo "ERROR: cannot query ${job}: ${lookup_failures} consecutive lookup failures." >&2
+        return 1
+      fi
+    fi
+    if ((SECONDS >= deadline)); then
+      echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for ${job} to complete." >&2
+      return 1
+    fi
+    sleep 5
+  done
+  kubectl --context "${KUBE_CONTEXT}" --namespace nats \
+    rollout status statefulset/nats --timeout="${ROLLOUT_TIMEOUT}"
 }
 
 if ! command -v kubectl >/dev/null 2>&1; then

@@ -8,11 +8,14 @@ package holos
 // instance) with clustering disabled.  No authentication is configured this
 // phase (MVP posture); NATS listens for in-cluster clients only on port 4222.
 //
-// Render-only in this phase (HOL-1192): the component is registered in the
-// platform and renders into the committed deploy tree, but is NOT yet added
-// to scripts/apply and no streams are created — those land in the next phase
-// (HOL-1193).  This mirrors the Argo CD bring-up split (render-only in
-// HOL-1186, apply integration in HOL-1187).
+// The server was brought up render-only in HOL-1192 (registered in the
+// platform, rendered into the committed deploy tree).  This phase (HOL-1193)
+// makes the backbone live and self-bootstrapping: it adds the stream
+// bootstrap Job below — which creates the two file-backed WorkQueue streams
+// (WEBHOOKS, TASKS) idempotently — and integrates the component into
+// scripts/apply with a wait_nats() gate (the bootstrap Job completion plus
+// the StatefulSet rollout).  This mirrors the Argo CD bring-up split
+// (render-only in HOL-1186, apply integration in HOL-1187).
 //
 // The nats Namespace — including its ambient mesh enrollment label — is
 // registered in the central namespaces registry (holos/namespaces.cue) and
@@ -76,9 +79,198 @@ let AUTHZ = {
 		// Allow only sources in the nats namespace.  An ALLOW policy with a
 		// rule denies everything the rule does not match, so cross-namespace
 		// pods are rejected until HOL-1193 adds their principals explicitly.
+		// The bootstrap Job below runs in this namespace, so it is allowed to
+		// reach the client port to create the streams.
 		rules: [{
 			from: [{source: namespaces: [NAMESPACE]}]
 		}]
+	}
+}
+
+// NATS_URL is the in-cluster client endpoint the bootstrap Job connects to:
+// the chart's client Service (name "nats", port 4222 — verified against the
+// rendered service-nats.yaml) in this component's namespace.
+let NATS_URL = "nats://\(NAME).\(NAMESPACE).svc.cluster.local:4222"
+
+// NATS_BOX_IMAGE pins the nats-box image the bootstrap Job runs the `nats`
+// CLI from.  natsio/nats-box:0.19.7 is the tag the vendored chart pins for
+// its own nats-box (vendor/2.14.2/nats/values.yaml) — reuse it so the CLI
+// version tracks the chart.  The image is a multi-arch manifest list
+// including linux/arm64 (required because the cluster is k3d on
+// OrbStack/Apple silicon).  The image declares no USER and defaults to /root,
+// so the Job's pod securityContext below enforces non-root (uid 65534) and a
+// /tmp working directory.  Keep this in sync with the chart's
+// natsBox.container.image.tag when bumping NATSChartVersion.
+let NATS_BOX_IMAGE = "natsio/nats-box:0.19.7"
+
+// BOOTSTRAP is the name of the stream bootstrap Job and its pod label.  It
+// carries its own app.kubernetes.io/name — NOT the StatefulSet's "nats" —
+// because the chart's client Service selects on that label: a probe-less
+// bootstrap pod labeled like the server would become a dead Service endpoint
+// for the seconds it runs whenever the Job re-runs after TTL garbage
+// collection (the quay BOOTSTRAP_METADATA precedent).
+let BOOTSTRAP = "nats-stream-bootstrap"
+
+let BOOTSTRAP_METADATA = {
+	name:      BOOTSTRAP
+	namespace: NAMESPACE
+	labels: "app.kubernetes.io/name": BOOTSTRAP
+}
+
+// The bootstrap script: create the two file-backed WorkQueue streams the
+// platform's NATS backbone needs (HOL-1120) idempotently against the
+// in-cluster NATS client endpoint.  WEBHOOKS ingests raw inbound webhooks
+// (subjects webhooks.>) and TASKS carries internal work (subjects tasks.>).
+// The webhooks.> wildcard captures the documented producer subject
+// webhooks.quay (ADR-13's "Raw event published to NATS: webhooks.quay on
+// WEBHOOKS"), so a publish from the receiver matches this stream rather than
+// being rejected; the narrower webhooks.raw.> the issue quoted from HOL-1120
+// predates ADR-13 and would not match webhooks.quay.  tasks.> likewise
+// captures tasks.render and tasks.deploy (ADR-13).  WorkQueue retention holds
+// each message until a consumer acks it and then removes it; file storage
+// persists the queue across a NATS pod restart.  Keep the stream
+// names/subjects in sync with ADR-13 and the subject hierarchy documented in
+// HOL-1194.
+//
+// Idempotency has two layers so the Job is safe to re-run under
+// `kubectl apply` (and after TTL garbage collection):
+//
+//   - `nats stream info <NAME>` gates `nats stream add`, so an existing
+//     stream is never re-created (add errors on a duplicate name).
+//   - `nats stream edit --force` then converges an existing stream's
+//     mutable config (the declared subjects and retention) without
+//     prompting, so a change to a stream definition reconciles on the next
+//     apply rather than drifting silently.  Storage is immutable after
+//     creation and is set only by `stream add` (see converge_stream).
+//
+// `nats stream add --defaults` accepts the CLI defaults for every option not
+// given explicitly (so the command never blocks on an interactive prompt),
+// while the explicit flags pin the three properties the acceptance criteria
+// name: --subjects, --retention=work (WorkQueue), --storage=file.
+//
+// The leading reachability loop tolerates the gate ordering in scripts/apply
+// polling the Job before the StatefulSet is necessarily serving: it retries
+// `nats server check connection` until NATS answers (or ~2 min elapses, after
+// which the script exits non-zero and the Job's backoffLimit re-runs the
+// pod).  `set -eu` makes any unexpected CLI error fail the pod rather than
+// leaving a stream half-created.  converge_stream centralizes the
+// info-gated create-or-edit so each stream is one line below.
+let BOOTSTRAP_SCRIPT = """
+	set -eu
+	SERVER="\(NATS_URL)"
+	echo "Waiting for NATS at ${SERVER} ..."
+	i=0
+	until nats --server "${SERVER}" server check connection >/dev/null 2>&1; do
+	  i=$((i + 1))
+	  if [ "$i" -ge 60 ]; then
+	    echo "NATS did not become reachable in time" >&2
+	    exit 1
+	  fi
+	  sleep 2
+	done
+	echo "NATS is reachable; converging streams."
+	converge_stream() {
+	  name="$1"
+	  subjects="$2"
+	  if nats --server "${SERVER}" stream info "${name}" >/dev/null 2>&1; then
+	    echo "Stream ${name} exists; converging config."
+	    # `stream edit` only accepts mutable fields: --storage is rejected
+	    # ("unknown long flag '--storage'") because a stream's storage backend
+	    # is immutable after creation, so converge only the subjects (and
+	    # re-assert the retention policy, which edit does accept).  The
+	    # storage=file guarantee is established by `stream add` below and never
+	    # changes.
+	    nats --server "${SERVER}" stream edit --force \\
+	      --subjects="${subjects}" --retention=work "${name}"
+	  else
+	    echo "Creating stream ${name}."
+	    nats --server "${SERVER}" stream add --defaults \\
+	      --subjects="${subjects}" --retention=work --storage=file "${name}"
+	  fi
+	}
+	converge_stream WEBHOOKS 'webhooks.>'
+	converge_stream TASKS 'tasks.>'
+	echo "Stream bootstrap complete."
+	"""
+
+// CAVEAT: a completed Job's pod template is immutable.  Server-side re-apply
+// of this unchanged spec is a no-op while the Job exists, and
+// ttlSecondsAfterFinished garbage-collects it a day after completion — after
+// that a re-apply recreates the Job, which converges the already-created
+// streams and exits 0.  Only a pod-template change within the TTL window
+// (e.g. editing BOOTSTRAP_SCRIPT) requires deleting the old Job
+// first (kubectl -n nats delete job nats-stream-bootstrap) — the streams it
+// created survive in JetStream's file store, and the new Job converges them.
+let BOOTSTRAP_JOB = {
+	apiVersion: "batch/v1"
+	kind:       "Job"
+	metadata:   BOOTSTRAP_METADATA
+	spec: {
+		// The reachability loop inside the script already tolerates a NATS
+		// that is not yet serving; backoffLimit covers the rarer case of the
+		// pod itself failing (e.g. an image pull blip) before the loop runs.
+		backoffLimit: 3
+		// A day keeps the Job's logs around for debugging a fresh bootstrap
+		// while still dissolving the immutable-pod-template caveat above for
+		// routine re-applies (the quay BOOTSTRAP_JOB precedent).
+		ttlSecondsAfterFinished: 86400
+		template: {
+			// The distinct label matters most here: the chart's client
+			// Service must never select this pod (see BOOTSTRAP_METADATA).
+			metadata: labels: BOOTSTRAP_METADATA.labels
+			spec: {
+				restartPolicy: "Never"
+				// The Job talks to NATS over the network, never to the
+				// Kubernetes API, so it needs no ServiceAccount token.
+				automountServiceAccountToken: false
+				securityContext: {
+					runAsNonRoot: true
+					// The nats-box image declares no non-root USER; pick the
+					// conventional "nobody" uid (the quay bootstrap precedent).
+					runAsUser:  65534
+					runAsGroup: 65534
+					seccompProfile: type: "RuntimeDefault"
+				}
+				containers: [{
+					name:  "bootstrap"
+					image: NATS_BOX_IMAGE
+					command: ["/bin/sh", "-c", BOOTSTRAP_SCRIPT]
+					// The nats-box image's working directory is /root (mode
+					// 700, owned by root), which uid 65534 cannot even stat —
+					// and the nats CLI stats the working directory while
+					// validating a stream config, so `stream add` fails with
+					// "stat .: permission denied" from /root.  Run from /tmp
+					// (the writable emptyDir) instead so the stat — and the
+					// CLI's context/state writes under $HOME, also pointed at
+					// /tmp — succeed under the read-only root filesystem.
+					workingDir: "/tmp"
+					env: [{
+						name:  "HOME"
+						value: "/tmp"
+					}]
+					resources: {
+						requests: {
+							cpu:    "10m"
+							memory: "32Mi"
+						}
+						limits: memory: "64Mi"
+					}
+					securityContext: {
+						allowPrivilegeEscalation: false
+						capabilities: drop: ["ALL"]
+						readOnlyRootFilesystem: true
+					}
+					volumeMounts: [{
+						name:      "tmp"
+						mountPath: "/tmp"
+					}]
+				}]
+				volumes: [{
+					name: "tmp"
+					emptyDir: {}
+				}]
+			}
+		}
 	}
 }
 
@@ -169,10 +361,12 @@ userDefinedBuildPlan: {
 				kind:   "Resources"
 				output: "resources.gen.yaml"
 				// Unify with #Resources (holos/resources.cue) so the
-				// hand-authored AuthorizationPolicy validates against the
-				// vendored Istio schema at render time.
+				// hand-authored AuthorizationPolicy and stream bootstrap
+				// Job validate against the vendored Istio and Kubernetes
+				// schemas at render time.
 				resources: #Resources & {
 					AuthorizationPolicy: (AUTHZ.metadata.name): AUTHZ
+					Job: (BOOTSTRAP_JOB.metadata.name):         BOOTSTRAP_JOB
 				}
 			}]
 			transformers: [

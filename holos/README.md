@@ -132,6 +132,10 @@ platform service:
     `StatefulSet`, the repo-server, server, and redis `Deployment`s, and
     the `HTTPRoute` pair attaching the UI to the shared Gateway at
     `argocd.holos.localhost`
+21. `nats` — the NATS JetStream backbone: the single-replica `nats`
+    `StatefulSet` with file-backed JetStream, plus the
+    `nats-stream-bootstrap` `Job` that idempotently creates the `WEBHOOKS`
+    (`webhooks.>`) and `TASKS` (`tasks.>`) file-backed WorkQueue streams
 
 The order encodes six rules: the `namespaces` component applies first, so
 every Namespace exists before any component that populates it;
@@ -177,7 +181,7 @@ reachable — already gated Ready in the `cnpg-clusters` step — and its gate
 waits on the secret-keys bootstrap Job and then on the `quay` Deployment
 rollout with its own generous timeout (`QUAY_TIMEOUT`, default 900s),
 since the first pull of the Quay image is large and the first start runs
-Quay's database schema migrations. `argocd-crds` and `argocd` close the
+Quay's database schema migrations. `argocd-crds` and `argocd` continue the
 sequence: the CRDs apply (and are gated Established) before the
 controllers that need the types, and Argo CD depends only on the Gateway
 its `HTTPRoute`s attach to — nothing downstream depends on it during
@@ -186,7 +190,14 @@ bootstrap — so appending the pair keeps the established order stable. The
 renders with pods — the redis, repo-server, and server `Deployment`s and
 the application-controller `StatefulSet` — as the Argo CD smoke check
 (the applicationset-controller `Deployment` renders with `replicas: 0`,
-and dex and notifications are disabled and render no workloads).
+and dex and notifications are disabled and render no workloads). `nats`
+closes the sequence: it is a Layer 2 backbone service that nothing during
+bootstrap depends on (its producers and consumers are separate components
+that land later), so appending it keeps the established order stable — the
+same rationale as `argocd`. Its gate first polls the `nats-stream-bootstrap`
+Job to completion — the `wait_quay` Job-poll pattern, so a failure names the
+Job rather than a generic rollout timeout — and then waits the `nats`
+`StatefulSet` rollout as the NATS backbone smoke check.
 
 The first rule exists because nothing orders an apply batch by kind:
 kubectl submits the files sequentially in lexical order, so a single
