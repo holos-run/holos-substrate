@@ -52,19 +52,24 @@ from the ambient mesh enrollment convention in
 
 ## Keycloak realm reconciliation
 
-The `holos` realm is created declaratively at bootstrap by the
+**Resolved.** The `holos` realm is created declaratively at bootstrap by the
 `KeycloakRealmImport` CR in
 [`components/keycloak/instance/`](../components/keycloak/instance/buildplan.cue),
-but the import is bootstrap-only: the operator's import Job skips when the
-realm already exists, so post-bootstrap changes to the CR — new clients,
-roles, users — are not reconciled into the live realm. Until a
-reconciliation mechanism is chosen (a keycloak-config-cli-style tool, a
-platform reconciler per [ADR-2](../../docs/adr/ADR-2.md), or an upstream
-operator feature), realm changes on an existing cluster are manual: apply
-them in the admin console, or delete and re-import the realm — which
-destroys realm state.
-[Quay OIDC login](#quay-oidc-login-against-the-keycloak-holos-realm) hits
-this first when it enables the placeholder `quay` client.
+but that import is bootstrap-only: the operator's import Job skips when the
+realm already exists, so post-bootstrap changes to the CR are not reconciled
+into the live realm. The reconciliation mechanism is now the
+[`keycloak-config`](../components/keycloak/realm-config/buildplan.cue)
+component — an idempotent
+[keycloak-config-cli](https://github.com/adorsys/keycloak-config-cli) `Job`
+that converges the realm against the live admin API on every `scripts/apply`.
+It manages the platform's realm roles, the `authenticated` default group, and
+the Argo CD OIDC client declaratively, so realm changes land by editing the
+import document and re-applying rather than by manual admin-console edits. The
+`KeycloakRealmImport` CR still bootstraps the realm shell on a clean cluster;
+the `keycloak-config` Job layers managed objects onto it and keeps them
+converged. Realm objects the Job does not declare are left untouched
+(keycloak-config-cli's default no-delete managed-import behavior; full-realm
+purge is deliberately not enabled).
 
 ## Quay OIDC login against the Keycloak `holos` realm
 
