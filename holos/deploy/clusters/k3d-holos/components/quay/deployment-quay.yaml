@@ -64,6 +64,9 @@ spec:
         volumeMounts:
         - mountPath: /conf/stack
           name: config
+        - mountPath: /conf/stack/extra_ca_certs
+          name: local-ca
+          readOnly: true
         - mountPath: /datastorage
           name: datastorage
       initContainers:
@@ -136,6 +139,12 @@ spec:
         name: config-template
       - emptyDir: {}
         name: config
+      - name: local-ca
+        secret:
+          items:
+          - key: ca.crt
+            path: local-ca.crt
+          secretName: quay-local-ca
       - name: datastorage
         persistentVolumeClaim:
           claimName: quay-datastorage

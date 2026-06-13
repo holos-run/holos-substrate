@@ -99,6 +99,22 @@ let OIDC_CLIENT_ID = "quay"
 let OIDC_SECRET = "quay-oidc"
 let OIDC_SECRET_KEY = "client_secret"
 
+// CA_CERT_SECRET carries the local-ca root certificate in its ca.crt key.
+// Quay performs its OIDC discovery/JWKS/token calls to OIDC_SERVER
+// (https://auth.holos.localhost) server-side with TLS verification ON and has
+// no per-OIDC "insecure skip verify" knob (unlike Argo CD), so it must trust
+// the local CA that signed the shared Gateway's *.holos.localhost certificate.
+// A cert-manager Certificate issued by the local-ca ClusterIssuer
+// (components/local-ca) writes this Secret into the quay namespace with the
+// signing CA in ca.crt; the Quay container mounts that key under
+// /conf/stack/extra_ca_certs so the Quay entrypoint installs it into the
+// system trust bundle on start.  Mounting a per-namespace cert-manager Secret
+// (rather than the Gateway's wildcard-holos-localhost Secret, which lives in
+// the istio-gateways namespace) keeps the trust anchor local to this pod's
+// namespace — a pod can only mount Secrets from its own namespace.
+let CA_CERT_SECRET = "quay-local-ca"
+let CA_CERT_KEY = "ca.crt"
+
 let REDIS_NAME = "quay-redis"
 let REDIS_PORT = 6379
 
@@ -159,13 +175,17 @@ let REDIS_METADATA = {
 //   - FEATURE_TEAM_SYNCING true keeps Quay teams in sync with the Keycloak
 //     groups claim (TEAM_RESYNC_STALE_TIME cadence); that claim carries both
 //     Keycloak group membership and the quay client roles (platform-admin,
-//     project-admin) folded in by the Phase 1 protocol mappers.
+//     project-admin) folded in by the Phase 1 protocol mappers.  Team sync only
+//     populates Quay teams from the groups claim — it does NOT grant Quay
+//     superuser; superuser comes solely from SUPER_USERS below.
 //   - SUPER_USERS keeps the local "admin" entry that scripts/quay-init (HOL-1177)
-//     bootstraps the local org with; the holos realm seeds no users yet, so
-//     Keycloak-backed platform admins gain Quay superuser/org-admin access via
-//     the quay "platform-admin" client role surfaced through the groups claim
-//     and team sync rather than a hardcoded realm preferred_username.  Append a
-//     realm user's preferred_username here once such bootstrap admins exist.
+//     bootstraps the local org with — it stays reachable because Quay always
+//     permits superuser local login even with FEATURE_DIRECT_LOGIN false.  The
+//     holos realm seeds no users yet, so there is no realm preferred_username to
+//     grant SSO superuser to; a Keycloak-backed platform admin is bootstrapped
+//     by seeding a realm user and appending their preferred_username here (the
+//     deferred item in the PR).  The quay "platform-admin" client role drives
+//     Quay *team* membership via the groups claim, not superuser.
 let CONFIG_YAML = """
 	SERVER_HOSTNAME: \(HOSTNAME)
 	PREFERRED_URL_SCHEME: https
@@ -771,6 +791,17 @@ let DEPLOYMENT = {
 							mountPath: "/conf/stack"
 						},
 						{
+							// The local-ca root cert, mounted where the Quay
+							// entrypoint's certs_install step picks up extra
+							// trust anchors, so server-side OIDC TLS to
+							// auth.holos.localhost validates.  A subdir mount of
+							// /conf/stack — it coexists with the config volume's
+							// config.yaml the initContainer renders.
+							name:      "local-ca"
+							mountPath: "/conf/stack/extra_ca_certs"
+							readOnly:  true
+						},
+						{
 							name:      "datastorage"
 							mountPath: "/datastorage"
 						},
@@ -784,6 +815,16 @@ let DEPLOYMENT = {
 					{
 						name: "config"
 						emptyDir: {}
+					},
+					{
+						name: "local-ca"
+						secret: {
+							secretName: CA_CERT_SECRET
+							items: [{
+								key:  CA_CERT_KEY
+								path: "local-ca.crt"
+							}]
+						}
 					},
 					{
 						name: "datastorage"
@@ -958,6 +999,35 @@ let AUTH_SERVICE_ENTRY = {
 	}
 }
 
+// CA_CERTIFICATE issues a short-lived leaf certificate in the quay namespace
+// from the local-ca ClusterIssuer purely as a vehicle for its ca.crt: every
+// cert-manager-issued Secret carries the signing CA in ca.crt, so this puts the
+// local-ca root PEM into a Secret (CA_CERT_SECRET) the Quay pod can mount from
+// its own namespace.  The leaf cert itself is unused — only ca.crt is consumed
+// — but a Certificate is the lightest cert-manager-native way to materialise the
+// CA into an arbitrary namespace without trust-manager (not deployed here).  The
+// dnsName is a stable placeholder local to this namespace; it is never served.
+let CA_CERTIFICATE = {
+	apiVersion: "cert-manager.io/v1"
+	kind:       "Certificate"
+	metadata: {
+		name:      CA_CERT_SECRET
+		namespace: NAMESPACE
+		labels: "app.kubernetes.io/name": NAME
+	}
+	spec: {
+		secretName: CA_CERT_SECRET
+		// Only ca.crt is consumed; the leaf is never served, so a single
+		// in-namespace placeholder dnsName suffices to satisfy the schema.
+		dnsNames: ["\(NAME)-local-ca.\(NAMESPACE).svc.cluster.local"]
+		issuerRef: {
+			group: "cert-manager.io"
+			kind:  "ClusterIssuer"
+			name:  "local-ca"
+		}
+	}
+}
+
 userDefinedBuildPlan: {
 	metadata: name: "quay"
 	spec: artifacts: manifests: {
@@ -989,6 +1059,7 @@ userDefinedBuildPlan: {
 						(REDIS_SERVICE.metadata.name): REDIS_SERVICE
 					}
 					AuthorizationPolicy: (REDIS_AUTHZ.metadata.name): REDIS_AUTHZ
+					Certificate: (CA_CERTIFICATE.metadata.name):      CA_CERTIFICATE
 					PersistentVolumeClaim: (PVC.metadata.name):       PVC
 					ServiceEntry: {
 						(SERVICE_ENTRY.metadata.name):      SERVICE_ENTRY
