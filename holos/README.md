@@ -625,13 +625,21 @@ render-vs-deploy task split.
 
 **Stream definitions.** The `nats-stream-bootstrap` Job creates both streams
 with WorkQueue retention (each message is delivered to exactly one consumer
-and removed on ack — at-least-once processing with no unbounded backlog) and
-file storage (the queue survives a NATS pod restart):
+and removed once acked, so handled events never accumulate — at-least-once
+processing) and file storage (the queue survives a NATS pod restart):
 
 | Stream | Subjects | Retention | Storage |
 |--------|----------|-----------|---------|
 | `WEBHOOKS` | `webhooks.>` | `WorkQueue` | `file` |
 | `TASKS` | `tasks.>` | `WorkQueue` | `file` |
+
+The streams are created with the CLI defaults for size and age limits
+(`max_msgs`, `max_bytes`, `max_age` all unbounded), so WorkQueue retention
+bounds only *acked* messages — an undrained backlog of unconsumed messages
+can still grow against the 2Gi JetStream PVC. Explicit stream limits (and the
+discard policy at the limit) are deferred along with the consumer
+configuration to the receiver/subscriber issues (HOL-1122/1123/1124), which
+own the delivery and back-pressure policy.
 
 **MVP auth posture: no in-cluster authentication (deferred).** The NATS server
 runs with **no authentication** for the MVP — any in-cluster client that can
