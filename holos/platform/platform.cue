@@ -333,6 +333,23 @@ platform: {
 				cluster:   CLUSTER.name
 				labels: app: "webhook-receiver"
 			}}).output
+
+			// webhook-subscriber is the durable JetStream consumer that
+			// drains the NATS WEBHOOKS stream and publishes DeployTasks to
+			// the TASKS stream: a Deployment running the holos-paas image
+			// (webhook-subscriber subcommand) and nothing else — unlike the
+			// receiver it serves no inbound business HTTP, so it has no
+			// Service and no HTTPRoute.  Registered after nats and the
+			// receiver: it is a NATS client, so the streams must exist for a
+			// consume/publish to land, and the nats AuthorizationPolicy
+			// ALLOWs this component's namespace as a client source on port
+			// 4222.  Nothing during bootstrap depends on it, so appending it
+			// keeps the established order stable.
+			(#ComponentTemplate & {inputs: {
+				component: "webhook-subscriber"
+				cluster:   CLUSTER.name
+				labels: app: "webhook-subscriber"
+			}}).output
 		}
 	}
 }

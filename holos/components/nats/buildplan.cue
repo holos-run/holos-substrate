@@ -71,6 +71,19 @@ let NAME = "nats"
 // makes a rename or removal of that namespace a render failure here rather than
 // a silent cross-namespace deny at the client port.
 let RECEIVER_NAMESPACE = "webhook-receiver" & #RegisteredNamespace
+
+// SUBSCRIBER_NAMESPACE is the webhook-subscriber component's namespace
+// (holos/components/webhook-subscriber/buildplan.cue), added to the ALLOW
+// rules so the durable JetStream consumer may reach the WEBHOOKS and TASKS
+// streams from its own namespace (HOL-1204) — it pulls raw webhook bodies off
+// WEBHOOKS and publishes DeployTasks to TASKS, both on the client port (4222).
+// Like the receiver this is namespace-granularity, the right scope this MVP
+// phase — NATS is unauthenticated, so there is no principal to bind to yet;
+// the per-ServiceAccount tightening is the HOL-1122/1123/1124 work noted
+// above.  Unifying with #RegisteredNamespace makes a rename or removal of that
+// namespace a render failure here rather than a silent cross-namespace deny at
+// the client port.
+let SUBSCRIBER_NAMESPACE = "webhook-subscriber" & #RegisteredNamespace
 let AUTHZ = {
 	apiVersion: "security.istio.io/v1"
 	kind:       "AuthorizationPolicy"
@@ -88,10 +101,9 @@ let AUTHZ = {
 			"app.kubernetes.io/component": NAME
 		}
 		action: "ALLOW"
-		// Two rules, each least-privilege.  An ALLOW policy denies everything no
-		// rule matches, so every other cross-namespace pod is rejected until a
-		// later phase adds the remaining subscriber principals explicitly
-		// (HOL-1123/1124).
+		// Three rules, each least-privilege.  An ALLOW policy denies everything
+		// no rule matches, so every other cross-namespace pod is rejected until
+		// a later phase adds the remaining principals explicitly (HOL-1124).
 		//
 		//   1. Same-namespace sources reach every port: the bootstrap Job below
 		//      runs in this namespace and needs the client port (4222) to create
@@ -103,12 +115,21 @@ let AUTHZ = {
 		//      to.operation.ports restriction keeps that surface same-namespace
 		//      only.  The port is a string because Istio matches operation ports
 		//      as strings.
+		//   3. The webhook-subscriber namespace (HOL-1204) reaches ONLY the
+		//      client port (4222), mirroring rule 2: the durable consumer pulls
+		//      raw bodies off WEBHOOKS and publishes DeployTasks to TASKS, both
+		//      over the client port, and has no business on the monitoring
+		//      endpoint (8222).
 		rules: [
 			{
 				from: [{source: namespaces: [NAMESPACE]}]
 			},
 			{
 				from: [{source: namespaces: [RECEIVER_NAMESPACE]}]
+				to: [{operation: ports: ["4222"]}]
+			},
+			{
+				from: [{source: namespaces: [SUBSCRIBER_NAMESPACE]}]
 				to: [{operation: ports: ["4222"]}]
 			},
 		]

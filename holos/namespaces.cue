@@ -160,4 +160,17 @@ namespaces: {
 	// by ztunnel, so an unenrolled receiver would be denied at the NATS client
 	// port.
 	"webhook-receiver": _ambient: true
+
+	// webhook-subscriber hosts the durable JetStream consumer that drains the
+	// WEBHOOKS stream and publishes DeployTasks to TASKS
+	// (components/webhook-subscriber); its workloads enroll in the ambient
+	// mesh per the platform convention, following the nats and
+	// webhook-receiver precedent for single in-cluster services.  Enrollment
+	// is load-bearing here, not just convention: the subscriber is a NATS
+	// client into nats, and the nats AuthorizationPolicy
+	// (components/nats/buildplan.cue) ALLOWs this namespace as a source on the
+	// client port (4222) — that policy only takes effect when both peers are
+	// captured by ztunnel, so an unenrolled subscriber would be denied at the
+	// NATS client port.
+	"webhook-subscriber": _ambient: true
 }
