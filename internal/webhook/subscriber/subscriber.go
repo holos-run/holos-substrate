@@ -3,7 +3,6 @@ package subscriber
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +16,7 @@ import (
 	"github.com/holos-run/holos-paas/internal/task"
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"google.golang.org/protobuf/proto"
 )
 
 // natsMsgIDHeader is the JetStream message-deduplication header. Setting it on a
@@ -284,10 +284,11 @@ func (c *Consumer) isFinalDelivery(msg jetstream.Msg) bool {
 	return md.NumDelivered >= uint64(c.maxDeliver)
 }
 
-// marshalTask serializes a DeployTask to its JSON wire form for publishing to
-// task.DeploySubject.
-func marshalTask(t task.DeployTask) ([]byte, error) {
-	body, err := json.Marshal(t)
+// marshalTask serializes a DeployTask to its binary protobuf wire form (ADR-14)
+// for publishing to task.DeploySubject. The serialized message is the NATS
+// payload; the deployer consumer decodes it with proto.Unmarshal.
+func marshalTask(t *task.DeployTask) ([]byte, error) {
+	body, err := proto.Marshal(t)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling DeployTask: %w", err)
 	}

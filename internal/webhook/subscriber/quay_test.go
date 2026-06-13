@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/holos-run/holos-paas/internal/task"
 )
 
@@ -25,7 +27,7 @@ func TestQuayParseGolden(t *testing.T) {
 		t.Fatalf("Parse: %v", err)
 	}
 
-	want := []task.DeployTask{
+	want := []*task.DeployTask{
 		task.NewDeployTask(QuaySource, "holos/sample-app", "v2", "quay.example.com/holos/sample-app", receivedAt),
 		task.NewDeployTask(QuaySource, "holos/sample-app", "latest", "quay.example.com/holos/sample-app", receivedAt),
 	}
@@ -34,27 +36,27 @@ func TestQuayParseGolden(t *testing.T) {
 		t.Fatalf("got %d tasks, want %d", len(got), len(want))
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !proto.Equal(got[i], want[i]) {
 			t.Errorf("task[%d] mismatch:\n got = %#v\nwant = %#v", i, got[i], want[i])
 		}
 		// Spot-check the derived/stamped fields explicitly for clarity.
-		if got[i].App != "sample-app" {
-			t.Errorf("task[%d].App = %q, want %q", i, got[i].App, "sample-app")
+		if got[i].GetApplication().GetName() != "sample-app" {
+			t.Errorf("task[%d].Application.Name = %q, want %q", i, got[i].GetApplication().GetName(), "sample-app")
 		}
-		if got[i].Source != QuaySource {
-			t.Errorf("task[%d].Source = %q, want %q", i, got[i].Source, QuaySource)
+		if got[i].GetSource() != QuaySource {
+			t.Errorf("task[%d].Source = %q, want %q", i, got[i].GetSource(), QuaySource)
 		}
-		if got[i].SchemaVersion != task.SchemaVersion {
-			t.Errorf("task[%d].SchemaVersion = %d, want %d", i, got[i].SchemaVersion, task.SchemaVersion)
+		if got[i].GetSchemaVersion() != task.SchemaVersion {
+			t.Errorf("task[%d].SchemaVersion = %d, want %d", i, got[i].GetSchemaVersion(), task.SchemaVersion)
 		}
-		if got[i].Digest != "" {
-			t.Errorf("task[%d].Digest = %q, want empty (deferred)", i, got[i].Digest)
+		if got[i].GetDigest() != "" {
+			t.Errorf("task[%d].Digest = %q, want empty (deferred)", i, got[i].GetDigest())
 		}
-		if !got[i].ReceivedAt.Equal(receivedAt) {
-			t.Errorf("task[%d].ReceivedAt = %v, want %v", i, got[i].ReceivedAt, receivedAt)
+		if !got[i].GetReceivedAt().AsTime().Equal(receivedAt) {
+			t.Errorf("task[%d].ReceivedAt = %v, want %v", i, got[i].GetReceivedAt().AsTime(), receivedAt)
 		}
 	}
-	if got[0].IdempotencyKey == got[1].IdempotencyKey {
+	if got[0].GetIdempotencyKey() == got[1].GetIdempotencyKey() {
 		t.Error("tasks for distinct tags share an idempotency key")
 	}
 }
@@ -70,11 +72,11 @@ func TestQuayParseFallbackRepository(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d tasks, want 1", len(got))
 	}
-	if got[0].Repository != "holos/sample-app" {
-		t.Errorf("Repository = %q, want %q", got[0].Repository, "holos/sample-app")
+	if got[0].GetRepository() != "holos/sample-app" {
+		t.Errorf("Repository = %q, want %q", got[0].GetRepository(), "holos/sample-app")
 	}
-	if got[0].App != "sample-app" {
-		t.Errorf("App = %q, want %q", got[0].App, "sample-app")
+	if got[0].GetApplication().GetName() != "sample-app" {
+		t.Errorf("Application.Name = %q, want %q", got[0].GetApplication().GetName(), "sample-app")
 	}
 }
 

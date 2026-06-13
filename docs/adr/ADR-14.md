@@ -8,9 +8,10 @@
 | Tags     | api, nats, protobuf, conventions |
 | Updates  | ADR-10, ADR-13                   |
 
-| Revision | Date       | Author      | Info           |
-| -------- | ---------- | ----------- | -------------- |
-| 1        | 2026-06-13 | @jeffmccune | Initial design |
+| Revision | Date       | Author      | Info                                            |
+| -------- | ---------- | ----------- | ----------------------------------------------- |
+| 1        | 2026-06-13 | @jeffmccune | Initial design                                  |
+| 2        | 2026-06-13 | @jeffmccune | Accepted; implemented for DeployTask (HOL-1206) |
 
 ## Context and Problem Statement
 

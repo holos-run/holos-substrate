@@ -1,0 +1,113 @@
+// Package holos.paas.pipeline.v1alpha1 defines the schema of every message that
+// flows through the platform's NATS JetStream backbone (ADR-6, ADR-13). Per
+// ADR-14 these definitions are the single source of truth: the Go types under
+// internal/gen are generated from this file with buf and are never hand-edited.
+//
+// tasks.* payloads (RenderTask, DeployTask) travel as binary protobuf — the
+// serialized message is the NATS payload. The raw webhook stays the provider's
+// own JSON on webhooks.quay (ADR-9); QuayRepositoryPush is the typed parse
+// target the subscriber decodes that JSON into, not a wire format of its own.
+//
+// v1alpha1 reflects MVP maturity. A wire-incompatible change becomes a new
+// package version, not an in-place break; buf breaking enforces this in CI.
+syntax = "proto3";
+
+package holos.paas.pipeline.v1alpha1;
+
+import "google/protobuf/timestamp.proto";
+
+// ApplicationRef identifies the Application resource a task targets. It keeps
+// application identity consistent across both task types (ADR-14).
+message ApplicationRef {
+  string name = 1;
+  string namespace = 2;
+}
+
+// QuayRepositoryPush is the typed view of Quay's repository_push notification
+// (ADR-8). The raw JSON body is what travels on webhooks.quay (ADR-9); the
+// subscriber parses it into this message behind the per-source parser interface
+// (ADR-10). It is a parse target, not a wire format.
+message QuayRepositoryPush {
+  // name is the repository short name, e.g. "sample-app".
+  string name = 1;
+  // repository is the "<namespace>/<name>" path, e.g. "holos/sample-app".
+  string repository = 2;
+  // namespace is the Quay namespace/organization, e.g. "holos".
+  string namespace = 3;
+  // docker_url is the registry-qualified repository URL, e.g.
+  // "quay.example.com/holos/sample-app".
+  string docker_url = 4;
+  // homepage is the human-facing Quay repository URL (informational).
+  string homepage = 5;
+  // updated_tags lists the tags pushed in this event; one task is emitted per
+  // entry (ADR-13, "one task per pushed tag").
+  repeated string updated_tags = 6;
+}
+
+// RenderTask is loop 1's instruction, published on tasks.render (ADR-13).
+// Emitted when an event repository matches an Application's app-image
+// repository. It is defined here per ADR-14's MVP message set; the render loop
+// that produces it is deferred work (HOL-1201 scope).
+message RenderTask {
+  // schema_version is the contract version, carried in-band so a consumer can
+  // reject an unknown future version and fail closed. The proto package path
+  // (v1alpha1) is the coarse version; schema_version distinguishes revisions
+  // within it.
+  int32 schema_version = 1;
+  // idempotency_key is a stable, deterministic key derived from the source
+  // event so a redelivered raw event yields a byte-identical key.
+  string idempotency_key = 2;
+  // application is the matched Application identity.
+  ApplicationRef application = 3;
+  // repository is the normalized source repository, e.g. "holos/sample-app".
+  string repository = 4;
+  // tag is the pushed app-image tag, e.g. "v2".
+  string tag = 5;
+  // source is the webhook source token the event arrived from, e.g. "quay".
+  string source = 6;
+  // received_at is when the subscriber observed the source event;
+  // observability only, deliberately excluded from the idempotency key.
+  google.protobuf.Timestamp received_at = 7;
+}
+
+// DeployTask is a single, fully-resolved instruction to deploy one image tag,
+// published on tasks.deploy (ADR-13). One source event (e.g. a Quay push
+// listing several tags) fans out to one DeployTask per tag.
+//
+// This message is the well-known, versioned contract between the webhook
+// subscriber (ADR-10) and the deployer (ADR-11). Changing its shape is an
+// ADR-level change: bump schema_version and revise ADR-10/ADR-11/ADR-14 rather
+// than altering the contract silently. Consumers reading an unknown future
+// schema_version should fail closed.
+message DeployTask {
+  // schema_version is the contract version, carried in-band so a consumer can
+  // reject an unknown future version and fail closed.
+  int32 schema_version = 1;
+  // idempotency_key is a stable, deterministic key derived from the source
+  // event. A redelivered raw event yields a byte-identical key so the deployer
+  // can deduplicate without coordinating state. It carries no timestamp or
+  // random component.
+  string idempotency_key = 2;
+  // application is the matched Application identity. The subscriber populates
+  // only the name (derived mechanically from the repository's last path
+  // segment, ADR-13); the deferred KRM matcher may set the namespace and
+  // overwrite the name with the matched Application's identity without a
+  // contract break.
+  ApplicationRef application = 3;
+  // repository is the source repository the image was pushed to, e.g.
+  // "holos/sample-app".
+  string repository = 4;
+  // tag is the single image tag this task deploys, e.g. "v2".
+  string tag = 5;
+  // digest is the resolved manifest digest ("sha256:…") when known. Quay's
+  // documented repo_push payload carries no digest (ADR-13) and registry digest
+  // resolution is deferred (HOL-1201 scope); the field is present so the
+  // deferred resolution can populate it without a contract break.
+  string digest = 6;
+  // source is the webhook source token the event arrived from, e.g. "quay".
+  string source = 7;
+  // received_at is when the subscriber observed the source event;
+  // observability only, deliberately excluded from the idempotency key so
+  // redeliveries remain byte-identical.
+  google.protobuf.Timestamp received_at = 8;
+}

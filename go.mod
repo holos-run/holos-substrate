@@ -6,6 +6,7 @@ require (
 	github.com/nats-io/nats-server/v2 v2.10.22
 	github.com/nats-io/nats.go v1.37.0
 	github.com/spf13/cobra v1.10.2
+	google.golang.org/protobuf v1.36.11
 )
 
 require (

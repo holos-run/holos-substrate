@@ -71,7 +71,7 @@ func (p quayRepoPush) repository() string {
 // carries no updated_tags returns a non-nil, descriptive error and no tasks.
 // The Term-vs-Nak decision for such errors lives in Phase 2 (ADR-13); this
 // parser only guarantees a clean typed error.
-func (QuayParser) Parse(source string, hdr http.Header, body []byte, receivedAt time.Time) ([]task.DeployTask, error) {
+func (QuayParser) Parse(source string, hdr http.Header, body []byte, receivedAt time.Time) ([]*task.DeployTask, error) {
 	_ = hdr // Quay needs no headers to parse; accepted for the Parser contract.
 
 	var payload quayRepoPush
@@ -94,7 +94,7 @@ func (QuayParser) Parse(source string, hdr http.Header, body []byte, receivedAt 
 		return nil, fmt.Errorf("parsing quay repo_push payload for repository %q: no updated_tags", repository)
 	}
 
-	tasks := make([]task.DeployTask, 0, len(payload.UpdatedTags))
+	tasks := make([]*task.DeployTask, 0, len(payload.UpdatedTags))
 	for _, tag := range payload.UpdatedTags {
 		if tag == "" {
 			return nil, fmt.Errorf("parsing quay repo_push payload for repository %q: empty tag in updated_tags", repository)
