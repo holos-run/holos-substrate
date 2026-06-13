@@ -338,12 +338,17 @@ wait_keycloak() {
 # Job that runs the CLI, and because keycloak-config-cli converges idempotently,
 # re-running on every apply is exactly the intended "reconcile on every apply"
 # behavior.  --ignore-not-found tolerates the first apply (no Job yet) and the
-# post-TTL-GC case; --wait blocks until the old Job and its pods are gone so the
-# subsequent apply cannot collide with a terminating object of the same name.
+# post-TTL-GC case.  --cascade=foreground with --wait blocks until the old Job
+# AND its dependent CLI pod are fully gone before returning: the default
+# background cascade only waits for the Job object to disappear, which would let a
+# still-running CLI pod from an interrupted prior apply race the fresh reconcile
+# and, if it finished last, leave the realm in a stale state (the round-3 review
+# finding).  The longer request timeout covers foreground deletion blocking on
+# the pod's own termination.
 pre_keycloak_config() {
   kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
     delete job -l app.kubernetes.io/name=keycloak-config \
-    --ignore-not-found --wait --request-timeout=30s
+    --ignore-not-found --cascade=foreground --wait --request-timeout=60s
 }
 
 # keycloak-config: the realm-reconciliation smoke check.  The keycloak-config-cli
