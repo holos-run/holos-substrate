@@ -18,6 +18,7 @@ package task
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -87,20 +88,27 @@ type DeployTask struct {
 
 // IdempotencyKey derives the stable idempotency key for a deploy of tag in
 // repository from source, optionally qualified by dockerURL. The key is the
-// hex-encoded SHA-256 of the joined fields and contains no timestamp or random
-// value, so a redelivered raw event always produces the identical key
-// (ADR-13 idempotency).
+// hex-encoded SHA-256 of the fields and contains no timestamp or random value,
+// so a redelivered raw event always produces the identical key (ADR-13
+// idempotency).
+//
+// The hash input is unambiguously framed: each field is length-prefixed (its
+// byte length as a decimal followed by ":") before concatenation. Unlike a
+// plain delimiter join, this is injective even when a field contains the
+// delimiter or NUL/control bytes, so two distinct field tuples can never
+// produce the same preimage (e.g. tag "v1"+dockerURL "\x00x" is distinct from
+// tag "v1\x00"+dockerURL "x").
 //
 // dockerURL may be empty; when present it disambiguates repositories that
 // share a name across registries. Construct tasks with [NewDeployTask] rather
 // than setting the key by hand so every task in the system computes the key
 // the same way.
 func IdempotencyKey(source, repository, tag, dockerURL string) string {
-	// Use a delimiter that cannot appear in any single component to avoid
-	// collisions between e.g. ("a", "b") and ("a\x00b", "").
-	h := sha256.Sum256([]byte(strings.Join(
-		[]string{source, repository, tag, dockerURL}, "\x00",
-	)))
+	var b strings.Builder
+	for _, field := range []string{source, repository, tag, dockerURL} {
+		fmt.Fprintf(&b, "%d:%s", len(field), field)
+	}
+	h := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(h[:])
 }
 

@@ -126,6 +126,24 @@ func TestIdempotencyKeyDistinct(t *testing.T) {
 	}
 }
 
+// TestIdempotencyKeyNoFieldBoundaryCollision verifies the length-prefixed
+// framing is injective: shifting a byte (here a NUL) across a field boundary
+// produces a distinct key, so no two distinct field tuples collide.
+func TestIdempotencyKeyNoFieldBoundaryCollision(t *testing.T) {
+	a := IdempotencyKey("quay", "holos/app", "v1", "\x00x")
+	b := IdempotencyKey("quay", "holos/app", "v1\x00", "x")
+	if a == b {
+		t.Errorf("field-boundary collision: %q == %q", a, b)
+	}
+
+	// Concatenation collisions must also be impossible across other fields.
+	c := IdempotencyKey("quay", "holos/app", "", "v1")
+	d := IdempotencyKey("quay", "holos/app", "v1", "")
+	if c == d {
+		t.Errorf("empty-field collision: %q == %q", c, d)
+	}
+}
+
 func TestAppFromRepository(t *testing.T) {
 	cases := map[string]string{
 		"holos/sample-app": "sample-app",
