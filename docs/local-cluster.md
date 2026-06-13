@@ -307,6 +307,7 @@ kubectl -n nats run nats-sub --rm -it --restart=Never --image=natsio/nats-box:0.
 # In another terminal, POST a payload and expect 202 Accepted:
 echo '{"name":"sample","docker_url":"quay.holos.localhost/holos/sample"}' > /tmp/payload.json
 curl -fsS -o /dev/null -w '%{http_code}\n' \
+  -H 'Content-Type: application/json' \
   -X POST --data-binary @/tmp/payload.json \
   https://hooks.holos.localhost/webhooks/quay        # 202
 ```
@@ -330,8 +331,10 @@ kubectl -n nats scale statefulset/nats --replicas=0
 kubectl -n nats rollout status statefulset/nats --timeout=120s   # scaled to 0
 
 # The receiver cannot publish, so it returns 503 (the signal that makes a real
-# sender retry):
-curl -fsS -o /dev/null -w '%{http_code}\n' \
+# sender retry). Omit curl's -f here: a non-2xx is the expected result, and -f
+# would make curl exit non-zero and abort a set -e shell:
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  -H 'Content-Type: application/json' \
   -X POST --data-binary @/tmp/payload.json \
   https://hooks.holos.localhost/webhooks/quay        # 503
 
@@ -343,6 +346,7 @@ kubectl -n webhook-receiver wait pod -l app.kubernetes.io/name=webhook-receiver 
 
 # The retried delivery now succeeds and lands on the file-backed WorkQueue:
 curl -fsS -o /dev/null -w '%{http_code}\n' \
+  -H 'Content-Type: application/json' \
   -X POST --data-binary @/tmp/payload.json \
   https://hooks.holos.localhost/webhooks/quay        # 202
 ```

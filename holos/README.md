@@ -796,16 +796,22 @@ resolution of [ADR-9](../docs/adr/ADR-9.md)'s milestone planning note.
 
 **Security posture: unauthenticated, local-only (MVP).** The receiver performs
 **no authentication** for the MVP — it neither verifies provider signatures nor
-requires a token. The endpoint is safe because it is reachable only at
+requires a token, so **any** client that can reach the endpoint can enqueue an
+arbitrary body onto the `WEBHOOKS` stream. The MVP relies entirely on network
+reachability to bound exposure: the endpoint is reachable only at
 `hooks.holos.localhost`, which resolves to `127.0.0.1` and is served by the
-shared Istio Gateway on the local k3d cluster; it is never exposed off the
-machine. Its namespace is ambient-enrolled
-([mesh-enrollment.md](docs/mesh-enrollment.md)) and the `nats`
+shared Istio Gateway on the local k3d cluster, and is never exposed off the
+machine. That is a containment boundary, not an authentication boundary — any
+local process (or a browser POST to the trusted `*.holos.localhost` origin) can
+still submit a forged webhook; the only in-handler abuse bound is the
+configurable max body size, which caps a single request's contribution to the
+WorkQueue. Defense-in-depth at the transport layer: the namespace is
+ambient-enrolled ([mesh-enrollment.md](docs/mesh-enrollment.md)) and the `nats`
 `AuthorizationPolicy` admits the `webhook-receiver` namespace to **only** the
-NATS client port (`4222`), never the monitoring endpoint. The only in-handler
-abuse bound is the configurable max body size. The signature headers are carried
-through verbatim so verification can move to the edge later: edge signature
-verification (reject forged senders before publishing) is a future enhancement
+NATS client port (`4222`), never the monitoring endpoint. The signature headers
+are carried through verbatim so verification can move to the edge later: edge
+signature verification (reject forged senders before publishing) is the planned
+fix and a prerequisite for ever exposing the endpoint beyond the local cluster —
 tracked by [HOL-1200](https://linear.app/holos-run/issue/HOL-1200) and stubbed in
 [docs/placeholders.md](docs/placeholders.md#webhook-edge-signature-verification).
 

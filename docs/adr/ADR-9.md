@@ -57,8 +57,12 @@ available.
 >   segment — e.g. `POST /webhooks/quay` publishes to `webhooks.quay`. This
 >   matches [ADR-13](ADR-13.md)'s `webhooks.quay` producer subject; the
 >   narrower `webhooks.raw.<source>` sketched in the M0 notes is **not** used,
->   because it predates ADR-13 and would not match the `webhooks.>` capture
->   subject of the `WEBHOOKS` stream.
+>   because it predates ADR-13 and does not match ADR-13's `webhooks.quay`
+>   producer subject — the receiver and subscriber must agree on a single
+>   subject. (The `WEBHOOKS` stream's `webhooks.>` capture subject would match
+>   either form, since terminal `>` matches all remaining tokens; the
+>   constraint is the producer/consumer subject agreement, not the stream
+>   capture.)
 > - **Stream configuration.** The subject is backed by the `WEBHOOKS`
 >   file-backed **WorkQueue** stream (`webhooks.>`) provisioned by the NATS
 >   `nats-stream-bootstrap` Job ([ADR-6](ADR-6.md)). Explicit size/age limits,
