@@ -328,9 +328,21 @@ wait_keycloak() {
 # Job converges the holos realm's three platform roles, the authenticated default
 # group, and the Argo CD OIDC client against the live admin API — the point of
 # this component — and the Job depends on the server serving, so gating here
-# names the actual culprit in the error instead of a generic timeout.  The Job is
-# polled instead of handed to `kubectl wait --for=condition=Complete` so a Failed
-# Job fails the gate on the next poll rather than blocking the full
+# names the actual culprit in the error instead of a generic timeout.
+#
+# The Job's name carries a content hash of the realm import document and image
+# tag (see the realm-config component's CONFIG_HASH), so a realm change renders a
+# DIFFERENT Job name and reconciles on the next apply rather than being masked by
+# a stale Complete Job.  This gate therefore must wait on exactly the Job that was
+# just applied, NOT on any Job matching the component label: after a config change
+# the previous (now stale) Complete Job still lingers under its own hash until TTL
+# GC, and a label-based poll could match its Complete status and pass before the
+# new Job has converged.  So the Job name is read from the rendered manifest the
+# apply step just used — the single committed job-*.yaml under the component's
+# deploy directory — tying the gate to precisely what was applied.
+#
+# The Job is polled instead of handed to `kubectl wait --for=condition=Complete`
+# so a Failed Job fails the gate on the next poll rather than blocking the full
 # ROLLOUT_TIMEOUT before erroring.  The Job carries a ttlSecondsAfterFinished, so
 # absence is tolerated — already garbage-collected on a long-bootstrapped cluster
 # (or mid-poll), with the realm state it converged still in Keycloak's database —
@@ -341,7 +353,30 @@ wait_keycloak() {
 # polling it while the server is still settling after wait_keycloak is safe: it
 # converges once the admin API responds.
 wait_keycloak_config() {
-  local job=job/keycloak-config job_state lookup_failures=0
+  local job_state lookup_failures=0
+  # Resolve the rendered Job's name from the committed manifest the apply just
+  # used, so the gate waits on exactly that Job (its name carries the config
+  # hash).  Exactly one job-*.yaml renders per apply; fail clearly if that
+  # assumption breaks rather than silently waiting on the wrong object.
+  local job_file job_files=("${COMPONENTS_DIR}/keycloak-config"/job-*.yaml)
+  if [[ ${#job_files[@]} -ne 1 || ! -e "${job_files[0]}" ]]; then
+    echo "ERROR: expected exactly one keycloak-config job manifest, found ${#job_files[@]}." >&2
+    return 1
+  fi
+  job_file="${job_files[0]}"
+  local job_name
+  job_name=$(kubectl --context "${KUBE_CONTEXT}" \
+    get -f "${job_file}" -o jsonpath='{.metadata.name}' --request-timeout=10s 2>/dev/null) || true
+  if [[ -z "${job_name}" ]]; then
+    # The cluster read failed (e.g. the Job was already TTL-GC'd between apply
+    # and gate); fall back to the name in the manifest itself.
+    job_name=$(awk '/^metadata:/{m=1} m&&/^  name:/{print $2; exit}' "${job_file}")
+  fi
+  if [[ -z "${job_name}" ]]; then
+    echo "ERROR: could not determine keycloak-config Job name from ${job_file}." >&2
+    return 1
+  fi
+  local job="job/${job_name}"
   local deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
   while true; do
     # One read captures both existence and state: absent yields empty

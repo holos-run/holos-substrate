@@ -22,10 +22,18 @@
 // (holos/namespaces.cue) with _ambient: false — never emitted by components.
 package holos
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
+)
 
 let NAMESPACE = KeycloakNamespace
 
+// NAME is the component name and the ConfigMap-mount/pod-label base.  The Job's
+// own metadata.name is NAME plus a content hash (JOB_NAME below) so a realm
+// import change always produces a fresh Job — see CONFIG_HASH.
 let NAME = "keycloak-config"
 
 // KeycloakConfigCLIImage pins the keycloak-config-cli image.  adorsys publishes
@@ -168,6 +176,31 @@ let CONFIG_MAP = {
 	data: "holos.json": json.Marshal(REALM_CONFIG)
 }
 
+// CONFIG_HASH is a short content hash of everything that determines what the Job
+// converges: the realm import document and the image tag.  It is suffixed onto
+// the Job's metadata.name (JOB_NAME) so any change to the import document or the
+// image yields a NEW Job name.  This is the fix for the otherwise-silent
+// stale-completion trap: a completed Job's pod template is immutable, and the
+// ConfigMap is mounted by name (not by content), so editing holos.json without
+// changing the Job would leave the old Complete Job in place — kubectl apply
+// would see no change, never re-run keycloak-config-cli, and wait_keycloak_config
+// would pass on the stale completion, so the realm edit would not reconcile until
+// the day-long TTL GC removed the old Job.  By folding the content into the Job
+// name, an import change always produces a fresh Job that re-runs the CLI and
+// reconciles immediately; the previous Job's name no longer renders, so it simply
+// ages out via its own ttlSecondsAfterFinished.  Re-applying an UNCHANGED config
+// keeps the same name (a no-op while the Job exists; recreated and re-converged
+// after TTL GC), so routine idempotent re-applies are unaffected.  8 hex chars
+// (32 bits) is ample collision resistance for a single-tenant realm import.
+let CONFIG_HASH = strings.SliceRunes(hex.Encode(sha256.Sum256(
+CONFIG_MAP.data["holos.json"]+"\n"+KeycloakConfigCLIImage)), 0, 8)
+
+// JOB_NAME embeds the content hash so an import-document or image change renders
+// a distinct Job (see CONFIG_HASH).  scripts/apply's wait_keycloak_config gate
+// resolves the current Job by reading this rendered name from the committed
+// manifest, so the gate always waits on exactly the Job that was just applied.
+let JOB_NAME = "\(NAME)-\(CONFIG_HASH)"
+
 // CONFIG_JOB runs keycloak-config-cli against the live Keycloak admin API to
 // converge the realm.  It mirrors the nats stream-bootstrap Job's hardened
 // posture (components/nats/buildplan.cue): non-root, read-only root filesystem
@@ -176,19 +209,16 @@ let CONFIG_MAP = {
 // backoffLimit, and a day-long ttlSecondsAfterFinished so a routine re-apply of
 // the unchanged spec recreates and re-converges after GC.
 //
-// CAVEAT (the nats Job precedent): a completed Job's pod template is immutable.
-// Re-applying this unchanged spec while the Job still exists is a no-op; the
-// TTL garbage-collects it a day after completion, after which a re-apply
-// recreates the Job and it re-converges the realm idempotently.  Only a
-// pod-template change within the TTL window (e.g. a new image tag or import
-// document) requires deleting the old Job first
-// (kubectl -n keycloak delete job keycloak-config) — the realm state it created
-// survives in Keycloak's database, and the new Job converges it.
+// The metadata.name carries the CONFIG_HASH suffix (JOB_NAME) so a realm import
+// or image change always renders a new Job and reconciles on the next apply
+// rather than being masked by a stale Complete Job — see CONFIG_HASH.  The
+// app.kubernetes.io/name label stays the stable NAME so the apply-script gate and
+// any operator queries can select the current Job regardless of its hash.
 let CONFIG_JOB = {
 	apiVersion: "batch/v1"
 	kind:       "Job"
 	metadata: {
-		name:      NAME
+		name:      JOB_NAME
 		namespace: NAMESPACE
 		labels: "app.kubernetes.io/name": NAME
 	}

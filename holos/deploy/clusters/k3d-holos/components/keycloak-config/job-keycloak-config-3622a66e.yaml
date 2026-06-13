@@ -3,7 +3,7 @@ kind: Job
 metadata:
   labels:
     app.kubernetes.io/name: keycloak-config
-  name: keycloak-config
+  name: keycloak-config-3622a66e
   namespace: keycloak
 spec:
   backoffLimit: 3
