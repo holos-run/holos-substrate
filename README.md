@@ -33,13 +33,13 @@ on Apple Silicon**, so the Make targets default to `PLATFORM=linux/arm64`;
 override `PLATFORM` for other architectures.
 
 ```bash
-make docker-build                    # build k3d-registry.holos.localhost:5100/holos-paas:dev (linux/arm64)
+make docker-build                    # build k3d-registry.holos.localhost:5000/holos-paas:dev (linux/arm64)
 make docker-push                     # build and push to the local k3d registry
 make docker-build IMAGE_TAG=v0.1.0   # override the tag
 make docker-build PLATFORM=linux/amd64
 ```
 
-`IMAGE_REPO` defaults to `k3d-registry.holos.localhost:5100/holos-paas`, the
+`IMAGE_REPO` defaults to `k3d-registry.holos.localhost:5000/holos-paas`, the
 in-cluster registry created by `scripts/local-k3d` (see
 [docs/local-cluster.md](docs/local-cluster.md)). Images pushed there are
 pullable by the k3d cluster, so `make docker-push` makes the image available
@@ -49,7 +49,7 @@ cross-built `linux/arm64` image is published directly.
 Verify the image locally without the cluster:
 
 ```bash
-docker run --rm k3d-registry.holos.localhost:5100/holos-paas:dev webhook-receiver --help
+docker run --rm k3d-registry.holos.localhost:5000/holos-paas:dev webhook-receiver --help
 ```
 
 With a reachable NATS (e.g. `docker run --rm -p 4222:4222 nats -js`), the

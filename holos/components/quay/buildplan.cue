@@ -68,7 +68,7 @@ let PORT = 8080
 // docs/local-cluster.md, and the Keycloak realm's placeholder quay client
 // already lists https://quay.holos.localhost/* as a redirect URI.
 // k3d-registry.holos.localhost is deliberately NOT used: that name belongs to
-// the k3d bootstrap registry on port 5100 (scripts/local-k3d).
+// the k3d bootstrap registry on port 5000 (scripts/local-k3d).
 let HOSTNAME = "quay.holos.localhost"
 
 // The shared Gateway's namespace and name (components/istio-gateway).
