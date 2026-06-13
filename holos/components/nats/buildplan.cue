@@ -97,8 +97,10 @@ let NATS_URL = "nats://\(NAME).\(NAMESPACE).svc.cluster.local:4222"
 // its own nats-box (vendor/2.14.2/nats/values.yaml) — reuse it so the CLI
 // version tracks the chart.  The image is a multi-arch manifest list
 // including linux/arm64 (required because the cluster is k3d on
-// OrbStack/Apple silicon) and runs as a non-root user.  Keep this in sync
-// with the chart's natsBox.container.image.tag when bumping NATSChartVersion.
+// OrbStack/Apple silicon).  The image declares no USER and defaults to /root,
+// so the Job's pod securityContext below enforces non-root (uid 65534) and a
+// /tmp working directory.  Keep this in sync with the chart's
+// natsBox.container.image.tag when bumping NATSChartVersion.
 let NATS_BOX_IMAGE = "natsio/nats-box:0.19.7"
 
 // BOOTSTRAP is the name of the stream bootstrap Job and its pod label.  It
@@ -135,10 +137,11 @@ let BOOTSTRAP_METADATA = {
 //
 //   - `nats stream info <NAME>` gates `nats stream add`, so an existing
 //     stream is never re-created (add errors on a duplicate name).
-//   - `nats stream edit --force` then converges an existing stream's config
-//     to the declared subjects/retention/storage without prompting, so a
-//     change to a stream definition reconciles on the next apply rather than
-//     drifting silently.
+//   - `nats stream edit --force` then converges an existing stream's
+//     mutable config (the declared subjects and retention) without
+//     prompting, so a change to a stream definition reconciles on the next
+//     apply rather than drifting silently.  Storage is immutable after
+//     creation and is set only by `stream add` (see converge_stream).
 //
 // `nats stream add --defaults` accepts the CLI defaults for every option not
 // given explicitly (so the command never blocks on an interactive prompt),
