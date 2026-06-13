@@ -1,0 +1,87 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  labels:
+    app.kubernetes.io/name: quay-oidc-bootstrap
+  name: quay-oidc-bootstrap
+  namespace: keycloak
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: quay-oidc-bootstrap
+    spec:
+      containers:
+      - command:
+        - /bin/sh
+        - -c
+        - |-
+          set -eu
+          random_secret() {
+            head -c 256 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c 1-48
+          }
+          # Reuse an existing secret value from either namespace so the two copies
+          # always match even if one was created by a prior partial run.
+          existing=""
+          for ns in keycloak quay; do
+            if kubectl -n "$ns" get secret quay-oidc >/dev/null 2>&1; then
+              existing="$(kubectl -n "$ns" get secret quay-oidc \
+                -o jsonpath='{.data.client_secret}' | base64 -d)"
+              break
+            fi
+          done
+          if [ -n "$existing" ]; then
+            CLIENT_SECRET="$existing"
+          else
+            CLIENT_SECRET="$(random_secret)"
+          fi
+          [ "${#CLIENT_SECRET}" -eq 48 ]
+          for ns in keycloak quay; do
+            if kubectl -n "$ns" get secret quay-oidc >/dev/null 2>&1; then
+              echo "Secret quay-oidc already exists in $ns; leaving it untouched."
+              continue
+            fi
+            kubectl -n "$ns" create -f - <<EOF
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: quay-oidc
+            namespace: $ns
+          stringData:
+            client_secret: "${CLIENT_SECRET}"
+          EOF
+            echo "Secret quay-oidc created in $ns."
+          done
+        env:
+        - name: HOME
+          value: /tmp
+        image: docker.io/alpine/kubectl:1.33.3
+        name: bootstrap
+        resources:
+          limits:
+            memory: 64Mi
+          requests:
+            cpu: 10m
+            memory: 32Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - mountPath: /tmp
+          name: tmp
+      restartPolicy: Never
+      securityContext:
+        runAsGroup: 65534
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: quay-oidc-bootstrap
+      volumes:
+      - emptyDir: {}
+        name: tmp
+  ttlSecondsAfterFinished: 86400

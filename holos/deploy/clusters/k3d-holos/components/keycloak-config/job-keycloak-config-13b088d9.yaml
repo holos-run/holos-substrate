@@ -3,7 +3,7 @@ kind: Job
 metadata:
   labels:
     app.kubernetes.io/name: keycloak-config
-  name: keycloak-config-3622a66e
+  name: keycloak-config-13b088d9
   namespace: keycloak
 spec:
   backoffLimit: 3
@@ -27,6 +27,11 @@ spec:
             secretKeyRef:
               key: password
               name: keycloak-initial-admin
+        - name: QUAY_OIDC_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              key: client_secret
+              name: quay-oidc
         - name: KEYCLOAK_AVAILABILITYCHECK_ENABLED
           value: "true"
         - name: KEYCLOAK_AVAILABILITYCHECK_TIMEOUT
