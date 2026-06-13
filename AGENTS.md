@@ -32,8 +32,8 @@ behind the layout is in
   Keycloak, Quay, Argo CD) — with `scripts/apply`.
 - [holos/README.md](holos/README.md) — orientation to the Holos CUE
   directory: layout, clusters, how rendered manifests are applied (the
-  apply-order rationale), and the Keycloak, Postgres, and Quay
-  verification steps and service contracts.
+  apply-order rationale), and the Keycloak, Postgres, Quay, and NATS
+  JetStream verification steps and service contracts.
 - [holos/docs/component-guidelines.md](holos/docs/component-guidelines.md)
   — how to add a Holos component: anatomy, guardrails, and the
   render-then-commit workflow.
@@ -48,7 +48,8 @@ behind the layout is in
   out-of-MVP-scope concerns: ArgoCD gitops delivery (the `argoAppDisabled`
   flip), observability dashboards, the Gateway route-attachment policy,
   Keycloak realm reconciliation, Quay OIDC login, node-level registry
-  trust for in-cluster pulls, production deployment area.
+  trust for in-cluster pulls, NATS in-cluster authentication, production
+  deployment area.
 
 ## Conventions
 

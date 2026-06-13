@@ -56,9 +56,10 @@ let NAME = "nats"
 // reach the unauthenticated client port (4222) or the monitoring endpoint
 // (8222) — Codex flagged both as cluster-wide-reachable without a policy.
 // Kubelet health probes are exempt from ambient capture, so the StatefulSet's
-// /healthz probes on the monitor port keep working.  The next phase (HOL-1193)
-// extends this to ALLOW the specific producer/consumer ServiceAccounts in
-// other namespaces as clients are introduced.
+// /healthz probes on the monitor port keep working.  A later phase extends
+// this to ALLOW the specific producer/consumer ServiceAccounts in other
+// namespaces as the receiver/subscriber clients (HOL-1122/1123/1124) are
+// introduced.
 let AUTHZ = {
 	apiVersion: "security.istio.io/v1"
 	kind:       "AuthorizationPolicy"
@@ -78,9 +79,10 @@ let AUTHZ = {
 		action: "ALLOW"
 		// Allow only sources in the nats namespace.  An ALLOW policy with a
 		// rule denies everything the rule does not match, so cross-namespace
-		// pods are rejected until HOL-1193 adds their principals explicitly.
-		// The bootstrap Job below runs in this namespace, so it is allowed to
-		// reach the client port to create the streams.
+		// pods are rejected until a later phase adds the receiver/subscriber
+		// principals explicitly (HOL-1122/1123/1124).  The bootstrap Job below
+		// runs in this namespace, so it is allowed to reach the client port to
+		// create the streams.
 		rules: [{
 			from: [{source: namespaces: [NAMESPACE]}]
 		}]
@@ -350,10 +352,10 @@ userDefinedBuildPlan: {
 						podDisruptionBudget: enabled: false
 						// nats-box is a debugging utility Deployment (a shell
 						// with the nats CLI).  Not part of the server bring-up
-						// and not needed to render the StatefulSet + Services
-						// this phase requires; disable it to keep the footprint
-						// minimal.  Stream creation in the next phase (HOL-1193)
-						// runs as its own Job, not from this pod.
+						// and not needed to render the StatefulSet + Services;
+						// disable it to keep the footprint minimal.  Stream
+						// creation runs as its own bootstrap Job (below), not
+						// from this pod.
 						natsBox: enabled: false
 					}
 				}
