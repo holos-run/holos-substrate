@@ -743,6 +743,27 @@ if ! kubectl --context "${KUBE_CONTEXT}" version --request-timeout=10s >/dev/nul
   exit 1
 fi
 
+# Migration cleanup (HOL-1241): the NATS event-driven deployment pipeline (the
+# nats backbone plus the webhook-receiver and webhook-subscriber components) was
+# retired in favor of Kargo + the client-side ORAS publish workflow (ADR-16).
+# This script applies only the component directories that still render, but a
+# plain server-side apply never prunes resources whose manifests were removed
+# from the deploy tree — so a cluster that previously applied the pipeline would
+# keep its StatefulSet, Deployments, Services, HTTPRoutes, and the unauthenticated
+# hooks.holos.localhost / nats.holos.localhost surfaces running indefinitely.
+# Every resource the pipeline created lived entirely inside one of these three
+# dedicated namespaces, so deleting the namespaces removes the workloads,
+# routes, and policies in one cascade; the Gateway listeners they attached to
+# are level-triggered and detach on their own.  --ignore-not-found makes this a
+# no-op on a fresh cluster or after the first cleaned apply, keeping the script
+# idempotent.  --wait=false returns immediately: namespace termination drains
+# pods in the background and nothing applied later depends on these namespaces
+# being gone.
+echo "==> cleanup: retired NATS pipeline namespaces (HOL-1241)"
+kubectl --context "${KUBE_CONTEXT}" delete namespace \
+  nats webhook-receiver webhook-subscriber \
+  --ignore-not-found --wait=false
+
 for component in "${COMPONENTS[@]}"; do
   echo "==> ${component}"
   # Optional pre-apply hook, run before the component's manifests apply (the
