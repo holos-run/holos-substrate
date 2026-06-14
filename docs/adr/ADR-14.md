@@ -4,7 +4,7 @@
 | -------- | -------------------------------- |
 | Date     | 2026-06-13                       |
 | Author   | @jeffmccune                      |
-| Status   | `Accepted`                       |
+| Status   | `Deprecated`                     |
 | Tags     | api, nats, protobuf, conventions |
 | Updates  | ADR-10, ADR-13                   |
 
@@ -12,6 +12,16 @@
 | -------- | ---------- | ----------- | ----------------------------------------------- |
 | 1        | 2026-06-13 | @jeffmccune | Initial design                                  |
 | 2        | 2026-06-13 | @jeffmccune | Accepted; implemented for DeployTask (HOL-1206) |
+| 3        | 2026-06-14 | @jeffmccune | Deprecated by [ADR-16](ADR-16.md). The NATS protobuf message schemas (`RenderTask`/`DeployTask`) are not used / deferred, eschewed in favor of the client-side CLI build-and-publish ORAS workflow + Kargo: with no in-cluster subscribers exchanging task messages, the `tasks.*` protobuf contracts are not used |
+
+> **Deprecated — see [ADR-16](ADR-16.md).** The NATS JetStream protobuf message
+> schemas described below (`RenderTask`/`DeployTask` on `tasks.*`) are **not used /
+> deferred** for the MVP, eschewed in favor of the client-side CLI
+> build-and-publish (ORAS) workflow plus Kargo. With no in-cluster receiver,
+> subscriber, render subscriber, or deployer exchanging task messages, the
+> `tasks.*` protobuf contracts have no producer or consumer. This document is kept
+> for the historical record; the ConnectRPC/buf-as-house-tool convention it
+> records may inform future message-schema decisions.
 
 ## Context and Problem Statement
 

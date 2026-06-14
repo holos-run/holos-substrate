@@ -4,13 +4,20 @@
 | -------- | ----------------------------- |
 | Date     | 2026-06-09                    |
 | Author   | @jeffmccune                   |
-| Status   | `Approved`                    |
+| Status   | `Deprecated`                  |
 | Tags     | pipeline, mvp, nats, deployer |
 
 | Revision | Date       | Author      | Info                                                                                             |
 | -------- | ---------- | ----------- | ------------------------------------------------------------------------------------------------ |
 | 1        | 2026-06-09 | @jeffmccune | Initial design                                                                                   |
 | 2        | 2026-06-12 | @jeffmccune | Refined by [ADR-13](ADR-13.md): end-to-end two-loop flow; render & publish becomes a sixth stage |
+| 3        | 2026-06-14 | @jeffmccune | Deprecated; superseded by [ADR-16](ADR-16.md). The six-stage in-cluster NATS pipeline is replaced by a client-side CLI build-and-publish (ORAS) workflow plus Kargo-driven promotion |
+
+> **Deprecated — superseded by [ADR-16](ADR-16.md).** The six-stage in-cluster
+> NATS JetStream pipeline described below is no longer the MVP deployment path.
+> Rendering and publishing move client-side (a CLI build-and-publish ORAS
+> workflow), and Kargo watches the registry and patches the Argo CD `Application`.
+> This document is kept for the historical record.
 
 ## Context and Problem Statement
 

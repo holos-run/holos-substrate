@@ -4,7 +4,7 @@
 | -------- | -------------------------------- |
 | Date     | 2026-06-12                       |
 | Author   | @jeffmccune                      |
-| Status   | `Approved`                       |
+| Status   | `Deprecated`                     |
 | Tags     | pipeline, mvp, nats, oci, argocd |
 | Updates  | ADR-6, ADR-10, ADR-11            |
 
@@ -13,6 +13,15 @@
 | 1        | 2026-06-12 | @jeffmccune | Initial design                                                                                                                                                             |
 | 2        | 2026-06-12 | @jeffmccune | Clarify routing invariants and config digest lookup                                                                                                                        |
 | 3        | 2026-06-13 | @jeffmccune | The `RenderTask`/`DeployTask` message schemas are specified by [ADR-14](ADR-14.md): ConnectRPC protobuf definitions with the `.proto` as the source of truth, Go generated |
+| 4        | 2026-06-14 | @jeffmccune | Deprecated; superseded by [ADR-16](ADR-16.md). The two-loop NATS flow is replaced by a client-side CLI build-and-publish (ORAS) workflow plus a Kargo `Warehouse`/`Stage` `argocd-update` promotion |
+
+> **Deprecated — superseded by [ADR-16](ADR-16.md).** The two-registry-event-loop
+> NATS flow described below is no longer the MVP deployment path. The render and
+> publish step moves client-side (a CLI build-and-publish ORAS workflow producing
+> a Kustomize OCI artifact), and a Kargo `Warehouse`/`Stage` watches the registry
+> and runs an `argocd-update` promotion to patch the Argo CD `Application`'s
+> `targetRevision`. Argo CD OCI delivery by digest is retained. This document is
+> kept for the historical record.
 
 ## Context and Problem Statement
 
