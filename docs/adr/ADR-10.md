@@ -4,7 +4,7 @@
 | -------- | ------------------------- |
 | Date     | 2026-06-09                |
 | Author   | @jeffmccune               |
-| Status   | `Approved`                |
+| Status   | `Deprecated`              |
 | Tags     | webhook, nats, subscriber |
 | Updates  | ADR-6                     |
 
@@ -15,6 +15,14 @@
 | 3        | 2026-06-13 | @jeffmccune | The task message schema planning note is resolved by [ADR-14](ADR-14.md): messages are ConnectRPC protobuf definitions with the `.proto` as the source of truth                                                                                                                                    |
 | 4        | 2026-06-13 | @jeffmccune | Records the shipped MVP slice (HOL-1201): direct parse → `DeployTask` → publish on `tasks.deploy`, with KRM-matching routing, digest resolution, and a durable dead-letter subject explicitly deferred — see [Implemented MVP slice and deferred scope](#implemented-mvp-slice-and-deferred-scope) |
 | 5        | 2026-06-13 | @jeffmccune | The `DeployTask` wire form is now binary protobuf per [ADR-14](ADR-14.md) (Accepted), generated from a committed `.proto`; the protobuf-schema migration is no longer deferred (HOL-1206) |
+| 6        | 2026-06-14 | @jeffmccune | Deprecated by [ADR-16](ADR-16.md). The webhook subscriber is not used / deferred, eschewed in favor of the client-side CLI build-and-publish ORAS workflow + Kargo: there is no raw webhook to parse and route; Kargo `Warehouse`/`Stage` discovers `Freight` and promotes |
+
+> **Deprecated — see [ADR-16](ADR-16.md).** The parse-and-dispatch webhook
+> subscriber described below is **not used / deferred** for the MVP, eschewed in
+> favor of the client-side CLI build-and-publish (ORAS) workflow plus Kargo. Under
+> the pivot there is no raw webhook to parse and route — a Kargo
+> `Warehouse`/`Stage` discovers new `Freight` from the rendered-manifests
+> repository and promotes it. This document is kept for the historical record.
 
 ## Context and Problem Statement
 

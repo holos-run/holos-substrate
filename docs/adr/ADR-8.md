@@ -11,6 +11,7 @@
 | Revision | Date       | Author      | Info           |
 | -------- | ---------- | ----------- | -------------- |
 | 1        | 2026-06-09 | @jeffmccune | Initial design |
+| 2        | 2026-06-14 | @jeffmccune | Revised for the [ADR-16](ADR-16.md) pivot: the registry is watched by a Kargo `Warehouse` rather than emitting a webhook to the receiver; the rendered-manifests OCI artifact is produced client-side with Kustomize + ORAS |
 
 ## Context and Problem Statement
 
@@ -36,9 +37,16 @@ to a container registry with a tag**. The **tag is the unit of versioning**: the
 value deployed by the pipeline is exactly the tag that was pushed. There is no
 separate version concept layered on top of the image tag for the MVP.
 
-A push of a new tag must emit a **registry webhook** to the receiver
-([ADR-9](ADR-9.md)). The webhook delivery is what starts a deployment; the
-registry is therefore both the artifact store and the event source.
+A push of a new tag must be **observable to the deployment system**, which
+treats the registry as both the artifact store and the event source. Under the
+[ADR-16](ADR-16.md) pivot a **Kargo `Warehouse` watches the registry directly**
+and discovers new `Freight` when an artifact is published; the registry no longer
+POSTs a webhook to an in-cluster receiver. (The original design emitted a
+**registry webhook** to the thin receiver of [ADR-9](ADR-9.md); that path is
+deprecated along with the in-cluster NATS pipeline — see [ADR-16](ADR-16.md).)
+The rendered-manifests OCI artifact that Argo CD syncs is produced **client-side
+with Kustomize + ORAS** ([ADR-16](ADR-16.md)), not by an in-cluster render
+subscriber.
 
 The research on Argo CD OCI delivery
 ([report](../research/argocd-oci-image-tag-updates.md)) draws out a distinction
@@ -63,8 +71,12 @@ references** so "what is deployed" is exact and auditable for both artifacts.
 
 1. Built images are **pushed to a container registry with a tag**, and the
    **tag is the deployed version** for the MVP.
-2. A new-tag push **emits a webhook** to the receiver ([ADR-9](ADR-9.md)); the
-   registry is the pipeline's event source.
+2. A new-tag push is **observed by a Kargo `Warehouse` watching the registry**
+   ([ADR-16](ADR-16.md)); the registry is the deployment system's event source.
+   The rendered-manifests OCI artifact is produced **client-side with Kustomize
+   + ORAS** ([ADR-16](ADR-16.md)). (The original design emitted a webhook to the
+   thin receiver of [ADR-9](ADR-9.md); that receiver is deprecated under the
+   pivot.)
 3. The specific registry, tagging convention, and webhook payload format are to
    be chosen in this milestone (see the planning note) because [ADR-10](ADR-10.md)
    depends on the payload shape.

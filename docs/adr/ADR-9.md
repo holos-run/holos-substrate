@@ -4,7 +4,7 @@
 | -------- | ---------------------- |
 | Date     | 2026-06-09             |
 | Author   | @jeffmccune            |
-| Status   | `Approved`             |
+| Status   | `Deprecated`           |
 | Tags     | webhook, nats, ingress |
 | Updates  | ADR-6                  |
 
@@ -12,6 +12,14 @@
 | -------- | ---------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 1        | 2026-06-09 | @jeffmccune | Initial design                                                                                                                                                                                                                                                                                                                       |
 | 2        | 2026-06-13 | @jeffmccune | Resolved the milestone planning note: subject `webhooks.<source>` on the `WEBHOOKS` WorkQueue stream, raw body as payload with a curated header allowlist as NATS headers, ack-after-`PubAck` semantics (`202`/`503`), and edge auth deferred to the subscriber (HOL-1200). Receiver implemented (HOL-1196) and deployed (HOL-1198). |
+| 3        | 2026-06-14 | @jeffmccune | Deprecated by [ADR-16](ADR-16.md). The thin webhook receiver is not used / deferred, eschewed in favor of the client-side CLI build-and-publish ORAS workflow + Kargo: a Kargo `Warehouse` watches the registry directly, so no in-cluster HTTP ingress is needed. |
+
+> **Deprecated — see [ADR-16](ADR-16.md).** The thin webhook receiver described
+> below is **not used / deferred** for the MVP, eschewed in favor of the
+> client-side CLI build-and-publish (ORAS) workflow plus Kargo. Under the pivot a
+> Kargo `Warehouse` watches the registry directly, so the registry no longer POSTs
+> a webhook to an in-cluster receiver. This document is kept for the historical
+> record.
 
 ## Context and Problem Statement
 

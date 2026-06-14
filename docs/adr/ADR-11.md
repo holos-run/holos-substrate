@@ -4,7 +4,7 @@
 | -------- | --------------------- |
 | Date     | 2026-06-09            |
 | Author   | @jeffmccune           |
-| Status   | `Approved`            |
+| Status   | `Deprecated`          |
 | Tags     | api, deployer, gitops |
 | Updates  | ADR-6                 |
 
@@ -12,6 +12,16 @@
 | -------- | ---------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | 1        | 2026-06-09 | @jeffmccune | Initial design                                                                                                                         |
 | 2        | 2026-06-12 | @jeffmccune | Refined by [ADR-13](ADR-13.md): OCI rendered-manifests delivery moves into the MVP; only Git write-back and SoD gating remain deferred |
+| 3        | 2026-06-14 | @jeffmccune | Deprecated by [ADR-16](ADR-16.md). The NATS deployer task subscriber is not used / deferred, eschewed in favor of the client-side CLI build-and-publish ORAS workflow + Kargo: a Kargo `argocd-update` promotion step patches the Argo CD `Application` `targetRevision`. The `Application`-as-deploy-target concept survives the pivot |
+
+> **Deprecated — see [ADR-16](ADR-16.md).** The NATS **deployer task subscriber**
+> described below is **not used / deferred** for the MVP, eschewed in favor of the
+> client-side CLI build-and-publish (ORAS) workflow plus Kargo. The
+> `Application`-as-deploy-target concept **survives** the pivot: the deployed truth
+> is still an Argo CD `Application` whose `targetRevision` selects the
+> rendered-manifests artifact by digest. What changes is **who patches it** — a
+> Kargo `argocd-update` promotion step, not this NATS subscriber. This document is
+> kept for the historical record.
 
 ## Context and Problem Statement
 
