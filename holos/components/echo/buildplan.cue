@@ -169,7 +169,7 @@ userDefinedBuildPlan: {
 							rules: [{
 								// Route only the exact paths the smoke test
 								// uses.  serve-hostname has no dangerous
-								// endpoints (unlike netexec — see the VERSION
+								// endpoints (unlike netexec — see the IMAGE
 								// comment), so this is defense in depth: the
 								// route documents exactly what the smoke test
 								// exercises and nothing more ships through

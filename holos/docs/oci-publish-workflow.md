@@ -86,42 +86,62 @@ The artifact is tagged input-addressed:
 render-<config-digest-12>-<appimage-digest-12>
 ```
 
-- **config-digest** is a content digest of the `holos/` CUE source tree (the
-  tracked files under `holos/` excluding the rendered `holos/deploy/` output),
-  computed from git blob object ids so it is stable across checkouts and
-  independent of file mtimes.
+- **config-digest** is a content digest of the `holos/` CUE source tree — the
+  inputs `holos render` actually reads. It hashes the **working-tree bytes** of
+  every input file (so unstaged edits change the tag), enumerated from git as
+  the union of tracked files and untracked-but-not-gitignored files under
+  `holos/`, excluding the rendered `holos/deploy/` output. It is independent of
+  file mtimes and stable across checkouts.
 - **appimage-digest** is the resolved app image digest.
 
 Together these two inputs fully determine the rendered output, so **re-publishing
-the same CUE source + app image digest produces the same tag**. The next-phase
-Kargo Warehouse can therefore treat the tag as a stable, deduplicated handle and
-avoid creating redundant Freight for an unchanged input (research §4.5).
+the same CUE source + app image digest produces the same tag**. The script makes
+this concretely idempotent with a **tag-exists fast path**: before pushing it
+resolves the computed tag in the registry, and if it already exists it re-emits
+the existing digest without re-pushing (set `FORCE_PUSH=1` to overwrite). The
+next-phase Kargo deployment can therefore treat the tag as a stable,
+deduplicated handle for an unchanged input (research §4.5).
 
 Note the **digest is the source of truth downstream**: do not rely on
 byte-identical artifact digests across re-pushes (tar/gzip timestamps mean the
-same content can yield a different artifact digest). Idempotency is achieved by
-the input-addressed *tag*, while `targetRevision` carries the immutable
-*digest* the push reports (consistent with [ADR-8](../../docs/adr/ADR-8.md)'s
-digest-pinning preference). Override the computed tag with `ARTIFACT_TAG=…` only
-when you deliberately want to break this guarantee.
+same content can yield a different artifact digest), which is exactly why the
+fast path reuses the existing artifact rather than re-pushing. `targetRevision`
+carries the immutable *digest* the push reports (consistent with
+[ADR-8](../../docs/adr/ADR-8.md)'s digest-pinning preference). Override the
+computed tag with `ARTIFACT_TAG=…` only when you deliberately want to break this
+guarantee.
 
-## Registry credentials (push scope)
+## Registry credentials
 
-The credential used by this workflow needs **push** scope on the target
-manifests repo (and **pull** on the app image repo, for the tag→digest
-resolve). For the in-cluster Quay this is the same robot account
-`scripts/quay-init` provisions; see the
-[repository credential Secret shape and Quay bootstrap](argocd-application-source.md#repository-credential-secret)
-in argocd-application-source.md (the cluster-side credential Argo CD's
-repo-server uses to *pull* the same artifact).
+The workflow touches **two** registries with **separate** credentials, by
+design — the destination push credential is never sent to the source registry
+(which may be a different, untrusted registry):
+
+- **Destination** (the manifests artifact repo) needs **push** scope. For the
+  in-cluster Quay this is the same robot account `scripts/quay-init` provisions;
+  see the
+  [repository credential Secret shape and Quay bootstrap](argocd-application-source.md#repository-credential-secret)
+  in argocd-application-source.md (the cluster-side credential Argo CD's
+  repo-server uses to *pull* the same artifact).
+- **Source** (the app image repo) needs **pull** scope, used only to resolve the
+  app image tag → digest.
 
 Provide credentials to `scripts/publish` either way:
 
-- **Ambient auth** — run `oras login quay.holos.localhost` (or rely on
-  `~/.docker/config.json`) once, then invoke the script with no credential
-  variables.
-- **Explicit** — set `ORAS_USERNAME` and `ORAS_PASSWORD`; the script passes them
-  via `--password-stdin` so the secret never appears in the process list.
+- **Ambient auth** — run `oras login <registry>` (or rely on
+  `~/.docker/config.json`) once for each registry, then invoke the script with
+  no credential variables. This is the simplest path and works for both
+  registries at once.
+- **Explicit** — set credentials per registry; the script passes them via
+  `--password-stdin` so the secret never appears in the process list:
+  - destination push: `ORAS_USERNAME` / `ORAS_PASSWORD`
+  - source pull (only needed for a **private** app image repo):
+    `ORAS_SRC_USERNAME` / `ORAS_SRC_PASSWORD`
+
+  The destination variables are used **only** against the destination repo, so a
+  private source image on a different registry needs the `ORAS_SRC_*` pair (or
+  ambient auth for that registry) — the destination push token is never offered
+  to it.
 
 ### Transport for local registries
 

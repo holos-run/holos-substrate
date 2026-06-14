@@ -75,6 +75,10 @@
 #                    are otherwise computed independently from each host.
 #   ARTIFACT_TAG     Override the computed input-addressed tag.  Use with care:
 #                    overriding defeats the idempotency guarantee.
+#   FORCE_PUSH       Set to a non-empty value to push even when the
+#                    input-addressed tag already exists in the registry,
+#                    overwriting it.  By default an existing tag is reused (its
+#                    digest re-emitted) without re-pushing, for idempotency.
 #   KEEP_WORKDIR     Set to a non-empty value to keep the temporary working
 #                    directory (for debugging) instead of removing it on exit.
 #
@@ -238,9 +242,16 @@ else
     exit 1
   fi
   # oras resolve prints the bare digest; recompose the digest-pinned reference
-  # by stripping any :tag from the repo part.
+  # by stripping any :tag from the repo part.  A tag colon, if present, is in the
+  # final path segment (after the last '/'); the registry's :port colon is in
+  # the first segment and must be preserved.  Strip the tag only when the last
+  # segment actually contains a ':' -- so localhost:5099/holos/echo (port, no
+  # tag) is left intact while localhost:5099/holos/echo:v1 loses only ':v1'.
   APP_IMAGE_REPO="${APP_IMAGE%%@*}"
-  APP_IMAGE_REPO="${APP_IMAGE_REPO%:*}"
+  app_image_last_segment="${APP_IMAGE_REPO##*/}"
+  if [[ "${app_image_last_segment}" == *:* ]]; then
+    APP_IMAGE_REPO="${APP_IMAGE_REPO%:*}"
+  fi
   APP_IMAGE_DIGEST_REF="${APP_IMAGE_REPO}@${APP_IMAGE_DIGEST}"
   echo "Resolved: ${APP_IMAGE_DIGEST_REF}" >&2
 fi
@@ -349,16 +360,34 @@ TARBALL="${WORKDIR}/manifests.tar.gz"
 tar -czf "${TARBALL}" -C "${FINAL_MANIFESTS}" .
 
 ARTIFACT_REF="${PUBLISH_REPO}:${ARTIFACT_TAG}"
-echo "Pushing ${ARTIFACT_REF} ..." >&2
 
-# Push from the tarball's directory so the layer's path annotation is the bare
-# filename, and capture the pushed digest via the go-template format.
-PUSH_DIGEST="$(
-  cd "${WORKDIR}"
-  run_oras_dest push "${ARTIFACT_REF}" \
-    --format 'go-template={{.digest}}' \
-    "manifests.tar.gz:application/vnd.oci.image.layer.v1.tar+gzip"
-)"
+# Idempotent fast path (research §4.5): if the input-addressed tag already
+# resolves in the registry, the same input has already been published.  Re-using
+# the existing digest -- rather than re-pushing -- avoids churning the artifact
+# digest, because ORAS/tar/gzip do not guarantee byte-identical re-pushes
+# (timestamps), so a re-push of identical content would mint a new digest and
+# needlessly oscillate the downstream targetRevision/Freight.  Set FORCE_PUSH=1
+# to overwrite the tag regardless (e.g. to repair a corrupt artifact).
+PUSH_DIGEST=""
+if [[ -z "${FORCE_PUSH:-}" ]]; then
+  EXISTING_DIGEST="$(run_oras_dest resolve "${ARTIFACT_REF}" 2>/dev/null || true)"
+  if [[ -n "${EXISTING_DIGEST}" ]]; then
+    echo "Tag ${ARTIFACT_TAG} already present; reusing existing artifact (no push)." >&2
+    PUSH_DIGEST="${EXISTING_DIGEST}"
+  fi
+fi
+
+if [[ -z "${PUSH_DIGEST}" ]]; then
+  echo "Pushing ${ARTIFACT_REF} ..." >&2
+  # Push from the tarball's directory so the layer's path annotation is the bare
+  # filename, and capture the pushed digest via the go-template format.
+  PUSH_DIGEST="$(
+    cd "${WORKDIR}"
+    run_oras_dest push "${ARTIFACT_REF}" \
+      --format 'go-template={{.digest}}' \
+      "manifests.tar.gz:application/vnd.oci.image.layer.v1.tar+gzip"
+  )"
+fi
 
 if [[ -z "${PUSH_DIGEST}" ]]; then
   echo "ERROR: oras push did not report a digest." >&2
