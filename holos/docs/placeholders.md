@@ -109,20 +109,37 @@ local cluster guide and in `scripts/quay-init`.
 ## NATS in-cluster authentication
 
 The `nats` JetStream backbone ([`components/nats/`](../components/nats/buildplan.cue))
-runs with **no authentication** inside the cluster for the MVP: any
-in-cluster client that can reach the client port (`4222`) may publish and
-subscribe. The rationale is reachability — NATS is in-cluster only (no
-`HTTPRoute`, never exposed outside the cluster), the `nats` namespace is
+runs with **no authentication** for the MVP: any client that can reach a NATS
+port may publish and subscribe. The rationale is reachability — in-cluster
+clients connect over the client port (`4222`), the `nats` namespace is
 ambient-enrolled for mTLS transport identity, and an `AuthorizationPolicy`
-restricts the client and monitoring ports to same-namespace sources until the
-receiver/subscriber principals are added explicitly. NATS account/user
-authentication (e.g. NKEYs or a credentials file per producer/consumer) is
-deferred to a later issue; the connection contract and the deferred posture
-are documented in
+restricts each port to its explicitly admitted source namespaces. NATS
+account/user authentication (e.g. NKEYs or a credentials file per
+producer/consumer) is deferred to a later issue; the connection contract and the
+deferred posture are documented in
 [`holos/README.md`](../README.md#nats-jetstream-backbone-and-connection-contract).
-The receiver and subscriber components (HOL-1122/1123/1124) will extend the
-same `AuthorizationPolicy` to allow their specific ServiceAccounts as they
-land.
+The receiver and subscriber components have already landed and the rendered
+`AuthorizationPolicy` admits their **namespaces** (not yet their specific
+ServiceAccounts) to the client port; tightening those namespace-granular rules
+to per-ServiceAccount principals is part of the deferred hardening tracked here.
+
+The component also exposes the NATS WebSocket port to the host at
+`wss://nats.holos.localhost` (an `HTTPRoute` on the shared Gateway, HOL-1228) as
+a local debugging affordance — see the
+[host-facing wss debug endpoint](../README.md#host-facing-wss-debug-endpoint).
+That endpoint is **intentionally unauthenticated**, the same MVP no-auth posture
+as the in-cluster surface, and it carries no client authentication of its own:
+anything that can reach the shared Gateway and present `Host`/SNI
+`nats.holos.localhost` can use it. The `AuthorizationPolicy` admits the
+WebSocket port (`8080`) from the shared Gateway's namespace alone, which bounds
+*in-cluster* reach but not who can reach the Gateway from outside. The intended
+use is local — `nats.holos.localhost` resolves to `127.0.0.1` on the developer's
+machine — but that DNS mapping is a convenience, not an access boundary, since
+the k3d load balancer publishes the Gateway ports on the Docker host without a
+loopback-only bind. Containing the endpoint (loopback-bound ports or a host
+firewall) is the operator's responsibility until authentication lands.
+Authenticating both the in-cluster and the host-facing `wss://` surfaces is the
+same deferred future work tracked here.
 
 ## Webhook edge signature verification
 
