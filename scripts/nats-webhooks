@@ -102,8 +102,10 @@ while [ "$seq" -ge "$first_seq" ] && [ "$shown" -lt "$COUNT" ] && [ "$probes" -l
     echo "===== ${STREAM} sequence ${seq} ====="
     printf '%s\n' "$msg"
     shown=$((shown + 1))
-  elif grep -qiE 'no message found|message not found|not found' "$err"; then
-    : # deleted/acked sequence — expected gap in a WorkQueue, skip it
+  elif grep -qiE 'no message found|message not found|sequence [0-9]+ not found' "$err"; then
+    : # deleted/acked sequence — expected gap in a WorkQueue, skip it.
+      # Matched narrowly so operational errors (e.g. "stream not found") that
+      # also contain "not found" are NOT mistaken for a deleted message.
   else
     echo "ERROR: reading $STREAM sequence $seq failed:" >&2
     cat "$err" >&2
