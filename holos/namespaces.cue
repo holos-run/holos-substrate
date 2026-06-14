@@ -219,4 +219,34 @@ namespaces: {
 	// name MUST match global.clusterSecretsNamespace's chart default.
 	// Deliberately NOT ambient-enrolled: it carries only Secrets, no workloads.
 	"kargo-cluster-secrets": _ambient: false
+
+	// kargo-echo is the Kargo Project namespace for the echo sample app's
+	// delivery pipeline (HOL-1240): it holds the Warehouse that watches the
+	// rendered-manifests OCI artifact and the Stage whose promotion patches the
+	// echo Argo CD Application's OCI targetRevision (components/kargo-project-echo
+	// and components/kargo-echo).  It is deliberately a DEDICATED Kargo Project
+	// namespace rather than the echo workload namespace: a Kargo Project adopts a
+	// same-named namespace and adds its own kargo.akuity.io/finalizer to it, so
+	// pointing the Project at the echo namespace (server-side-applied by the
+	// namespaces component) would risk finalizer/label contention between the two
+	// reconcilers.  Keeping the Project's namespace separate isolates Kargo's
+	// ownership; the Stage targets the echo workload through the Argo CD
+	// Application, not by sharing a namespace.
+	//
+	// The kargo.akuity.io/project label lets the Kargo Project controller ADOPT
+	// this pre-created namespace instead of refusing it (the controller requires
+	// the exact label value "true" to adopt an existing namespace), and the
+	// kargo.akuity.io/keep-namespace annotation tells Kargo not to delete this
+	// namespace if the Project is ever removed, since the namespaces component
+	// owns the base Namespace object.  Deliberately NOT ambient-enrolled: it
+	// carries only Kargo control resources (Warehouse, Stage, Freight,
+	// Promotion), not workloads, so there is no pod traffic for ztunnel to
+	// capture.
+	"kargo-echo": {
+		_ambient: false
+		metadata: {
+			labels: "kargo.akuity.io/project":              "true"
+			annotations: "kargo.akuity.io/keep-namespace": "true"
+		}
+	}
 }
