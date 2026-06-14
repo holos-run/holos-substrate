@@ -1,9 +1,10 @@
 # Argo CD Application Source: the MVP OCI Pattern
 
 The chosen source pattern for delivering applications in the MVP — the
-sample app (Layer 3) and the deployment subscriber's rollout mechanism
-([ADR-11](../../docs/adr/ADR-11.md)) both consume this contract. The
-decision itself was made in
+sample app (Layer 3) and Kargo's `argocd-update` promotion step
+([ADR-16](../../docs/adr/ADR-16.md)) both consume this contract. (The
+original NATS deployment subscriber, ADR-11, was retired in HOL-1241;
+Kargo now writes the `targetRevision`.) The decision itself was made in
 [Research: Handling Image-Tag Updates in Argo CD with an OCI Manifest Source](../../docs/research/argocd-oci-image-tag-updates.md)
 (Option 1, recommended); this document records the verified, consumable
 shape on the local cluster. Verified live end to end in HOL-1188 with the
@@ -47,7 +48,8 @@ publish time:
 oras resolve quay.holos.localhost/holos/<repo>:<tag>
 ```
 
-The deployment subscriber rolls out a new version by patching the digest:
+Kargo's `argocd-update` promotion step ([ADR-16](../../docs/adr/ADR-16.md))
+rolls out a new version by patching the digest (equivalent to):
 
 ```bash
 kubectl -n argocd patch application <name> --type merge \
@@ -142,10 +144,11 @@ cluster API objects:
 kubectl get applications.argoproj.io -n argocd
 ```
 
-A future ServiceAccount granted RBAC on `applications.argoproj.io` can
-patch `spec.source.targetRevision` directly — this is the deployment
-subscriber's write path ([ADR-11](../../docs/adr/ADR-11.md)). The RBAC
-itself lands with the subscriber issue, not here.
+A ServiceAccount granted RBAC on `applications.argoproj.io` can patch
+`spec.source.targetRevision` directly — this is Kargo's write path: its
+`argocd-update` promotion step ([ADR-16](../../docs/adr/ADR-16.md)) sets the
+field to the promoted Freight's digest. (The original NATS deployment
+subscriber, ADR-11, was retired in HOL-1241.)
 
 ## What stays imperative
 
