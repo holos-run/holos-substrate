@@ -73,22 +73,25 @@ purge is deliberately not enabled).
 
 ## Quay OIDC login against the Keycloak `holos` realm
 
-Quay authenticates against its local database; OIDC login via the
-Keycloak `holos` realm was deliberately deferred from the MVP. The realm
-carries a **disabled** placeholder `quay` client with no secret committed
-([`components/keycloak/instance/`](../components/keycloak/instance/buildplan.cue)).
-[HOL-1183](https://linear.app/holos-run/issue/HOL-1183/featquay-oidc-login-via-the-keycloak-holos-realm)
-enables the client, provisions its secret without committing it, and sets
-Quay's OIDC configuration. The realm-reconciliation gap that once blocked
-this is now closed: the
-[Keycloak realm reconciliation](#keycloak-realm-reconciliation) mechanism
-above — the idempotent `keycloak-config` Job — converges realm changes on
-every `scripts/apply`, so HOL-1183 enables the `quay` client by adding it
-to that Job's import document (the `argocd` client is already managed there
-as the model to follow), and the change lands on an existing cluster on the
-next apply rather than requiring a manual admin-console edit. What remains
-deferred is the Quay-specific work itself: enabling the client, provisioning
-its secret, and wiring Quay's OIDC configuration.
+**Resolved.** Quay now signs users in through the Keycloak `holos` realm with
+the Authorization Code flow plus PKCE (S256), using the confidential `quay`
+client reconciled by the `keycloak-config` Job. The username is taken from the
+ID token's `preferred_username` claim with no customization, and the `quay`
+client roles (`platform-admin`, `project-admin`) plus Keycloak groups flow
+through the `groups` claim into Quay teams via `FEATURE_TEAM_SYNCING`. The
+design is recorded in [ADR-15](../../docs/adr/ADR-15.md); the operator-facing
+overview is in [`holos/README.md`](../README.md#quay-oidc-sso-and-roles) and
+the verification steps are in
+[Verify Quay](../../docs/local-cluster.md#verify-quay). The local `admin`
+superuser remains as a break-glass account via `SUPER_USERS`, and
+`scripts/quay-init` still bootstraps it alongside SSO.
+
+A **disabled** placeholder `quay` client still lingers in the bootstrap
+`KeycloakRealmImport` CR
+([`components/keycloak/instance/`](../components/keycloak/instance/buildplan.cue));
+it is superseded by the enabled, reconciled client in `keycloak-config`.
+Removing that stale placeholder and any remaining references is tracked by
+[HOL-1221](https://linear.app/holos-run/issue/HOL-1221).
 
 ## Node-level registry trust for in-cluster pulls
 
