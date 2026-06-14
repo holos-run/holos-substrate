@@ -185,6 +185,15 @@ oras pull --plain-http -o out \
   localhost:5099/holos/holos-paas-manifests@"$DIGEST"
 tar xzf out/manifests.tar.gz -O | grep 'image:.*echo@sha256'
 
-# 5. Re-running with the same inputs yields the same input-addressed tag.
+# 5. Re-running with the same inputs is idempotent: the same input-addressed
+#    tag is produced.  Capture the tag from each run's stderr and compare.
+scripts/publish localhost:5099/holos/echo:v1 \
+  localhost:5099/holos/holos-paas-manifests 2>&1 >/dev/null \
+  | grep -oE 'render-[0-9a-f]{12}-[0-9a-f]{12}'   # tag run A
+scripts/publish localhost:5099/holos/echo:v1 \
+  localhost:5099/holos/holos-paas-manifests 2>&1 >/dev/null \
+  | grep -oE 'render-[0-9a-f]{12}-[0-9a-f]{12}'   # tag run B == tag run A
+
+# 6. Clean up.
 docker rm -f reg
 ```

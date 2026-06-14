@@ -94,7 +94,7 @@ userDefinedBuildPlan: {
 										// path with the pod name, proving
 										// which pod answered.  No UDP flag
 										// means no UDP listener.  See the
-										// VERSION comment for why this
+										// IMAGE comment above for why this
 										// subcommand and not netexec.
 										args: ["serve-hostname", "--port=\(PORT)"]
 										ports: [{

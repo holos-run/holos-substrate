@@ -47,24 +47,32 @@
 #   APP_IMAGE        Default app image reference when the positional arg is
 #                    omitted.
 #   PUBLISH_REPO     Default target OCI repository.
-#   ORAS_USERNAME /  Registry push credentials.  When set, passed to every oras
-#   ORAS_PASSWORD    invocation via `--username/--password-stdin`.  Omit to use
-#                    oras's ambient auth (~/.docker/config.json, a prior
-#                    `oras login`).  The credential needs **push** scope on the
-#                    target repo (and pull on the app image repo for the
-#                    tag->digest resolve).  See the credentials section in
-#                    holos/docs/oci-publish-workflow.md.
+#   ORAS_USERNAME /  Destination (manifests artifact) **push** credentials, used
+#   ORAS_PASSWORD    only against the target OCI repo.  Passed via
+#                    `--username/--password-stdin`.  Omit to use oras's ambient
+#                    auth (~/.docker/config.json, a prior `oras login`).  These
+#                    are NEVER sent to the app image (source) registry.
+#   ORAS_SRC_USERNAME / Source (app image) **pull** credentials, used only when
+#   ORAS_SRC_PASSWORD   resolving the app image tag->digest against its own
+#                    registry.  Omit to use ambient auth for the source registry
+#                    (the default), so the destination push credentials never
+#                    reach a possibly-different source registry.  See the
+#                    credentials section in holos/docs/oci-publish-workflow.md.
 #   ORAS_INSECURE    Set to a non-empty value to pass `--insecure` to oras
 #                    (skip TLS verification on an HTTPS registry), matching the
 #                    in-cluster Quay's mkcert-signed certificate
-#                    (argocd-application-source.md).  Defaults to "1" when the
-#                    repo host ends in `.holos.localhost`, off otherwise.
+#                    (argocd-application-source.md).  When unset, transport is
+#                    decided per host: `--insecure` auto-enables for a
+#                    `*.holos.localhost` host.  When set, it applies to BOTH the
+#                    source and destination registries.
 #   ORAS_PLAIN_HTTP  Set to a non-empty value to pass `--plain-http` to oras
 #                    for a registry served over plain HTTP (e.g. a bare
-#                    `localhost:5000` dev registry).  Defaults to "1" when the
-#                    repo host is `localhost`/`127.0.0.1` (optionally with a
-#                    `:port`), off otherwise.  Mutually exclusive with the TLS
-#                    path: when set it takes precedence over ORAS_INSECURE.
+#                    `localhost:5000` dev registry).  When unset, `--plain-http`
+#                    auto-enables per host for `localhost`/`127.0.0.1` (with an
+#                    optional `:port`).  When set, it applies to BOTH the source
+#                    and destination registries and takes precedence over the
+#                    TLS `--insecure` path.  Source and destination transports
+#                    are otherwise computed independently from each host.
 #   ARTIFACT_TAG     Override the computed input-addressed tag.  Use with care:
 #                    overriding defeats the idempotency guarantee.
 #   KEEP_WORKDIR     Set to a non-empty value to keep the temporary working
@@ -121,49 +129,75 @@ if [[ -z "${APP_IMAGE}" ]]; then
   exit 1
 fi
 
-# Extract the registry host (everything before the first slash) for transport
-# defaults.
+# Source (app image, pulled) and destination (manifests artifact, pushed) are
+# distinct registries with distinct credentials and transport.  Destination push
+# credentials must NEVER be sent to the source registry: APP_IMAGE may point at a
+# different or attacker-controlled registry, and leaking the push robot's token
+# to it would be a credential disclosure.  Transport (plain-http / insecure) is
+# likewise per-host -- the publish repo being localhost must not force plain HTTP
+# against the app image's real registry.
 PUBLISH_HOST="${PUBLISH_REPO%%/*}"
+APP_IMAGE_HOST="${APP_IMAGE%%/*}"
 
-# Default --plain-http on for a bare localhost dev registry (HTTP, no TLS).
-if [[ -z "${ORAS_PLAIN_HTTP+x}" ]]; then
-  case "${PUBLISH_HOST}" in
-    localhost|localhost:*|127.0.0.1|127.0.0.1:*) ORAS_PLAIN_HTTP=1 ;;
-    *) ORAS_PLAIN_HTTP="" ;;
-  esac
-fi
+# transport_flags HOST -> echoes the oras transport flag(s) for that host:
+#   --plain-http for a bare localhost dev registry (HTTP, no TLS);
+#   --insecure   for *.holos.localhost (mkcert-signed cert not in the trust
+#                store), matching the Argo CD repo Secret's insecure: "true".
+# The ORAS_PLAIN_HTTP / ORAS_INSECURE overrides, when set, apply to BOTH the
+# source and destination (an explicit operator decision); plain HTTP takes
+# precedence over insecure since --insecure is a TLS-only concern.
+transport_flags() {
+  local host="$1" plain insecure
+  plain="${ORAS_PLAIN_HTTP:-}"
+  insecure="${ORAS_INSECURE:-}"
+  if [[ -z "${ORAS_PLAIN_HTTP+x}" ]]; then
+    case "${host}" in
+      localhost|localhost:*|127.0.0.1|127.0.0.1:*) plain=1 ;;
+    esac
+  fi
+  if [[ -z "${ORAS_INSECURE+x}" ]]; then
+    case "${host}" in
+      *.holos.localhost) insecure=1 ;;
+    esac
+  fi
+  if [[ -n "${plain}" ]]; then
+    printf '%s' "--plain-http"
+  elif [[ -n "${insecure}" ]]; then
+    printf '%s' "--insecure"
+  fi
+}
 
-# Default --insecure on for the in-cluster Quay (mkcert-signed *.holos.localhost
-# certificate is not in the default trust store); callers can force it either
-# way with ORAS_INSECURE.  Plain HTTP takes precedence: --insecure is a TLS
-# concern and does not apply to a plain-HTTP registry.
-if [[ -z "${ORAS_INSECURE+x}" ]]; then
-  case "${PUBLISH_HOST}" in
-    *.holos.localhost) ORAS_INSECURE=1 ;;
-    *) ORAS_INSECURE="" ;;
-  esac
-fi
-
-# Assemble the common oras flags once: transport (plain-http or insecure) and
-# optional credentials.  Credentials are passed via --password-stdin so the
-# secret never appears in the process list or shell history.
-oras_common_flags=()
-if [[ -n "${ORAS_PLAIN_HTTP}" ]]; then
-  oras_common_flags+=(--plain-http)
-elif [[ -n "${ORAS_INSECURE}" ]]; then
-  oras_common_flags+=(--insecure)
-fi
-
-# run_oras wraps oras with the common flags and streams the password on stdin
-# when credentials are configured.  Stdout/stderr pass through unchanged so
-# callers can capture --format output.
-run_oras() {
+# run_oras_dest / run_oras_src wrap oras for the destination and source
+# registries respectively, applying that registry's transport flags and only
+# that registry's credentials.  Credentials are passed via --password-stdin so
+# the secret never appears in the process list or shell history.  Stdout/stderr
+# pass through unchanged so callers can capture --format output.
+#
+#   Destination (push) creds: ORAS_USERNAME      / ORAS_PASSWORD
+#   Source      (pull) creds: ORAS_SRC_USERNAME  / ORAS_SRC_PASSWORD
+# Omit the source creds to use oras's ambient auth (oras login / docker config)
+# for the app image registry -- the default, so push creds never reach it.
+run_oras_dest() {
+  local cmd="$1"; shift
+  local flag; flag="$(transport_flags "${PUBLISH_HOST}")"
   if [[ -n "${ORAS_USERNAME:-}" && -n "${ORAS_PASSWORD:-}" ]]; then
     printf '%s' "${ORAS_PASSWORD}" \
-      | oras "$1" "${oras_common_flags[@]}" \
-          --username "${ORAS_USERNAME}" --password-stdin "${@:2}"
+      | oras "${cmd}" ${flag:+"${flag}"} \
+          --username "${ORAS_USERNAME}" --password-stdin "$@"
   else
-    oras "$1" "${oras_common_flags[@]}" "${@:2}"
+    oras "${cmd}" ${flag:+"${flag}"} "$@"
+  fi
+}
+
+run_oras_src() {
+  local cmd="$1"; shift
+  local flag; flag="$(transport_flags "${APP_IMAGE_HOST}")"
+  if [[ -n "${ORAS_SRC_USERNAME:-}" && -n "${ORAS_SRC_PASSWORD:-}" ]]; then
+    printf '%s' "${ORAS_SRC_PASSWORD}" \
+      | oras "${cmd}" ${flag:+"${flag}"} \
+          --username "${ORAS_SRC_USERNAME}" --password-stdin "$@"
+  else
+    oras "${cmd}" ${flag:+"${flag}"} "$@"
   fi
 }
 
@@ -198,7 +232,7 @@ if [[ "${APP_IMAGE}" == *"@sha256:"* ]]; then
   echo "App image already digest-pinned: ${APP_IMAGE_DIGEST_REF}" >&2
 else
   echo "Resolving ${APP_IMAGE} -> digest ..." >&2
-  APP_IMAGE_DIGEST="$(run_oras resolve "${APP_IMAGE}")"
+  APP_IMAGE_DIGEST="$(run_oras_src resolve "${APP_IMAGE}")"
   if [[ -z "${APP_IMAGE_DIGEST}" ]]; then
     echo "ERROR: could not resolve a digest for ${APP_IMAGE}." >&2
     exit 1
@@ -269,18 +303,22 @@ fi
 # ---------------------------------------------------------------------------
 # config digest: a content digest of the holos/ CUE source tree (the inputs
 # that, together with the app image digest, fully determine the rendered
-# output).  Hash the tracked CUE/source files' contents so the digest is
-# stable across checkouts and independent of file mtimes.  Fall back to hashing
-# the whole holos/ tree when git is unavailable for the path.
+# output).  It must reflect the *working-tree* content `holos render` actually
+# read -- not the git index -- so unstaged edits to tracked CUE produce a
+# distinct tag rather than colliding with the committed version's tag.  Use git
+# only to enumerate the tracked input files (excluding the rendered deploy/
+# output and gitignored noise), then hash each file's working-tree bytes,
+# keyed by path, sorted for determinism and independent of file mtimes.
 if [[ -z "${ARTIFACT_TAG:-}" ]]; then
   config_digest="$(
     cd "${REPO_ROOT}"
-    # Hash the blob ids of tracked files under holos/ excluding the rendered
-    # deploy tree (an output, not an input).  git ls-files -s prints
-    # "<mode> <objectid> <stage>\t<path>"; the object ids already content-hash
-    # each file, so hashing the sorted list yields a stable tree digest.
-    git ls-files -s -- holos ':(exclude)holos/deploy' 2>/dev/null \
-      | LC_ALL=C sort \
+    # -z / read -d '' handles paths with spaces or newlines safely.  Each file
+    # is hashed individually (sha256sum prints "<hash>  <path>"); hashing that
+    # path-keyed list of per-file digests yields a stable tree digest that
+    # tracks the actual on-disk content of every input file.
+    git ls-files -z -- holos ':(exclude)holos/deploy' 2>/dev/null \
+      | sort -z \
+      | xargs -0 sha256sum 2>/dev/null \
       | sha256sum \
       | cut -d' ' -f1
   )"
@@ -311,7 +349,7 @@ echo "Pushing ${ARTIFACT_REF} ..." >&2
 # filename, and capture the pushed digest via the go-template format.
 PUSH_DIGEST="$(
   cd "${WORKDIR}"
-  run_oras push "${ARTIFACT_REF}" \
+  run_oras_dest push "${ARTIFACT_REF}" \
     --format 'go-template={{.digest}}' \
     "manifests.tar.gz:application/vnd.oci.image.layer.v1.tar+gzip"
 )"
