@@ -45,21 +45,30 @@ esac
 # Read the stream's sequence window directly from JetStream metadata. This does
 # not create a consumer; `nats stream info` only reports state.
 info="$(nats --server "$SERVER" stream info "$STREAM" --json)"
+messages="$(jq -r '.state.messages' <<<"$info")"
 first_seq="$(jq -r '.state.first_seq' <<<"$info")"
 last_seq="$(jq -r '.state.last_seq' <<<"$info")"
 
-if [ "$last_seq" -eq 0 ] || [ "$first_seq" -eq 0 ]; then
+# A drained WorkQueue can report messages == 0 while first_seq/last_seq remain
+# non-zero, so test the live count, not the sequence window.
+if [ "$messages" -eq 0 ]; then
   echo "no messages on stream $STREAM"
   exit 0
 fi
 
-# Newest first: walk back from last_seq, clamped to first_seq, at most COUNT
+# Newest first: walk back from last_seq toward first_seq, printing at most COUNT
 # messages. Each `nats stream get <seq>` is a non-destructive read by sequence.
+# WEBHOOKS is a WorkQueue, so acked messages are deleted and their sequences
+# leave gaps; `nats stream get` on a missing sequence exits non-zero. Treat that
+# as "skip this sequence" rather than fatal — only printed messages count toward
+# COUNT — so a deleted newest sequence never hides the older ones still present.
 seq="$last_seq"
 shown=0
 while [ "$seq" -ge "$first_seq" ] && [ "$shown" -lt "$COUNT" ]; do
-  echo "===== ${STREAM} sequence ${seq} ====="
-  nats --server "$SERVER" stream get "$STREAM" "$seq"
+  if msg="$(nats --server "$SERVER" stream get "$STREAM" "$seq" 2>/dev/null)"; then
+    echo "===== ${STREAM} sequence ${seq} ====="
+    printf '%s\n' "$msg"
+    shown=$((shown + 1))
+  fi
   seq=$((seq - 1))
-  shown=$((shown + 1))
 done
