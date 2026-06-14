@@ -844,9 +844,10 @@ wait_kargo_project_echo() {
 # kargo-echo: confirm the Warehouse, Stage, and target Argo CD Application
 # applied and exist.  This is a structural smoke check, not a full pipeline run:
 # the Warehouse cannot produce Freight until scripts/publish pushes an artifact,
-# and the Application stays Unknown/Degraded until the first promotion patches its
-# targetRevision off the render-bootstrap placeholder — both are exercised by the
-# manual verification in holos/docs/oci-publish-workflow.md, not at apply time.
+# and the Application stays Unknown until the first promotion sets its
+# targetRevision (deliberately uncommitted — Kargo owns the field) — both are
+# exercised by the manual verification in holos/docs/oci-publish-workflow.md, not
+# at apply time.
 wait_kargo_echo() {
   kubectl --context "${KUBE_CONTEXT}" --namespace kargo-echo \
     get warehouse.kargo.akuity.io/manifests --request-timeout=10s >/dev/null
