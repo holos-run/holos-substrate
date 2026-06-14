@@ -36,7 +36,7 @@ to the template above.
 | [ADR-5](ADR-5.md) | api, billing, quotas  | Chargeback, quotas, and limits following the GCP model            |
 | [ADR-6](ADR-6.md) | pipeline, mvp, nats   | **Deprecated** (superseded by ADR-16) — Six-stage MVP Heroku-style deployment pipeline on a NATS JetStream backbone |
 | [ADR-7](ADR-7.md) | workload, build       | KubeRay reference workload on k3d (Apple Silicon), multi-stage build |
-| [ADR-8](ADR-8.md) | registry, build       | Container registry and image tagging; the tag is the version      |
+| [ADR-8](ADR-8.md) | registry, build, kargo, oci | Container registry and image tagging; the tag is the version; the rendered-manifests artifact push is watched by a Kargo `Warehouse` (ADR-16) |
 | [ADR-9](ADR-9.md) | webhook, nats, ingress | **Deprecated** (see ADR-16) — Thin webhook receiver posting raw bodies to a NATS WorkQueue; not used / deferred in favor of a Kargo registry watch |
 | [ADR-10](ADR-10.md) | webhook, subscriber | **Deprecated** (see ADR-16) — Webhook subscriber parses events and routes render or deployer tasks by KRM match; not used / deferred in favor of Kargo |
 | [ADR-11](ADR-11.md) | api, deployer, gitops | **Deprecated** (see ADR-16) — Deployer updates the Application's config-image version; not used / deferred (Kargo `argocd-update` patches `targetRevision`); Git write-back/SoD deferred |

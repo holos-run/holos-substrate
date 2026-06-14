@@ -124,6 +124,25 @@ In the cluster, **Kargo** watches the registry and promotes:
   registry → webhook receiver → NATS path of the deprecated pipeline. The
   registry is still the event source ([ADR-8](ADR-8.md)); Kargo polls/watches it
   natively instead of the registry POSTing to an in-cluster receiver.
+
+  > **Open validation item (resolve in implementation).** Kargo `Warehouse`
+  > subscriptions are documented for **container images, Git repositories, and
+  > Helm chart repositories** — not, as a first-class subscription type, an
+  > arbitrary plain-manifest OCI artifact. The implementation phases that deploy
+  > and configure Kargo (HOL-1238 deploys the controller/CRDs; HOL-1240 defines
+  > the `Project`/`Warehouse`/`Stage`) **must verify** how the
+  > Kustomize-built rendered-manifests artifact is discovered as `Freight`. The
+  > most likely path is an **`image` subscription** against the
+  > rendered-manifests repository (the artifact is an OCI image manifest like any
+  > other tag), with the `argocd-update` step resolving the discovered digest into
+  > `desiredRevision`. If Kargo cannot treat the artifact as an image
+  > subscription, the recorded fallbacks are: tag the artifact so an `image`
+  > subscription matches it, or interpose a thin Git/Helm shim that Kargo does
+  > subscribe to. This is the one genuinely unproven assumption in the pivot and
+  > is called out so the implementation does not discover it late. See the
+  > [Kargo Warehouse docs](https://docs.kargo.io/user-guide/how-to-guides/working-with-warehouses)
+  > and the open
+  > [Kargo OCI-artifact feature request](https://github.com/akuity/kargo/issues/4864).
 - A Kargo **`Stage`** runs an **`argocd-update`** promotion step that patches the
   Argo CD `Application`'s **`targetRevision`** to the new artifact's immutable
   digest. Argo CD then syncs the rendered manifests from the OCI source
@@ -232,3 +251,13 @@ These documents are kept for the historical record and marked `Deprecated`, per
 - The deprecated ADRs (6, 9, 10, 11, 13, 14) and their research remain the record
   of why the NATS pipeline was designed and why it was set aside; future work that
   needs an in-cluster, event-driven render path can revive them.
+- **This ADR is the decision record only; it does not retire the running NATS
+  pipeline or its operational docs.** Repo operational guidance (e.g.
+  `holos/README.md` and the webhook-receiver/subscriber verification flows) still
+  describes the deprecated path and is updated as a separate, code-touching phase
+  (HOL-1241, *chore(pipeline): retire NATS pipeline*) so this documentation-only
+  phase changes no Go or CUE. Until that phase lands, the deprecated ADRs' status
+  banners are the authoritative pointer that the NATS pipeline is no longer the MVP
+  path. The Kargo controller/CRDs (HOL-1238) and the
+  `Project`/`Warehouse`/`Stage` configuration (HOL-1240) are likewise follow-on
+  implementation phases of the parent plan.
