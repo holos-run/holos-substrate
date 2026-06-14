@@ -86,12 +86,11 @@ the verification steps are in
 superuser remains as a break-glass account via `SUPER_USERS`, and
 `scripts/quay-init` still bootstraps it alongside SSO.
 
-A **disabled** placeholder `quay` client still lingers in the bootstrap
-`KeycloakRealmImport` CR
-([`components/keycloak/instance/`](../components/keycloak/instance/buildplan.cue));
-it is superseded by the enabled, reconciled client in `keycloak-config`.
-Removing that stale placeholder and any remaining references is tracked by
-[HOL-1221](https://linear.app/holos-run/issue/HOL-1221).
+The bootstrap `KeycloakRealmImport` CR
+([`components/keycloak/instance/`](../components/keycloak/instance/buildplan.cue))
+creates only the realm shell; the live `quay` client is owned and reconciled
+by the `keycloak-config` Job. The earlier disabled placeholder client in that
+import was removed in HOL-1221 so the two never disagree.
 
 ## Node-level registry trust for in-cluster pulls
 
