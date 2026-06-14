@@ -5,8 +5,12 @@ package holos
 // Helm values.  It is a single-replica StatefulSet with filesystem-backed
 // JetStream on a local-path PVC, a headless Service (peer discovery) and a
 // client Service (in-cluster clients), a laptop footprint (ADR-7: one local
-// instance) with clustering disabled.  No authentication is configured this
-// phase (MVP posture); NATS listens for in-cluster clients only on port 4222.
+// instance) with clustering disabled.  No authentication is configured (MVP
+// posture): NATS serves in-cluster clients on the client port (4222) and, since
+// HOL-1228, a host-facing WebSocket listener (8080) exposed through the shared
+// Istio Gateway at wss://nats.holos.localhost.  The Gateway terminates TLS and
+// the nats AuthorizationPolicy (below) is what scopes each source to its port —
+// the broker itself stays unauthenticated.
 //
 // The server was brought up render-only in HOL-1192 (registered in the
 // platform, rendered into the committed deploy tree).  This phase (HOL-1193)
@@ -62,14 +66,19 @@ let WS_PORT = 8080
 let GATEWAY_NAMESPACE = "istio-gateways" & #RegisteredNamespace
 
 // The NATS server runs without authentication this phase (MVP posture), so
-// "in-cluster clients only" cannot rely on the broker itself — Istio ambient
-// enrollment (holos/namespaces.cue) provides mTLS transport and L4 identity,
-// but not default-deny access control.  This AuthorizationPolicy makes the
-// in-cluster-only claim true by construction the same way the quay component's
-// REDIS_AUTHZ does for unauthenticated Redis: it selects the NATS pods and
-// ALLOWs only same-namespace sources, so arbitrary cross-namespace pods cannot
-// reach the unauthenticated client port (4222) or the monitoring endpoint
-// (8222) — Codex flagged both as cluster-wide-reachable without a policy.
+// access scoping cannot rely on the broker itself — Istio ambient enrollment
+// (holos/namespaces.cue) provides mTLS transport and L4 identity, but not
+// default-deny access control.  This AuthorizationPolicy provides that
+// default-deny the same way the quay component's REDIS_AUTHZ does for
+// unauthenticated Redis: it selects the NATS pods and ALLOWs only the
+// explicitly enumerated sources, each scoped to its least-privilege port, so
+// every other cross-namespace pod cannot reach the unauthenticated client port
+// (4222), the monitoring endpoint (8222), or the WebSocket port (8080) — Codex
+// flagged the client and monitoring ports as cluster-wide-reachable without a
+// policy.  The host-facing WebSocket exposure (HOL-1228) is itself gated here:
+// only the shared Gateway's namespace reaches 8080 (rule 4 below), and only the
+// Gateway terminates TLS for wss://nats.holos.localhost, so the unauthenticated
+// WebSocket is not cluster-wide-reachable either.
 // Kubelet health probes are exempt from ambient capture, so the StatefulSet's
 // /healthz probes on the monitor port keep working.  The webhook-receiver
 // (HOL-1198) and webhook-subscriber (HOL-1204) namespaces are now ALLOWed as
@@ -181,7 +190,14 @@ let AUTHZ = {
 // rule matches all paths, correct here because the NATS WebSocket endpoint
 // serves the upgrade handshake at /; Istio performs the WebSocket upgrade
 // transparently over the HTTP route, forwarding to the Service's WebSocket
-// port (8080).
+// port (8080).  sectionName pins the parentRef to the Gateway's `https`
+// listener (port 443, TLS Terminate) so the route attaches ONLY there:
+// the shared Gateway also has an `http` listener (port 80) for the same
+// *.holos.localhost wildcard with allowedRoutes.namespaces.from: All
+// (istio-gateway component), and without sectionName a parentRef binds to
+// every matching listener — which would also expose the unauthenticated
+// WebSocket over plain ws://nats.holos.localhost:80, contradicting the
+// wss-only TLS-termination design and the MVP no-auth posture.
 let HTTPROUTE = {
 	apiVersion: "gateway.networking.k8s.io/v1"
 	kind:       "HTTPRoute"
@@ -191,7 +207,7 @@ let HTTPROUTE = {
 		labels: "app.kubernetes.io/name": NAME
 	}
 	spec: {
-		parentRefs: [{name: "default", namespace: GATEWAY_NAMESPACE}]
+		parentRefs: [{name: "default", namespace: GATEWAY_NAMESPACE, sectionName: "https"}]
 		hostnames: ["nats.holos.localhost"]
 		rules: [{
 			backendRefs: [{name: NAME, port: WS_PORT}]
@@ -463,11 +479,14 @@ userDefinedBuildPlan: {
 						// is bursty on stream operations.
 						//
 						// No authentication (MVP posture — deferred): NATS
-						// listens for in-cluster clients only.  The nats
+						// serves in-cluster clients on the client port (4222)
+						// plus a host-facing WebSocket port (8080) reached
+						// through the shared Gateway (HOL-1228).  The nats
 						// namespace is ambient-enrolled (holos/namespaces.cue),
-						// so the client hop is secured by the mesh at L4.  The
-						// chart leaves auth disabled by default, so nothing is
-						// set here to enable it.
+						// so the in-cluster hop is secured by the mesh at L4,
+						// and the AuthorizationPolicy above scopes each source
+						// to its port.  The chart leaves auth disabled by
+						// default, so nothing is set here to enable it.
 						container: resources: {
 							requests: {
 								cpu:    "50m"

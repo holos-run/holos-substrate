@@ -11,6 +11,7 @@ spec:
   parentRefs:
   - name: default
     namespace: istio-gateways
+    sectionName: https
   rules:
   - backendRefs:
     - name: nats
