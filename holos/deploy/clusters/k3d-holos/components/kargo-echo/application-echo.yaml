@@ -15,7 +15,6 @@ spec:
     source:
         path: .
         repoURL: oci://quay.holos.localhost/holos/holos-paas-manifests
-        targetRevision: render-bootstrap
     syncPolicy:
         automated:
             prune: true
