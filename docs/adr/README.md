@@ -43,6 +43,7 @@ to the template above.
 | [ADR-12](ADR-12.md) | layout, conventions, build | Single-module monorepo layout for multiple Go services and Holos CUE |
 | [ADR-13](ADR-13.md) | pipeline, mvp, nats, oci, argocd | End-to-end MVP deployment flow: two registry-event loops through render and Argo CD |
 | [ADR-14](ADR-14.md) | api, nats, protobuf, conventions | NATS message schemas are ConnectRPC protobuf definitions; the `.proto` is the source of truth, Go is generated |
+| [ADR-15](ADR-15.md) | registry, oidc, security | Quay↔Keycloak OIDC SSO with PKCE: confidential client, username from the ID token, roles/groups via the `groups` claim into Quay teams |
 
 ## Status values
 

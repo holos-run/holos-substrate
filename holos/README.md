@@ -363,6 +363,14 @@ realm. What it reconciles:
   claim: a group-membership mapper (bare names, e.g. `authenticated`) and a
   realm-role mapper (e.g. `platform-owner`), so a single `groups` claim
   carries both group and role membership for Argo CD RBAC to key on.
+- the confidential PKCE **`quay` OIDC client** (`publicClient: false`,
+  `pkce.code.challenge.method: S256`, the `quay.holos.localhost` callback
+  redirect URIs) and its `platform-admin` / `project-admin` **client roles**,
+  with mappers that write group memberships, the `quay` client-role names, and
+  `preferred_username` into the token — the SSO login Quay relies on, designed
+  in [ADR-15](../docs/adr/ADR-15.md). The client secret is the `quay-oidc`
+  Secret, generated once into both the `keycloak` and `quay` namespaces and
+  substituted into the import document at run time (never committed).
 
 The import document is authored in CUE and marshalled to JSON in a
 `ConfigMap` the Job mounts at `/config/holos.json`; it carries
@@ -397,6 +405,46 @@ Secrets (`quay` namespace) — never committed to this repository. The
 script is idempotent. See the
 [Verify Quay](../docs/local-cluster.md#verify-quay) section of the local
 cluster guide for the bootstrap and the `docker push` verification flow.
+
+The bootstrapped `admin` is a break-glass local superuser; **normal users
+sign in through Keycloak SSO** (below), not through a registry-local password.
+
+### Quay OIDC SSO and roles
+
+Quay is a Single Sign-On relying party of the Keycloak `holos` realm: users
+log in with the **Holos SSO** button through the Authorization Code flow with
+PKCE (S256). The full design — why PKCE, the confidential client, the
+username-from-token behavior, and the roles model — is in
+[ADR-15](../docs/adr/ADR-15.md). The essentials:
+
+- **Login flow.** Quay's `KEYCLOAK_LOGIN_CONFIG`
+  ([components/quay/buildplan.cue](components/quay/buildplan.cue)) points at
+  the realm's confidential `quay` client (`USE_PKCE: true`,
+  `PKCE_METHOD: S256`), reconciled in `keycloak-config` above. The local
+  username/password form is removed (`FEATURE_DIRECT_LOGIN: false`).
+- **Username and namespace.** The username is taken verbatim from the ID
+  token's `preferred_username` claim with no prompt to confirm or edit it
+  (`FEATURE_USERNAME_CONFIRMATION: false`); first login auto-provisions
+  (`FEATURE_USER_CREATION: true`) the user's personal namespace
+  (`quay.holos.localhost/<preferred_username>/...`), which is their per-user
+  organization scope and cannot be renamed.
+- **Roles → teams.** The `quay` client roles `platform-admin` and
+  `project-admin` (and per-project roles by the same convention) are folded
+  into the `groups` claim alongside Keycloak group memberships. They are
+  identity labels, not privileges in themselves: a Quay **superuser** binds a
+  Quay team to the group/role name (team-sync setup is superuser-only here —
+  `FEATURE_NONSUPERUSER_TEAM_SYNCING_SETUP` is off), and the team's
+  permissions are what grant access. `FEATURE_TEAM_SYNCING: true` then keeps
+  membership in sync, re-syncing on the 30-minute `TEAM_RESYNC_STALE_TIME`
+  cadence.
+- **Superusers.** Superuser status comes solely from `SUPER_USERS` in the
+  config (by `preferred_username`), not from the `groups` claim and not from
+  the `platform-admin` role; the local `admin` bootstrap account is kept there
+  as break-glass.
+
+`scripts/quay-init` and SSO coexist: the init script still bootstraps the
+local `admin`/`holos` org and the `holos+robot` pull account, while realm
+users sign in through SSO.
 
 ### Quay verification
 

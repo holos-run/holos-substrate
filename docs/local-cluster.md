@@ -233,6 +233,45 @@ auto-created by push are private).
 > `~/.docker/certs.d/quay.holos.localhost/ca.crt`
 > (`mkcert -CAROOT` prints the directory containing `rootCA.pem`).
 
+**Verify Keycloak SSO login.** Beyond the local `admin` account, real users
+sign in to Quay through the Keycloak `holos` realm with the Authorization Code
+flow plus PKCE (the confidential `quay` client the `keycloak-config` Job
+provisions). The design is in [ADR-15](adr/ADR-15.md); verify it end to end:
+
+1. Create a realm user (or reuse the one from
+   [Verify Argo CD](#verify-argo-cd)) in the Keycloak admin console at
+   `https://auth.holos.localhost/admin/`. To exercise the roles model, assign
+   the `quay` client role `platform-admin` or `project-admin` under
+   **Users → (user) → Role mapping → Assign role → Filter by clients → `quay`**.
+2. Open Quay and start SSO login:
+
+   ```bash
+   open https://quay.holos.localhost/
+   ```
+
+   Click **Sign in with Holos SSO** and authenticate as the realm user.
+3. Confirm the SSO behavior:
+   - **No username prompt.** Quay does not ask the user to choose or confirm a
+     username (`FEATURE_USERNAME_CONFIRMATION: false`); login completes
+     straight to the dashboard.
+   - **Namespace matches the token.** The user's personal namespace equals
+     their `preferred_username` claim — repositories live under
+     `quay.holos.localhost/<preferred_username>/...`.
+   - **Roles → teams.** A user granted a `quay` client role (or bound Keycloak
+     group) gains the matching Quay team membership after the next team
+     re-sync (`TEAM_RESYNC_STALE_TIME`, 30 minutes), once a Quay **superuser**
+     has bound the team to that group/role name in the Quay organization UI.
+     Team-sync setup is a superuser action here — this platform leaves
+     `FEATURE_NONSUPERUSER_TEAM_SYNCING_SETUP` off — so use the `admin`
+     superuser (or another `SUPER_USERS` member) to configure it.
+
+`scripts/quay-init` and SSO coexist: the init script bootstraps the local
+`admin` superuser, the `holos` org, and the `holos+robot` pull account
+(local-database identities used by the push verification above and CI), while
+realm users authenticate through SSO. The local form is hidden
+(`FEATURE_DIRECT_LOGIN: false`); `admin` remains a break-glass superuser via
+`SUPER_USERS`.
+
 In-cluster pulls of `quay.holos.localhost/...` images by the k3d nodes'
 containerd are out of scope here — node-level DNS and CA trust for the
 registry hostname is a separate concern, tracked by
