@@ -235,7 +235,15 @@ let REALM_CONFIG = {
 		// is committed.  The bootstrap Job generates it once and never rotates
 		// it, so the value here stays stable across reconciles.
 		secret: "$(env:QUAY_OIDC_CLIENT_SECRET)"
-		attributes: "pkce.code.challenge.method": "S256"
+		attributes: {
+			"pkce.code.challenge.method": "S256"
+			// HOL-1233: Quay's OIDC client does not fully implement PKCE (code
+			// verifier not sent in token exchange), so make PKCE optional instead
+			// of required. The client can authenticate with just the client secret
+			// if its PKCE implementation is incomplete, while still supporting
+			// PKCE if/when it's fixed.
+			"pkce.force": "false"
+		}
 		redirectUris: ["\(QUAY_PUBLIC_URL)/*"]
 		webOrigins: [QUAY_PUBLIC_URL]
 		protocolMappers: [
