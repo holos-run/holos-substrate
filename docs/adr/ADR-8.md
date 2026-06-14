@@ -88,11 +88,15 @@ references** so "what is deployed" is exact and auditable for both artifacts.
 
 1. Built images are **pushed to a container registry with a tag**, and the
    **tag is the deployed version** for the MVP.
-2. A new-tag push is **observed by a Kargo `Warehouse` watching the registry**
-   ([ADR-16](ADR-16.md)); the registry is the deployment system's event source.
-   The rendered-manifests OCI artifact is produced **client-side with Kustomize
-   + ORAS** ([ADR-16](ADR-16.md)). (The original design emitted a webhook to the
-   thin receiver of [ADR-9](ADR-9.md); that receiver is deprecated under the
+2. An **application-image** push is a **client-side trigger only**: it prompts the
+   engineer (or coding agent) to run the client-side render-and-publish workflow,
+   which produces the **rendered-manifests OCI artifact** with **Kustomize + ORAS**
+   ([ADR-16](ADR-16.md)). It is the **rendered-manifests artifact** push — not the
+   app-image push — that a **Kargo `Warehouse` observes** in-cluster to drive a
+   promotion. The registry is still the deployment system's event source, but the
+   `Warehouse` watches the **rendered-manifests repository**, not the app-image
+   repository. (The original design emitted a webhook to the thin receiver of
+   [ADR-9](ADR-9.md) on the app-image push; that receiver is deprecated under the
    pivot.)
 3. The specific registry and tagging convention are to be chosen in this
    milestone (see the planning note), along with the rendered-manifests repository
