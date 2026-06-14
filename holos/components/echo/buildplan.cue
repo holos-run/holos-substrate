@@ -11,18 +11,28 @@ package holos
 // registered in the central namespaces registry (holos/namespaces.cue) and
 // rendered by the namespaces component.
 
-// VERSION pins the agnhost echo image tag.  agnhost is the upstream
-// Kubernetes e2e test image: multi-arch (arm64 required — the cluster is k3d
-// on OrbStack/Apple silicon), dependency-light, and maintained by
-// sig-testing; its serve-hostname subcommand answers every HTTP path with
-// the pod name.  serve-hostname is chosen over netexec deliberately:
-// netexec unconditionally serves /shell (arbitrary command execution),
-// /shutdown, and /exit, which must never be reachable — not even from
-// inside the cluster — in a permanent component.
-// Check https://github.com/kubernetes/kubernetes/tree/master/test/images/agnhost
-// for the current tag before bumping; any tag works for the smoke test as
-// long as it remains multi-arch.
-let VERSION = "2.53"
+// IMAGE is the container image the echo workload runs.  It is driven by the
+// platform-wide _AppImage tag (holos/tags.cue), so the client-side
+// build-and-publish workflow can inject a digest-pinned app image:
+//
+//	holos render platform --inject app_image=registry/app@sha256:<digest>
+//
+// echo is the Layer 3 sample workload that workflow targets — see
+// holos/docs/oci-publish-workflow.md.  When _AppImage is not injected it
+// defaults (in holos/tags.cue) to the pinned agnhost smoke-test image, so an
+// unparameterized render stays diff-clean.
+//
+// agnhost is the upstream Kubernetes e2e test image: multi-arch (arm64
+// required — the cluster is k3d on OrbStack/Apple silicon), dependency-light,
+// and maintained by sig-testing; its serve-hostname subcommand answers every
+// HTTP path with the pod name.  serve-hostname is chosen over netexec
+// deliberately: netexec unconditionally serves /shell (arbitrary command
+// execution), /shutdown, and /exit, which must never be reachable — not even
+// from inside the cluster — in a permanent component.  Check
+// https://github.com/kubernetes/kubernetes/tree/master/test/images/agnhost
+// for the current tag before bumping the default in holos/tags.cue; any tag
+// works for the smoke test as long as it remains multi-arch.
+let IMAGE = _AppImage
 
 // The #RegisteredNamespace constraint (holos/namespaces.cue) turns silent
 // drift between this literal and the registry entry into a render failure:
@@ -79,7 +89,7 @@ userDefinedBuildPlan: {
 									}
 									containers: [{
 										name:  NAME
-										image: "registry.k8s.io/e2e-test-images/agnhost:\(VERSION)"
+										image: IMAGE
 										// serve-hostname answers every HTTP
 										// path with the pod name, proving
 										// which pod answered.  No UDP flag
