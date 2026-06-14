@@ -470,6 +470,22 @@ userDefinedBuildPlan: {
 								enabled: true
 								port:    WS_PORT
 								tls: enabled: false
+								// same_origin rejects any WebSocket upgrade whose
+								// Origin header does not match the request Host.  The
+								// listener is unauthenticated and exposed at the
+								// browser-trusted wss://nats.holos.localhost, so without
+								// this any web page the developer visits could open a
+								// cross-origin WebSocket to local NATS and
+								// publish/subscribe/manipulate JetStream (NATS Origin
+								// checking is opt-in; same_origin defaults to false).
+								// The nats CLI sends no Origin header, so it is unaffected;
+								// only browser cross-origin requests are blocked.  The
+								// chart has no first-class field for this, so inject it
+								// through the websocket config block's merge passthrough
+								// (vendor/2.14.2/nats/files/config/websocket.yaml feeds
+								// `merge` into the rendered server config via
+								// nats.loadMergePatch).
+								merge: same_origin: true
 							}
 						}
 						// Laptop footprint (ADR-7): modest requests with a
