@@ -34,6 +34,13 @@ set -euo pipefail
 SERVER="${NATS_URL:-wss://nats.holos.localhost}"
 STREAM="WEBHOOKS"
 COUNT="${1:-10}"
+# Cap on how many sequence numbers to probe before giving up. WEBHOOKS is a
+# WorkQueue: acked messages are deleted, so the sequence window can stretch far
+# ahead of the live messages (an old unacked message at first_seq with many
+# newer drained sequences). Without a bound the scan below would run one
+# `nats stream get` per deleted sequence — possibly thousands. Override with
+# NATS_MAX_SCAN if you genuinely need to reach further back.
+MAX_SCAN="${NATS_MAX_SCAN:-10000}"
 
 case "$COUNT" in
   '' | *[!0-9]*)
@@ -62,13 +69,21 @@ fi
 # leave gaps; `nats stream get` on a missing sequence exits non-zero. Treat that
 # as "skip this sequence" rather than fatal — only printed messages count toward
 # COUNT — so a deleted newest sequence never hides the older ones still present.
+# Bound the probe count with MAX_SCAN so a wide gap between live messages can
+# never trigger an unbounded run of `nats stream get` calls.
 seq="$last_seq"
 shown=0
-while [ "$seq" -ge "$first_seq" ] && [ "$shown" -lt "$COUNT" ]; do
+probes=0
+while [ "$seq" -ge "$first_seq" ] && [ "$shown" -lt "$COUNT" ] && [ "$probes" -lt "$MAX_SCAN" ]; do
   if msg="$(nats --server "$SERVER" stream get "$STREAM" "$seq" 2>/dev/null)"; then
     echo "===== ${STREAM} sequence ${seq} ====="
     printf '%s\n' "$msg"
     shown=$((shown + 1))
   fi
   seq=$((seq - 1))
+  probes=$((probes + 1))
 done
+
+if [ "$shown" -lt "$COUNT" ] && [ "$seq" -ge "$first_seq" ]; then
+  echo "note: stopped after scanning $MAX_SCAN sequences (found $shown of $COUNT requested); raise NATS_MAX_SCAN to look further back" >&2
+fi
