@@ -64,6 +64,9 @@ spec:
         volumeMounts:
         - mountPath: /conf/stack
           name: config
+        - mountPath: /conf/stack/extra_ca_certs
+          name: local-ca
+          readOnly: true
         - mountPath: /datastorage
           name: datastorage
       initContainers:
@@ -76,7 +79,7 @@ spec:
           import psycopg2
 
           template = open("/conf/template/config.yaml").read()
-          for key in ("DB_URI", "SECRET_KEY", "DATABASE_SECRET_KEY"):
+          for key in ("DB_URI", "SECRET_KEY", "DATABASE_SECRET_KEY", "OIDC_CLIENT_SECRET"):
               template = template.replace("__%s__" % key, json.dumps(os.environ[key]))
           open("/conf/stack/config.yaml", "w").write(template)
 
@@ -100,6 +103,11 @@ spec:
             secretKeyRef:
               key: DATABASE_SECRET_KEY
               name: quay-secret-keys
+        - name: OIDC_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              key: client_secret
+              name: quay-oidc
         image: quay.io/projectquay/quay:3.17.3
         name: init
         resources:
@@ -131,6 +139,12 @@ spec:
         name: config-template
       - emptyDir: {}
         name: config
+      - name: local-ca
+        secret:
+          items:
+          - key: ca.crt
+            path: local-ca.crt
+          secretName: quay-local-ca
       - name: datastorage
         persistentVolumeClaim:
           claimName: quay-datastorage

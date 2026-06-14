@@ -80,6 +80,41 @@ let HOSTNAME = "quay.holos.localhost"
 let GATEWAY_NAMESPACE = "istio-gateways"
 let GATEWAY_NAME = "default"
 
+// OIDC / Keycloak SSO wiring (HOL-1219).  ISSUER_HOSTNAME is the Keycloak
+// hostname (components/keycloak/instance); OIDC_SERVER is the holos realm
+// issuer URL.  The trailing slash is REQUIRED: Quay's config validator
+// normalises the issuer to TrimSuffix(issuer,"/")+"/" and compares it against
+// Keycloak's published issuer, so the value here must carry the slash to match.
+// OIDC_CLIENT_ID is the confidential "quay" client managed in the realm
+// (components/keycloak/realm-config; HOL-1218).
+let ISSUER_HOSTNAME = "auth.holos.localhost"
+let OIDC_SERVER = "https://\(ISSUER_HOSTNAME)/realms/holos/"
+let OIDC_CLIENT_ID = "quay"
+
+// OIDC_SECRET is the shared client-secret Secret HOL-1218's bootstrap Job
+// provisioned into BOTH the keycloak and quay namespaces; OIDC_SECRET_KEY is
+// the data key holding the client secret.  The initContainer reads it and
+// substitutes it into the config template's __OIDC_CLIENT_SECRET__ placeholder
+// at pod start, so the secret value is never committed.
+let OIDC_SECRET = "quay-oidc"
+let OIDC_SECRET_KEY = "client_secret"
+
+// CA_CERT_SECRET carries the local-ca root certificate in its ca.crt key.
+// Quay performs its OIDC discovery/JWKS/token calls to OIDC_SERVER
+// (https://auth.holos.localhost) server-side with TLS verification ON and has
+// no per-OIDC "insecure skip verify" knob (unlike Argo CD), so it must trust
+// the local CA that signed the shared Gateway's *.holos.localhost certificate.
+// A cert-manager Certificate issued by the local-ca ClusterIssuer
+// (components/local-ca) writes this Secret into the quay namespace with the
+// signing CA in ca.crt; the Quay container mounts that key under
+// /conf/stack/extra_ca_certs so the Quay entrypoint installs it into the
+// system trust bundle on start.  Mounting a per-namespace cert-manager Secret
+// (rather than the Gateway's wildcard-holos-localhost Secret, which lives in
+// the istio-gateways namespace) keeps the trust anchor local to this pod's
+// namespace — a pod can only mount Secrets from its own namespace.
+let CA_CERT_SECRET = "quay-local-ca"
+let CA_CERT_KEY = "ca.crt"
+
 let REDIS_NAME = "quay-redis"
 let REDIS_PORT = 6379
 
@@ -115,6 +150,42 @@ let REDIS_METADATA = {
 //   - FEATURE_USER_INITIALIZE enables the one-shot /api/v1/user/initialize
 //     endpoint scripts/quay-init (HOL-1177) uses to create the admin user.
 //   - SETUP_COMPLETE skips the interactive setup flow.
+//
+// OIDC / Keycloak SSO (HOL-1219, Phase 2 of HOL-1217):
+//   - AUTHENTICATION_TYPE OIDC + KEYCLOAK_LOGIN_CONFIG point Quay at the
+//     holos realm's confidential "quay" client (enabled with PKCE S256 in
+//     Phase 1, HOL-1218, in components/keycloak/realm-config).  OIDC_SERVER
+//     is the realm issuer URL with a REQUIRED trailing slash — Quay's config
+//     validator normalises the issuer to TrimSuffix(issuer,"/")+"/", so the
+//     slash must be present here to match Keycloak's issuer exactly.
+//   - CLIENT_SECRET is the __OIDC_CLIENT_SECRET__ placeholder; the
+//     initContainer substitutes it from the shared quay-oidc Secret (the
+//     client_secret key) that Phase 1's bootstrap Job provisioned into BOTH
+//     the keycloak and quay namespaces — so this phase only consumes it and
+//     no secret value is ever committed.
+//   - FEATURE_DIRECT_LOGIN false removes the local username/password form so
+//     Keycloak SSO ("Holos SSO") is the only login path; FEATURE_USER_CREATION
+//     true lets first SSO login auto-provision the user's account namespace
+//     (a Quay user's personal namespace IS their per-user org scope).
+//   - FEATURE_USERNAME_CONFIRMATION false is the key requirement from the
+//     issue: the username is taken verbatim from PREFERRED_USERNAME_CLAIM_NAME
+//     (preferred_username) with no prompt to choose or edit it.
+//   - USE_PKCE/PKCE_METHOD S256 match the Keycloak client's
+//     pkce.code.challenge.method S256 (requires Quay 3.16.0+; this pins 3.17.3).
+//   - FEATURE_TEAM_SYNCING true keeps Quay teams in sync with the Keycloak
+//     groups claim (TEAM_RESYNC_STALE_TIME cadence); that claim carries both
+//     Keycloak group membership and the quay client roles (platform-admin,
+//     project-admin) folded in by the Phase 1 protocol mappers.  Team sync only
+//     populates Quay teams from the groups claim — it does NOT grant Quay
+//     superuser; superuser comes solely from SUPER_USERS below.
+//   - SUPER_USERS keeps the local "admin" entry that scripts/quay-init (HOL-1177)
+//     bootstraps the local org with — it stays reachable because Quay always
+//     permits superuser local login even with FEATURE_DIRECT_LOGIN false.  The
+//     holos realm seeds no users yet, so there is no realm preferred_username to
+//     grant SSO superuser to; a Keycloak-backed platform admin is bootstrapped
+//     by seeding a realm user and appending their preferred_username here (the
+//     deferred item in the PR).  The quay "platform-admin" client role drives
+//     Quay *team* membership via the groups claim, not superuser.
 let CONFIG_YAML = """
 	SERVER_HOSTNAME: \(HOSTNAME)
 	PREFERRED_URL_SCHEME: https
@@ -136,15 +207,38 @@ let CONFIG_YAML = """
 	DISTRIBUTED_STORAGE_PREFERENCE:
 	  - default
 	FEATURE_USER_INITIALIZE: true
+	FEATURE_USER_CREATION: true
+	FEATURE_DIRECT_LOGIN: false
+	FEATURE_USERNAME_CONFIRMATION: false
+	FEATURE_TEAM_SYNCING: true
+	TEAM_RESYNC_STALE_TIME: 30m
+	AUTHENTICATION_TYPE: OIDC
+	KEYCLOAK_LOGIN_CONFIG:
+	  OIDC_SERVER: \(OIDC_SERVER)
+	  CLIENT_ID: \(OIDC_CLIENT_ID)
+	  CLIENT_SECRET: __OIDC_CLIENT_SECRET__
+	  SERVICE_NAME: Holos SSO
+	  LOGIN_SCOPES:
+	    - openid
+	    - profile
+	    - email
+	    - groups
+	    - offline_access
+	  PREFERRED_USERNAME_CLAIM_NAME: preferred_username
+	  VERIFIED_EMAIL_CLAIM_NAME: email
+	  PREFERRED_GROUP_CLAIM_NAME: groups
+	  USE_PKCE: true
+	  PKCE_METHOD: S256
 	SUPER_USERS:
 	  - admin
 	FEATURE_MAILING: false
 	"""
 
 // The initContainer script: render the config, then prepare the database.
-// json.dumps the env values so any character CNPG or the bootstrap Job
-// might generate stays a valid YAML scalar; python3 and psycopg2 ship in
-// the Quay image, which the initContainer reuses to avoid a second pin.
+// json.dumps the env values so any character CNPG or the bootstrap Jobs
+// might generate (DB URI, secret keys, and the OIDC client secret) stays a
+// valid YAML scalar; python3 and psycopg2 ship in the Quay image, which the
+// initContainer reuses to avoid a second pin.
 //
 // Quay's config validator refuses to start without the pg_trgm extension
 // in its database.  pg_trgm is a *trusted* extension (PostgreSQL 13+), so
@@ -159,7 +253,7 @@ let INIT_SCRIPT = """
 	import psycopg2
 
 	template = open("/conf/template/config.yaml").read()
-	for key in ("DB_URI", "SECRET_KEY", "DATABASE_SECRET_KEY"):
+	for key in ("DB_URI", "SECRET_KEY", "DATABASE_SECRET_KEY", "OIDC_CLIENT_SECRET"):
 	    template = template.replace("__%s__" % key, json.dumps(os.environ[key]))
 	open("/conf/stack/config.yaml", "w").write(template)
 
@@ -548,6 +642,17 @@ let DEPLOYMENT = {
 								key:  "DATABASE_SECRET_KEY"
 							}
 						},
+						{
+							// The shared OIDC client secret from the quay-oidc
+							// Secret HOL-1218's bootstrap Job wrote into the quay
+							// namespace; the init script substitutes it into the
+							// config template's __OIDC_CLIENT_SECRET__ placeholder.
+							name: "OIDC_CLIENT_SECRET"
+							valueFrom: secretKeyRef: {
+								name: OIDC_SECRET
+								key:  OIDC_SECRET_KEY
+							}
+						},
 					]
 					resources: {
 						requests: {
@@ -686,6 +791,17 @@ let DEPLOYMENT = {
 							mountPath: "/conf/stack"
 						},
 						{
+							// The local-ca root cert, mounted where the Quay
+							// entrypoint's certs_install step picks up extra
+							// trust anchors, so server-side OIDC TLS to
+							// auth.holos.localhost validates.  A subdir mount of
+							// /conf/stack — it coexists with the config volume's
+							// config.yaml the initContainer renders.
+							name:      "local-ca"
+							mountPath: "/conf/stack/extra_ca_certs"
+							readOnly:  true
+						},
+						{
 							name:      "datastorage"
 							mountPath: "/datastorage"
 						},
@@ -699,6 +815,16 @@ let DEPLOYMENT = {
 					{
 						name: "config"
 						emptyDir: {}
+					},
+					{
+						name: "local-ca"
+						secret: {
+							secretName: CA_CERT_SECRET
+							items: [{
+								key:  CA_CERT_KEY
+								path: "local-ca.crt"
+							}]
+						}
 					},
 					{
 						name: "datastorage"
@@ -835,6 +961,73 @@ let SERVICE_ENTRY = {
 	}
 }
 
+// AUTH_SERVICE_ENTRY makes the Keycloak issuer hostname auth.holos.localhost a
+// service the mesh resolves so Quay's server-side OIDC calls (discovery, JWKS,
+// token exchange against OIDC_SERVER) reach Keycloak in-cluster — the same
+// pattern as SERVICE_ENTRY above and the argocd component's identically-named
+// entry (components/argocd/controller).  The quay namespace is ambient-enrolled
+// (holos/namespaces.cue), and *.localhost names resolve to loopback both
+// upstream of CoreDNS (RFC 6761 host resolver) and inside ztunnel's DNS proxy
+// (AMBIENT_DNS_CAPTURE special-cases *.localhost before forwarding), so a plain
+// DNS override never reaches enrolled pods.  This entry makes the hostname a
+// mesh service: ztunnel answers the Quay pod's query with the auto-allocated
+// VIP and routes to the shared Gateway, which terminates TLS for
+// *.holos.localhost and routes by SNI/Host to the keycloak HTTPRoute, so the
+// issuer serves https://auth.holos.localhost/realms/holos/ end-to-end and the
+// iss claim matches.  protocol TLS keeps ztunnel at L4 (the Gateway terminates
+// TLS); resolution DNS tracks the Gateway Service by name so the entry survives
+// ClusterIP changes.  exportTo is left at its mesh-wide default — harmless, as
+// only Quay resolves this issuer hostname here.
+let AUTH_SERVICE_ENTRY = {
+	apiVersion: "networking.istio.io/v1"
+	kind:       "ServiceEntry"
+	metadata: {
+		name:      "auth-holos-localhost"
+		namespace: NAMESPACE
+	}
+	spec: {
+		hosts: [ISSUER_HOSTNAME]
+		ports: [{
+			number:   443
+			name:     "tls"
+			protocol: "TLS"
+		}]
+		resolution: "DNS"
+		endpoints: [{
+			address: "\(GATEWAY_NAME)-istio.\(GATEWAY_NAMESPACE).svc.cluster.local"
+		}]
+	}
+}
+
+// CA_CERTIFICATE issues a short-lived leaf certificate in the quay namespace
+// from the local-ca ClusterIssuer purely as a vehicle for its ca.crt: every
+// cert-manager-issued Secret carries the signing CA in ca.crt, so this puts the
+// local-ca root PEM into a Secret (CA_CERT_SECRET) the Quay pod can mount from
+// its own namespace.  The leaf cert itself is unused — only ca.crt is consumed
+// — but a Certificate is the lightest cert-manager-native way to materialise the
+// CA into an arbitrary namespace without trust-manager (not deployed here).  The
+// dnsName is a stable placeholder local to this namespace; it is never served.
+let CA_CERTIFICATE = {
+	apiVersion: "cert-manager.io/v1"
+	kind:       "Certificate"
+	metadata: {
+		name:      CA_CERT_SECRET
+		namespace: NAMESPACE
+		labels: "app.kubernetes.io/name": NAME
+	}
+	spec: {
+		secretName: CA_CERT_SECRET
+		// Only ca.crt is consumed; the leaf is never served, so a single
+		// in-namespace placeholder dnsName suffices to satisfy the schema.
+		dnsNames: ["\(NAME)-local-ca.\(NAMESPACE).svc.cluster.local"]
+		issuerRef: {
+			group: "cert-manager.io"
+			kind:  "ClusterIssuer"
+			name:  "local-ca"
+		}
+	}
+}
+
 userDefinedBuildPlan: {
 	metadata: name: "quay"
 	spec: artifacts: manifests: {
@@ -866,8 +1059,12 @@ userDefinedBuildPlan: {
 						(REDIS_SERVICE.metadata.name): REDIS_SERVICE
 					}
 					AuthorizationPolicy: (REDIS_AUTHZ.metadata.name): REDIS_AUTHZ
+					Certificate: (CA_CERTIFICATE.metadata.name):      CA_CERTIFICATE
 					PersistentVolumeClaim: (PVC.metadata.name):       PVC
-					ServiceEntry: (SERVICE_ENTRY.metadata.name):      SERVICE_ENTRY
+					ServiceEntry: {
+						(SERVICE_ENTRY.metadata.name):      SERVICE_ENTRY
+						(AUTH_SERVICE_ENTRY.metadata.name): AUTH_SERVICE_ENTRY
+					}
 					HTTPRoute: {
 						(HTTPROUTE.metadata.name):          HTTPROUTE
 						(HTTPROUTE_REDIRECT.metadata.name): HTTPROUTE_REDIRECT
