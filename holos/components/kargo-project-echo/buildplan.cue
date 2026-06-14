@@ -1,9 +1,5 @@
 package holos
 
-import (
-	kargoproject "kargo.akuity.io/project/v1alpha1"
-)
-
 // kargo-project-echo defines the Kargo Project for the echo sample app's
 // delivery pipeline (HOL-1240).  A Kargo Project reconciles to a same-named
 // Kubernetes namespace and is the boundary that owns the Warehouse, Stage,
@@ -11,10 +7,23 @@ import (
 //
 // This mirrors the reference platform's minimal Project component
 // (holos-reference/holos/components/kargo-project-braintrust): the Project is a
-// single resource carrying only its name and an (empty here) promotion policy.
-// The companion Warehouse, Stage, and Argo CD Application target live in the
-// sibling kargo-echo component so this component stays a pure Project, matching
-// the reference's one-Project-per-component shape.
+// single resource carrying only its name.  The companion Warehouse, Stage, and
+// Argo CD Application target live in the sibling kargo-echo component so this
+// component stays Project-scoped, matching the reference's
+// one-Project-per-component shape.
+//
+// Authored as plain CUE structs rather than via the vendored kargo bindings:
+// the vendored #Project binding
+// (holos/cue.mod/gen/kargo.akuity.io/project/v1alpha1) is stale — it carries a
+// required spec! with promotionPolicies from an OLDER Kargo, but the Kargo
+// 1.10.3 Project CRD this platform installs (components/kargo-crds, the same
+// chart version) is CLUSTER-SCOPED and has NO spec at all (only metadata and
+// status).  In Kargo 1.10 the promotion policy moved off Project onto the
+// namespaced ProjectConfig CRD (see PROJECT_CONFIG below).  Using the stale
+// binding would force a spec the server prunes or rejects.  The CRD shapes are
+// the source of truth here:
+//   - components/kargo/vendor/1.10.3/kargo/resources/crds/kargo.akuity.io_projects.yaml
+//   - components/kargo/vendor/1.10.3/kargo/resources/crds/kargo.akuity.io_projectconfigs.yaml
 //
 // Sample app: echo (components/echo), the permanent Layer 3 smoke-test
 // workload the client-side publish workflow targets
@@ -46,8 +55,27 @@ let PROJECT = "kargo-echo" & #RegisteredNamespace
 // the kargo-echo component.
 let STAGE = "test"
 
-let PROJECT_RESOURCE = kargoproject.#Project & {
+// The Kargo 1.10 Project is cluster-scoped with no spec: it only marks the
+// kargo-echo namespace as a Project (the controller reconciles it to the
+// adopted namespace).  No metadata.namespace — the resource is cluster-scoped
+// and the Project NAME is what the controller maps to the same-named namespace.
+let PROJECT_RESOURCE = {
+	apiVersion: "kargo.akuity.io/v1alpha1"
+	kind:       "Project"
 	metadata: name: PROJECT
+}
+
+// The promotion policy lives on a namespaced ProjectConfig in the Project's
+// namespace (Kargo 1.10).  Stage.status.autoPromotionEnabled is derived from
+// this, so the test Stage auto-promotes newly created Freight.  The
+// ProjectConfig is conventionally named after its Project's namespace.
+let PROJECT_CONFIG = {
+	apiVersion: "kargo.akuity.io/v1alpha1"
+	kind:       "ProjectConfig"
+	metadata: {
+		name:      PROJECT
+		namespace: PROJECT
+	}
 	spec: promotionPolicies: [{
 		stage:                STAGE
 		autoPromotionEnabled: true
@@ -57,15 +85,23 @@ let PROJECT_RESOURCE = kargoproject.#Project & {
 userDefinedBuildPlan: {
 	metadata: name: "kargo-project-echo"
 	spec: artifacts: manifests: {
-		// One resource per artifact, CUE-natively (component guidelines): the
-		// Resources generator's output IS the artifact file, so the file holds
-		// exactly one Project resource with no bundle to slice.
+		// One resource per artifact, CUE-natively (component guidelines): each
+		// Resources generator's output IS its artifact file, so each file holds
+		// exactly one resource with no bundle to slice.
 		"clusters/\(clusterName)/components/\(metadata.name)/project-\(PROJECT).yaml": {
 			artifact: _
 			generators: [{
 				kind:   "Resources"
 				output: artifact
 				resources: Project: (PROJECT): PROJECT_RESOURCE
+			}]
+		}
+		"clusters/\(clusterName)/components/\(metadata.name)/projectconfig-\(PROJECT).yaml": {
+			artifact: _
+			generators: [{
+				kind:   "Resources"
+				output: artifact
+				resources: ProjectConfig: (PROJECT): PROJECT_CONFIG
 			}]
 		}
 	}

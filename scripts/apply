@@ -800,18 +800,20 @@ wait_kargo() {
 }
 
 # kargo-project-echo: gate on the Kargo Project reconciling before the kargo-echo
-# Warehouse/Stage apply into its namespace.  The Project adopts the pre-created
-# kargo-echo namespace (created by the namespaces component, carrying the
-# kargo.akuity.io/project: "true" adoption label) and reports Ready; only then
-# does the namespace carry Kargo's project RBAC so namespaced Warehouse/Stage
-# resources apply cleanly.  Poll the Project's Ready condition (rather than
-# `kubectl wait`) so a Stalled Project — e.g. the adoption label missing — fails
-# the gate promptly with a clear pointer instead of blocking the full timeout.
+# Warehouse/Stage apply into its namespace.  The Project (cluster-scoped in Kargo
+# 1.10) adopts the pre-created kargo-echo namespace (created by the namespaces
+# component, carrying the kargo.akuity.io/project: "true" adoption label) and
+# reports Ready; only then does the namespace carry Kargo's project RBAC so
+# namespaced Warehouse/Stage resources apply cleanly.  Poll the Project's Ready
+# condition (rather than `kubectl wait`) so a Stalled Project — e.g. the adoption
+# label missing — fails the gate promptly with a clear pointer instead of
+# blocking the full timeout.
 wait_kargo_project_echo() {
   local project="project.kargo.akuity.io/kargo-echo" state lookup_failures=0
   local deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
   while true; do
-    if state=$(kubectl --context "${KUBE_CONTEXT}" --namespace kargo-echo \
+    # Project is cluster-scoped (no --namespace).
+    if state=$(kubectl --context "${KUBE_CONTEXT}" \
       get "${project}" --ignore-not-found --request-timeout=10s \
       -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
       lookup_failures=0
