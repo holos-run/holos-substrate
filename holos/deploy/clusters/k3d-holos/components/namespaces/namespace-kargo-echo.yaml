@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+    annotations:
+        kargo.akuity.io/keep-namespace: "true"
+    labels:
+        kargo.akuity.io/project: "true"
+        kubernetes.io/metadata.name: kargo-echo
+    name: kargo-echo
