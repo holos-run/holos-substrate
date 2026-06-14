@@ -1,0 +1,20 @@
+apiVersion: v1
+data:
+  KARGO_NAMESPACE: kargo
+  LOG_FORMAT: JSON
+  LOG_LEVEL: INFO
+  PERMISSIVE_CORS_POLICY_ENABLED: "false"
+  ROLLOUTS_INTEGRATION_ENABLED: "false"
+  SHARED_RESOURCES_NAMESPACE: kargo-shared-resources
+  SYSTEM_RESOURCES_NAMESPACE: kargo-system-resources
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/component: api
+    app.kubernetes.io/instance: kargo
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: kargo
+    app.kubernetes.io/version: v1.10.3
+    helm.sh/chart: kargo-1.10.3
+  name: kargo-api
+  namespace: kargo

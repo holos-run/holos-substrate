@@ -149,7 +149,13 @@ ROLLOUT_TIMEOUT_SECONDS="$(duration_seconds "${ROLLOUT_TIMEOUT}")" || exit 1
 # publishing DeployTasks to TASKS, so it likewise trails nats (its /readyz gate
 # cannot pass until NATS is reachable); it has no Service or HTTPRoute, and
 # nothing during bootstrap depends on it, so appending it keeps the order
-# stable.
+# stable.  kargo-crds and kargo close the sequence: CRDs before the controllers
+# that need the kargo.akuity.io types (the same guardrail as the other *-crds
+# pairs), and Kargo depends only on its own CRDs, the Gateway its HTTPRoutes
+# attach to, and cert-manager (the chart's internal webhooks server uses
+# cert-manager-issued self-signed certs) — all applied earlier — so appending
+# the pair keeps the established order stable.  Nothing downstream depends on
+# Kargo during bootstrap.
 COMPONENTS=(
   namespaces
   gateway-api
@@ -175,6 +181,8 @@ COMPONENTS=(
   nats
   webhook-receiver
   webhook-subscriber
+  kargo-crds
+  kargo
 )
 
 # local-ca and istio-gateway create cert-manager.io resources (ClusterIssuer,
@@ -747,6 +755,37 @@ wait_webhook_subscriber() {
     fi
     return 1
   fi
+}
+
+# kargo-crds: the Kargo controller and webhooks servers require the
+# kargo.akuity.io types at startup, and the next phase (HOL-1240) applies
+# Project/Warehouse/Stage custom resources.
+wait_kargo_crds() {
+  wait_crds_established kargo-crds
+}
+
+# kargo: the Kargo smoke check.  Wait on the workloads the chart renders with
+# pods given this component's values: the controller and the API/UI Deployments,
+# plus the internal and external webhooks servers and the management controller.
+# Deliberately not waited on: dex (api.oidc.dex.enabled: false renders no pods)
+# and the garbage collector (a CronJob, not a long-running Deployment).  The
+# first reconcile pulls the multi-arch ghcr.io/akuity/kargo image, which may be
+# slow — ROLLOUT_TIMEOUT covers it.  The internal webhooks server's TLS cert is
+# issued by cert-manager (the chart's self-signed Issuer/Certificate), so this
+# gate also confirms the cert-manager webhook admitted those resources.  Route
+# attachment is level-triggered; verify the kargo.holos.localhost traffic path
+# separately (see holos/README.md).
+wait_kargo() {
+  kubectl --context "${KUBE_CONTEXT}" --namespace kargo \
+    rollout status deployment/kargo-controller --timeout="${ROLLOUT_TIMEOUT}"
+  kubectl --context "${KUBE_CONTEXT}" --namespace kargo \
+    rollout status deployment/kargo-api --timeout="${ROLLOUT_TIMEOUT}"
+  kubectl --context "${KUBE_CONTEXT}" --namespace kargo \
+    rollout status deployment/kargo-management-controller --timeout="${ROLLOUT_TIMEOUT}"
+  kubectl --context "${KUBE_CONTEXT}" --namespace kargo \
+    rollout status deployment/kargo-webhooks-server --timeout="${ROLLOUT_TIMEOUT}"
+  kubectl --context "${KUBE_CONTEXT}" --namespace kargo \
+    rollout status deployment/kargo-external-webhooks-server --timeout="${ROLLOUT_TIMEOUT}"
 }
 
 if ! command -v kubectl >/dev/null 2>&1; then

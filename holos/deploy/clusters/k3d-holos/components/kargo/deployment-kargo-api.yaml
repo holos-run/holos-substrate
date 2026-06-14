@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: api
+    app.kubernetes.io/instance: kargo
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: kargo
+    app.kubernetes.io/version: v1.10.3
+    helm.sh/chart: kargo-1.10.3
+  name: kargo-api
+  namespace: kargo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: api
+      app.kubernetes.io/instance: kargo
+      app.kubernetes.io/name: kargo
+  strategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+        configmap/checksum: 0586ceaa53203891010cadfb5a54d77250a6b3d4a87bd3343cfd98f1706d05ae
+        secret/checksum: d1de5656a573b5d57005b49b298a3441cfb54788b06b84fb66979d84ba7389a1
+      labels:
+        app.kubernetes.io/component: api
+        app.kubernetes.io/instance: kargo
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: kargo
+        app.kubernetes.io/version: v1.10.3
+        helm.sh/chart: kargo-1.10.3
+    spec:
+      containers:
+      - command:
+        - /usr/local/bin/kargo
+        - api
+        env:
+        - name: GOMEMLIMIT
+          valueFrom:
+            resourceFieldRef:
+              containerName: api
+              divisor: "1"
+              resource: limits.memory
+        - name: GOMAXPROCS
+          valueFrom:
+            resourceFieldRef:
+              containerName: api
+              divisor: "1"
+              resource: requests.cpu
+        envFrom:
+        - configMapRef:
+            name: kargo-api
+        - secretRef:
+            name: kargo-api
+        image: ghcr.io/akuity/kargo:v1.10.3
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          grpc:
+            port: 8080
+        name: api
+        ports:
+        - containerPort: 8080
+          name: h2c
+          protocol: TCP
+        readinessProbe:
+          grpc:
+            port: 8080
+          initialDelaySeconds: 5
+        resources:
+          limits:
+            memory: 256Mi
+          requests:
+            cpu: 50m
+            memory: 128Mi
+        securityContext:
+          runAsNonRoot: true
+          seccompProfile:
+            type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 30
+          grpc:
+            port: 8080
+          initialDelaySeconds: 10
+      serviceAccount: kargo-api
