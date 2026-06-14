@@ -18,9 +18,10 @@ COPY go.sum go.sum
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
-# Copy the source.
+# Copy the source.  The internal/ tree was removed in HOL-1241 when the NATS
+# pipeline services were retired (ADR-16); re-add `COPY internal/ internal/`
+# here when a later phase reintroduces shared implementation packages.
 COPY cmd/ cmd/
-COPY internal/ internal/
 
 # Build a static, trimmed binary. CGO is disabled for a small, portable image;
 # TARGETOS/TARGETARCH (set by buildx, defaulting to linux) drive
@@ -38,5 +39,7 @@ WORKDIR /
 COPY --from=build /holos-paas /holos-paas
 USER 65532:65532
 
-# The service is selected by subcommand args, e.g. ["webhook-receiver"].
+# The running service is selected by subcommand args (ADR-12). The root
+# command registers no service subcommands yet — the NATS pipeline services
+# were retired in HOL-1241; later phases add their subcommands back.
 ENTRYPOINT ["/holos-paas"]

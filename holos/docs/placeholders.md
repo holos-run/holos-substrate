@@ -97,71 +97,30 @@ import was removed in HOL-1221 so the two never disagree.
 Pushes to `quay.holos.localhost` from the host work (the host resolves
 `*.holos.localhost` and trusts the mkcert root CA), but containerd on the
 k3d nodes can neither resolve nor trust the registry hostname, so pods
-cannot run images pushed to Quay. The gap must close before Layer 2
-([ADR-13](../../docs/adr/ADR-13.md)) deploys the images the pipeline
-pushes — likely k3d `registries`/hosts configuration plus CA trust on the
-nodes.
+cannot run images pushed to Quay. The gap must close before the cluster can
+pull and run the application images published to Quay — likely k3d
+`registries`/hosts configuration plus CA trust on the nodes.
 [HOL-1184](https://linear.app/holos-run/issue/HOL-1184/featquay-in-cluster-image-pulls-from-quayholoslocalhost)
 tracks it; the scope boundary is noted in the
 [Verify Quay](../../docs/local-cluster.md#verify-quay) section of the
 local cluster guide and in `scripts/quay-init`.
 
-## NATS in-cluster authentication
+## NATS in-cluster authentication and webhook edge verification — retired
 
-The `nats` JetStream backbone ([`components/nats/`](../components/nats/buildplan.cue))
-runs with **no authentication** for the MVP: any client that can reach a NATS
-port may publish and subscribe. The rationale is reachability — in-cluster
-clients connect over the client port (`4222`), the `nats` namespace is
-ambient-enrolled for mTLS transport identity, and an `AuthorizationPolicy`
-restricts each port to its explicitly admitted source namespaces. NATS
-account/user authentication (e.g. NKEYs or a credentials file per
-producer/consumer) is deferred to a later issue; the connection contract and the
-deferred posture are documented in
-[`holos/README.md`](../README.md#nats-jetstream-backbone-and-connection-contract).
-The receiver and subscriber components have already landed and the rendered
-`AuthorizationPolicy` admits their **namespaces** (not yet their specific
-ServiceAccounts) to the client port; tightening those namespace-granular rules
-to per-ServiceAccount principals is part of the deferred hardening tracked here.
+Two earlier placeholders covered the NATS event-driven deployment pipeline: the
+unauthenticated `nats` JetStream backbone (NKEY/credentials auth deferred) and
+the thin webhook receiver's deferred edge signature verification
+([ADR-9](../../docs/adr/ADR-9.md)/[ADR-10](../../docs/adr/ADR-10.md)).
 
-The component also exposes the NATS WebSocket port to the host at
-`wss://nats.holos.localhost` (an `HTTPRoute` on the shared Gateway, HOL-1228) as
-a local debugging affordance — see the
-[host-facing wss debug endpoint](../README.md#host-facing-wss-debug-endpoint).
-That endpoint is **intentionally unauthenticated**, the same MVP no-auth posture
-as the in-cluster surface, and it carries no client authentication of its own:
-anything that can reach the shared Gateway and present `Host`/SNI
-`nats.holos.localhost` can use it. The `AuthorizationPolicy` admits the
-WebSocket port (`8080`) from the shared Gateway's namespace alone, which bounds
-*in-cluster* reach but not who can reach the Gateway from outside. The intended
-use is local — `nats.holos.localhost` resolves to `127.0.0.1` on the developer's
-machine — but that DNS mapping is a convenience, not an access boundary, since
-the k3d load balancer publishes the Gateway ports on the Docker host without a
-loopback-only bind. Containing the endpoint (loopback-bound ports or a host
-firewall) is the operator's responsibility until authentication lands.
-Authenticating both the in-cluster and the host-facing `wss://` surfaces is the
-same deferred future work tracked here.
-
-## Webhook edge signature verification
-
-The webhook receiver ([`internal/webhook/receiver/`](../../internal/webhook/receiver/receiver.go),
-deployed by [`components/webhook-receiver/`](../components/webhook-receiver/buildplan.cue))
-is deliberately **thin** ([ADR-9](../../docs/adr/ADR-9.md)): it publishes the
-raw request body to `webhooks.<source>` and acks the sender, performing **no
-authentication**. Signature verification was deferred to the subscriber
-([ADR-10](../../docs/adr/ADR-10.md)) for the MVP — the receiver carries the
-signature headers (`X-Hub-Signature-256` / `X-Signature`) through verbatim so a
-later stage can authenticate the sender against the raw body. Until then the
-endpoint relies on network reachability plus the configurable max-body-size
-bound: from outside the cluster it is exposed only at `hooks.holos.localhost`
-(→ `127.0.0.1`) through the shared Gateway, never off the local machine, while
-its in-cluster ClusterIP `Service` carries no ingress policy and any in-cluster
-workload can also enqueue a body — accepted under the MVP's no-in-cluster-auth
-posture, not a boundary to rely on once untrusted tenant workloads exist. Moving
-verification to the **edge** — rejecting forged senders with `401`/`403` before
-they are ever enqueued, with a provider-pluggable HMAC check and a configurable
-secret — is tracked by
-[HOL-1200](https://linear.app/holos-run/issue/HOL-1200) and recorded as the
-edge-auth resolution in [ADR-9](../../docs/adr/ADR-9.md)'s revision 2.
+That pipeline was **retired in HOL-1241**: ADR-9/10/11/14 are now `Deprecated`
+and superseded by [ADR-16](../../docs/adr/ADR-16.md), and the
+`nats`/`webhook-receiver`/`webhook-subscriber` components, their Go code, and the
+`wss://nats.holos.localhost` debug endpoint were removed. Deployment is now
+driven by Kargo plus the client-side build-and-publish workflow
+([`oci-publish-workflow.md`](oci-publish-workflow.md)) — there is no inbound
+webhook ingress to authenticate and no in-cluster NATS surface to harden, so both
+placeholders no longer apply. If a messaging backbone is reintroduced later, its
+authentication posture should be recorded as a fresh placeholder.
 
 ## Kargo API authentication
 
@@ -173,8 +132,7 @@ generating and committing an admin Secret), and the bundled Dex broker is off.
 The API is reachable from the host only through the shared Gateway at
 `https://kargo.holos.localhost` (→ `127.0.0.1`, never off the machine), and the
 `kargo` namespace is ambient-enrolled so the Gateway→API hop is secured by the
-mesh — the same MVP no-auth posture the `nats` and `webhook-receiver`
-components take.
+mesh — the same MVP no-auth posture the other host-facing platform consoles take.
 
 The reference platform wires Kargo to a Thomson-Reuters Keycloak OIDC issuer
 with group-based admin/viewer RBAC; that issuer and its RBAC are deliberately

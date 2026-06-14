@@ -1,8 +1,13 @@
 // Command holos-paas is the single multi-service binary for the Holos PaaS
 // (ADR-12): a cobra root command with one subcommand per service. Each service
-// runs the same image with a different subcommand. This phase wires only the
-// webhook-receiver (ADR-9) and webhook-subscriber (ADR-10) subcommands; the
-// controller, deployer, and authproxy subcommands are added by later phases.
+// runs the same image with a different subcommand.
+//
+// The webhook-receiver (ADR-9) and webhook-subscriber (ADR-10) subcommands
+// that previously realized this layout were retired in HOL-1241: Kargo plus
+// the client-side ORAS publish workflow (ADR-16) now own deployment,
+// superseding the deprecated NATS event-driven pipeline (ADR-9/10/11/14). The
+// root command currently registers no service subcommands; the controller,
+// deployer, and authproxy subcommands are added by later phases.
 package main
 
 import (
@@ -10,8 +15,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/holos-run/holos-paas/internal/webhook/receiver"
-	"github.com/holos-run/holos-paas/internal/webhook/subscriber"
 	"github.com/spf13/cobra"
 )
 
@@ -22,8 +25,8 @@ func main() {
 	}
 }
 
-// newRootCommand builds the "holos-paas" root command and registers the
-// per-service subcommands.
+// newRootCommand builds the "holos-paas" root command. Per-service subcommands
+// are registered here as services are added (see ADR-12).
 func newRootCommand() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "holos-paas",
@@ -33,7 +36,5 @@ func newRootCommand() *cobra.Command {
 			"(see ADR-12).",
 		SilenceUsage: true,
 	}
-	root.AddCommand(receiver.NewCommand())
-	root.AddCommand(subscriber.NewCommand())
 	return root
 }

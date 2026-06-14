@@ -17,12 +17,16 @@
 # import Done conditions as the Layer 1 smoke check, the keycloak-config
 # realm-reconciliation Job completion (the keycloak-config-cli run that
 # converges the holos realm's roles, default group, and Argo CD client), the quay
-# Deployment rollout as the Quay smoke check, the Argo CD workload
-# rollouts as the Argo CD smoke check, and the NATS stream bootstrap
-# Job completion plus the NATS StatefulSet rollout as the NATS backbone
-# smoke check.  The README is the canonical
+# Deployment rollout as the Quay smoke check, and the Argo CD workload
+# rollouts as the Argo CD smoke check.  The README is the canonical
 # explanation of why the order is what it is; this script encodes exactly
 # that order.
+#
+# The NATS event-driven deployment pipeline (the nats backbone plus the
+# webhook-receiver and webhook-subscriber rollouts) was retired in HOL-1241:
+# Kargo plus the client-side ORAS publish workflow (ADR-16) now own
+# deployment, superseding the deprecated receiver/subscriber/deployer path
+# (ADR-9/10/11/14).
 #
 # Idempotent by construction: server-side apply and kubectl wait both
 # converge, so re-running against a fresh, partially applied, or fully
@@ -136,19 +140,6 @@ ROLLOUT_TIMEOUT_SECONDS="$(duration_seconds "${ROLLOUT_TIMEOUT}")" || exit 1
 # Keycloak issuer through a ServiceEntry it ships itself (resolved by the
 # mesh, applied with the component) — nothing downstream depends on it
 # during bootstrap — so appending the pair keeps the established order
-# stable.  nats precedes webhook-receiver: it is a Layer 2 backbone service
-# that nothing during bootstrap depends on (its producers and consumers are
-# separate components that land later), so appending it keeps the
-# established order stable — the same rationale as argocd.
-# webhook-receiver trails nats: it publishes into the NATS WEBHOOKS
-# stream, so it follows nats (whose gate confirms the stream bootstrap Job
-# completed and the server is Ready) — its /readyz gate cannot pass until NATS
-# is reachable.  Its HTTPRoute attaches to the shared Gateway; attachment is
-# level-triggered, so route order does not matter.  webhook-subscriber closes
-# the sequence: it is the durable JetStream consumer draining WEBHOOKS and
-# publishing DeployTasks to TASKS, so it likewise trails nats (its /readyz gate
-# cannot pass until NATS is reachable); it has no Service or HTTPRoute, and
-# nothing during bootstrap depends on it, so appending it keeps the order
 # stable.  kargo-crds and kargo close the sequence: CRDs before the controllers
 # that need the kargo.akuity.io types (the same guardrail as the other *-crds
 # pairs), and Kargo depends only on its own CRDs, the Gateway its HTTPRoutes
@@ -187,9 +178,6 @@ COMPONENTS=(
   quay
   argocd-crds
   argocd
-  nats
-  webhook-receiver
-  webhook-subscriber
   kargo-crds
   kargo
   kargo-project-echo
@@ -408,7 +396,7 @@ pre_keycloak_config() {
 # (or mid-poll), with the realm state it converged still in Keycloak's database —
 # and --ignore-not-found makes that discrimination structural: absent yields
 # empty output with exit 0, while a persistent lookup failure (RBAC, API error)
-# fails the gate rather than silently skipping it (the wait_nats/wait_quay
+# fails the gate rather than silently skipping it (the wait_quay
 # precedent).  The Job's own availability check retries until Keycloak answers, so
 # polling it while the server is still settling after wait_keycloak is safe: it
 # converges once the admin API responds.
@@ -632,142 +620,6 @@ wait_argocd() {
     rollout status statefulset/argocd-application-controller --timeout="${ROLLOUT_TIMEOUT}"
 }
 
-# nats: the NATS backbone smoke check.  First the stream bootstrap Job — the
-# WEBHOOKS and TASKS WorkQueue streams it creates are the point of bringing
-# NATS up, and the Job depends on the server serving, so gating here names
-# the actual culprit in the error instead of a generic rollout timeout.  The
-# Job is polled instead of handed to `kubectl wait --for=condition=Complete`
-# so a Failed Job fails the gate on the next poll rather than blocking the
-# full ROLLOUT_TIMEOUT before erroring.  The Job carries a
-# ttlSecondsAfterFinished, so absence is tolerated — already garbage-collected
-# on a long-bootstrapped cluster (or mid-poll), with the streams it created
-# still in JetStream's file store — and --ignore-not-found makes that
-# discrimination structural: absent yields empty output with exit 0, while a
-# persistent lookup failure (RBAC, API error) fails the gate rather than
-# silently skipping it (the wait_quay precedent).  Then the StatefulSet
-# rollout confirms the server pod is Ready.  The Job's own script retries
-# until NATS is reachable, so polling the Job before the StatefulSet is fully
-# rolled out is safe: the Job converges once the server answers, and the
-# rollout wait then confirms readiness.
-wait_nats() {
-  local job=job/nats-stream-bootstrap job_state lookup_failures=0
-  local deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
-  while true; do
-    # One read captures both existence and state: absent yields empty
-    # output; present yields the Job name followed by one Type=Status line
-    # per status condition.  --request-timeout bounds each poll so a hung
-    # apiserver connection cannot stall past the script-owned deadline.
-    if job_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace nats \
-      get "${job}" --ignore-not-found --request-timeout=10s \
-      -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
-      lookup_failures=0
-      if [[ -z "${job_state}" ]] || grep -q '^Complete=True$' <<<"${job_state}"; then
-        break
-      fi
-      if grep -q '^Failed=True$' <<<"${job_state}"; then
-        echo "ERROR: ${job} failed; inspect it with:" >&2
-        echo "       kubectl --context ${KUBE_CONTEXT} --namespace nats describe ${job}" >&2
-        return 1
-      fi
-    else
-      # kubectl's own stderr has already flowed through above.  A single
-      # failed read may be a transient apiserver or network blip — only a
-      # persistent failure (e.g. RBAC) aborts the gate.
-      lookup_failures=$((lookup_failures + 1))
-      if ((lookup_failures >= 3)); then
-        echo "ERROR: cannot query ${job}: ${lookup_failures} consecutive lookup failures." >&2
-        return 1
-      fi
-    fi
-    if ((SECONDS >= deadline)); then
-      echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for ${job} to complete." >&2
-      return 1
-    fi
-    sleep 5
-  done
-  kubectl --context "${KUBE_CONTEXT}" --namespace nats \
-    rollout status statefulset/nats --timeout="${ROLLOUT_TIMEOUT}"
-}
-
-# webhook-receiver: the end-to-end ingress smoke check.  Its readinessProbe
-# hits /readyz, which reports Ready only once the pod is connected to NATS, so
-# a successful rollout confirms the full path is live: the enrolled workload
-# started under ambient capture and the mesh AuthorizationPolicy permits its
-# publish to the NATS client port.  It does not exercise the Gateway or
-# HTTPRoute attachment — verify the hooks.holos.localhost traffic path
-# separately (see holos/README.md).  Gating after nats matters: a receiver
-# scheduled before the NATS server is serving would sit unready until it
-# reconnects, so the nats gate ahead of this one keeps the rollout fast.
-#
-# Unlike every other component, this one runs a locally built image
-# quay.holos.localhost/holos/holos-paas:dev) rather than an upstream one,
-# so a fresh `scripts/apply` on a cluster that has not yet had the image pushed
-# stalls at ImagePullBackOff.  Detect that specific failure on a stalled
-# rollout and name the actual fix (`make docker-push`) instead of letting it
-# expire as a generic rollout timeout.  See the quick-start
-# (docs/local-cluster.md) and holos/README.md.
-wait_webhook_receiver() {
-  if ! kubectl --context "${KUBE_CONTEXT}" --namespace webhook-receiver \
-    rollout status deployment/webhook-receiver --timeout="${ROLLOUT_TIMEOUT}"; then
-    # On timeout, surface an image-pull failure as the likely cause: it is the
-    # one this component introduces and the rollout-status error alone does not
-    # name it.  The waiting-reason read is best-effort — a missing pod or empty
-    # output simply falls through to the generic guidance.
-    local waiting
-    waiting=$(kubectl --context "${KUBE_CONTEXT}" --namespace webhook-receiver \
-      get pods -l app.kubernetes.io/name=webhook-receiver \
-      -o jsonpath='{range .items[*].status.containerStatuses[*]}{.state.waiting.reason}{"\n"}{end}' \
-      2>/dev/null || true)
-    if grep -qE 'ImagePull|ErrImagePull|ImagePullBackOff' <<<"${waiting}"; then
-      echo "ERROR: webhook-receiver cannot pull its image" \
-        "(${waiting//$'\n'/ }).  This is the only component that runs a locally" >&2
-      echo "       built image; build and push it to the k3d registry first:" >&2
-      echo "         make docker-push" >&2
-      echo "       then re-run scripts/apply (see docs/local-cluster.md)." >&2
-    fi
-    return 1
-  fi
-}
-
-# webhook-subscriber: the consumer-side smoke check.  Its readinessProbe hits
-# /readyz, which reports Ready only once the pod is connected to NATS, so a
-# successful rollout confirms the enrolled workload started under ambient
-# capture and the mesh AuthorizationPolicy permits its consume/publish on the
-# NATS client port.  Unlike the receiver it has no Service or HTTPRoute, so
-# there is no traffic path to verify separately.  Gating after nats matters: a
-# subscriber scheduled before the NATS server is serving would sit unready
-# until it reconnects, so the nats gate ahead of this one keeps the rollout
-# fast.
-#
-# Like webhook-receiver it runs the locally built image
-# quay.holos.localhost/holos/holos-paas:dev), so a fresh `scripts/apply` on
-# a cluster that has not yet had the image pushed stalls at ImagePullBackOff.
-# Detect that specific failure on a stalled rollout and name the actual fix
-# (`make docker-push`) instead of letting it expire as a generic rollout
-# timeout.  See the quick-start (docs/local-cluster.md) and holos/README.md.
-wait_webhook_subscriber() {
-  if ! kubectl --context "${KUBE_CONTEXT}" --namespace webhook-subscriber \
-    rollout status deployment/webhook-subscriber --timeout="${ROLLOUT_TIMEOUT}"; then
-    # On timeout, surface an image-pull failure as the likely cause: it is the
-    # one this component introduces and the rollout-status error alone does not
-    # name it.  The waiting-reason read is best-effort — a missing pod or empty
-    # output simply falls through to the generic guidance.
-    local waiting
-    waiting=$(kubectl --context "${KUBE_CONTEXT}" --namespace webhook-subscriber \
-      get pods -l app.kubernetes.io/name=webhook-subscriber \
-      -o jsonpath='{range .items[*].status.containerStatuses[*]}{.state.waiting.reason}{"\n"}{end}' \
-      2>/dev/null || true)
-    if grep -qE 'ImagePull|ErrImagePull|ImagePullBackOff' <<<"${waiting}"; then
-      echo "ERROR: webhook-subscriber cannot pull its image" \
-        "(${waiting//$'\n'/ }).  Like webhook-receiver it runs a locally" >&2
-      echo "       built image; build and push it to the k3d registry first:" >&2
-      echo "         make docker-push" >&2
-      echo "       then re-run scripts/apply (see docs/local-cluster.md)." >&2
-    fi
-    return 1
-  fi
-}
-
 # kargo-crds: the Kargo controller and webhooks servers require the
 # kargo.akuity.io types at startup, and the next phase (HOL-1240) applies
 # Project/Warehouse/Stage custom resources.
@@ -890,6 +742,27 @@ if ! kubectl --context "${KUBE_CONTEXT}" version --request-timeout=10s >/dev/nul
   echo "       Create the local cluster with scripts/local-k3d (see docs/local-cluster.md)." >&2
   exit 1
 fi
+
+# Migration cleanup (HOL-1241): the NATS event-driven deployment pipeline (the
+# nats backbone plus the webhook-receiver and webhook-subscriber components) was
+# retired in favor of Kargo + the client-side ORAS publish workflow (ADR-16).
+# This script applies only the component directories that still render, but a
+# plain server-side apply never prunes resources whose manifests were removed
+# from the deploy tree — so a cluster that previously applied the pipeline would
+# keep its StatefulSet, Deployments, Services, HTTPRoutes, and the unauthenticated
+# hooks.holos.localhost / nats.holos.localhost surfaces running indefinitely.
+# Every resource the pipeline created lived entirely inside one of these three
+# dedicated namespaces, so deleting the namespaces removes the workloads,
+# routes, and policies in one cascade; the Gateway listeners they attached to
+# are level-triggered and detach on their own.  --ignore-not-found makes this a
+# no-op on a fresh cluster or after the first cleaned apply, keeping the script
+# idempotent.  --wait=false returns immediately: namespace termination drains
+# pods in the background and nothing applied later depends on these namespaces
+# being gone.
+echo "==> cleanup: retired NATS pipeline namespaces (HOL-1241)"
+kubectl --context "${KUBE_CONTEXT}" delete namespace \
+  nats webhook-receiver webhook-subscriber \
+  --ignore-not-found --wait=false
 
 for component in "${COMPONENTS[@]}"; do
   echo "==> ${component}"

@@ -85,9 +85,8 @@ cert-manager webhook rollout, the CNPG operator rollout, the Postgres
 `Cluster` Ready conditions, and the Keycloak operator rollout — plus waits
 on the `echo` Deployment, the `Keycloak` CR Ready and realm import Done
 conditions, the `keycloak-config` realm-reconciliation Job, the `quay`
-Deployment rollout, the Argo CD workload rollouts, the `nats`
-stream-bootstrap Job and StatefulSet rollout, and the `webhook-receiver`
-Deployment rollout as smoke checks; nothing else.
+Deployment rollout, and the Argo CD workload rollouts as smoke checks;
+nothing else.
 
 Apply order matters beyond "CRD components first". The script applies the
 platform components in this order — everything through `echo` is the
@@ -146,23 +145,6 @@ platform service:
     Keycloak issuer hostname `auth.holos.localhost` in-cluster for the
     OIDC backchannel (see
     [Argo CD admin credentials and verification](#argo-cd-admin-credentials-and-verification))
-22. `nats` — the NATS JetStream backbone: the single-replica `nats`
-    `StatefulSet` with file-backed JetStream, plus the
-    `nats-stream-bootstrap` `Job` that idempotently creates the `WEBHOOKS`
-    (`webhooks.>`) and `TASKS` (`tasks.>`) file-backed WorkQueue streams,
-    and an `HTTPRoute` attaching the chart's WebSocket port (`8080`) to the
-    shared Gateway at `nats.holos.localhost` for host-facing debugging over
-    `wss://` (see the
-    [host-facing wss debug endpoint](#host-facing-wss-debug-endpoint))
-23. `webhook-receiver` — the thin HTTP ingress that publishes raw inbound
-    webhook bodies to the NATS `WEBHOOKS` stream: a `Deployment` running the
-    `holos-paas` image (`webhook-receiver` subcommand), a `Service`, and an
-    `HTTPRoute` attaching it to the shared Gateway at `hooks.holos.localhost`
-24. `webhook-subscriber` — the durable JetStream consumer that drains the
-    `WEBHOOKS` stream, parses each raw event into `DeployTask`s, and publishes
-    them to the `TASKS` stream (`tasks.deploy`): a `Deployment` running the
-    `holos-paas` image (`webhook-subscriber` subcommand) and **nothing else** —
-    no `Service` or `HTTPRoute`, since it serves no inbound business traffic
 
 The order encodes six rules: the `namespaces` component applies first, so
 every Namespace exists before any component that populates it;
@@ -231,39 +213,9 @@ bootstrap — so appending the pair keeps the established order stable. The
 renders with pods — the redis, repo-server, and server `Deployment`s and
 the application-controller `StatefulSet` — as the Argo CD smoke check
 (the applicationset-controller `Deployment` renders with `replicas: 0`,
-and dex and notifications are disabled and render no workloads). `nats`
-closes the sequence: it is a Layer 2 backbone service that nothing during
-bootstrap depends on (its producers and consumers are separate components
-that land later), so appending it keeps the established order stable — the
-same rationale as `argocd`. Its gate first polls the `nats-stream-bootstrap`
-Job to completion — the `wait_quay` Job-poll pattern, so a failure names the
-Job rather than a generic rollout timeout — and then waits the `nats`
-`StatefulSet` rollout as the NATS backbone smoke check. `webhook-receiver`
-closes the sequence: it publishes into the NATS `WEBHOOKS` stream, so it
-trails `nats` — its `readinessProbe` hits `/readyz`, which reports Ready only
-once the pod is connected to NATS, so its rollout gate cannot pass until the
-`nats` server is serving and the mesh `AuthorizationPolicy` (extended to
-ALLOW the `webhook-receiver` namespace as a client source) admits its publish.
-Gating it after `nats` keeps that rollout fast rather than leaving the
-receiver unready while it reconnects. Its `HTTPRoute` attaches to the shared
-Gateway at `hooks.holos.localhost`; attachment is level-triggered, so route
-order does not matter — verify the end-to-end traffic path
-(`curl -X POST --data-binary @payload.json https://hooks.holos.localhost/webhooks/<source>`
-→ the exact raw body on `webhooks.<source>`) separately. The route matches
-`POST /webhooks/` only, so a bodyless `GET` does not exercise it.
-`webhook-subscriber` closes the sequence after the receiver: it consumes the
-raw events the receiver stores on the `WEBHOOKS` stream and publishes
-`DeployTask`s onto the `TASKS` stream, so it trails both `nats` (whose streams
-and `AuthorizationPolicy` it depends on — the policy is extended to ALLOW the
-`webhook-subscriber` namespace on the client port `4222`) and `webhook-receiver`
-(its producer). Its `readinessProbe` hits `/readyz`, which reports Ready only
-once the pod is connected to NATS, so its rollout gate cannot pass until the
-backbone is serving and the policy admits its connection. It emits a
-`Deployment` only — no `Service` or `HTTPRoute`, because it serves no inbound
-business traffic; its health endpoints are kubelet-facing and deliberately not
-widened to the mesh. See the
-[webhook subscriber and DeployTask contract](#webhook-subscriber-and-deploytask-contract)
-for the message contract and durability story.
+and dex and notifications are disabled and render no workloads). Argo CD
+closes the apply sequence: nothing downstream depends on it during
+bootstrap, so it is appended last to keep the established order stable.
 
 The first rule exists because nothing orders an apply batch by kind:
 kubectl submits the files sequentially in lexical order, so a single
@@ -452,8 +404,7 @@ users sign in through SSO.
 
 ### Quay verification
 
-Two checks prove the registry behaviors the platform depends on
-([ADR-13](../docs/adr/ADR-13.md) builds on the push webhook); re-run them
+Two checks prove the registry behaviors the platform depends on; re-run them
 after any Quay change. Both assume the bootstrap above has run: the
 registry is initialized and `holos/sample` exists from the
 [Verify Quay](../docs/local-cluster.md#verify-quay) push.
@@ -490,8 +441,8 @@ kubectl -n quay logs quay-echo
 ```
 
 The echo logs must show one POST per event whose JSON body carries
-`repository`, `namespace`, `name`, `docker_url`, and `updated_tags` — the
-fields ADR-13's webhook receiver parses. Deliveries to cluster-internal
+`repository`, `namespace`, `name`, `docker_url`, and `updated_tags`.
+Deliveries to cluster-internal
 plain-HTTP URLs work out of the box; no allowlist configuration is
 required. Failures can be silent (Quay queues deliveries through Redis),
 so on trouble check the notification's failure counter
@@ -694,7 +645,7 @@ EOF
 
 Wait for the sync and confirm the manifest landed. `Application`s are
 ordinary namespaced objects — the plain `kubectl get` is the same access
-path the future deployment subscriber uses to patch `targetRevision`:
+path Kargo's promotion controller uses to patch `targetRevision`:
 
 ```bash
 kubectl -n argocd wait application/argocd-smoke \
@@ -705,7 +656,7 @@ kubectl get applications.argoproj.io -n argocd
 kubectl -n echo get configmap argocd-smoke
 ```
 
-Exercise the rollout path the deployment subscriber will use — push a
+Exercise the rollout path Kargo's promotion controller uses — push a
 changed artifact, resolve its immutable digest, and patch
 `targetRevision` (prefer digests over tags for controller-driven updates;
 see the
@@ -795,433 +746,22 @@ kubectl -n keycloak run psql-verify --rm -i --restart=Never \
   psql "$URI" -c 'SELECT current_user, current_database()'
 ```
 
-### NATS JetStream backbone and connection contract
+### Deployment: Kargo + client-side ORAS publish
 
-The `nats` component is the platform's event-driven backbone
-([ADR-6](../docs/adr/ADR-6.md)): a single-replica `nats` `StatefulSet` with
-file-backed JetStream, plus a `nats-stream-bootstrap` `Job` that idempotently
-creates the two WorkQueue streams the pipeline runs on. This section is the
-stable contract the downstream
-[webhook-receiver](#webhook-receiver-and-service-contract) (HOL-1198) and
-[webhook-subscriber](#webhook-subscriber-and-deploytask-contract) (HOL-1204)
-components connect against; the
-[two-loop deployment flow](../docs/adr/ADR-13.md) is the authoritative source
-for which producer publishes to which subject.
+The platform's deployment path is owned by **Kargo** plus a client-side
+**ORAS publish workflow** ([ADR-16](../docs/adr/ADR-16.md)): rendered
+manifests are packaged and pushed to the in-cluster Quay registry as OCI
+artifacts (see
+[docs/oci-publish-workflow.md](docs/oci-publish-workflow.md)), and Kargo
+promotes them through its Project/Warehouse/Stage resources.
 
-**Subject hierarchy.** The platform's subjects are organized under two
-top-level prefixes, one per stream:
-
-| Subject         | Published by                                         | Meaning                                                                                                                                                                                                                                                                                                 |
-| --------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `webhooks.quay` | Webhook receiver ([ADR-9](../docs/adr/ADR-9.md))     | Raw Quay repository-push webhook bodies, written verbatim with no parsing                                                                                                                                                                                                                               |
-| `tasks.deploy`  | Webhook subscriber ([ADR-10](../docs/adr/ADR-10.md)) | Normalized **deploy task** ([DeployTask contract](#webhook-subscriber-and-deploytask-contract)) — the **only** subject the shipped subscriber emits; per [ADR-13](../docs/adr/ADR-13.md) the eventual design reserves it for a config-image push matched to an `Application`'s configuration repository |
-| `tasks.render`  | Webhook subscriber ([ADR-10](../docs/adr/ADR-10.md)) | Normalized **render task** — an app-image push matched an `Application`'s app-image repository ([ADR-13](../docs/adr/ADR-13.md)). **Not yet emitted**: the KRM-matching routing that produces it is deferred (see the [subscriber contract](#webhook-subscriber-and-deploytask-contract))               |
-
-The streams capture these with wildcard subjects (`webhooks.>`, `tasks.>`) so
-the receiver and subscriber can introduce additional sources or task types
-without re-provisioning a stream. The `webhooks.>` wildcard deliberately
-matches ADR-13's `webhooks.quay` producer subject rather than the narrower
-`webhooks.raw.<source>` sketched in the M0 planning notes, which predates
-ADR-13 and would not match `webhooks.quay`. [ADR-13](../docs/adr/ADR-13.md)
-defines the render-vs-deploy task split; the shipped subscriber implements only
-the direct `tasks.deploy` slice — it performs no KRM match and publishes every
-parsed tag as a `DeployTask`, so `tasks.render` and the match-driven routing of
-`tasks.deploy` are deferred (see the
-[subscriber contract](#webhook-subscriber-and-deploytask-contract)).
-
-**Stream definitions.** The `nats-stream-bootstrap` Job creates both streams
-with WorkQueue retention (each message is delivered to exactly one consumer
-and removed once acked, so handled events never accumulate — at-least-once
-processing) and file storage (the queue survives a NATS pod restart):
-
-| Stream     | Subjects     | Retention   | Storage |
-| ---------- | ------------ | ----------- | ------- |
-| `WEBHOOKS` | `webhooks.>` | `WorkQueue` | `file`  |
-| `TASKS`    | `tasks.>`    | `WorkQueue` | `file`  |
-
-The streams are created with the CLI defaults for size and age limits
-(`max_msgs`, `max_bytes`, `max_age` all unbounded), so WorkQueue retention
-bounds only *acked* messages — an undrained backlog of unconsumed messages
-can still grow against the 2Gi JetStream PVC. Explicit stream limits (and the
-discard policy at the limit) are deferred along with the consumer
-configuration to the receiver (HOL-1198) and subscriber (HOL-1204) components,
-which own the delivery and back-pressure policy.
-
-**MVP auth posture: no NATS authentication (deferred).** The NATS server
-runs with **no authentication** for the MVP — any client that can reach a NATS
-port may publish and subscribe. The rationale is reachability: in-cluster
-clients connect over the client port, the `nats` namespace is ambient-enrolled
-([mesh-enrollment.md](docs/mesh-enrollment.md)) so the client hop carries mTLS
-transport identity at L4, and the one host-facing surface — the WebSocket port
-exposed at `wss://nats.holos.localhost` for local debugging (see
-[Host-facing wss debug endpoint](#host-facing-wss-debug-endpoint) below) — is
-**unauthenticated** and reachable through the shared Gateway from anywhere the
-Gateway's published ports are reachable. It is *intended* for the developer's
-own loopback (`nats.holos.localhost` resolves to `127.0.0.1`), but that DNS
-mapping is a convenience, not an access boundary; containing it to the local
-machine is the operator's responsibility (loopback-bound host ports or a
-firewall) until NATS authentication lands. To keep cross-namespace reach
-explicit by construction, the
-component ships an `AuthorizationPolicy` with least-privilege rules:
-same-namespace (`nats`) sources reach every port — the
-client port (4222) for the bootstrap Job and the monitoring endpoint (8222) —
-the shared Gateway's namespace reaches **only** the WebSocket port (8080) so
-the host-facing `wss://` route works, while the `webhook-receiver` namespace
-(added in HOL-1198 so the deployed
-`webhook-receiver` may publish to the `WEBHOOKS` stream) and the
-`webhook-subscriber` namespace (added in HOL-1204 so the deployed
-`webhook-subscriber` may drain `WEBHOOKS` and publish to `TASKS`) each reach
-**only** the client port (4222), never the unauthenticated monitoring endpoint.
-Any further cross-namespace clients are admitted explicitly and similarly scoped
-as they land; tightening these namespace-granular rules to per-ServiceAccount
-principals, and NATS account/user authentication for both the in-cluster and
-the host-facing `wss://` surfaces, are deliberately deferred to a later issue
-(the [NATS in-cluster authentication placeholder](docs/placeholders.md#nats-in-cluster-authentication)).
-
-**In-cluster connection contract.** Clients connect to the chart's client
-`Service` on the NATS client port:
-
-| Endpoint            | Value                                          |
-| ------------------- | ---------------------------------------------- |
-| Connection URL      | `nats://nats.nats.svc.cluster.local:4222`      |
-| Service / namespace | `nats` Service in the `nats` namespace         |
-| Client port         | `4222`                                         |
-| Streams             | `WEBHOOKS` (`webhooks.>`), `TASKS` (`tasks.>`) |
-
-#### Host-facing wss debug endpoint
-
-For local debugging, the `nats` component also attaches the chart's WebSocket
-listener (port `8080`) to the shared Istio Gateway via an `HTTPRoute`, the same
-way the `quay`, `argocd`, and `keycloak` components expose their UIs on
-`*.holos.localhost`. The Gateway terminates browser-trusted TLS and forwards the
-plain WebSocket upgrade to the listener, so a developer on the host can reach
-JetStream over `wss://` without port-forwarding:
-
-| Endpoint            | Value                                    |
-| ------------------- | ---------------------------------------- |
-| Connection URL      | `wss://nats.holos.localhost`             |
-| Exposed via         | `HTTPRoute` on the shared Istio Gateway  |
-| WebSocket port      | `8080` (on the `nats` Service)           |
-| Credentials         | none — unauthenticated (MVP no-auth)     |
-
-This endpoint is a **debugging affordance, not a production access path**, and it
-is **unauthenticated** — consistent with the MVP
-[no-auth posture](#nats-jetstream-backbone-and-connection-contract) above. Treat
-it as having no client authentication at all: anything that can open a TCP
-connection to the Gateway's published HTTPS port and present `Host`/SNI
-`nats.holos.localhost` can publish and subscribe. The
-`AuthorizationPolicy` admits the WebSocket port (8080) from the shared Gateway's
-namespace alone, which constrains *in-cluster* reach to the Gateway, but it does
-**not** bound who can reach the Gateway from outside. The intended use is local:
-`nats.holos.localhost` resolves to `127.0.0.1` on the developer's machine
-([docs/local-cluster.md](../docs/local-cluster.md)), so the developer hits their
-own loopback. That DNS mapping is a convenience, **not** an access boundary —
-the k3d load balancer publishes ports `80`/`443` on the Docker host
-([`k3d/config.yaml`](../k3d/config.yaml)) without a loopback-only host bind, so
-on a multi-user or LAN-reachable host another client could reach the Gateway by
-IP with the right `Host` header. Containing this endpoint to the local machine
-is the operator's responsibility (bind the published ports to `127.0.0.1`, or a
-host firewall) until NATS authentication lands. Authenticating both the
-in-cluster and host-facing surfaces is the deferred future work tracked by the
-[NATS in-cluster authentication placeholder](docs/placeholders.md#nats-in-cluster-authentication).
-The host-side verification steps — connecting with the `nats` CLI and reading
-recent `WEBHOOKS` messages with the `scripts/nats-webhooks` reader — are in
-[Verify NATS over wss](../docs/local-cluster.md#verify-nats-over-wss).
-
-Verify the backbone on the live cluster after `scripts/apply`. The
-`nats`-CLI commands run from a throwaway `nats-box` pod against the in-cluster
-URL above (the bootstrap Job uses the same `natsio/nats-box` image):
-
-```bash
-SERVER=nats://nats.nats.svc.cluster.local:4222
-kubectl -n nats rollout status statefulset/nats --timeout=300s
-kubectl -n nats logs job/nats-stream-bootstrap        # "Stream bootstrap complete."
-
-# Stream shape — WorkQueue retention and file storage on both streams:
-kubectl -n nats run nats-verify --rm -i --restart=Never \
-  --image=natsio/nats-box:0.19.7 -- \
-  nats --server "$SERVER" stream info WEBHOOKS         # Retention: WorkQueue, Storage: File, Subjects: webhooks.>
-```
-
-To prove retention-with-restart-survival and WorkQueue removal-after-ack — the
-two behaviors [ADR-6](../docs/adr/ADR-6.md) depends on — run an interactive
-`nats-box` pod and exercise a publish, a NATS pod restart, then a
-consume-and-ack:
-
-```bash
-kubectl -n nats run nats-box --rm -it --restart=Never --image=natsio/nats-box:0.19.7 -- sh
-# inside the pod:
-SERVER=nats://nats.nats.svc.cluster.local:4222
-nats --server "$SERVER" pub webhooks.quay 'quay-event'   # Published — accepted by WEBHOOKS
-nats --server "$SERVER" stream info WEBHOOKS             # Messages: 1
-# in another terminal, restart the server pod:
-#   kubectl -n nats delete pod nats-0
-#   kubectl -n nats rollout status statefulset/nats
-nats --server "$SERVER" stream info WEBHOOKS             # Messages: 1 (survived restart — file storage)
-nats --server "$SERVER" consumer add WEBHOOKS test --pull --ack=explicit --deliver=all --defaults
-nats --server "$SERVER" consumer next WEBHOOKS test --count=1 --ack   # "quay-event"; Acknowledged
-nats --server "$SERVER" stream info WEBHOOKS             # Messages: 0 (WorkQueue: removed after ack)
-```
-
-The bootstrap Job is idempotent: it gates `nats stream add` on `nats stream
-info` and converges an existing stream's mutable config with
-`nats stream edit --force`, so re-running it (after the
-`ttlSecondsAfterFinished` garbage-collects the completed Job, or after a
-`kubectl -n nats delete job nats-stream-bootstrap` and re-apply) converges the
-already-created streams and exits 0 without re-creating them.
-
-### Webhook receiver and service contract
-
-The `webhook-receiver` component ([ADR-9](../docs/adr/ADR-9.md)) is the thin
-HTTP ingress that fronts the NATS backbone: it accepts an inbound registry
-webhook and publishes the **raw, unmodified body** to the `WEBHOOKS` WorkQueue
-stream, performing no parsing — every interpretation is deferred to the
-subscriber ([ADR-10](../docs/adr/ADR-10.md)). It runs the locally built
-`holos-paas` image (`webhook-receiver` subcommand) as a `Deployment` + `Service`
-in the ambient-enrolled `webhook-receiver` namespace, with an `HTTPRoute`
-attaching it to the shared Gateway at `hooks.holos.localhost`. This section is
-the stable service contract its senders (the Quay registry, [ADR-13](../docs/adr/ADR-13.md))
-and the downstream subscriber connect against.
-
-**HTTP contract.**
-
-| Aspect           | Value                                                                     |
-| ---------------- | ------------------------------------------------------------------------- |
-| Ingress hostname | `hooks.holos.localhost` (→ `127.0.0.1`, local cluster only)               |
-| Webhook endpoint | `POST /webhooks/{source}` — `{source}` names the sender (e.g. `quay`)     |
-| Publish subject  | `<prefix>.<source>`, prefix defaults to `webhooks` → e.g. `webhooks.quay` |
-| Target stream    | `WEBHOOKS` (`webhooks.>`), file-backed WorkQueue                          |
-| Liveness probe   | `GET /healthz` — always `200` while the process is up                     |
-| Readiness probe  | `GET /readyz` — `200` only when connected to NATS, else `503`             |
-
-The publish subject is `webhooks.<source>`, matching [ADR-13](../docs/adr/ADR-13.md)'s
-`webhooks.quay` producer subject and the `WEBHOOKS` stream's `webhooks.>`
-capture — not the narrower `webhooks.raw.<source>` from the superseded M0
-planning notes. The subject prefix, listen address, and max body size are
-configurable via flags or `HOLOS_PAAS_*` environment variables (see
-`webhook-receiver --help`).
-
-**Status codes** (the handler's contract; see the ingress note below for which
-of these are reachable at `hooks.holos.localhost`):
-
-| Code                           | Meaning                                                                                                                                                                                             |
-| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `202 Accepted`                 | The body was published **and** the JetStream `PubAck` returned — the event is durably stored on the `WEBHOOKS` stream                                                                               |
-| `503 Service Unavailable`      | The publish failed or NATS is unreachable — the event is **not** stored, so the sender must retry                                                                                                   |
-| `413 Request Entity Too Large` | The body exceeded the configured `--max-body-bytes` (default 1 MiB) and was rejected before any publish                                                                                             |
-| `400 Bad Request`              | The body could not be read (e.g. a truncated request)                                                                                                                                               |
-| `404 Not Found`                | The path did not match `/webhooks/{source}` — the Go 1.22 `ServeMux` `{source}` segment matches exactly one path element, so `/webhooks/quay/extra` and `/webhooks/` with an empty source get `404` |
-| `405 Method Not Allowed`       | A matching path with a method other than `POST` (e.g. `GET /webhooks/quay`)                                                                                                                         |
-
-The `HTTPRoute` at `hooks.holos.localhost` forwards **only** `POST` requests
-with the `/webhooks/` prefix (it matches `method: POST`, `path prefix
-/webhooks/`). So externally a non-`POST` method or a non-`/webhooks/` path is
-rejected by the Gateway and never reaches the handler — the `404`/`405` rows
-above describe the handler's own behavior, exercised either by a request the
-Gateway does forward (e.g. `POST /webhooks/quay/extra` → `404`) or by reaching
-the ClusterIP `Service` directly in-cluster.
-
-**Body + header framing.** The raw request body becomes the NATS message
-payload verbatim. A small, provider-agnostic allowlist of HTTP headers is copied
-onto the message as NATS headers so the subscriber can route and verify without
-the receiver having parsed anything; only headers present on the request are
-forwarded:
-
-| HTTP header                           | Purpose                                                                 |
-| ------------------------------------- | ----------------------------------------------------------------------- |
-| `Content-Type`                        | the body's media type, for the subscriber to parse it                   |
-| `X-Github-Event` / `X-Event-Type`     | event-type dispatch without decoding the body                           |
-| `X-Github-Delivery` / `X-Delivery-Id` | delivery id for idempotency and end-to-end tracing                      |
-| `X-Hub-Signature-256` / `X-Signature` | sender signature, carried through for verification against the raw body |
-
-**Durability story.** The receiver is thin, so its only failure mode is failing
-to persist to JetStream. It therefore acks the sender (`202`) **only after** the
-publish is acked by JetStream, and returns `503` when the publish fails or NATS
-is unavailable. A `5xx` makes the sender (the registry) retry, so an accepted
-event is never silently dropped: once NATS returns, the retried delivery lands
-on the file-backed `WEBHOOKS` WorkQueue stream and is not lost. Durability is
-owned by the stream — the receiver's contract is simply "`202` means stored".
-The pod connects with an **unbounded reconnect budget** (`MaxReconnects(-1)`), so
-it rides out arbitrarily long NATS outages: `/readyz` reports `503` while
-disconnected (failing the readiness gate and removing the pod from the Service's
-endpoints) and recovers on reconnect without a restart. This is the live
-resolution of [ADR-9](../docs/adr/ADR-9.md)'s milestone planning note.
-
-**Security posture: unauthenticated, local-only (MVP).** The receiver performs
-**no authentication** for the MVP — it neither verifies provider signatures nor
-requires a token, so **any** client that can reach the endpoint can enqueue an
-arbitrary body onto the `WEBHOOKS` stream. The MVP relies entirely on network
-reachability to bound exposure, on two surfaces:
-
-- **External.** The endpoint is reachable from outside the cluster only at
-  `hooks.holos.localhost`, which resolves to `127.0.0.1` and is served by the
-  shared Istio Gateway on the local k3d cluster; it is never exposed off the
-  machine. Even there, localhost is a containment boundary, not an
-  authentication one — any local process (or a browser POST to the trusted
-  `*.holos.localhost` origin) can submit a forged webhook.
-- **In-cluster.** The component also renders a plain ClusterIP `Service`
-  (`webhook-receiver.webhook-receiver.svc:8080`) with **no receiver-side
-  `AuthorizationPolicy` or NetworkPolicy** restricting callers, so any
-  in-cluster workload that can reach it can likewise enqueue an arbitrary body.
-  This is consistent with the MVP's deliberate no-in-cluster-auth posture for
-  the NATS backbone (see
-  [NATS JetStream backbone](#nats-jetstream-backbone-and-connection-contract)),
-  where every in-cluster client is already trusted; it is **not** a boundary to
-  rely on once untrusted tenant workloads exist.
-
-The only in-handler abuse bound on either surface is the configurable max body
-size, which caps a single request's contribution to the WorkQueue.
-Defense-in-depth at the transport layer: the namespace is ambient-enrolled
-([mesh-enrollment.md](docs/mesh-enrollment.md)) and the `nats`
-`AuthorizationPolicy` admits the `webhook-receiver` namespace to **only** the
-NATS client port (`4222`), never the monitoring endpoint. The signature headers
-are carried through verbatim so verification can move to the edge later: edge
-signature verification (reject forged senders before publishing) is the planned
-fix and a prerequisite for ever exposing the endpoint beyond the local cluster —
-tracked by [HOL-1200](https://linear.app/holos-run/issue/HOL-1200) and stubbed in
-[docs/placeholders.md](docs/placeholders.md#webhook-edge-signature-verification).
-
-**Dev-loop image refresh.** The Deployment pulls
-`quay.holos.localhost/holos/holos-paas:dev` with `imagePullPolicy: Always`.
-The `:dev` tag is **mutable** (a deliberate tradeoff for the local dev loop:
-[ADR-8](../docs/adr/ADR-8.md) prefers immutable tags for delivery, but the dev
-loop rebuilds the same tag), so the cluster does not redeploy on its own when the
-tag's content changes. After rebuilding and pushing the image, restart the
-Deployment to pull the new `:dev`:
-
-```bash
-make docker-push
-kubectl -n webhook-receiver rollout restart deployment/webhook-receiver
-kubectl -n webhook-receiver rollout status deployment/webhook-receiver
-```
-
-**Verification.** See the
-[Verify the webhook receiver](../docs/local-cluster.md#verify-the-webhook-receiver)
-section of the local cluster guide for the end-to-end `curl`/`nats` checks,
-including the `503`-and-retry durability check.
-
-### Webhook subscriber and DeployTask contract
-
-The `webhook-subscriber` component ([ADR-10](../docs/adr/ADR-10.md)) is the
-durable JetStream consumer that turns the raw webhook bodies the receiver stored
-into the platform's own work vocabulary. It drains the `WEBHOOKS` WorkQueue
-stream (`webhooks.>`), parses each raw event into one or more **DeployTask**
-messages, and publishes each to the `tasks.deploy` subject on the `TASKS`
-stream, where the future deployer ([ADR-11](../docs/adr/ADR-11.md)) consumes
-them. It runs the same locally built `holos-paas` image (`webhook-subscriber`
-subcommand) as a `Deployment` in the ambient-enrolled `webhook-subscriber`
-namespace; unlike the receiver it serves **no inbound business traffic**, so it
-renders no `Service` or `HTTPRoute` — its only HTTP surface is the kubelet-facing
-health port. This section is the stable contract its producer (the receiver) and
-its consumer (the deployer) connect against, and the canonical home of the
-DeployTask field table referenced by [ADR-10](../docs/adr/ADR-10.md) and
-[ADR-11](../docs/adr/ADR-11.md).
-
-**DeployTask schema.** The DeployTask is a versioned wire contract specified as
-a ConnectRPC/buf protobuf message ([ADR-14](../docs/adr/ADR-14.md)). The
-`.proto` is the single source of truth:
-[`proto/holos/paas/pipeline/v1alpha1/pipeline.proto`](../proto/holos/paas/pipeline/v1alpha1/pipeline.proto)
-(package `holos.paas.pipeline.v1alpha1`); the Go type is **generated** from it
-into [`internal/gen/`](../internal/gen) and re-exported as `task.DeployTask` from
-[`internal/task/task.go`](../internal/task/task.go), which also owns the
-`DeploySubject`, `SchemaVersion`, and the idempotency-key helper. The message is
-**binary-protobuf-marshaled** onto `tasks.deploy` — `nats sub tasks.>` shows
-bytes, so eyeballing a task needs `protoc --decode` or the generated type.
-Changing its shape is an ADR-level change: edit the `.proto`, bump
-`schema_version`, and revise ADR-10/ADR-11/ADR-14; `buf breaking` gates a
-wire-incompatible change in CI. The fields:
-
-| Field           | proto field                 | Type                        | Meaning                                                                                                                                                                                                                              |
-| --------------- | --------------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Schema version  | `schema_version` (1)        | int32                       | The contract version (currently `1`); a consumer reading an unknown future version must fail closed                                                                                                                                  |
-| Idempotency key | `idempotency_key` (2)       | string                      | Stable, deterministic key derived from the source event — a redelivered raw event yields a byte-identical key so the deployer can deduplicate without coordinating state (no timestamp or random component)                          |
-| Application     | `application` (3)           | `ApplicationRef`            | Matched `Application` identity. The subscriber sets only `application.name`, derived **mechanically** as the last `/`-segment of the repository (e.g. `holos/sample-app` → `sample-app`); a derivation only — no `Application` KRM lookup happens here (deferred, see below) |
-| Repository      | `repository` (4)            | string                      | The source repository the image was pushed to, e.g. `holos/sample-app`                                                                                                                                                              |
-| Tag             | `tag` (5)                   | string                      | The single image tag this task deploys, e.g. `v2`                                                                                                                                                                                   |
-| Digest          | `digest` (6)                | string                      | The resolved manifest digest when known. Quay's `repo_push` payload carries no digest and registry digest resolution is deferred, so it is currently the empty string                                                               |
-| Source          | `source` (7)                | string                      | The webhook source token the event arrived from, e.g. `quay`                                                                                                                                                                        |
-| Received at     | `received_at` (8)           | `google.protobuf.Timestamp` | Wall-clock time the subscriber observed the source event — informational/observability only, deliberately **excluded** from the idempotency key so redeliveries stay byte-identical                                                  |
-
-| Aspect          | Value                                          |
-| --------------- | ---------------------------------------------- |
-| Publish subject | `tasks.deploy` (`task.DeploySubject`)          |
-| Target stream   | `TASKS` (`tasks.>`), file-backed WorkQueue     |
-| Consumed by     | the deployer ([ADR-11](../docs/adr/ADR-11.md)) |
-| Schema version  | `1` (`task.SchemaVersion`)                     |
-
-**One task per pushed tag.** A single source event fans out to **one DeployTask
-per tag**: a Quay `repo_push` listing several tags in `updated_tags` produces one
-DeployTask per tag, each with its own `tag` and its own idempotency key
-([ADR-13](../docs/adr/ADR-13.md), "one task per pushed tag").
-
-The **idempotency key** is the hex-encoded SHA-256 of the length-prefixed
-`(source, repository, tag, docker_url)` tuple, so it is **stable across
-redeliveries of the same raw event**: a redelivered Quay push yields a
-byte-identical key, letting the deployer deduplicate without coordinating state.
-It is deliberately **not** push-unique — two separate pushes of the same tag to
-the same repository hash to the same key, because the tuple carries no per-event
-component. JetStream publish dedupe therefore uses the key qualified by the
-WEBHOOKS stream sequence as the `Nats-Msg-Id` header (see durability below), not
-the bare key — the stream sequence is the per-event identity that distinguishes
-two genuine pushes of the same tag, which the bare key alone would otherwise
-collapse.
-
-**Durability and retry story.** The subscriber consumes through a **durable
-pull consumer** (`webhook-subscriber`) on the `WEBHOOKS` stream with explicit
-acknowledgement, and only acks the raw WEBHOOKS message **after** every
-DeployTask it parsed has been published to `tasks.deploy` — so a crash between
-parse and publish redelivers the raw event rather than losing the task
-(at-least-once). Failures are handled per their kind:
-
-- **Transient publish failure** → `Nak` with a fixed backoff (`--nak-backoff`,
-  default `5s`) for redelivery, bounded by the consumer's `MaxDeliver`
-  (`--max-deliver`, default `5`) so a real outage window is spanned rather than
-  the budget burned through instantly; on the **final** permitted delivery the
-  message is `Term`'d instead of Nak'd so a persistently failing event stops
-  being redelivered.
-- **Poison message** (unknown source, unparseable body, or a marshal failure —
-  all deterministic, so redelivery cannot help) → `Term` immediately, after
-  logging the full raw payload base64-encoded under `raw_base64` at error level
-  as a **log-backed dead-letter** record for diagnosis or manual replay.
-- **Publish dedupe** → each publish to `tasks.deploy` sets the `Nats-Msg-Id`
-  header to `<WEBHOOKS-stream-sequence>:<idempotencyKey>`, so JetStream's
-  message-deduplication window collapses a redelivered partial-success publish
-  while still admitting a later genuine push of the same tag (which lands at a
-  distinct stream sequence).
-
-The subscriber connects to NATS at `nats://nats.nats.svc.cluster.local:4222`
-(see the
-[NATS connection contract](#nats-jetstream-backbone-and-connection-contract));
-the `nats` `AuthorizationPolicy` admits the `webhook-subscriber` namespace to
-**only** the client port (`4222`). Its `readinessProbe` hits `GET /readyz` (the
-default health port `:8080`, kubelet-facing only — never exposed through a
-Service or the Gateway), which reports `200` only while connected to NATS, and
-its `livenessProbe` hits `GET /healthz`. The consumer name, stream, filter
-subject (`webhooks.>`), and the redelivery knobs above are configurable via flags
-or `HOLOS_PAAS_*` environment variables (see `webhook-subscriber --help`).
-
-**Deferred scope (ADR-13 vs. the shipped slice).** The shipped subscriber
-implements the **direct parse → DeployTask → publish** slice: it always emits a
-DeployTask on `tasks.deploy`. [ADR-10](../docs/adr/ADR-10.md)'s eventual design,
-refined by [ADR-13](../docs/adr/ADR-13.md), routes by KRM match — emitting a
-`RenderTask` (`tasks.render`) for an application-image push or a DeployTask for a
-configuration-image push. That **KRM-matching routing**, **registry digest
-resolution** (populating `digest`), and a **durable dead-letter subject/stream**
-(beyond today's log-backed record) all remain deferred pending the `Application`
-resource and the deployer ([ADR-11](../docs/adr/ADR-11.md)); see
-[ADR-10](../docs/adr/ADR-10.md)'s revision table.
-
-**Dev-loop image refresh.** Like the receiver, the Deployment pulls the
-**mutable** `:dev` tag with `imagePullPolicy: Always`, so after rebuilding the
-image restart the Deployment to pull it:
-
-```bash
-make docker-push
-kubectl -n webhook-subscriber rollout restart deployment/webhook-subscriber
-kubectl -n webhook-subscriber rollout status deployment/webhook-subscriber
-```
-
-**Verification.** See the
-[Verify the webhook subscriber](../docs/local-cluster.md#verify-the-webhook-subscriber)
-section of the local cluster guide for the end-to-end check: POST a captured Quay
-payload and observe a DeployTask appear on `tasks.deploy`.
+> **Retired:** The earlier NATS event-driven pipeline — the `nats`
+> JetStream backbone, the `webhook-receiver`, and the `webhook-subscriber`
+> components, together with their Go code, the pipeline protobuf, the
+> `wss://nats.holos.localhost` debug endpoint, and the `scripts/nats-webhooks`
+> reader — was removed in HOL-1241. Nothing else used NATS, so it is gone
+> entirely. ADR-9/10/11/14 that described that pipeline are now
+> `Deprecated`. The contract documentation that lived here (the `WEBHOOKS`/
+> `TASKS` streams, the `webhooks.>`/`tasks.deploy` subject hierarchy, the
+> DeployTask schema, and the receiver/subscriber service contracts) was
+> removed with it.

@@ -11,6 +11,17 @@
 | -------- | ---------- | ----------- | -------------------------------------------------------- |
 | 1        | 2026-06-10 | @jeffmccune | Initial design                                           |
 | 2        | 2026-06-11 | @jeffmccune | Add `holos/deploy/` and `holos/docs/` to the layout tree |
+| 3        | 2026-06-14 | @jeffmccune | Note the NATS webhook receiver/subscriber/deployer were retired (HOL-1241, [ADR-16](ADR-16.md)); the single-module/single-binary layout decision stands |
+
+> **Note (rev 3):** The NATS webhook receiver, subscriber, and deployer named
+> below as motivating services were retired in HOL-1241 — deployment moved to
+> Kargo plus the client-side ORAS publish workflow ([ADR-16](ADR-16.md)), and
+> the `internal/webhook` / `internal/nats` packages were deleted. The layout
+> **decision** this ADR records (Option A: single module, single multi-service
+> binary, kubebuilder multi-group conventions, all implementation under
+> `internal/`) is unchanged and still governs; the service names and
+> `internal/` example paths in the sections below are the decision-time
+> illustration, not a current inventory.
 
 ## Context and Problem Statement
 

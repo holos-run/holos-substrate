@@ -30,10 +30,6 @@ vet: ## Run go vet against code.
 lint: ## Run golangci-lint.
 	golangci-lint run
 
-.PHONY: generate
-generate: ## Generate Go from the .proto sources with buf (ADR-14).
-	buf generate
-
 .PHONY: test
 test: fmt vet ## Run tests with the race detector and coverage.
 	go test -race -coverprofile cover.out ./...
@@ -41,10 +37,6 @@ test: fmt vet ## Run tests with the race detector and coverage.
 .PHONY: build
 build: fmt vet ## Build the holos-paas binary.
 	go build -o bin/holos-paas ./cmd/holos-paas
-
-.PHONY: run
-run: ## Run the webhook receiver locally.
-	go run ./cmd/holos-paas webhook-receiver
 
 # The publish target wraps scripts/publish: render the platform with an injected
 # app image digest, package the rendered manifests through Kustomize, and oras

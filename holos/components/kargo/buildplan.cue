@@ -18,8 +18,8 @@ package holos
 // this component instead:
 //
 //   - Disables OIDC and the chart's admin account (no auth): the API runs
-//     unauthenticated on the local cluster, the MVP posture the nats and
-//     webhook-receiver components also take.  This is recorded as a deferral in
+//     unauthenticated on the local cluster, the same MVP no-auth posture the
+//     other host-facing platform consoles take.  This is recorded as a deferral in
 //     holos/docs/placeholders.md.  No admin Secret is generated, so there is
 //     nothing to commit or rotate, and the kubectl-slice below strips any
 //     Secret the chart would emit.
@@ -224,7 +224,7 @@ userDefinedBuildPlan: {
 							// runAsUser: 0 only renders when api.cabundle is set,
 							// which it is not here.  seccompProfile:
 							// RuntimeDefault matches the platform's bootstrap-Job
-							// hardening (the nats/quay precedent).
+							// hardening (the quay precedent).
 							securityContext: {
 								runAsNonRoot: true
 								seccompProfile: type: "RuntimeDefault"
@@ -296,7 +296,7 @@ userDefinedBuildPlan: {
 							}
 
 							// Single-replica: nothing to disrupt, so the chart's
-							// PodDisruptionBudget is noise (the argocd/nats
+							// PodDisruptionBudget is noise (the argocd
 							// precedent of disabling PDBs on single-replica
 							// workloads).
 							pdb: enabled: false

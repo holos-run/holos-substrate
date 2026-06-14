@@ -136,48 +136,16 @@ namespaces: {
 	// argocd.cue asserts at render time that its value is registered here.
 	argocd: _ambient: true
 
-	// nats hosts the single-replica NATS JetStream server
-	// (components/nats); its workloads enroll in the ambient mesh per the
-	// platform convention, following the quay and argocd precedent for
-	// single-replica in-cluster services.  NATS runs without authentication
-	// in this MVP phase, so the in-cluster-only posture relies on the mesh:
-	// ztunnel captures client traffic (port 4222) over HBONE and enforces L4
-	// authorization, and nothing in the cluster reaches NATS from outside the
-	// mesh.  If client traffic is later found not to traverse ambient capture
-	// cleanly, fall back to a Keycloak-style `_ambient: false` exception with
-	// a rationale comment here — see the exceptions section of
-	// holos/docs/mesh-enrollment.md.
-	nats: _ambient: true
-
-	// webhook-receiver hosts the thin HTTP ingress that publishes raw webhook
-	// bodies to the NATS WEBHOOKS stream (components/webhook-receiver); its
-	// workloads enroll in the ambient mesh per the platform convention,
-	// following the quay, argocd, and nats precedent for single in-cluster
-	// services.  Enrollment is load-bearing here, not just convention: the
-	// receiver publishes cross-namespace into nats, and the nats
-	// AuthorizationPolicy (components/nats/buildplan.cue) ALLOWs this namespace
-	// as a source — that policy only takes effect when both peers are captured
-	// by ztunnel, so an unenrolled receiver would be denied at the NATS client
-	// port.
-	"webhook-receiver": _ambient: true
-
-	// webhook-subscriber hosts the durable JetStream consumer that drains the
-	// WEBHOOKS stream and publishes DeployTasks to TASKS
-	// (components/webhook-subscriber); its workloads enroll in the ambient
-	// mesh per the platform convention, following the nats and
-	// webhook-receiver precedent for single in-cluster services.  Enrollment
-	// is load-bearing here, not just convention: the subscriber is a NATS
-	// client into nats, and the nats AuthorizationPolicy
-	// (components/nats/buildplan.cue) ALLOWs this namespace as a source on the
-	// client port (4222) — that policy only takes effect when both peers are
-	// captured by ztunnel, so an unenrolled subscriber would be denied at the
-	// NATS client port.
-	"webhook-subscriber": _ambient: true
+	// The nats, webhook-receiver, and webhook-subscriber namespaces (the NATS
+	// event-driven deployment pipeline) were retired in HOL-1241: Kargo plus
+	// the client-side ORAS publish workflow (ADR-16) now own deployment,
+	// superseding the deprecated receiver/subscriber/deployer path
+	// (ADR-9/10/11/14).
 
 	// kargo hosts the Kargo control plane (controller, API/UI, management
 	// controller, garbage collector, and the internal and external webhooks
 	// servers — components/kargo); its workloads enroll in the ambient mesh
-	// per the platform convention, following the argocd, quay, and nats
+	// per the platform convention, following the argocd and quay
 	// precedent for in-cluster services behind the shared Gateway.  The Kargo
 	// API runs without authentication on this local single-user cluster (MVP
 	// posture — see holos/docs/placeholders.md), so the Gateway→api hop relies
