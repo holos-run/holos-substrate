@@ -1,0 +1,22 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  labels:
+    app.kubernetes.io/name: kargo
+  name: kargo
+  namespace: kargo
+spec:
+  hostnames:
+  - kargo.holos.localhost
+  parentRefs:
+  - name: default
+    namespace: istio-gateways
+    sectionName: https
+  rules:
+  - backendRefs:
+    - name: kargo-api
+      port: 80
+    matches:
+    - path:
+        type: PathPrefix
+        value: /

@@ -1,0 +1,77 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  labels:
+    app.kubernetes.io/component: garbage-collector
+    app.kubernetes.io/instance: kargo
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: kargo
+    app.kubernetes.io/version: v1.10.3
+    helm.sh/chart: kargo-1.10.3
+  name: kargo-garbage-collector
+  namespace: kargo
+spec:
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    metadata:
+      annotations:
+        configmap/checksum: 75a987b939566144a972f7732a8694c58ddf7928eca3a335b6e06d4d5d101e1b
+      labels:
+        app.kubernetes.io/component: garbage-collector
+        app.kubernetes.io/instance: kargo
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: kargo
+        app.kubernetes.io/version: v1.10.3
+        helm.sh/chart: kargo-1.10.3
+    spec:
+      template:
+        metadata:
+          annotations:
+            configmap/checksum: 75a987b939566144a972f7732a8694c58ddf7928eca3a335b6e06d4d5d101e1b
+          labels:
+            app.kubernetes.io/component: garbage-collector
+            app.kubernetes.io/instance: kargo
+            app.kubernetes.io/managed-by: Helm
+            app.kubernetes.io/name: kargo
+            app.kubernetes.io/version: v1.10.3
+            helm.sh/chart: kargo-1.10.3
+        spec:
+          containers:
+          - args:
+            - garbage-collector
+            command:
+            - /sbin/tini
+            - --
+            - /usr/local/bin/kargo
+            env:
+            - name: GOMEMLIMIT
+              valueFrom:
+                resourceFieldRef:
+                  containerName: garbage-collector
+                  divisor: "1"
+                  resource: limits.memory
+            - name: GOMAXPROCS
+              valueFrom:
+                resourceFieldRef:
+                  containerName: garbage-collector
+                  divisor: "1"
+                  resource: requests.cpu
+            envFrom:
+            - configMapRef:
+                name: kargo-garbage-collector
+            image: ghcr.io/akuity/kargo:v1.10.3
+            imagePullPolicy: IfNotPresent
+            name: garbage-collector
+            resources:
+              limits:
+                memory: 128Mi
+              requests:
+                cpu: 20m
+                memory: 64Mi
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+          restartPolicy: Never
+          serviceAccountName: kargo-garbage-collector
+  schedule: 0 * * * *

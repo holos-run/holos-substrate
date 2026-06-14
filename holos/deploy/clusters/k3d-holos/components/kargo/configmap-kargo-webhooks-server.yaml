@@ -1,0 +1,19 @@
+apiVersion: v1
+data:
+  CACHE_BY_TAG_POLICY: Allow
+  CONTROLPLANE_USER_REGEX: ^system:serviceaccount:kargo:(kargo-api|kargo-controller|kargo-garbage-collector|kargo-management-controller)$
+  KARGO_NAMESPACE: kargo
+  LOG_FORMAT: JSON
+  LOG_LEVEL: INFO
+  MANAGEMENT_CONTROLLER_USERNAME: system:serviceaccount:kargo:kargo-management-controller
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/component: kubernetes-webhooks-server
+    app.kubernetes.io/instance: kargo
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: kargo
+    app.kubernetes.io/version: v1.10.3
+    helm.sh/chart: kargo-1.10.3
+  name: kargo-webhooks-server
+  namespace: kargo

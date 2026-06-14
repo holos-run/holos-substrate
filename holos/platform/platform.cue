@@ -369,6 +369,41 @@ platform: {
 				cluster:   CLUSTER.name
 				labels: app: "webhook-subscriber"
 			}}).output
+
+			// kargo-crds renders the Kargo CustomResourceDefinitions
+			// (kargo.akuity.io group) sliced from the upstream Kargo Helm
+			// chart.  CRDs are isolated components labeled crds: "true" so
+			// they apply before the controllers that depend on them.  The
+			// controller is the kargo component below; both pin the same chart
+			// version in their buildplan.cue (the two are sibling components
+			// with no shared CUE ancestor, so the pin is duplicated and a
+			// mismatch is visible in the diff).
+			(#ComponentTemplate & {inputs: {
+				component: "kargo-crds"
+				cluster:   CLUSTER.name
+				labels: {
+					app:  "kargo"
+					crds: "true"
+				}
+			}}).output
+
+			// kargo renders the Kargo control plane — controller, API/UI,
+			// management controller, garbage collector, and the internal and
+			// external webhooks servers — from the upstream Kargo Helm chart
+			// with a laptop footprint and a simplified no-auth posture for the
+			// local single-user cluster (HOL-1238).  The API/UI is exposed at
+			// kargo.holos.localhost through the shared Gateway.  Registered
+			// after kargo-crds: its workloads need the kargo.akuity.io types
+			// established first (the crds-before-controllers guardrail).  The
+			// controller drives Argo CD via the argocd-update promotion step,
+			// so its argocd.namespace Helm value points at this platform's
+			// argocd namespace; nothing during bootstrap depends on Kargo, so
+			// appending the pair keeps the established order stable.
+			(#ComponentTemplate & {inputs: {
+				component: "kargo"
+				cluster:   CLUSTER.name
+				labels: app: "kargo"
+			}}).output
 		}
 	}
 }

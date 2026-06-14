@@ -173,4 +173,36 @@ namespaces: {
 	// captured by ztunnel, so an unenrolled subscriber would be denied at the
 	// NATS client port.
 	"webhook-subscriber": _ambient: true
+
+	// kargo hosts the Kargo control plane (controller, API/UI, management
+	// controller, garbage collector, and the internal and external webhooks
+	// servers — components/kargo); its workloads enroll in the ambient mesh
+	// per the platform convention, following the argocd, quay, and nats
+	// precedent for in-cluster services behind the shared Gateway.  The Kargo
+	// API runs without authentication on this local single-user cluster (MVP
+	// posture — see holos/docs/placeholders.md), so the Gateway→api hop relies
+	// on the mesh: the namespace is ambient-enrolled, ztunnel captures traffic
+	// over HBONE with mTLS, and the API is reachable from the host only through
+	// the shared Gateway at kargo.holos.localhost.  The Kargo CRDs are
+	// cluster-scoped and carry no namespace; the kargo-crds component installs
+	// them independently of this namespace.
+	kargo: _ambient: true
+
+	// kargo-system-resources and kargo-shared-resources are Kargo-internal
+	// namespaces the chart references from its RoleBindings: the system one
+	// holds namespaced resources that back cluster-scoped Kargo resources (e.g.
+	// Secrets a cluster-scoped ClusterConfig references), and the shared one
+	// holds credentials shared across Kargo Projects.  The chart would emit
+	// these as Namespace resources, but components must not (the component
+	// guidelines), so the kargo component disables the chart's namespace
+	// creation (global.{system,shared}Resources.createNamespace: false) and the
+	// names are registered here instead — they MUST match the
+	// global.{system,shared}Resources.namespace chart defaults the chart's
+	// RoleBindings target (kargo-system-resources, kargo-shared-resources).
+	// Deliberately NOT ambient-enrolled: they carry no workloads, only
+	// configuration/credential objects referenced by the Kargo control plane in
+	// the (enrolled) kargo namespace, so there is no pod traffic for ztunnel to
+	// capture.
+	"kargo-system-resources": _ambient: false
+	"kargo-shared-resources": _ambient: false
 }

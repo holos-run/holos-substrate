@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: management-controller
+    app.kubernetes.io/instance: kargo
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: kargo
+    app.kubernetes.io/version: v1.10.3
+    helm.sh/chart: kargo-1.10.3
+  name: kargo-management-controller
+  namespace: kargo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: management-controller
+      app.kubernetes.io/instance: kargo
+      app.kubernetes.io/name: kargo
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        configmap/checksum: cf3fad4e66a003766281f806000d1250be7d96e9aa95415ac3e07f2a376fd0eb
+      labels:
+        app.kubernetes.io/component: management-controller
+        app.kubernetes.io/instance: kargo
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: kargo
+        app.kubernetes.io/version: v1.10.3
+        helm.sh/chart: kargo-1.10.3
+    spec:
+      containers:
+      - args:
+        - management-controller
+        command:
+        - /sbin/tini
+        - --
+        - /usr/local/bin/kargo
+        env:
+        - name: GOMEMLIMIT
+          valueFrom:
+            resourceFieldRef:
+              containerName: management-controller
+              divisor: "1"
+              resource: limits.memory
+        - name: GOMAXPROCS
+          valueFrom:
+            resourceFieldRef:
+              containerName: management-controller
+              divisor: "1"
+              resource: requests.cpu
+        envFrom:
+        - configMapRef:
+            name: kargo-management-controller
+        image: ghcr.io/akuity/kargo:v1.10.3
+        imagePullPolicy: IfNotPresent
+        name: management-controller
+        resources:
+          limits:
+            memory: 128Mi
+          requests:
+            cpu: 20m
+            memory: 64Mi
+        securityContext:
+          runAsNonRoot: true
+          seccompProfile:
+            type: RuntimeDefault
+      serviceAccount: kargo-management-controller
