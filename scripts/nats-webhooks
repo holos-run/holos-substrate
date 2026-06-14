@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Print the most recent raw messages from the NATS WEBHOOKS WorkQueue stream
+# over the host-facing secure WebSocket endpoint (wss://nats.holos.localhost,
+# HOL-1228/HOL-1230). The webhook-receiver publishes every inbound webhook body
+# to this stream; this is the one-command debugging affordance to see the last
+# N raw bodies it stored.
+#
+# Read-only and consumer-free: it reads each message by sequence with
+# `nats stream get`, which fetches directly from the stream without creating a
+# consumer and without acking. This matters because WEBHOOKS is a file-backed
+# WorkQueue stream drained by the webhook-subscriber's durable consumer — a
+# WorkQueue deletes each message once it is acked, and rejects a second
+# consumer whose subject filter overlaps an existing one. So we never run
+# `nats sub`, `nats stream view`, or `nats consumer add` on `webhooks.>`; an
+# ack or overlapping consumer would destroy real work.
+#
+# No NATS credentials are required: local development runs NATS unauthenticated
+# (the MVP no-auth posture) and the shared Istio Gateway terminates TLS for
+# *.holos.localhost, forwarding to the plain WebSocket port.
+#
+# Prerequisites:
+#   - the `nats` CLI (https://github.com/nats-io/natscli)
+#   - jq  (https://jqlang.github.io/jq/)
+#   - a running local cluster (scripts/apply) reachable at nats.holos.localhost
+#
+# Usage:
+#   scripts/nats-webhooks [count]   # count defaults to 10
+#
+# Environment:
+#   NATS_URL   override the server URL (default wss://nats.holos.localhost)
+
+set -euo pipefail
+
+SERVER="${NATS_URL:-wss://nats.holos.localhost}"
+STREAM="WEBHOOKS"
+COUNT="${1:-10}"
+
+case "$COUNT" in
+  '' | *[!0-9]*)
+    echo "ERROR: count must be a non-negative integer, got: $COUNT" >&2
+    exit 1
+    ;;
+esac
+
+# Read the stream's sequence window directly from JetStream metadata. This does
+# not create a consumer; `nats stream info` only reports state.
+info="$(nats --server "$SERVER" stream info "$STREAM" --json)"
+first_seq="$(jq -r '.state.first_seq' <<<"$info")"
+last_seq="$(jq -r '.state.last_seq' <<<"$info")"
+
+if [ "$last_seq" -eq 0 ] || [ "$first_seq" -eq 0 ]; then
+  echo "no messages on stream $STREAM"
+  exit 0
+fi
+
+# Newest first: walk back from last_seq, clamped to first_seq, at most COUNT
+# messages. Each `nats stream get <seq>` is a non-destructive read by sequence.
+seq="$last_seq"
+shown=0
+while [ "$seq" -ge "$first_seq" ] && [ "$shown" -lt "$COUNT" ]; do
+  echo "===== ${STREAM} sequence ${seq} ====="
+  nats --server "$SERVER" stream get "$STREAM" "$seq"
+  seq=$((seq - 1))
+  shown=$((shown + 1))
+done
