@@ -261,11 +261,14 @@ rollout that the in-cluster NATS deployer subscriber used to drive
     [`components/user-defined-build-plan.cue`](../components/user-defined-build-plan.cue)):
     that projection emits a **git**-source Application for the deferred
     whole-platform gitops delivery ([placeholders.md](placeholders.md)), which is
-    the wrong shape for Kargo to patch. Its `targetRevision` starts at the
-    `render-bootstrap` placeholder; the Application is Unknown/Degraded until the
-    first promotion patches it to a real digest, the same "imperative artifact,
-    declarative Application" posture
-    [argocd-application-source.md](argocd-application-source.md) documents.
+    the wrong shape for Kargo to patch. Its `targetRevision` is **deliberately
+    omitted** from the committed manifest: Kargo's `argocd-update` step owns that
+    field, and `scripts/apply` re-applies every component with `kubectl apply
+    --server-side --force-conflicts`, so committing a value would seize it back on
+    every run and fight Kargo. Leaving it out means apply never asserts ownership
+    — the Application is Unknown until the first promotion, then Kargo is the sole
+    owner of the revision, the "imperative revision, declarative Application"
+    posture [argocd-application-source.md](argocd-application-source.md) documents.
 
 ### Lexical ordering caveat (spike)
 
@@ -280,11 +283,31 @@ counter or timestamp prefix) or a `Digest` strategy against a mutable tag.
 ### End-to-end manual verification (on the local cluster)
 
 Prerequisites: the cluster is up and `scripts/apply` has run (Kargo, Argo CD,
-Quay, and the two `kargo-*-echo` components are applied). Argo CD's repo-server
-needs a **repository credential Secret** for the manifests repo (the
-`holos+robot` pull credential `scripts/quay-init` provisions) — see the
-[repository credential Secret](argocd-application-source.md#repository-credential-secret)
-shape; it is created imperatively and is not committed.
+Quay, and the two `kargo-*-echo` components are applied). Two **imperative,
+uncommitted** credential Secrets are required (the repo's runtime-secret posture
+— neither is rendered into the deploy tree):
+
+1. **Argo CD's repo-server** PULLs the artifact using a repository credential
+   Secret in the `argocd` namespace (the `holos+robot` pull credential
+   `scripts/quay-init` provisions) — see the
+   [repository credential Secret](argocd-application-source.md#repository-credential-secret)
+   shape.
+2. **Kargo's controller** LISTs tags for the Warehouse using a separate
+   **Kargo-format image credential Secret** in the `kargo-echo` Project namespace.
+   Kargo discovers credentials from Secrets labeled
+   `kargo.akuity.io/cred-type: image` whose `repoURL` matches (or prefixes) the
+   subscription `repoURL`; without it, Warehouse discovery cannot authenticate to
+   the private Quay repo and no Freight is created. Create it from the same Quay
+   robot pull credential:
+
+   ```bash
+   kubectl --context k3d-holos -n kargo-echo create secret generic quay-manifests-creds \
+     --from-literal=repoURL=quay.holos.localhost/holos/holos-paas-manifests \
+     --from-literal=username=holos+robot \
+     --from-literal=password='<robot token>'
+   kubectl --context k3d-holos -n kargo-echo label secret quay-manifests-creds \
+     kargo.akuity.io/cred-type=image
+   ```
 
 ```bash
 KCTX=k3d-holos
@@ -292,7 +315,7 @@ KCTX=k3d-holos
 # 0. The pipeline objects exist.
 kubectl --context "$KCTX" -n kargo-echo get warehouse,stage
 kubectl --context "$KCTX" -n argocd get application echo \
-  -o jsonpath='{.spec.source.targetRevision}{"\n"}'   # render-bootstrap (initially)
+  -o jsonpath='{.spec.source.targetRevision}{"\n"}'   # empty until first promotion
 
 # 1. Publish a new rendered-manifests artifact for echo (HOL-1239).  Use the
 #    in-cluster Quay app image repo; the default PUBLISH_REPO is the manifests

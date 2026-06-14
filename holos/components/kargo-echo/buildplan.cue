@@ -182,15 +182,29 @@ let STAGE_RESOURCE = kargostage.#Stage & {
 // argocd-update step refuses to touch the Application.  The value format is
 // <project>:<stage>.
 //
-// targetRevision starts at a placeholder tag (render-bootstrap): no artifact
-// exists until the first scripts/publish run, so the Application is intentionally
-// Unknown/Degraded until the first promotion patches targetRevision to a real
-// digest.  This is the same "imperative artifact, declarative Application"
-// posture argocd-application-source.md documents; for the spike the Application
-// is committed so Kargo has a stable target to patch.  The repository credential
-// Secret the repo-server uses to PULL the artifact is created imperatively
-// (scripts/quay-init robot account; see argocd-application-source.md) and is NOT
-// committed.
+// targetRevision is DELIBERATELY OMITTED from this committed manifest.  Kargo's
+// argocd-update step owns spec.source.targetRevision: it patches it to each
+// promoted Freight's digest.  scripts/apply re-applies every component with
+// `kubectl apply --server-side --force-conflicts`, which would seize that field
+// back to a committed value on every run — a reconciliation war that would
+// repeatedly break the Application after Kargo promotes.  By leaving the field
+// out of the desired state entirely, apply never asserts ownership of it: the
+// Application is created with no targetRevision (Unknown until the first
+// promotion), and from the first promotion onward Kargo is the sole owner of the
+// field, untouched by later applies.  This is the "imperative revision,
+// declarative Application" posture argocd-application-source.md documents — the
+// Application shell is committed so Kargo has a stable target to patch, while the
+// revision itself is controller-owned.
+//
+// The repository credential Secrets are created imperatively and are NOT
+// committed (the repo's runtime-secret posture):
+//   - Argo CD's repo-server PULLs the artifact using the argocd-namespace
+//     repository Secret (scripts/quay-init robot account; see
+//     argocd-application-source.md#repository-credential-secret).
+//   - Kargo's controller LISTS tags for the Warehouse using a separate
+//     Kargo-format image credential Secret in the kargo-echo Project namespace
+//     (labeled kargo.akuity.io/cred-type: image) — see the verification steps in
+//     holos/docs/oci-publish-workflow.md.
 let APP_RESOURCE = application.#Application & {
 	metadata: {
 		name:      APP
@@ -201,8 +215,7 @@ let APP_RESOURCE = application.#Application & {
 	spec: {
 		project: "default"
 		source: {
-			repoURL:        MANIFESTS_REPO_OCI
-			targetRevision: "render-bootstrap"
+			repoURL: MANIFESTS_REPO_OCI
 			// The manifests sit at the tarball root (scripts/publish packages
 			// the kustomize output flat), so the source path is ".".
 			path: "."
