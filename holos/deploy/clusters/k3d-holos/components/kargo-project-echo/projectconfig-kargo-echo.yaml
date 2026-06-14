@@ -1,0 +1,9 @@
+apiVersion: kargo.akuity.io/v1alpha1
+kind: ProjectConfig
+metadata:
+    name: kargo-echo
+    namespace: kargo-echo
+spec:
+    promotionPolicies:
+        - autoPromotionEnabled: true
+          stage: test
