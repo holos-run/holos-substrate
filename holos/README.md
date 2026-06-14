@@ -430,14 +430,17 @@ username-from-token behavior, and the roles model — is in
   organization scope and cannot be renamed.
 - **Roles → teams.** The `quay` client roles `platform-admin` and
   `project-admin` (and per-project roles by the same convention) are folded
-  into the `groups` claim alongside Keycloak group memberships; Quay binds
-  those to Quay teams via `FEATURE_TEAM_SYNCING: true`, re-syncing on the
-  30-minute `TEAM_RESYNC_STALE_TIME` cadence. To grant access, grant the user
-  the matching `quay` client role in Keycloak and bind the Quay team in the
-  organization UI.
+  into the `groups` claim alongside Keycloak group memberships. They are
+  identity labels, not privileges in themselves: a Quay **superuser** binds a
+  Quay team to the group/role name (team-sync setup is superuser-only here —
+  `FEATURE_NONSUPERUSER_TEAM_SYNCING_SETUP` is off), and the team's
+  permissions are what grant access. `FEATURE_TEAM_SYNCING: true` then keeps
+  membership in sync, re-syncing on the 30-minute `TEAM_RESYNC_STALE_TIME`
+  cadence.
 - **Superusers.** Superuser status comes solely from `SUPER_USERS` in the
-  config (by `preferred_username`), not from the `groups` claim; the local
-  `admin` bootstrap account is kept there as break-glass.
+  config (by `preferred_username`), not from the `groups` claim and not from
+  the `platform-admin` role; the local `admin` bootstrap account is kept there
+  as break-glass.
 
 `scripts/quay-init` and SSO coexist: the init script still bootstraps the
 local `admin`/`holos` org and the `holos+robot` pull account, while realm

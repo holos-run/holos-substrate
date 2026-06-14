@@ -259,8 +259,11 @@ provisions). The design is in [ADR-15](adr/ADR-15.md); verify it end to end:
      `quay.holos.localhost/<preferred_username>/...`.
    - **Roles → teams.** A user granted a `quay` client role (or bound Keycloak
      group) gains the matching Quay team membership after the next team
-     re-sync (`TEAM_RESYNC_STALE_TIME`, 30 minutes), once an org admin has
-     bound the team to that group/role name in the Quay organization UI.
+     re-sync (`TEAM_RESYNC_STALE_TIME`, 30 minutes), once a Quay **superuser**
+     has bound the team to that group/role name in the Quay organization UI.
+     Team-sync setup is a superuser action here — this platform leaves
+     `FEATURE_NONSUPERUSER_TEAM_SYNCING_SETUP` off — so use the `admin`
+     superuser (or another `SUPER_USERS` member) to configure it.
 
 `scripts/quay-init` and SSO coexist: the init script bootstraps the local
 `admin` superuser, the `holos` org, and the `holos+robot` pull account

@@ -124,8 +124,18 @@ the username is not editable.
 The realm carries two **`quay` client roles**, defined in
 `holos/components/keycloak/realm-config/buildplan.cue`:
 
-- `platform-admin` — Holos Platform Admin (Quay superuser / org admin).
+- `platform-admin` — the Holos Platform Admin role.
 - `project-admin` — per-project administrative access in Quay.
+
+These roles are **identity labels that flow into the `groups` claim** (via the
+client-role mapper below) for an operator to bind to a Quay team — they do
+**not** by themselves confer any privilege. In particular, the
+`platform-admin` role does **not** make a user a Quay superuser: superuser
+status comes solely from `SUPER_USERS` (see below). What a role grants is
+whatever the bound Quay team is given in the Quay organization (e.g. an
+`admin`-permission team for the org). Treat the role names as a convention for
+who *should* hold which access, realized through team bindings and
+`SUPER_USERS`, not as Quay-enforced permissions on their own.
 
 Per-project roles follow the same client-role convention: add a client role
 on the `quay` client named for the project, and grant it to the users who
@@ -144,11 +154,13 @@ Three protocol mappers on the `quay` client shape the token Quay consumes:
 
 Quay consumes the single `groups` claim
 (`PREFERRED_GROUP_CLAIM_NAME: groups`) for team synchronization
-(`FEATURE_TEAM_SYNCING: true`). An operator binds a Quay team to a Keycloak
-group (or folded client-role name) in the Quay organization UI; thereafter
-membership flows automatically. Quay re-syncs team membership on its
-`TEAM_RESYNC_STALE_TIME` cadence — **30 minutes** — so role/group changes in
-Keycloak propagate to Quay teams within that window rather than instantly.
+(`FEATURE_TEAM_SYNCING: true`). A Quay **superuser** binds a Quay team to a
+Keycloak group (or folded client-role name) in the Quay organization UI —
+team-sync setup is a superuser action because this platform leaves
+`FEATURE_NONSUPERUSER_TEAM_SYNCING_SETUP` off; thereafter membership flows
+automatically. Quay re-syncs team membership on its `TEAM_RESYNC_STALE_TIME`
+cadence — **30 minutes** — so role/group changes in Keycloak propagate to Quay
+teams within that window rather than instantly.
 
 **Superusers** are not derived from the `groups` claim: Quay superuser status
 comes solely from `SUPER_USERS` in the config. Bootstrap platform admins are
@@ -158,13 +170,17 @@ the break-glass superuser still works with `FEATURE_DIRECT_LOGIN: false`.
 
 ### How an operator grants access
 
-- **Platform Admin:** grant the user the `quay` client `platform-admin` role
-  in Keycloak (it folds into `groups`), and bind a Quay team to it — or, for a
-  bootstrap superuser, add the user's `preferred_username` to `SUPER_USERS` in
-  `holos/components/quay/buildplan.cue` and re-render/apply.
-- **Per-project access:** grant the user the project's `quay` client role
-  (`project-admin` or a per-project role), then bind the matching Quay team in
-  the organization UI. Membership lands on the next team re-sync.
+- **Platform Admin (superuser):** add the user's `preferred_username` to
+  `SUPER_USERS` in `holos/components/quay/buildplan.cue` and re-render/apply.
+  This is the only way to confer Quay superuser; the `platform-admin` client
+  role does not. Optionally also grant the `quay` `platform-admin` role so the
+  intent is visible in Keycloak and an org-admin team can be bound to it.
+- **Per-project / team access:** grant the user the project's `quay` client
+  role (`project-admin` or a per-project role) or add them to the bound
+  Keycloak group; a Quay **superuser** binds the matching Quay team to that
+  group/role name in the organization UI (Quay restricts team-sync setup to
+  superusers unless `FEATURE_NONSUPERUSER_TEAM_SYNCING_SETUP` is enabled, which
+  this platform leaves off). Membership then lands on the next team re-sync.
 
 ## Decision
 
