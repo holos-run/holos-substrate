@@ -38,5 +38,7 @@ WORKDIR /
 COPY --from=build /holos-paas /holos-paas
 USER 65532:65532
 
-# The service is selected by subcommand args, e.g. ["webhook-receiver"].
+# The running service is selected by subcommand args (ADR-12). The root
+# command registers no service subcommands yet — the NATS pipeline services
+# were retired in HOL-1241; later phases add their subcommands back.
 ENTRYPOINT ["/holos-paas"]
