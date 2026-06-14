@@ -305,19 +305,25 @@ fi
 # that, together with the app image digest, fully determine the rendered
 # output).  It must reflect the *working-tree* content `holos render` actually
 # read -- not the git index -- so unstaged edits to tracked CUE produce a
-# distinct tag rather than colliding with the committed version's tag.  Use git
-# only to enumerate the tracked input files (excluding the rendered deploy/
-# output and gitignored noise), then hash each file's working-tree bytes,
-# keyed by path, sorted for determinism and independent of file mtimes.
+# distinct tag rather than colliding with the committed version's tag.  It must
+# also cover **untracked** (but not gitignored) files under holos/: holos render
+# reads them too, so omitting them would let a new local .cue change the
+# rendered output while leaving the tag identical (breaking deduplication).  Use
+# git only to enumerate the input file set -- both tracked (--cached) and
+# untracked-non-ignored (--others --exclude-standard), excluding the rendered
+# deploy/ output -- then hash each file's working-tree bytes, keyed by path,
+# sorted for determinism and independent of file mtimes.
 if [[ -z "${ARTIFACT_TAG:-}" ]]; then
   config_digest="$(
     cd "${REPO_ROOT}"
     # -z / read -d '' handles paths with spaces or newlines safely.  Each file
     # is hashed individually (sha256sum prints "<hash>  <path>"); hashing that
     # path-keyed list of per-file digests yields a stable tree digest that
-    # tracks the actual on-disk content of every input file.
-    git ls-files -z -- holos ':(exclude)holos/deploy' 2>/dev/null \
-      | sort -z \
+    # tracks the actual on-disk content of every input file.  sort -zu dedupes
+    # any path that git reports under more than one category.
+    git ls-files -z --cached --others --exclude-standard \
+        -- holos ':(exclude)holos/deploy' 2>/dev/null \
+      | sort -zu \
       | xargs -0 sha256sum 2>/dev/null \
       | sha256sum \
       | cut -d' ' -f1
