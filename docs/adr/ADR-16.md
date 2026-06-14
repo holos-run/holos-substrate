@@ -11,6 +11,7 @@
 | Revision | Date       | Author      | Info           |
 | -------- | ---------- | ----------- | -------------- |
 | 1        | 2026-06-14 | @jeffmccune | Initial design |
+| 2        | 2026-06-14 | @jeffmccune | Note the NATS pipeline retirement landed (HOL-1241): receiver/subscriber code, the pipeline protobuf, and the nats/webhook-* components removed; operational docs updated to this path |
 
 ## Context and Problem Statement
 
@@ -251,13 +252,14 @@ These documents are kept for the historical record and marked `Deprecated`, per
 - The deprecated ADRs (6, 9, 10, 11, 13, 14) and their research remain the record
   of why the NATS pipeline was designed and why it was set aside; future work that
   needs an in-cluster, event-driven render path can revive them.
-- **This ADR is the decision record only; it does not retire the running NATS
-  pipeline or its operational docs.** Repo operational guidance (e.g.
-  `holos/README.md` and the webhook-receiver/subscriber verification flows) still
-  describes the deprecated path and is updated as a separate, code-touching phase
-  (HOL-1241, *chore(pipeline): retire NATS pipeline*) so this documentation-only
-  phase changes no Go or CUE. Until that phase lands, the deprecated ADRs' status
-  banners are the authoritative pointer that the NATS pipeline is no longer the MVP
-  path. The Kargo controller/CRDs (HOL-1238) and the
-  `Project`/`Warehouse`/`Stage` configuration (HOL-1240) are likewise follow-on
+- **This ADR is the decision record.** The actual retirement of the NATS
+  pipeline and its operational docs landed as a separate, code-touching phase
+  (HOL-1241, *chore(pipeline): retire NATS pipeline*): the webhook receiver and
+  subscriber subcommands, `internal/{nats,task,webhook}`, the pipeline protobuf,
+  and the `nats`/`webhook-receiver`/`webhook-subscriber` Holos components were
+  removed, and `holos/README.md`, the milestones plan, and the operational docs
+  were updated to this Kargo + CLI/ORAS path. The deprecated ADRs' status
+  banners remain the historical record of the NATS pipeline. The Kargo
+  controller/CRDs (HOL-1238), the publish workflow (HOL-1239), and the
+  `Project`/`Warehouse`/`Stage` configuration (HOL-1240) are the other
   implementation phases of the parent plan.
