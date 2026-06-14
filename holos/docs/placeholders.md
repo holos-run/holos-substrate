@@ -127,9 +127,16 @@ The component also exposes the NATS WebSocket port to the host at
 a local debugging affordance — see the
 [host-facing wss debug endpoint](../README.md#host-facing-wss-debug-endpoint).
 That endpoint is **intentionally unauthenticated**, the same MVP no-auth posture
-as the in-cluster surface: it is reachable only from the local machine because
-`nats.holos.localhost` resolves to `127.0.0.1`, and the `AuthorizationPolicy`
-admits the WebSocket port (`8080`) from the shared Gateway's namespace alone.
+as the in-cluster surface, and it carries no client authentication of its own:
+anything that can reach the shared Gateway and present `Host`/SNI
+`nats.holos.localhost` can use it. The `AuthorizationPolicy` admits the
+WebSocket port (`8080`) from the shared Gateway's namespace alone, which bounds
+*in-cluster* reach but not who can reach the Gateway from outside. The intended
+use is local — `nats.holos.localhost` resolves to `127.0.0.1` on the developer's
+machine — but that DNS mapping is a convenience, not an access boundary, since
+the k3d load balancer publishes the Gateway ports on the Docker host without a
+loopback-only bind. Containing the endpoint (loopback-bound ports or a host
+firewall) is the operator's responsibility until authentication lands.
 Authenticating both the in-cluster and the host-facing `wss://` surfaces is the
 same deferred future work tracked here.
 

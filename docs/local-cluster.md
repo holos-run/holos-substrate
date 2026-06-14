@@ -349,11 +349,16 @@ host at `wss://nats.holos.localhost` through an `HTTPRoute` on the shared Gatewa
 The Gateway terminates browser-trusted TLS and forwards the WebSocket upgrade to
 NATS, so you can reach JetStream from the host with the `nats` CLI directly — no
 `kubectl port-forward`, no throwaway `nats-box` pod. **No credentials are
-needed**: NATS runs unauthenticated in the MVP, and the endpoint is reachable
-only from this machine because `nats.holos.localhost` resolves to `127.0.0.1`
-(the local DNS set up in [Create the cluster](#create-the-cluster)). It is a
-debugging affordance, not a production access path — authenticating it is
-[deferred](../holos/docs/placeholders.md#nats-in-cluster-authentication).
+needed**: NATS runs unauthenticated in the MVP. `nats.holos.localhost` resolves
+to `127.0.0.1` on this machine (the local DNS set up in
+[One-Time DNS Setup](#one-time-dns-setup)), so the CLI connects to your own
+loopback. That mapping is a convenience, **not** a security boundary: the
+endpoint has no client authentication, and the k3d load balancer publishes the
+Gateway's ports on the Docker host without a loopback-only bind, so on a
+LAN-reachable or multi-user host another client could reach it by IP with the
+right `Host` header. It is a debugging affordance, not a production access path;
+keep the host's ports loopback-bound or firewalled, and treat authenticating the
+endpoint as [deferred](../holos/docs/placeholders.md#nats-in-cluster-authentication).
 
 List the streams from the host to confirm connectivity:
 

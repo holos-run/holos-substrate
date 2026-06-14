@@ -153,7 +153,7 @@ platform service:
     and an `HTTPRoute` attaching the chart's WebSocket port (`8080`) to the
     shared Gateway at `nats.holos.localhost` for host-facing debugging over
     `wss://` (see the
-    [host-facing wss debug endpoint](#nats-jetstream-backbone-and-connection-contract))
+    [host-facing wss debug endpoint](#host-facing-wss-debug-endpoint))
 23. `webhook-receiver` — the thin HTTP ingress that publishes raw inbound
     webhook bodies to the NATS `WEBHOOKS` stream: a `Deployment` running the
     `holos-paas` image (`webhook-receiver` subcommand), a `Service`, and an
@@ -899,14 +899,25 @@ JetStream over `wss://` without port-forwarding:
 | WebSocket port      | `8080` (on the `nats` Service)           |
 | Credentials         | none — unauthenticated (MVP no-auth)     |
 
-This endpoint is a **debugging affordance, not a production access path**. It is
-reachable only from the local machine because `nats.holos.localhost` resolves to
-`127.0.0.1` on the k3d cluster ([docs/local-cluster.md](../docs/local-cluster.md)),
-and the `AuthorizationPolicy` admits the WebSocket port (8080) from the shared
-Gateway's namespace alone. It is unauthenticated, consistent with the MVP
-[no-auth posture](#nats-jetstream-backbone-and-connection-contract) above;
-authenticating both the in-cluster and host-facing surfaces is the deferred
-future work tracked by the
+This endpoint is a **debugging affordance, not a production access path**, and it
+is **unauthenticated** — consistent with the MVP
+[no-auth posture](#nats-jetstream-backbone-and-connection-contract) above. Treat
+it as having no client authentication at all: anything that can open a TCP
+connection to the Gateway's published HTTPS port and present `Host`/SNI
+`nats.holos.localhost` can publish and subscribe. The
+`AuthorizationPolicy` admits the WebSocket port (8080) from the shared Gateway's
+namespace alone, which constrains *in-cluster* reach to the Gateway, but it does
+**not** bound who can reach the Gateway from outside. The intended use is local:
+`nats.holos.localhost` resolves to `127.0.0.1` on the developer's machine
+([docs/local-cluster.md](../docs/local-cluster.md)), so the developer hits their
+own loopback. That DNS mapping is a convenience, **not** an access boundary —
+the k3d load balancer publishes ports `80`/`443` on the Docker host
+([`k3d/config.yaml`](../k3d/config.yaml)) without a loopback-only host bind, so
+on a multi-user or LAN-reachable host another client could reach the Gateway by
+IP with the right `Host` header. Containing this endpoint to the local machine
+is the operator's responsibility (bind the published ports to `127.0.0.1`, or a
+host firewall) until NATS authentication lands. Authenticating both the
+in-cluster and host-facing surfaces is the deferred future work tracked by the
 [NATS in-cluster authentication placeholder](docs/placeholders.md#nats-in-cluster-authentication).
 The host-side verification steps — connecting with the `nats` CLI and reading
 recent `WEBHOOKS` messages with the `scripts/nats-webhooks` reader — are in
