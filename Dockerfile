@@ -18,9 +18,10 @@ COPY go.sum go.sum
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
-# Copy the source.
+# Copy the source.  The internal/ tree was removed in HOL-1241 when the NATS
+# pipeline services were retired (ADR-16); re-add `COPY internal/ internal/`
+# here when a later phase reintroduces shared implementation packages.
 COPY cmd/ cmd/
-COPY internal/ internal/
 
 # Build a static, trimmed binary. CGO is disabled for a small, portable image;
 # TARGETOS/TARGETARCH (set by buildx, defaulting to linux) drive

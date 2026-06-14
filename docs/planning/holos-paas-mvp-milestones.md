@@ -130,20 +130,26 @@ minimums):
 ## M2 — Registry & image tagging
 
 **ADR:** [ADR-8 — Container Registry and Image Tagging](../adr/ADR-8.md)
-**Goal:** publish the image with a tag (the tag *is* the version) and make the
-push observable via a webhook.
+**Goal:** publish the image with a tag (the tag *is* the version) so a new
+version is publishable and pullable.
+
+> **Note (HOL-1241):** the original plan made a tag push *observable via a
+> webhook* feeding the NATS receiver. That trigger path was superseded by
+> [ADR-16](../adr/ADR-16.md): the client-side `scripts/publish` workflow renders
+> and `oras push`es the manifests artifact, and a Kargo `Warehouse` watches the
+> registry for new artifacts. The registry/tagging substrate below stands; the
+> webhook trigger does not.
 
 **Planning hints / work to flesh out:**
 
 - Choose the registry (local registry wired into k3d, and/or GHCR/Harbor).
 - Define the tagging convention (prefer immutable tags; SHA/semver/build-no.).
-- Confirm the registry's webhook capability and capture its payload shape — this
-  is the contract M4's parser depends on.
 - Wire push auth (build step) and pull auth (k3d/KubeRay).
 
 **Acceptance criteria:**
 
-- Pushing a new tag is observable: the registry fires a webhook to the receiver.
+- Pushing a new tag is publishable and the artifact is discoverable (now by a
+  Kargo `Warehouse`, per [ADR-16](../adr/ADR-16.md)).
 - k3d can pull the pushed image with the configured credentials.
 
 ---
