@@ -37,16 +37,27 @@ to a container registry with a tag**. The **tag is the unit of versioning**: the
 value deployed by the pipeline is exactly the tag that was pushed. There is no
 separate version concept layered on top of the image tag for the MVP.
 
-A push of a new tag must be **observable to the deployment system**, which
-treats the registry as both the artifact store and the event source. Under the
-[ADR-16](ADR-16.md) pivot a **Kargo `Warehouse` watches the registry directly**
-and discovers new `Freight` when an artifact is published; the registry no longer
-POSTs a webhook to an in-cluster receiver. (The original design emitted a
-**registry webhook** to the thin receiver of [ADR-9](ADR-9.md); that path is
-deprecated along with the in-cluster NATS pipeline — see [ADR-16](ADR-16.md).)
-The rendered-manifests OCI artifact that Argo CD syncs is produced **client-side
-with Kustomize + ORAS** ([ADR-16](ADR-16.md)), not by an in-cluster render
-subscriber.
+A new tag push must be **observable to the deployment system**, which treats the
+registry as both the artifact store and the event source. The two OCI artifacts
+play distinct roles under the [ADR-16](ADR-16.md) pivot, so it matters *which*
+push triggers *what*:
+
+- The **application image** push is a **client-side** trigger. It does not start
+  promotion on its own; the engineer (or coding agent) responds to it by running
+  the client-side render-and-publish workflow ([ADR-16](ADR-16.md)):
+  `holos render platform --inject` → Kustomize OCI artifact → `oras push` to the
+  **rendered-manifests repository**.
+- The **rendered-manifests artifact** push is what the deployment system observes
+  in-cluster: a **Kargo `Warehouse` watches the rendered-manifests repository**
+  and discovers new `Freight` when that artifact is published. The registry no
+  longer POSTs a webhook to an in-cluster receiver. (The original design emitted a
+  **registry webhook** to the thin receiver of [ADR-9](ADR-9.md) for the
+  application-image push itself; that path is deprecated along with the in-cluster
+  NATS pipeline — see [ADR-16](ADR-16.md).)
+
+So a `docker push` of an app image does not by itself start a promotion under the
+pivot; it prompts the client-side render that publishes the rendered-manifests
+artifact, and *that* publish is what the Kargo `Warehouse` observes.
 
 The research on Argo CD OCI delivery
 ([report](../research/argocd-oci-image-tag-updates.md)) draws out a distinction
@@ -63,9 +74,15 @@ references** so "what is deployed" is exact and auditable for both artifacts.
 >   [ADR-7](ADR-7.md), and/or a hosted registry such as GHCR);
 > - the tagging convention (immutable tags vs. mutable `latest`; whether the tag
 >   encodes a git SHA, a semver, or a build number);
-> - the registry's webhook capability and payload shape, since [ADR-10](ADR-10.md)
->   must parse it (registries differ — Docker Registry, Harbor, GHCR, etc.);
-> - registry authentication for both push (build step) and pull (k3d/KubeRay).
+> - the rendered-manifests repository the client publishes to and the Kargo
+>   `Warehouse` watches ([ADR-16](ADR-16.md)); registry **webhook** capability is
+>   no longer required for the MVP — the deprecated webhook receiver/subscriber
+>   ([ADR-9](ADR-9.md), [ADR-10](ADR-10.md)) parsed registry payloads, but the
+>   pivot replaces that path with a Kargo registry watch;
+> - registry authentication: client **push** for the app image and the
+>   rendered-manifests artifact (the build/publish step), in-cluster **read** for
+>   the Kargo `Warehouse`, Argo CD **pull** for the OCI source, and pull for
+>   k3d/KubeRay.
 
 ## Decision
 
@@ -77,17 +94,22 @@ references** so "what is deployed" is exact and auditable for both artifacts.
    + ORAS** ([ADR-16](ADR-16.md)). (The original design emitted a webhook to the
    thin receiver of [ADR-9](ADR-9.md); that receiver is deprecated under the
    pivot.)
-3. The specific registry, tagging convention, and webhook payload format are to
-   be chosen in this milestone (see the planning note) because [ADR-10](ADR-10.md)
-   depends on the payload shape.
+3. The specific registry and tagging convention are to be chosen in this
+   milestone (see the planning note), along with the rendered-manifests repository
+   the Kargo `Warehouse` watches ([ADR-16](ADR-16.md)). A registry **webhook
+   payload format** is **no longer** a milestone requirement: under the pivot
+   nothing parses a registry webhook — the deprecated [ADR-10](ADR-10.md)
+   subscriber did, but Kargo watches the registry instead.
 
 ## Consequences
 
 - Versioning has a single, familiar source of truth — the image tag — which a
   coding agent can set deterministically at push time.
-- The choice of registry constrains the webhook format and therefore the
-  subscriber's parser ([ADR-10](ADR-10.md)); changing registries later is an
-  ADR-level change, not a config tweak.
+- Under the pivot the choice of registry constrains how the Kargo `Warehouse`
+  watches it ([ADR-16](ADR-16.md)) rather than a webhook parser; changing
+  registries later is an ADR-level change, not a config tweak. (In the deprecated
+  design the registry's webhook format constrained the subscriber's parser
+  ([ADR-10](ADR-10.md)).)
 - Mutable tags (e.g. `latest`) would make "which version is deployed"
   ambiguous; the milestone should prefer immutable, content-addressable tags.
 - The registry becomes a dependency for both push (CI/build) and pull

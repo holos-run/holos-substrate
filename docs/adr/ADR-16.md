@@ -127,7 +127,17 @@ In the cluster, **Kargo** watches the registry and promotes:
 - A Kargo **`Stage`** runs an **`argocd-update`** promotion step that patches the
   Argo CD `Application`'s **`targetRevision`** to the new artifact's immutable
   digest. Argo CD then syncs the rendered manifests from the OCI source
-  ([argocd-oci report](../research/argocd-oci-image-tag-updates.md)).
+  ([argocd-oci report](../research/argocd-oci-image-tag-updates.md)). Two Kargo
+  prerequisites must be set up for this step to take effect, and the
+  implementation phase must honor them:
+  - **The target Argo CD `Application` authorizes the Stage** via the
+    `kargo.akuity.io/authorized-stage: "<project>:<stage>"` annotation — Kargo
+    refuses to modify an `Application` that has not opted in.
+  - **The step's app `sources` entry sets `updateTargetRevision: true`** with the
+    `desiredRevision` resolved from the discovered `Freight` (the artifact
+    digest); `argocd-update` patches `targetRevision` **only** when that flag is
+    set. See the
+    [Kargo `argocd-update` reference](https://docs.kargo.io/user-guide/reference-docs/promotion-steps/argocd-update/).
 
 Kargo does exactly what OSS Kargo *can* do well — watch (`Warehouse`/`Freight`)
 and promote (`argocd-update`) — and nothing it cannot (it never renders;
