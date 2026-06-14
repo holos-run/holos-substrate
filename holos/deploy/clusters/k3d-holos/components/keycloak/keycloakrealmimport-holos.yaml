@@ -6,12 +6,5 @@ metadata:
 spec:
   keycloakCRName: keycloak
   realm:
-    clients:
-    - clientId: quay
-      enabled: false
-      name: Quay (placeholder — enabled by HOL-1183)
-      protocol: openid-connect
-      redirectUris:
-      - https://quay.holos.localhost/*
     enabled: true
     realm: holos

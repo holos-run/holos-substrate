@@ -206,6 +206,7 @@ client, roles, mappers, and secret are reconciled declaratively by the
   and `quay` namespaces; the bootstrap Job enforces this and fails loudly on a
   mismatch.
 - The previously **disabled** placeholder `quay` client in the
-  `KeycloakRealmImport` CR is now superseded by the enabled, reconciled client
-  in `keycloak-config`. Removing the stale placeholder and its references is
-  tracked separately (HOL-1221).
+  `KeycloakRealmImport` CR was superseded by the enabled, reconciled client in
+  `keycloak-config` and removed (HOL-1221); the bootstrap import now creates
+  only the realm shell, leaving the `quay` client wholly owned by
+  `keycloak-config`.

@@ -181,19 +181,18 @@ let REALM_IMPORT = {
 		realm: {
 			realm:   "holos"
 			enabled: true
-			// OIDC client placeholder for Quay: disabled, with no secret
-			// committed.  Quay shipped with local database auth; HOL-1183
-			// enables this client and provisions real credentials.  Because
-			// the realm import is bootstrap-only (CAVEAT above), enabling it
-			// on an existing cluster takes more than editing this CR — see
-			// the "Quay OIDC login" stub in holos/docs/placeholders.md.
-			clients: [{
-				clientId: "quay"
-				name:     "Quay (placeholder — enabled by HOL-1183)"
-				enabled:  false
-				protocol: "openid-connect"
-				redirectUris: ["https://quay.holos.localhost/*"]
-			}]
+			// No clients are declared here.  This bootstrap import creates
+			// only the realm shell (realm holos, enabled: true); the live
+			// "quay" OIDC client — enabled, with PKCE, roles, mappers, and a
+			// provisioned secret — is owned and reconciled on every apply by
+			// the realm-config component's keycloak-config-cli Job
+			// (components/keycloak/realm-config, HOL-1218/HOL-1219).  A
+			// disabled placeholder client used to live here, but it could
+			// only ever disagree with the managed client (different enabled
+			// state, no committed secret), so it was removed (HOL-1221).
+			// realm-config converges the realm on every apply regardless of
+			// bootstrap ordering, so a fresh cluster still gets a working
+			// quay client without a placeholder seeded here.
 		}
 	}
 }
