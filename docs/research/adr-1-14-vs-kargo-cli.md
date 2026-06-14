@@ -151,8 +151,16 @@ Kargo (off the shelf, declarative CRDs — no custom code):
 What this **deletes** from the MVP:
 
 - ❌ Webhook receiver (ADR-9) — Kargo has a **native Quay webhook receiver**
-  (`ProjectConfig.spec.webhookReceivers[].quay`), GA since Kargo **v1.6**
-  (2025-07). It is a 1:1 functional replacement for the custom receiver.
+  (`ProjectConfig.spec.webhookReceivers[].quay`), introduced in Kargo **v1.6**
+  (2025-07). **Caveat on the semantics:** webhook support landed as beta with
+  filtering limitations, and the receiver **triggers an immediate Warehouse
+  refresh** (a poll-now signal) rather than durably persisting the raw event the
+  way the NATS WorkQueue receiver does. So it replaces the *function* (registry
+  push → pipeline reacts) but not the *durability contract* — Kargo's safety net
+  is the Warehouse poll interval, not a retained at-least-once queue. For the MVP
+  that is an acceptable trade (the polling fallback still catches a missed
+  webhook), but it is not a byte-for-byte equivalent and should be verified
+  against the installed version's stability guarantees.
 - ❌ Webhook subscriber (ADR-10) — Kargo's **Warehouse** subscribes to the
   registry and produces **Freight** automatically; no custom parser/matcher.
 - ❌ Deployer + the deploy half of the Application controller (ADR-11) — Kargo's
@@ -196,7 +204,7 @@ kind: ProjectConfig
 metadata: { name: acme-store, namespace: acme-store }
 spec:
   promotionPolicies:
-  - stage: prod
+  - stageSelector: { name: prod }   # field spelling has drifted across releases; verify against the installed CRD
     autoPromotionEnabled: true
   webhookReceivers:
   - name: quay
@@ -244,7 +252,17 @@ pivot, and there are three clean resolutions:
    subscription type). Holos can render into a trivial chart wrapper (a
    `Chart.yaml` plus the rendered YAML under `templates/`, no values
    templating). This is the cleanest fit and is the assumption in the §4.1
-   sketch. **Recommended.**
+   sketch. **Recommended — with one constraint:** Kargo `chart` subscriptions
+   select by **SemVer** (`semverConstraint`), but ADR-8 makes the *image tag*
+   the version and does **not** require SemVer (git SHAs, `latest`, and other
+   immutable non-SemVer tags are allowed). So the CLI must stamp the wrapper
+   chart with a **SemVer `version`** — either by requiring SemVer app tags, or
+   by deriving a synthetic chart version (e.g. a monotonic build number or a
+   SemVer+build-metadata encoding of the digest) and recording the mapping back
+   to the source tag. Without that mapping scheme the "cleanest fit" does not
+   hold for arbitrary tags; pin this down in the spike. (Triggering on the app
+   *image* via resolution 2 sidesteps the chart-version requirement but
+   reintroduces the bundle/image-digest decoupling.)
 2. **Trigger off the application image instead of the manifest bundle.** The
    Warehouse watches `quay.../checkout` (an image — natively supported); the
    `argocd-update` step bumps the OCI-sourced `Application`. The downside is the
@@ -280,9 +298,16 @@ story (goal 4) is untouched and still requires the platform's own code:
 - **Keycloak/Quay self-service reconcilers** (ADR-12) and **Quay↔Keycloak OIDC
   SSO** (ADR-15, `Implemented`) — identity integration, orthogonal to delivery.
 
-Kargo and Argo CD bring their **own** OIDC SSO and RBAC (both already wired to
-the Keycloak realm in this project), so they slot into the existing identity
-layer rather than competing with it.
+Kargo and Argo CD both integrate with the existing Keycloak identity layer
+rather than competing with it — they consume OIDC SSO and map group claims to
+their own RBAC. **Argo CD is already wired** to the `holos` realm in this
+project; **Kargo is not** — it currently exists only as planned/aspirational
+docs and vendored generated CUE types, with no deployed Holos component or
+Keycloak client. Adopting Kargo therefore includes a one-time wiring cost: a
+Holos component to deploy it and a Keycloak OIDC client plus group→role mapping,
+following the same declarative pattern already used for Argo CD and Quay
+(ADR-15). This is configuration, not custom Go code, but it is real scope and is
+accounted for in the trade-offs ([§8](#8-trade-offs-honest-accounting)).
 
 This matters for the over-engineering question: the genuinely
 platform-differentiating custom code (tenancy, identity, self-service) is the
@@ -370,10 +395,13 @@ server code than the recommended CLI, kept as a documented escape hatch.
   API stays KRM — `Project`/`Application` CRDs, `kubectl` via authproxy. Only
   the *deploy trigger* becomes a CLI, and Kargo's own surface is itself KRM
   CRDs, so the KRM-native spirit is largely preserved.)
-- **New dependency and mental model.** Kargo is another controller to run and a
-  Warehouse/Freight/Stage model to learn. For a one-machine k3d demo this is
-  real but modest, and it is a *product* the team consumes rather than *code*
-  the team maintains.
+- **New dependency, mental model, and wiring cost.** Kargo is another controller
+  to run and a Warehouse/Freight/Stage model to learn, and — unlike Argo CD — it
+  is **not yet deployed or wired** in this project: adopting it adds a Holos
+  component to deploy it plus a Keycloak OIDC client and group→role mapping
+  (configuration following the existing Argo CD/Quay pattern, not custom Go).
+  For a one-machine k3d demo this is real but modest, and Kargo is a *product*
+  the team consumes rather than *code* the team maintains.
 - **The OCI-manifest-bundle gap** ([§5](#5-the-critical-compatibility-gap-and-how-to-close-it))
   requires repackaging rendered manifests as an OCI Helm chart (or triggering on
   the image). This is small but must be validated in the spike.
