@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Print the most recent raw messages from the NATS WEBHOOKS WorkQueue stream
-# over the host-facing secure WebSocket endpoint (wss://nats.holos.localhost,
-# HOL-1228/HOL-1230). The webhook-receiver publishes every inbound webhook body
-# to this stream; this is the one-command debugging affordance to see the last
-# N raw bodies it stored.
+# Print the most recent retained/unacked messages from the NATS WEBHOOKS
+# WorkQueue stream over the host-facing secure WebSocket endpoint
+# (wss://nats.holos.localhost, HOL-1228/HOL-1230). The webhook-receiver
+# publishes every inbound webhook body to this stream; this is the one-command
+# debugging affordance to see the last N raw bodies still retained. A WorkQueue
+# only retains a message until a consumer acks it, so once the webhook-subscriber
+# has drained a message it is gone — this prints what is currently retained, not
+# a historical event log.
 #
 # Read-only and consumer-free: it reads each message by sequence with
 # `nats stream get`, which fetches directly from the stream without creating a
@@ -27,7 +30,9 @@
 #   scripts/nats-webhooks [count]   # count defaults to 10
 #
 # Environment:
-#   NATS_URL   override the server URL (default wss://nats.holos.localhost)
+#   NATS_URL       override the server URL (default wss://nats.holos.localhost)
+#   NATS_MAX_SCAN  cap on sequences probed before giving up (default 10000;
+#                  must be a positive integer)
 
 set -euo pipefail
 
@@ -48,6 +53,20 @@ case "$COUNT" in
     exit 1
     ;;
 esac
+
+# NATS_MAX_SCAN controls whether messages are inspected at all, so a bad value
+# (empty, non-numeric, or zero) must fail loudly rather than silently scanning
+# nothing and reporting "stopped after scanning 0 sequences".
+case "$MAX_SCAN" in
+  '' | *[!0-9]*)
+    echo "ERROR: NATS_MAX_SCAN must be a positive integer, got: $MAX_SCAN" >&2
+    exit 1
+    ;;
+esac
+if [ "$MAX_SCAN" -eq 0 ]; then
+  echo "ERROR: NATS_MAX_SCAN must be a positive integer, got: $MAX_SCAN" >&2
+  exit 1
+fi
 
 # Read the stream's sequence window directly from JetStream metadata. This does
 # not create a consumer; `nats stream info` only reports state.
