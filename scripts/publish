@@ -1,0 +1,331 @@
+#!/usr/bin/env bash
+# Build and publish the platform's rendered manifests as an OCI artifact.
+#
+# This is the client-side "build and publish" workflow that replaces the
+# in-cluster render-task subscriber (see
+# holos/docs/oci-publish-workflow.md and
+# docs/research/rendered-manifests-publish-pipeline.md).  Given an app image
+# reference (tag or digest) and a target OCI repository, it:
+#
+#   1. resolves the app image tag -> digest (oras resolve) so the rendered
+#      output is exact and reproducible for the same input;
+#   2. runs `holos render platform --inject app_image=<repo>@sha256:<digest>`
+#      to produce the deploy/ tree pinned to that digest;
+#   3. assembles the rendered manifests under a Kustomize layout (a generated
+#      kustomization.yaml referencing every rendered resource) and runs
+#      `kustomize build` to produce the final manifest set -- Kustomize, NOT a
+#      Helm chart wrapper (the explicit packaging decision for this workflow);
+#   4. packages the kustomize output as a gzipped tarball and `oras push`es it
+#      with the `application/vnd.oci.image.layer.v1.tar+gzip` layer media type
+#      that Argo CD's OCI source accepts (holos/docs/argocd-application-source.md);
+#   5. prints the pushed artifact digest (sha256:...) on stdout, last line, so
+#      callers (CI, the next-phase Kargo Warehouse) can capture it.
+#
+# Idempotent tagging: the artifact is tagged input-addressed as
+# `render-<config-digest-12>-<appimage-digest-12>`, where the config digest is a
+# content digest of the holos/ CUE source tree.  Re-publishing the same CUE
+# source + app image digest produces the same tag, so the next-phase Kargo
+# Warehouse sees a stable, deduplicated artifact reference (research §4.5).  The
+# immutable artifact **digest** printed on stdout is what `targetRevision`
+# should carry downstream; the tag is the human/Warehouse-facing handle.
+#
+# Usage:
+#   scripts/publish <app-image-ref> [oci-repo]
+#   APP_IMAGE=<app-image-ref> PUBLISH_REPO=<oci-repo> scripts/publish
+#
+#   <app-image-ref>  The application container image to deploy, as either a
+#                    mutable tag (registry/app:tag) or an immutable digest
+#                    (registry/app@sha256:...).  A tag is resolved to its
+#                    digest before rendering.  Defaults to $APP_IMAGE.
+#   [oci-repo]       The OCI repository to push the manifests artifact to
+#                    (no tag/digest suffix), e.g.
+#                    quay.holos.localhost/holos/holos-paas-manifests.
+#                    Defaults to $PUBLISH_REPO, then to
+#                    quay.holos.localhost/holos/holos-paas-manifests.
+#
+# Environment overrides:
+#   APP_IMAGE        Default app image reference when the positional arg is
+#                    omitted.
+#   PUBLISH_REPO     Default target OCI repository.
+#   ORAS_USERNAME /  Registry push credentials.  When set, passed to every oras
+#   ORAS_PASSWORD    invocation via `--username/--password-stdin`.  Omit to use
+#                    oras's ambient auth (~/.docker/config.json, a prior
+#                    `oras login`).  The credential needs **push** scope on the
+#                    target repo (and pull on the app image repo for the
+#                    tag->digest resolve).  See the credentials section in
+#                    holos/docs/oci-publish-workflow.md.
+#   ORAS_INSECURE    Set to a non-empty value to pass `--insecure` to oras
+#                    (skip TLS verification on an HTTPS registry), matching the
+#                    in-cluster Quay's mkcert-signed certificate
+#                    (argocd-application-source.md).  Defaults to "1" when the
+#                    repo host ends in `.holos.localhost`, off otherwise.
+#   ORAS_PLAIN_HTTP  Set to a non-empty value to pass `--plain-http` to oras
+#                    for a registry served over plain HTTP (e.g. a bare
+#                    `localhost:5000` dev registry).  Defaults to "1" when the
+#                    repo host is `localhost`/`127.0.0.1` (optionally with a
+#                    `:port`), off otherwise.  Mutually exclusive with the TLS
+#                    path: when set it takes precedence over ORAS_INSECURE.
+#   ARTIFACT_TAG     Override the computed input-addressed tag.  Use with care:
+#                    overriding defeats the idempotency guarantee.
+#   KEEP_WORKDIR     Set to a non-empty value to keep the temporary working
+#                    directory (for debugging) instead of removing it on exit.
+#
+# Prerequisites:
+#   - holos     (https://holos.run/docs/cli/) -- renders the platform
+#   - kustomize (https://kustomize.io/)       -- assembles the final manifests
+#   - oras      (https://oras.land/)          -- resolves digests and pushes
+#   - git, tar, sha256sum (coreutils)
+#
+# NOTE: prerequisite checks are inline rather than a copy of the check_prereq
+# helper shared verbatim by scripts/local-{ca,dns,k3d} -- their NOTE blocks
+# call for consolidating into a shared helper if a fourth copy appears; this
+# script deliberately avoids creating one (matching scripts/render and
+# scripts/apply).
+
+set -euo pipefail
+
+# Resolve the repo root so this script works from any working directory.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+HOLOS_DIR="${REPO_ROOT}/holos"
+
+# ---------------------------------------------------------------------------
+# Prerequisites
+# ---------------------------------------------------------------------------
+missing=0
+for tool in holos kustomize oras git tar sha256sum; do
+  if ! command -v "${tool}" >/dev/null 2>&1; then
+    echo "ERROR: '${tool}' not found on PATH." >&2
+    case "${tool}" in
+      holos)     echo "       Install from https://holos.run/docs/cli/" >&2 ;;
+      kustomize) echo "       Install from https://kubectl.docs.kubernetes.io/installation/kustomize/" >&2 ;;
+      oras)      echo "       Install from https://oras.land/docs/installation" >&2 ;;
+    esac
+    missing=1
+  fi
+done
+if [[ "${missing}" -ne 0 ]]; then
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Inputs
+# ---------------------------------------------------------------------------
+APP_IMAGE="${1:-${APP_IMAGE:-}}"
+PUBLISH_REPO="${2:-${PUBLISH_REPO:-quay.holos.localhost/holos/holos-paas-manifests}}"
+
+if [[ -z "${APP_IMAGE}" ]]; then
+  echo "ERROR: no app image reference given." >&2
+  echo "       Usage: scripts/publish <app-image-ref> [oci-repo]" >&2
+  echo "       e.g.   scripts/publish quay.holos.localhost/holos/echo:v1" >&2
+  exit 1
+fi
+
+# Extract the registry host (everything before the first slash) for transport
+# defaults.
+PUBLISH_HOST="${PUBLISH_REPO%%/*}"
+
+# Default --plain-http on for a bare localhost dev registry (HTTP, no TLS).
+if [[ -z "${ORAS_PLAIN_HTTP+x}" ]]; then
+  case "${PUBLISH_HOST}" in
+    localhost|localhost:*|127.0.0.1|127.0.0.1:*) ORAS_PLAIN_HTTP=1 ;;
+    *) ORAS_PLAIN_HTTP="" ;;
+  esac
+fi
+
+# Default --insecure on for the in-cluster Quay (mkcert-signed *.holos.localhost
+# certificate is not in the default trust store); callers can force it either
+# way with ORAS_INSECURE.  Plain HTTP takes precedence: --insecure is a TLS
+# concern and does not apply to a plain-HTTP registry.
+if [[ -z "${ORAS_INSECURE+x}" ]]; then
+  case "${PUBLISH_HOST}" in
+    *.holos.localhost) ORAS_INSECURE=1 ;;
+    *) ORAS_INSECURE="" ;;
+  esac
+fi
+
+# Assemble the common oras flags once: transport (plain-http or insecure) and
+# optional credentials.  Credentials are passed via --password-stdin so the
+# secret never appears in the process list or shell history.
+oras_common_flags=()
+if [[ -n "${ORAS_PLAIN_HTTP}" ]]; then
+  oras_common_flags+=(--plain-http)
+elif [[ -n "${ORAS_INSECURE}" ]]; then
+  oras_common_flags+=(--insecure)
+fi
+
+# run_oras wraps oras with the common flags and streams the password on stdin
+# when credentials are configured.  Stdout/stderr pass through unchanged so
+# callers can capture --format output.
+run_oras() {
+  if [[ -n "${ORAS_USERNAME:-}" && -n "${ORAS_PASSWORD:-}" ]]; then
+    printf '%s' "${ORAS_PASSWORD}" \
+      | oras "$1" "${oras_common_flags[@]}" \
+          --username "${ORAS_USERNAME}" --password-stdin "${@:2}"
+  else
+    oras "$1" "${oras_common_flags[@]}" "${@:2}"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Working directory (cleaned up on exit)
+# ---------------------------------------------------------------------------
+# holos render platform writes relative to the holos module root, so the render
+# target must live under holos/.  Use a unique, gitignored temp dir there and
+# remove it on exit (the EXIT trap also restores from interrupts).
+WORKDIR="$(mktemp -d "${HOLOS_DIR}/.publish.XXXXXX")"
+RENDER_DIR="${WORKDIR}/deploy"
+cleanup() {
+  if [[ -z "${KEEP_WORKDIR:-}" ]]; then
+    rm -rf "${WORKDIR}"
+  else
+    echo "KEEP_WORKDIR set; left working directory at ${WORKDIR}" >&2
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# ---------------------------------------------------------------------------
+# 1. Resolve the app image tag -> digest (pin the input)
+# ---------------------------------------------------------------------------
+# A reference already containing @sha256:... is used as-is.  Otherwise resolve
+# the tag to its digest so the rendered YAML is exact and the same invocation
+# always renders the same image even if the tag is later moved (research §4.4).
+if [[ "${APP_IMAGE}" == *"@sha256:"* ]]; then
+  APP_IMAGE_DIGEST_REF="${APP_IMAGE}"
+  APP_IMAGE_DIGEST="${APP_IMAGE##*@}"
+  echo "App image already digest-pinned: ${APP_IMAGE_DIGEST_REF}" >&2
+else
+  echo "Resolving ${APP_IMAGE} -> digest ..." >&2
+  APP_IMAGE_DIGEST="$(run_oras resolve "${APP_IMAGE}")"
+  if [[ -z "${APP_IMAGE_DIGEST}" ]]; then
+    echo "ERROR: could not resolve a digest for ${APP_IMAGE}." >&2
+    exit 1
+  fi
+  # oras resolve prints the bare digest; recompose the digest-pinned reference
+  # by stripping any :tag from the repo part.
+  APP_IMAGE_REPO="${APP_IMAGE%%@*}"
+  APP_IMAGE_REPO="${APP_IMAGE_REPO%:*}"
+  APP_IMAGE_DIGEST_REF="${APP_IMAGE_REPO}@${APP_IMAGE_DIGEST}"
+  echo "Resolved: ${APP_IMAGE_DIGEST_REF}" >&2
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Render the platform with the digest-pinned app image
+# ---------------------------------------------------------------------------
+echo "Rendering platform with app_image=${APP_IMAGE_DIGEST_REF} ..." >&2
+(
+  cd "${HOLOS_DIR}"
+  holos render platform \
+    --inject "app_image=${APP_IMAGE_DIGEST_REF}" \
+    --write-to "$(basename "${WORKDIR}")/deploy"
+) >&2
+
+if [[ ! -d "${RENDER_DIR}" ]]; then
+  echo "ERROR: render produced no output at ${RENDER_DIR}." >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# 3. Assemble a Kustomize layout and build the final manifest set
+# ---------------------------------------------------------------------------
+# Kustomize, not a Helm chart wrapper: generate a kustomization.yaml that lists
+# every rendered manifest as a resource, then `kustomize build` to produce the
+# final, normalized manifest set.  The kustomization.yaml is written at the root
+# of the rendered tree so every resource path is at or below it -- kustomize's
+# default load restrictor rejects `../` references that escape the kustomization
+# directory, so no --load-restrictor override is needed.  Paths are sorted for a
+# deterministic kustomization.
+echo "Assembling Kustomize layout ..." >&2
+KUSTOMIZE_DIR="${RENDER_DIR}"
+
+{
+  echo "apiVersion: kustomize.config.k8s.io/v1beta1"
+  echo "kind: Kustomization"
+  echo "resources:"
+  (
+    cd "${RENDER_DIR}"
+    find . -type f \( -name '*.yaml' -o -name '*.yml' \) ! -name kustomization.yaml \
+      | LC_ALL=C sort \
+      | while IFS= read -r f; do
+          printf '  - %s\n' "${f#./}"
+        done
+  )
+} > "${KUSTOMIZE_DIR}/kustomization.yaml"
+
+FINAL_MANIFESTS="${WORKDIR}/manifests"
+mkdir -p "${FINAL_MANIFESTS}"
+echo "Running kustomize build ..." >&2
+kustomize build "${KUSTOMIZE_DIR}" > "${FINAL_MANIFESTS}/manifests.yaml"
+
+if [[ ! -s "${FINAL_MANIFESTS}/manifests.yaml" ]]; then
+  echo "ERROR: kustomize build produced no output." >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Compute the input-addressed artifact tag
+# ---------------------------------------------------------------------------
+# config digest: a content digest of the holos/ CUE source tree (the inputs
+# that, together with the app image digest, fully determine the rendered
+# output).  Hash the tracked CUE/source files' contents so the digest is
+# stable across checkouts and independent of file mtimes.  Fall back to hashing
+# the whole holos/ tree when git is unavailable for the path.
+if [[ -z "${ARTIFACT_TAG:-}" ]]; then
+  config_digest="$(
+    cd "${REPO_ROOT}"
+    # Hash the blob ids of tracked files under holos/ excluding the rendered
+    # deploy tree (an output, not an input).  git ls-files -s prints
+    # "<mode> <objectid> <stage>\t<path>"; the object ids already content-hash
+    # each file, so hashing the sorted list yields a stable tree digest.
+    git ls-files -s -- holos ':(exclude)holos/deploy' 2>/dev/null \
+      | LC_ALL=C sort \
+      | sha256sum \
+      | cut -d' ' -f1
+  )"
+  if [[ -z "${config_digest}" ]]; then
+    echo "ERROR: could not compute the config digest." >&2
+    exit 1
+  fi
+  appimage_short="${APP_IMAGE_DIGEST#sha256:}"
+  appimage_short="${appimage_short:0:12}"
+  config_short="${config_digest:0:12}"
+  ARTIFACT_TAG="render-${config_short}-${appimage_short}"
+fi
+echo "Artifact tag: ${ARTIFACT_TAG}" >&2
+
+# ---------------------------------------------------------------------------
+# 5. Package and push the OCI artifact
+# ---------------------------------------------------------------------------
+# Single layer: a gzipped tarball of the kustomize output, layer media type
+# application/vnd.oci.image.layer.v1.tar+gzip (the type Argo CD's OCI source
+# accepts -- holos/docs/argocd-application-source.md).
+TARBALL="${WORKDIR}/manifests.tar.gz"
+tar -czf "${TARBALL}" -C "${FINAL_MANIFESTS}" .
+
+ARTIFACT_REF="${PUBLISH_REPO}:${ARTIFACT_TAG}"
+echo "Pushing ${ARTIFACT_REF} ..." >&2
+
+# Push from the tarball's directory so the layer's path annotation is the bare
+# filename, and capture the pushed digest via the go-template format.
+PUSH_DIGEST="$(
+  cd "${WORKDIR}"
+  run_oras push "${ARTIFACT_REF}" \
+    --format 'go-template={{.digest}}' \
+    "manifests.tar.gz:application/vnd.oci.image.layer.v1.tar+gzip"
+)"
+
+if [[ -z "${PUSH_DIGEST}" ]]; then
+  echo "ERROR: oras push did not report a digest." >&2
+  exit 1
+fi
+
+echo "Published ${PUBLISH_REPO}@${PUSH_DIGEST} (tag ${ARTIFACT_TAG})" >&2
+echo "Consume it as an Argo CD OCI source by digest:" >&2
+echo "  repoURL:        oci://${PUBLISH_REPO}" >&2
+echo "  targetRevision: ${PUSH_DIGEST}" >&2
+
+# The pushed artifact digest is the script's machine-readable result: print it
+# alone on stdout as the last line so callers can `DIGEST=$(scripts/publish ...)`.
+echo "${PUSH_DIGEST}"
