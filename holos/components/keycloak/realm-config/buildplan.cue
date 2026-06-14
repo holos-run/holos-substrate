@@ -331,8 +331,8 @@ CONFIG_MAP.data["holos.json"]+"\n"+KeycloakConfigCLIImage)), 0, 8)
 let JOB_NAME = "\(NAME)-\(CONFIG_HASH)"
 
 // CONFIG_JOB runs keycloak-config-cli against the live Keycloak admin API to
-// converge the realm.  It mirrors the nats stream-bootstrap Job's hardened
-// posture (components/nats/buildplan.cue): non-root, read-only root filesystem
+// converge the realm.  It uses a hardened bootstrap-Job
+// posture: non-root, read-only root filesystem
 // with a writable /tmp emptyDir, dropped capabilities, no service-account token
 // (it talks to Keycloak over the network, never to the Kubernetes API), a
 // backoffLimit, and a day-long ttlSecondsAfterFinished so a routine re-apply of
@@ -359,7 +359,7 @@ let CONFIG_JOB = {
 		backoffLimit: 3
 		// A day keeps the Job's logs around for debugging a fresh import while
 		// still dissolving the immutable-pod-template caveat above for routine
-		// re-applies (the nats BOOTSTRAP_JOB precedent).
+		// re-applies (the bootstrap-Job precedent).
 		ttlSecondsAfterFinished: 86400
 		template: {
 			metadata: labels: "app.kubernetes.io/name": NAME
@@ -371,8 +371,8 @@ let CONFIG_JOB = {
 				securityContext: {
 					runAsNonRoot: true
 					// The keycloak-config-cli image runs as a non-root user; pin
-					// the conventional "nobody" uid explicitly (the nats Job
-					// precedent) so the read-only-rootfs posture is unambiguous.
+					// the conventional "nobody" uid explicitly so the
+					// read-only-rootfs posture is unambiguous.
 					runAsUser:  65534
 					runAsGroup: 65534
 					seccompProfile: type: "RuntimeDefault"
@@ -417,8 +417,7 @@ let CONFIG_JOB = {
 							}
 						},
 						// Tolerate the apply-script gate polling before the
-						// server is fully serving — the nats reachability-loop
-						// equivalent.  keycloak-config-cli retries the admin API
+						// server is fully serving.  keycloak-config-cli retries the admin API
 						// until it answers (or the timeout elapses, after which
 						// the pod fails and backoffLimit re-runs it).
 						{
@@ -689,7 +688,7 @@ let QUAY_OIDC_BOOTSTRAP_JOB = {
 		backoffLimit: 3
 		// A day keeps the Job's logs around for debugging a fresh bootstrap
 		// while still dissolving the immutable-pod-template caveat for routine
-		// re-applies (the nats/quay BOOTSTRAP_JOB precedent).
+		// re-applies (the quay BOOTSTRAP_JOB precedent).
 		ttlSecondsAfterFinished: 86400
 		template: {
 			metadata: labels: QUAY_OIDC_BOOTSTRAP_METADATA.labels

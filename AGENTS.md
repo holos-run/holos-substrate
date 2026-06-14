@@ -17,33 +17,32 @@ before adding a service, an API group, or moving directories. The evidence
 behind the layout is in
 [Research: Repository Layouts for Multiple Go Services](docs/research/go-multi-service-repo-layout.md).
 
-The first services realizing this layout are the **webhook receiver**
-([ADR-9](docs/adr/ADR-9.md)) and the **webhook subscriber**
-([ADR-10](docs/adr/ADR-10.md)):
+Deployment is owned by **Kargo plus the client-side build-and-publish
+workflow** ([ADR-16](docs/adr/ADR-16.md)): `scripts/publish` (`make publish`)
+renders the platform with an injected app image digest, packages the rendered
+manifests with Kustomize, and `oras push`es the OCI artifact to the in-cluster
+Quay registry; a Kargo `Warehouse` watches that repository, creates `Freight`,
+and a `Stage` promotion runs `argocd-update` to point the Argo CD `Application`
+at the new digest. See
+[holos/docs/oci-publish-workflow.md](holos/docs/oci-publish-workflow.md) and
+[holos/docs/argocd-application-source.md](holos/docs/argocd-application-source.md).
 
 ```text
 cmd/holos-paas/            # the multi-service binary (cobra root command)
 internal/                  # all implementation
-├── nats/                  # the JetStream publisher/connection helper
-├── task/                  # the DeployTask wire contract (ADR-10/ADR-11)
-└── webhook/
-    ├── receiver/          # the webhook-receiver subcommand and HTTP handler
-    └── subscriber/        # the webhook-subscriber subcommand, Quay parser, consumer
 Makefile                   # go fmt/vet/test and the container image targets
 Dockerfile                 # two-stage cross-compile → distroless runtime
 holos/                     # Holos CUE deployment configuration and policy
 ```
 
-The receiver's HTTP contract, durability story, and unauthenticated local-only
-posture are documented in
-[holos/README.md](holos/README.md#webhook-receiver-and-service-contract); its
-end-to-end verification steps are in
-[docs/local-cluster.md](docs/local-cluster.md#verify-the-webhook-receiver). The
-subscriber's DeployTask schema, durability/retry story, and deferred-scope
-decisions are documented in
-[holos/README.md](holos/README.md#webhook-subscriber-and-deploytask-contract);
-its verification steps are in
-[docs/local-cluster.md](docs/local-cluster.md#verify-the-webhook-subscriber).
+The earlier NATS event-driven deployment pipeline — the **webhook receiver**
+([ADR-9](docs/adr/ADR-9.md)), the **webhook subscriber**
+([ADR-10](docs/adr/ADR-10.md)), and the deployer/render-task path
+([ADR-11](docs/adr/ADR-11.md), [ADR-14](docs/adr/ADR-14.md)) — was retired in
+HOL-1241. Those ADRs are now `Deprecated` and superseded by ADR-16; the
+receiver/subscriber subcommands, their `internal/` packages, the NATS pipeline
+protobuf schemas, and the `nats`/`webhook-receiver`/`webhook-subscriber` Holos
+components have been removed. Git history preserves them.
 
 ## Documentation index
 
@@ -60,8 +59,8 @@ its verification steps are in
   Keycloak, Quay, Argo CD) — with `scripts/apply`.
 - [holos/README.md](holos/README.md) — orientation to the Holos CUE
   directory: layout, clusters, how rendered manifests are applied (the
-  apply-order rationale), and the Keycloak, Postgres, Quay, NATS JetStream,
-  webhook-receiver, and webhook-subscriber verification steps and contracts.
+  apply-order rationale), and the Keycloak, Postgres, Quay, and Argo CD
+  verification steps and contracts.
 - [holos/docs/component-guidelines.md](holos/docs/component-guidelines.md)
   — how to add a Holos component: anatomy, guardrails, and the
   render-then-commit workflow.

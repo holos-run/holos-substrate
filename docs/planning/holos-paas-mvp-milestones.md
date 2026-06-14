@@ -12,7 +12,21 @@ acceptance criteria — that the decisions feed into.
 
 - **North star:** push a tag → get a deploy, with no manual deployment steps.
 - **Demo target:** runnable end to end on a single Apple Silicon Mac (k3d).
-- **Backbone:** NATS JetStream couples the stages ([ADR-6](../adr/ADR-6.md)).
+
+> **Superseded — deployment pivoted to Kargo + a client-side CLI/ORAS publish
+> workflow ([ADR-16](../adr/ADR-16.md)).** The original NATS event-driven
+> pipeline below (M0 backbone, M3 webhook receiver, M4 webhook subscriber, M5
+> deployer) is **deferred / not used**: ADR-9/10/11/14 are now `Deprecated`,
+> and in HOL-1241 the receiver/subscriber/deployer code and the
+> `nats`/`webhook-receiver`/`webhook-subscriber` Holos components were removed
+> from the platform. The deploy loop is now closed by `scripts/publish`
+> (`make publish`) rendering + Kustomize-packaging + `oras push`ing rendered
+> manifests, a Kargo `Warehouse`/`Stage` watching that artifact, and an
+> `argocd-update` promotion pointing the Argo CD `Application` at the new
+> digest. See [ADR-16](../adr/ADR-16.md),
+> [holos/docs/oci-publish-workflow.md](../../holos/docs/oci-publish-workflow.md),
+> and the **Kargo Spike** milestone (HOL-1236). The M0/M3/M4/M5 sections below
+> are retained for historical context only.
 
 ## How to use this with Linear
 
@@ -31,32 +45,40 @@ acceptance criteria — that the decisions feed into.
 
 | # | Milestone                         | ADR                          | Depends on |
 |---|-----------------------------------|------------------------------|------------|
-| 0 | Pipeline backbone (NATS JetStream)| [ADR-6](../adr/ADR-6.md)     | —          |
+| 0 | Pipeline backbone (NATS JetStream) — **superseded by [ADR-16](../adr/ADR-16.md)** | [ADR-6](../adr/ADR-6.md)     | —          |
 | 1 | KubeRay reference workload        | [ADR-7](../adr/ADR-7.md)     | M0         |
 | 2 | Registry & image tagging          | [ADR-8](../adr/ADR-8.md)     | M1         |
-| 3 | Webhook receiver (thin ingress)   | [ADR-9](../adr/ADR-9.md)     | M0, M2     |
-| 4 | Webhook subscriber (parse/dispatch)| [ADR-10](../adr/ADR-10.md)  | M3         |
-| 5 | Deployer & Application resource    | [ADR-11](../adr/ADR-11.md)  | M4, M1     |
+| 3 | Webhook receiver (thin ingress) — **superseded by [ADR-16](../adr/ADR-16.md)** | [ADR-9](../adr/ADR-9.md)     | M0, M2     |
+| 4 | Webhook subscriber (parse/dispatch) — **superseded by [ADR-16](../adr/ADR-16.md)**| [ADR-10](../adr/ADR-10.md)  | M3         |
+| 5 | Deployer & Application resource — **superseded by [ADR-16](../adr/ADR-16.md)**    | [ADR-11](../adr/ADR-11.md)  | M4, M1     |
 
-The critical path is M0 → M2 → M3 → M4 → M5. M1 (workload) can proceed in
-parallel once M0 exists and is the input to M2 and M5.
+The original critical path was M0 → M2 → M3 → M4 → M5. M3/M4/M5 (the NATS
+receiver → subscriber → deployer path) are **superseded** by the Kargo + CLI/ORAS
+workflow ([ADR-16](../adr/ADR-16.md)); the live deploy loop is the **Kargo
+Spike** milestone (HOL-1236). M1 (workload) and M2 (registry) remain. The NATS
+backbone (M0) was removed with the pipeline.
 
 ---
 
 ## M0 — Pipeline backbone (NATS JetStream)
 
+> **Superseded by [ADR-16](../adr/ADR-16.md) (deferred / not used).** The NATS
+> JetStream backbone existed only to couple the receiver → subscriber → deployer
+> pipeline, all now `Deprecated` (ADR-9/10/11/14). In HOL-1241 the `nats` Holos
+> component, its WEBHOOKS/TASKS streams, and the `wait_nats()` apply gate were
+> removed; deployment is now Kargo + the client-side CLI/ORAS workflow. The
+> "Status: delivered" note below is historical.
+
 **ADR:** [ADR-6 — MVP Heroku-Style Deployment Pipeline](../adr/ADR-6.md)
 **Goal:** the event-driven substrate every other milestone plugs into.
 
-**Status: delivered.** The `nats` component
-([`holos/components/nats/`](../../holos/components/nats/buildplan.cue)) renders
-a file-backed JetStream `StatefulSet` and a bootstrap `Job` that creates the
+**Status: delivered, then retired (HOL-1241).** The `nats` component rendered
+a file-backed JetStream `StatefulSet` and a bootstrap `Job` that created the
 two WorkQueue streams, integrated into `scripts/apply` with a `wait_nats()`
-gate (HOL-1192, HOL-1193). The subject hierarchy, stream definitions, MVP
-auth posture, and in-cluster connection contract are documented in
-[`holos/README.md`](../../holos/README.md#nats-jetstream-backbone-and-connection-contract);
-the subject naming convention follows [ADR-13](../adr/ADR-13.md)
-(`webhooks.quay` on `WEBHOOKS`, `tasks.render` / `tasks.deploy` on `TASKS`).
+gate (HOL-1192, HOL-1193). The subject naming convention followed
+[ADR-13](../adr/ADR-13.md) (`webhooks.quay` on `WEBHOOKS`, `tasks.render` /
+`tasks.deploy` on `TASKS`). All of this was removed in HOL-1241 — see the
+superseded note above.
 
 **Work that landed:**
 
@@ -68,19 +90,17 @@ the subject naming convention follows [ADR-13](../adr/ADR-13.md)
   (`webhooks.>`) and `TASKS` (`tasks.>`), created idempotently by the
   bootstrap Job.
 - Connection contract (`nats://nats.nats.svc.cluster.local:4222`) documented;
-  the MVP posture is **no in-cluster authentication** (deferred — see
-  [placeholders.md](../../holos/docs/placeholders.md#nats-in-cluster-authentication)).
+  the MVP posture was **no in-cluster authentication**.
 - Brought up by `scripts/apply` (no separate `make` target needed — the
   platform shares one apply path).
 
-**Acceptance criteria:**
+**Acceptance criteria (historical):**
 
 - A message published to the ingress subject survives a broker restart.
 - A single consumer receives each message exactly once and removes it on ack.
 
-Both verified live on the k3d-holos cluster in HOL-1193; the verification
-commands are in
-[`holos/README.md`](../../holos/README.md#nats-jetstream-backbone-and-connection-contract).
+Both were verified live on the k3d-holos cluster in HOL-1193 before the NATS
+pipeline was retired in HOL-1241.
 
 ---
 
@@ -130,25 +150,24 @@ push observable via a webhook.
 
 ## M3 — Webhook receiver (thin NATS ingress)
 
+> **Superseded by [ADR-16](../adr/ADR-16.md) (deferred / not used).** ADR-9 is
+> `Deprecated`; the `webhook-receiver` subcommand, its HTTP handler, and the
+> `webhook-receiver` Holos component were removed in HOL-1241. There is no
+> inbound webhook ingress in the MVP — deployment is driven by the client-side
+> `scripts/publish` workflow and Kargo. Retained below for historical context.
+
 **ADR:** [ADR-9 — Webhook Receiver: Thin NATS Ingress](../adr/ADR-9.md)
 **Goal:** a thin HTTP endpoint that writes the **raw** webhook body to the NATS
 WorkQueue stream and acks the sender — no parsing.
 
-**Status: delivered.** The webhook receiver is implemented as the
-`webhook-receiver` subcommand of the `holos-paas` binary
-([`internal/webhook/receiver/`](../../internal/webhook/receiver/receiver.go),
-HOL-1196), shipped as an arm64 distroless image (HOL-1197), and deployed as the
-`webhook-receiver` Holos component on the shared Gateway at
-`hooks.holos.localhost`, with the NATS `AuthorizationPolicy` extended to admit
-its namespace (HOL-1198). It publishes the raw body to `webhooks.<source>` on the
-`WEBHOOKS` WorkQueue stream and acks the sender only after the JetStream
-`PubAck`. The ADR-9 milestone planning note (subject naming, body+headers
-framing, ack semantics, edge-auth location) is resolved in
-[ADR-9](../adr/ADR-9.md) revision 2; the service contract, durability story, and
-unauthenticated local-only posture are documented in
-[`holos/README.md`](../../holos/README.md#webhook-receiver-and-service-contract),
-with end-to-end verification in
-[`docs/local-cluster.md`](../local-cluster.md#verify-the-webhook-receiver).
+**Status: delivered, then retired (HOL-1241).** The webhook receiver was
+implemented as the `webhook-receiver` subcommand of the `holos-paas` binary
+(`internal/webhook/receiver/`, HOL-1196), shipped as an arm64 distroless image
+(HOL-1197), and deployed as the `webhook-receiver` Holos component on the shared
+Gateway at `hooks.holos.localhost` (HOL-1198). It published the raw body to
+`webhooks.<source>` on the `WEBHOOKS` WorkQueue stream. The subcommand, its
+package, and the component were removed in HOL-1241 — see the superseded note
+above.
 
 **Original planning hints (all resolved — see ADR-9 revision 2):**
 
@@ -177,6 +196,12 @@ Edge signature verification is a deferred future enhancement
 
 ## M4 — Webhook subscriber (parse & dispatch)
 
+> **Superseded by [ADR-16](../adr/ADR-16.md) (deferred / not used).** ADR-10 is
+> `Deprecated`; the `webhook-subscriber` subcommand, its `internal/` packages,
+> and the `webhook-subscriber` Holos component were removed in HOL-1241. Parsing
+> a registry push into a deploy is now the client-side `scripts/publish`
+> workflow feeding a Kargo `Warehouse`. Retained below for historical context.
+
 **ADR:** [ADR-10 — Webhook Subscriber: Parse and Dispatch](../adr/ADR-10.md)
 **Goal:** consume raw events, parse them, and publish one well-known **deployer
 task** message to the processor subject.
@@ -200,6 +225,12 @@ task** message to the processor subject.
 ---
 
 ## M5 — Deployer & Application resource
+
+> **Superseded by [ADR-16](../adr/ADR-16.md) (deferred / not used).** ADR-11 is
+> `Deprecated`; the deployer task subscriber was never built and the NATS path
+> was retired in HOL-1241. A Kargo `Stage` promotion now runs `argocd-update` to
+> set the Argo CD `Application`'s `targetRevision` to the published Freight
+> digest. Retained below for historical context.
 
 **ADR:** [ADR-11 — Deployer Task Subscriber and the Application Resource](../adr/ADR-11.md)
 **Goal:** consume deployer tasks and update the `Application` resource to the new

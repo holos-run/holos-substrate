@@ -21,11 +21,16 @@ scripts/apply        # apply the platform components in order
 
 ## Container image
 
-The `holos-paas` binary ships as a single multi-service image: the
+The `holos-paas` binary ships as a single multi-service image (ADR-12): the
 `ENTRYPOINT` is the binary, and the running service is selected by the
-subcommand argument (e.g. `webhook-receiver`). The image is built from a
+subcommand argument. The image is built from a
 two-stage `Dockerfile` — a `golang` builder that cross-compiles a static,
 distroless-ready binary, and a `gcr.io/distroless/static:nonroot` runtime.
+
+The webhook-receiver and webhook-subscriber subcommands that previously
+realized this binary were retired in HOL-1241 when deployment moved to Kargo
+plus the client-side ORAS publish workflow (ADR-16); the root command
+currently registers no service subcommands, and later phases add them back.
 
 The build cross-compiles via `TARGETOS`/`TARGETARCH` with `CGO_ENABLED=0`,
 so the same `Dockerfile` produces any platform. **The local k3d cluster runs
@@ -49,11 +54,8 @@ cross-built `linux/arm64` image is published directly.
 Verify the image locally without the cluster:
 
 ```bash
-docker run --rm quay.holos.localhost/holos/holos-paas:dev webhook-receiver --help
+docker run --rm quay.holos.localhost/holos/holos-paas:dev --help
 ```
-
-With a reachable NATS (e.g. `docker run --rm -p 4222:4222 nats -js`), the
-service answers `200` on `/healthz` and, once connected, `200` on `/readyz`.
 
 ## Documentation
 
@@ -65,8 +67,7 @@ service answers `200` on `/healthz` and, once connected, `200` on `/readyz`.
   create the cluster and apply the platform.
 - [holos/README.md](holos/README.md) — the Holos CUE deployment
   configuration: layout, apply-order rationale, caveats, and the platform
-  service contracts (including the
-  [webhook receiver](holos/README.md#webhook-receiver-and-service-contract)).
+  service contracts.
 
 ## License
 

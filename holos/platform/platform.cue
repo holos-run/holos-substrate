@@ -323,52 +323,11 @@ platform: {
 				labels: app: "argocd"
 			}}).output
 
-			// nats renders the NATS JetStream server — a single-replica
-			// StatefulSet with filesystem-backed JetStream on a local-path
-			// PVC, a headless Service and a client Service — from the
-			// official upstream NATS Helm chart with a laptop footprint.
-			// Render-only in this phase (HOL-1192): integration into
-			// scripts/apply and the WorkQueue stream creation land in the
-			// next phase (HOL-1193).
-			(#ComponentTemplate & {inputs: {
-				component: "nats"
-				cluster:   CLUSTER.name
-				labels: app: "nats"
-			}}).output
-
-			// webhook-receiver is the thin HTTP ingress that publishes raw
-			// inbound webhook bodies to the NATS WEBHOOKS stream: a Deployment
-			// running the holos-paas image (webhook-receiver subcommand), a
-			// Service, and an HTTPRoute attaching it to the shared Gateway at
-			// hooks.holos.localhost.  Registered after nats: it publishes into
-			// the NATS backbone, so the stream must exist for an end-to-end
-			// publish to land, and the nats AuthorizationPolicy ALLOWs this
-			// component's namespace as a client source.  Its HTTPRoute attaches
-			// to the istio-gateway component's Gateway; attachment is
-			// level-triggered, so apply order does not matter for the route
-			// itself.
-			(#ComponentTemplate & {inputs: {
-				component: "webhook-receiver"
-				cluster:   CLUSTER.name
-				labels: app: "webhook-receiver"
-			}}).output
-
-			// webhook-subscriber is the durable JetStream consumer that
-			// drains the NATS WEBHOOKS stream and publishes DeployTasks to
-			// the TASKS stream: a Deployment running the holos-paas image
-			// (webhook-subscriber subcommand) and nothing else — unlike the
-			// receiver it serves no inbound business HTTP, so it has no
-			// Service and no HTTPRoute.  Registered after nats and the
-			// receiver: it is a NATS client, so the streams must exist for a
-			// consume/publish to land, and the nats AuthorizationPolicy
-			// ALLOWs this component's namespace as a client source on port
-			// 4222.  Nothing during bootstrap depends on it, so appending it
-			// keeps the established order stable.
-			(#ComponentTemplate & {inputs: {
-				component: "webhook-subscriber"
-				cluster:   CLUSTER.name
-				labels: app: "webhook-subscriber"
-			}}).output
+			// The NATS event-driven deployment pipeline (the nats backbone,
+			// webhook-receiver, and webhook-subscriber components) was retired
+			// in HOL-1241: Kargo plus the client-side ORAS publish workflow
+			// (ADR-16) now own deployment, superseding the deprecated
+			// receiver/subscriber/deployer path (ADR-9/10/11/14).
 
 			// kargo-crds renders the Kargo CustomResourceDefinitions
 			// (kargo.akuity.io group) sliced from the upstream Kargo Helm
