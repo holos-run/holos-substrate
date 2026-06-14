@@ -72,6 +72,13 @@ its verification steps are in
   — the MVP Argo CD `Application` source pattern: OCI rendered-manifests
   artifacts in the in-cluster Quay registry, the repository credential
   Secret shape, and how the repo-server reaches Quay.
+- [holos/docs/oci-publish-workflow.md](holos/docs/oci-publish-workflow.md)
+  — the client-side build-and-publish workflow (`scripts/publish` /
+  `make publish`): render the platform with an injected app image digest,
+  package the rendered manifests with Kustomize, and `oras push` the OCI
+  artifact, with the deterministic input-addressed tagging convention and
+  required push credentials. Replaces the deferred in-cluster render
+  subscriber.
 - [holos/docs/placeholders.md](holos/docs/placeholders.md) — stubs for
   out-of-MVP-scope concerns: ArgoCD gitops delivery (the `argoAppDisabled`
   flip), observability dashboards, the Gateway route-attachment policy,

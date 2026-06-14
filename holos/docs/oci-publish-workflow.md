@@ -1,0 +1,219 @@
+# Client-Side Build-and-Publish Workflow (Kustomize + ORAS)
+
+The command-line "build and publish" workflow that turns a new application
+container image into a deployable, digest-pinned **OCI rendered-manifests
+artifact**. A developer or CI runs one command —
+[`scripts/publish`](../../scripts/publish) (or `make publish`) — that renders
+the platform with the new app image, packages the rendered manifests with
+**Kustomize**, and `oras push`es the result to the registry, printing the
+pushed artifact digest.
+
+This is the **client-side half of the Kargo pivot** (parent HOL-1236). It
+**replaces the previously-planned in-cluster render-task subscriber**: instead
+of a NATS-driven subscriber re-rendering and pushing inside the cluster, the
+render + package + push step now runs from the CLI, and the next phase's Kargo
+Warehouse watches the artifact this workflow produces. See the original
+subscriber design — now superseded for the MVP — in
+[Research: rendered-manifests publish pipeline](../../docs/research/rendered-manifests-publish-pipeline.md)
+(§4.4 tag injection and §4.5 input-addressed idempotency are the directly
+reusable parts, now run from the CLI rather than a subscriber).
+
+The published artifact is consumed exactly as documented in
+[argocd-application-source.md](argocd-application-source.md): an Argo CD
+`Application` with an `oci://` `repoURL` and a digest `targetRevision`.
+
+## What the command does
+
+`scripts/publish <app-image-ref> [oci-repo]` performs five steps:
+
+1. **Resolve the app image tag → digest** (`oras resolve`). A reference that
+   already contains `@sha256:…` is used as-is. Resolving the tag first pins the
+   input, so the rendered YAML is exact and the same invocation always renders
+   the same image even if the tag is later moved.
+2. **Render the platform** with the digest-pinned image injected:
+   `holos render platform --inject app_image=<repo>@sha256:<digest>`. The
+   platform CUE declares `_AppImage: string @tag(app_image)` in
+   [`holos/tags.cue`](../tags.cue) and the echo component (the Layer 3 sample
+   workload) sets its container image from it; `--inject` is forwarded to every
+   component render.
+3. **Package with Kustomize** — *not* a Helm chart wrapper (the explicit
+   packaging decision from the parent issue). The script writes a
+   `kustomization.yaml` at the root of the rendered tree listing every rendered
+   manifest as a resource, then runs `kustomize build` to produce the final,
+   normalized manifest set.
+4. **Push the OCI artifact** — a single layer holding a gzipped tarball of the
+   kustomize output, with the layer media type
+   `application/vnd.oci.image.layer.v1.tar+gzip` that Argo CD's OCI source
+   accepts.
+5. **Print the pushed digest** (`oras push --format go-template='{{.digest}}'`)
+   as the last line on stdout, so a caller can capture it:
+   `DIGEST=$(scripts/publish …)`.
+
+## Example invocation
+
+```bash
+# By tag (resolved to a digest before rendering):
+scripts/publish quay.holos.localhost/holos/echo:v1
+
+# By digest, to an explicit target repo:
+scripts/publish \
+  quay.holos.localhost/holos/echo@sha256:9afa…5ba \
+  quay.holos.localhost/holos/holos-paas-manifests
+
+# Via make (APP_IMAGE required; PUBLISH_REPO optional):
+make publish APP_IMAGE=quay.holos.localhost/holos/echo:v1
+
+# Capture the pushed digest for downstream use:
+DIGEST=$(scripts/publish quay.holos.localhost/holos/echo:v1)
+echo "$DIGEST"   # sha256:1a88…dad
+```
+
+On success the script prints progress and the consumption hint to **stderr** and
+the bare artifact digest to **stdout**:
+
+```
+Published quay.holos.localhost/holos/holos-paas-manifests@sha256:1a88…dad (tag render-6727d8e9f33c-9afa9311ba1d)
+Consume it as an Argo CD OCI source by digest:
+  repoURL:        oci://quay.holos.localhost/holos/holos-paas-manifests
+  targetRevision: sha256:1a88…dad
+```
+
+## Deterministic, input-addressed tagging (idempotency)
+
+The artifact is tagged input-addressed:
+
+```
+render-<config-digest-12>-<appimage-digest-12>
+```
+
+- **config-digest** is a content digest of the `holos/` CUE source tree — the
+  inputs `holos render` actually reads. It hashes the **working-tree bytes** of
+  every input file (so unstaged edits change the tag), enumerated from git as
+  the union of tracked files and untracked-but-not-gitignored files under
+  `holos/`, excluding the rendered `holos/deploy/` output. It is independent of
+  file mtimes and stable across checkouts.
+- **appimage-digest** is the resolved app image digest.
+
+Together these two inputs fully determine the rendered output, so **re-publishing
+the same CUE source + app image digest produces the same tag**. The script makes
+this concretely idempotent with a **tag-exists fast path**: before pushing it
+resolves the computed tag in the registry, and if it already exists it re-emits
+the existing digest without re-pushing (set `FORCE_PUSH=1` to overwrite). The
+next-phase Kargo deployment can therefore treat the tag as a stable,
+deduplicated handle for an unchanged input (research §4.5).
+
+Note the **digest is the source of truth downstream**: do not rely on
+byte-identical artifact digests across re-pushes (tar/gzip timestamps mean the
+same content can yield a different artifact digest), which is exactly why the
+fast path reuses the existing artifact rather than re-pushing. `targetRevision`
+carries the immutable *digest* the push reports (consistent with
+[ADR-8](../../docs/adr/ADR-8.md)'s digest-pinning preference). Override the
+computed tag with `ARTIFACT_TAG=…` only when you deliberately want to break this
+guarantee.
+
+## Registry credentials
+
+The workflow touches **two** registries with **separate** credentials, by
+design — the destination push credential is never sent to the source registry
+(which may be a different, untrusted registry):
+
+- **Destination** (the manifests artifact repo) needs **push** scope. For the
+  in-cluster Quay this is the same robot account `scripts/quay-init` provisions;
+  see the
+  [repository credential Secret shape and Quay bootstrap](argocd-application-source.md#repository-credential-secret)
+  in argocd-application-source.md (the cluster-side credential Argo CD's
+  repo-server uses to *pull* the same artifact).
+- **Source** (the app image repo) needs **pull** scope, used only to resolve the
+  app image tag → digest.
+
+Provide credentials to `scripts/publish` either way:
+
+- **Ambient auth** — run `oras login <registry>` (or rely on
+  `~/.docker/config.json`) once for each registry, then invoke the script with
+  no credential variables. This is the simplest path and works for both
+  registries at once.
+- **Explicit** — set credentials per registry; the script passes them via
+  `--password-stdin` so the secret never appears in the process list:
+  - destination push: `ORAS_USERNAME` / `ORAS_PASSWORD`
+  - source pull (only needed for a **private** app image repo):
+    `ORAS_SRC_USERNAME` / `ORAS_SRC_PASSWORD`
+
+  The destination variables are used **only** against the destination repo, so a
+  private source image on a different registry needs the `ORAS_SRC_*` pair (or
+  ambient auth for that registry) — the destination push token is never offered
+  to it.
+
+### Transport for local registries
+
+| Registry | Transport | Default in `scripts/publish` |
+| --- | --- | --- |
+| `quay.holos.localhost` (in-cluster Quay) | HTTPS with a mkcert-signed cert not in the default trust store | `--insecure` (skip TLS verify) auto-enabled for `*.holos.localhost` |
+| `localhost:<port>` (bare dev registry) | plain HTTP | `--plain-http` auto-enabled for `localhost`/`127.0.0.1` |
+| any other host | HTTPS with a trusted cert | neither flag |
+
+Force either explicitly with `ORAS_INSECURE=1` or `ORAS_PLAIN_HTTP=1` (plain
+HTTP takes precedence). `--insecure` mirrors the `insecure: "true"` field on the
+Argo CD repository Secret, required for the same mkcert reason
+([argocd-application-source.md](argocd-application-source.md#repository-credential-secret)).
+
+## Consuming the artifact in Argo CD
+
+Reference the printed digest in an `Application` source (see
+[argocd-application-source.md](argocd-application-source.md) for the full
+contract, including the repository credential Secret and in-cluster
+reachability):
+
+```yaml
+spec:
+  source:
+    repoURL: oci://quay.holos.localhost/holos/holos-paas-manifests
+    targetRevision: sha256:1a88…dad   # the digest scripts/publish printed
+    path: .                           # manifests sit at the tarball root
+```
+
+## Prerequisites
+
+The script checks for these on PATH and fails fast if any is missing:
+
+- [`holos`](https://holos.run/docs/cli/) — renders the platform
+- [`kustomize`](https://kustomize.io/) — assembles the final manifests
+- [`oras`](https://oras.land/) — resolves the digest and pushes the artifact
+- `git`, `tar`, `sha256sum`
+
+## Verification (manual)
+
+The repo has no harness for shell scripts; verify against a local OCI registry:
+
+```bash
+# 1. A throwaway registry and a sample "app image".
+docker run -d --name reg -p 5099:5000 registry:2
+printf hello > file.txt
+oras push --plain-http localhost:5099/holos/echo:v1 \
+  file.txt:application/vnd.oci.image.layer.v1.tar+gzip
+
+# 2. Publish the rendered manifests for that image.
+DIGEST=$(scripts/publish localhost:5099/holos/echo:v1 \
+  localhost:5099/holos/holos-paas-manifests)
+
+# 3. The artifact exists by digest, with the expected single tar+gzip layer.
+oras manifest fetch --plain-http \
+  localhost:5099/holos/holos-paas-manifests@"$DIGEST" \
+  | jq '.layers[].mediaType'   # "application/vnd.oci.image.layer.v1.tar+gzip"
+
+# 4. The published manifests carry the injected app image digest.
+oras pull --plain-http -o out \
+  localhost:5099/holos/holos-paas-manifests@"$DIGEST"
+tar xzf out/manifests.tar.gz -O | grep 'image:.*echo@sha256'
+
+# 5. Re-running with the same inputs is idempotent: the same input-addressed
+#    tag is produced.  Capture the tag from each run's stderr and compare.
+scripts/publish localhost:5099/holos/echo:v1 \
+  localhost:5099/holos/holos-paas-manifests 2>&1 >/dev/null \
+  | grep -oE 'render-[0-9a-f]{12}-[0-9a-f]{12}'   # tag run A
+scripts/publish localhost:5099/holos/echo:v1 \
+  localhost:5099/holos/holos-paas-manifests 2>&1 >/dev/null \
+  | grep -oE 'render-[0-9a-f]{12}-[0-9a-f]{12}'   # tag run B == tag run A
+
+# 6. Clean up.
+docker rm -f reg
+```

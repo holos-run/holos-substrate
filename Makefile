@@ -46,6 +46,17 @@ build: fmt vet ## Build the holos-paas binary.
 run: ## Run the webhook receiver locally.
 	go run ./cmd/holos-paas webhook-receiver
 
+# The publish target wraps scripts/publish: render the platform with an injected
+# app image digest, package the rendered manifests through Kustomize, and oras
+# push the result as an OCI artifact (see holos/docs/oci-publish-workflow.md).
+# APP_IMAGE is required (tag or digest); PUBLISH_REPO defaults to the in-cluster
+# Quay manifests repo, mirroring the IMAGE_REPO default above.
+PUBLISH_REPO ?= quay.holos.localhost/holos/holos-paas-manifests
+.PHONY: publish
+publish: ## Render, Kustomize-package, and oras push the manifests artifact (set APP_IMAGE=<ref>).
+	@test -n "$(APP_IMAGE)" || { echo "ERROR: set APP_IMAGE=<registry>/<app>:<tag> or <registry>/<app>@sha256:<digest>"; exit 1; }
+	scripts/publish "$(APP_IMAGE)" "$(PUBLISH_REPO)"
+
 # The image targets use buildx so the builder stage runs on the native host
 # (BUILDPLATFORM) and the Go toolchain cross-compiles to $(PLATFORM) — no target
 # architecture emulation is required. docker-build loads the result into the
