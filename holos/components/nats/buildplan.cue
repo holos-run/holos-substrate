@@ -46,6 +46,21 @@ let NAMESPACE = "nats" & #RegisteredNamespace
 
 let NAME = "nats"
 
+// WS_PORT is the NATS WebSocket listener port.  The shared Istio Gateway
+// terminates TLS for wss://nats.holos.localhost and forwards plain ws to this
+// port on the nats Service (HOL-1228).  8080 is the chart's default websocket
+// port (vendor/2.14.2/nats/values.yaml); pinning it here keeps the Helm
+// config, the HTTPRoute backendRef, and the AuthorizationPolicy rule in sync.
+let WS_PORT = 8080
+
+// GATEWAY_NAMESPACE is the namespace hosting the auto-provisioned shared
+// Gateway pods (istio-gateway component).  The HTTPRoute attaches to the
+// "default" Gateway there and the AuthorizationPolicy ALLOWs this namespace as
+// a source on the WebSocket port.  Unifying with #RegisteredNamespace
+// (holos/namespaces.cue) makes a rename or removal of that namespace a render
+// failure here rather than a silent cross-namespace deny at the WebSocket port.
+let GATEWAY_NAMESPACE = "istio-gateways" & #RegisteredNamespace
+
 // The NATS server runs without authentication this phase (MVP posture), so
 // "in-cluster clients only" cannot rely on the broker itself — Istio ambient
 // enrollment (holos/namespaces.cue) provides mTLS transport and L4 identity,
@@ -102,7 +117,7 @@ let AUTHZ = {
 			"app.kubernetes.io/component": NAME
 		}
 		action: "ALLOW"
-		// Three rules, each least-privilege.  An ALLOW policy denies everything
+		// Four rules, each least-privilege.  An ALLOW policy denies everything
 		// no rule matches, so every other cross-namespace pod is rejected.  The
 		// receiver and subscriber namespaces are both admitted explicitly below;
 		// tightening them to per-ServiceAccount principals is future work, once
@@ -123,6 +138,17 @@ let AUTHZ = {
 		//      raw bodies off WEBHOOKS and publishes DeployTasks to TASKS, both
 		//      over the client port, and has no business on the monitoring
 		//      endpoint (8222).
+		//   4. The shared Gateway namespace (istio-gateways) reaches ONLY the
+		//      WebSocket port (8080), mirroring rules 2 and 3.  The Gateway
+		//      terminates wss://nats.holos.localhost and forwards plain ws to the
+		//      unauthenticated WebSocket port for host-facing debugging
+		//      (HOL-1228), consistent with the MVP no-auth posture; it has no
+		//      business on the client (4222) or monitoring (8222) ports, so the
+		//      to.operation.ports restriction keeps those surfaces off the
+		//      Gateway.  istio-gateways is deliberately NOT ambient-enrolled, but
+		//      the Gateway proxy presents its own SPIFFE identity
+		//      (ns/istio-gateways) to the ambient NATS backend, so this namespace
+		//      rule matches at L4.
 		rules: [
 			{
 				from: [{source: namespaces: [NAMESPACE]}]
@@ -135,7 +161,41 @@ let AUTHZ = {
 				from: [{source: namespaces: [SUBSCRIBER_NAMESPACE]}]
 				to: [{operation: ports: ["4222"]}]
 			},
+			{
+				from: [{source: namespaces: [GATEWAY_NAMESPACE]}]
+				to: [{operation: ports: ["\(WS_PORT)"]}]
+			},
 		]
+	}
+}
+
+// HTTPROUTE attaches NATS to the shared Istio Gateway so the in-cluster
+// WebSocket listener is reachable from the host at wss://nats.holos.localhost
+// (HOL-1228).  Modeled on the webhook-receiver HTTPRoute
+// (components/webhook-receiver/buildplan.cue): cross-namespace attachment to
+// the "default" Gateway is allowed because the shared listener sets
+// allowedRoutes.namespaces.from: All and terminates TLS for *.holos.localhost
+// (istio-gateway component), so no ReferenceGrant is needed.
+// nats.holos.localhost matches that wildcard and resolves to 127.0.0.1 on the
+// host per docs/local-cluster.md.  The single rule carries no matches — a bare
+// rule matches all paths, correct here because the NATS WebSocket endpoint
+// serves the upgrade handshake at /; Istio performs the WebSocket upgrade
+// transparently over the HTTP route, forwarding to the Service's WebSocket
+// port (8080).
+let HTTPROUTE = {
+	apiVersion: "gateway.networking.k8s.io/v1"
+	kind:       "HTTPRoute"
+	metadata: {
+		name:      NAME
+		namespace: NAMESPACE
+		labels: "app.kubernetes.io/name": NAME
+	}
+	spec: {
+		parentRefs: [{name: "default", namespace: GATEWAY_NAMESPACE}]
+		hostnames: ["nats.holos.localhost"]
+		rules: [{
+			backendRefs: [{name: NAME, port: WS_PORT}]
+		}]
 	}
 }
 
@@ -375,6 +435,26 @@ userDefinedBuildPlan: {
 							// phase).  With cluster disabled the StatefulSet
 							// runs a single replica (the chart default).
 							cluster: enabled: false
+							// WebSocket listener for host-facing wss debugging
+							// access (HOL-1228): the shared Istio Gateway
+							// terminates TLS for wss://nats.holos.localhost and
+							// forwards plain ws to this port.  tls.enabled stays
+							// false so NATS serves plain ws (the chart emits
+							// `no_tls: true` in files/config/websocket.yaml) and
+							// the Gateway owns TLS termination.  The chart's
+							// service.ports.websocket.enabled default is already
+							// true, so enabling this config block exposes port
+							// 8080 on the nats Service (verified against
+							// vendor/2.14.2/nats/files/service.yaml, which emits
+							// a port only when both config.<proto>.enabled and
+							// service.ports.<proto>.enabled are true).  No auth
+							// is configured (MVP no-auth posture) — see the
+							// container block below.
+							websocket: {
+								enabled: true
+								port:    WS_PORT
+								tls: enabled: false
+							}
 						}
 						// Laptop footprint (ADR-7): modest requests with a
 						// memory limit; a single-instance in-cluster message
@@ -413,11 +493,12 @@ userDefinedBuildPlan: {
 				kind:   "Resources"
 				output: "resources.gen.yaml"
 				// Unify with #Resources (holos/resources.cue) so the
-				// hand-authored AuthorizationPolicy and stream bootstrap
-				// Job validate against the vendored Istio and Kubernetes
-				// schemas at render time.
+				// hand-authored AuthorizationPolicy, HTTPRoute, and stream
+				// bootstrap Job validate against the vendored Istio,
+				// Gateway API, and Kubernetes schemas at render time.
 				resources: #Resources & {
 					AuthorizationPolicy: (AUTHZ.metadata.name): AUTHZ
+					HTTPRoute: (HTTPROUTE.metadata.name):       HTTPROUTE
 					Job: (BOOTSTRAP_JOB.metadata.name):         BOOTSTRAP_JOB
 				}
 			}]

@@ -28,6 +28,14 @@ spec:
     - operation:
         ports:
         - "4222"
+  - from:
+    - source:
+        namespaces:
+        - istio-gateways
+    to:
+    - operation:
+        ports:
+        - "8080"
   selector:
     matchLabels:
       app.kubernetes.io/component: nats

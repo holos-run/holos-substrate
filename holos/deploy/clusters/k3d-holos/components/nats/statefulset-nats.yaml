@@ -61,6 +61,8 @@ spec:
         ports:
         - containerPort: 4222
           name: nats
+        - containerPort: 8080
+          name: websocket
         - containerPort: 8222
           name: monitor
         readinessProbe:

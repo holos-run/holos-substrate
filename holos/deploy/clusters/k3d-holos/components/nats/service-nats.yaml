@@ -16,6 +16,10 @@ spec:
     name: nats
     port: 4222
     targetPort: nats
+  - appProtocol: http
+    name: websocket
+    port: 8080
+    targetPort: websocket
   selector:
     app.kubernetes.io/component: nats
     app.kubernetes.io/instance: nats

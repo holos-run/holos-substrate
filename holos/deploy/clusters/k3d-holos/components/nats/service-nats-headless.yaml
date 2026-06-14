@@ -18,6 +18,10 @@ spec:
     port: 4222
     targetPort: nats
   - appProtocol: http
+    name: websocket
+    port: 8080
+    targetPort: websocket
+  - appProtocol: http
     name: monitor
     port: 8222
     targetPort: monitor
