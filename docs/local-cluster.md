@@ -340,6 +340,47 @@ For the full verification steps, the SSO/RBAC configuration, and the
 service contract, see
 [Argo CD admin credentials and verification](../holos/README.md#argo-cd-admin-credentials-and-verification).
 
+## Verify NATS over wss
+
+For local debugging, the `nats` component exposes the NATS WebSocket port to the
+host at `wss://nats.holos.localhost` through an `HTTPRoute` on the shared Gateway
+(see the
+[host-facing wss debug endpoint](../holos/README.md#host-facing-wss-debug-endpoint)).
+The Gateway terminates browser-trusted TLS and forwards the WebSocket upgrade to
+NATS, so you can reach JetStream from the host with the `nats` CLI directly — no
+`kubectl port-forward`, no throwaway `nats-box` pod. **No credentials are
+needed**: NATS runs unauthenticated in the MVP, and the endpoint is reachable
+only from this machine because `nats.holos.localhost` resolves to `127.0.0.1`
+(the local DNS set up in [Create the cluster](#create-the-cluster)). It is a
+debugging affordance, not a production access path — authenticating it is
+[deferred](../holos/docs/placeholders.md#nats-in-cluster-authentication).
+
+List the streams from the host to confirm connectivity:
+
+```bash
+SERVER=wss://nats.holos.localhost
+nats --server "$SERVER" stream ls          # WEBHOOKS and TASKS
+nats --server "$SERVER" stream info WEBHOOKS   # Retention: WorkQueue, Storage: File
+```
+
+To read the most recent raw bodies the receiver published to the `WEBHOOKS`
+stream, use the `scripts/nats-webhooks` reader (it connects over the same
+`wss://` endpoint and defaults to the last 10 messages):
+
+```bash
+scripts/nats-webhooks        # last 10 retained WEBHOOKS messages, newest first
+scripts/nats-webhooks 3      # last 3
+```
+
+The reader is **non-destructive**: it fetches each message by sequence with
+`nats stream get`, so it never creates a consumer or acks a message — important
+because `WEBHOOKS` is a WorkQueue stream the `webhook-subscriber` drains, and an
+ack would destroy real work. It needs the `nats` CLI and `jq` on the host. POST
+a payload through the Gateway first (see
+[Verify the webhook receiver](#verify-the-webhook-receiver) below) so there is a
+retained message to read; a drained stream prints `no messages on stream
+WEBHOOKS`.
+
 ## Verify the webhook receiver
 
 `scripts/apply` brings the `webhook-receiver` up at
