@@ -118,9 +118,10 @@ account/user authentication (e.g. NKEYs or a credentials file per
 producer/consumer) is deferred to a later issue; the connection contract and the
 deferred posture are documented in
 [`holos/README.md`](../README.md#nats-jetstream-backbone-and-connection-contract).
-The receiver and subscriber components (HOL-1122/1123/1124) will extend the
-same `AuthorizationPolicy` to allow their specific ServiceAccounts as they
-land.
+The receiver and subscriber components have already landed and the rendered
+`AuthorizationPolicy` admits their **namespaces** (not yet their specific
+ServiceAccounts) to the client port; tightening those namespace-granular rules
+to per-ServiceAccount principals is part of the deferred hardening tracked here.
 
 The component also exposes the NATS WebSocket port to the host at
 `wss://nats.holos.localhost` (an `HTTPRoute` on the shared Gateway, HOL-1228) as

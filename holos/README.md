@@ -854,9 +854,14 @@ clients connect over the client port, the `nats` namespace is ambient-enrolled
 ([mesh-enrollment.md](docs/mesh-enrollment.md)) so the client hop carries mTLS
 transport identity at L4, and the one host-facing surface — the WebSocket port
 exposed at `wss://nats.holos.localhost` for local debugging (see
-[Host-facing wss debug endpoint](#host-facing-wss-debug-endpoint) below) —
-reaches the local machine only because `nats.holos.localhost` resolves to
-`127.0.0.1`. To keep cross-namespace reach explicit by construction, the
+[Host-facing wss debug endpoint](#host-facing-wss-debug-endpoint) below) — is
+**unauthenticated** and reachable through the shared Gateway from anywhere the
+Gateway's published ports are reachable. It is *intended* for the developer's
+own loopback (`nats.holos.localhost` resolves to `127.0.0.1`), but that DNS
+mapping is a convenience, not an access boundary; containing it to the local
+machine is the operator's responsibility (loopback-bound host ports or a
+firewall) until NATS authentication lands. To keep cross-namespace reach
+explicit by construction, the
 component ships an `AuthorizationPolicy` with least-privilege rules:
 same-namespace (`nats`) sources reach every port — the
 client port (4222) for the bootstrap Job and the monitoring endpoint (8222) —
