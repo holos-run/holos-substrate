@@ -205,4 +205,18 @@ namespaces: {
 	// capture.
 	"kargo-system-resources": _ambient: false
 	"kargo-shared-resources": _ambient: false
+
+	// kargo-cluster-secrets is the (deprecated) chart concern
+	// global.clusterSecretsNamespace, defaulting to this name: it holds Secrets
+	// referenced by cluster-scoped Kargo resources (e.g. a ClusterConfig).  The
+	// kargo component sets global.createClusterSecretsNamespace: false so the
+	// chart does not emit it as a Namespace (components must not), but the chart
+	// unconditionally renders Role/RoleBinding objects IN this namespace
+	// (role-kargo-cluster-secrets-*, rolebinding-kargo-cluster-secrets-*), so it
+	// MUST exist before the kargo component applies or those RBAC objects fail
+	// with a NotFound namespace error (codex round 1).  Registering it here is
+	// the same pattern as kargo-system-resources / kargo-shared-resources.  The
+	// name MUST match global.clusterSecretsNamespace's chart default.
+	// Deliberately NOT ambient-enrolled: it carries only Secrets, no workloads.
+	"kargo-cluster-secrets": _ambient: false
 }

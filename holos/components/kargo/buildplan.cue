@@ -401,17 +401,24 @@ userDefinedBuildPlan: {
 					inputs: [transformers[0].output]
 					// this output is the artifact holos writes to the deploy
 					// directory, one file per resource.  CustomResourceDefinition
-					// is excluded — the kargo-crds component owns the CRDs — and
-					// Secret is excluded so no generated credential lands in the
-					// committed deploy tree (the reference platform's kargo
-					// kubectl-slice pattern; here it is belt-and-suspenders since
-					// the no-auth values emit no admin Secret).
+					// is excluded — the kargo-crds component owns the CRDs.
+					//
+					// Secret is deliberately NOT excluded (unlike the reference,
+					// which supplied credentials out-of-band via ExternalSecrets
+					// and stripped the chart's Secret): with the admin account
+					// disabled the chart still renders an EMPTY Secret/kargo-api
+					// (stringData: {}, no credentials), and the API Deployment's
+					// envFrom references it with a non-optional secretRef
+					// (api/secret.yaml + api/deployment.yaml in the vendored
+					// chart).  Excluding it would leave the api pod stuck in
+					// CreateContainerConfigError.  Because the Secret carries no
+					// data, committing it leaks nothing — the no-auth posture is
+					// what makes it empty (codex round 1).
 					output: artifact
 					command: args: [
 						"holos",
 						"kubectl-slice",
 						"--exclude-kind=CustomResourceDefinition",
-						"--exclude-kind=Secret",
 						"-f", "\(BuildContext.tempDir)/\(inputs[0])",
 						"-o", "\(BuildContext.tempDir)/\(artifact)",
 					]
