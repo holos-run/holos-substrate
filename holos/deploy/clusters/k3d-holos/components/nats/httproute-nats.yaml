@@ -1,0 +1,18 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  labels:
+    app.kubernetes.io/name: nats
+  name: nats
+  namespace: nats
+spec:
+  hostnames:
+  - nats.holos.localhost
+  parentRefs:
+  - name: default
+    namespace: istio-gateways
+    sectionName: https
+  rules:
+  - backendRefs:
+    - name: nats
+      port: 8080

@@ -12,7 +12,12 @@ data:
       "lame_duck_grace_period": "10s",
       "pid_file": "/var/run/nats/nats.pid",
       "port": 4222,
-      "server_name": $SERVER_NAME
+      "server_name": $SERVER_NAME,
+      "websocket": {
+        "no_tls": true,
+        "port": 8080,
+        "same_origin": true
+      }
     }
 kind: ConfigMap
 metadata:
