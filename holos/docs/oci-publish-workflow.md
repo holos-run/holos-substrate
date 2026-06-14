@@ -217,3 +217,127 @@ scripts/publish localhost:5099/holos/echo:v1 \
 # 6. Clean up.
 docker rm -f reg
 ```
+
+## Downstream: the Kargo delivery pipeline (echo spike)
+
+The artifact this workflow publishes is consumed by Kargo, which drives the
+rollout that the in-cluster NATS deployer subscriber used to drive
+([ADR-16](../../docs/adr/ADR-16.md)). For the spike this is wired end-to-end for
+**one** representative application — the **echo** sample workload
+([`components/echo/`](../components/echo/buildplan.cue)) — across two components:
+
+- [`components/kargo-project-echo/`](../components/kargo-project-echo/buildplan.cue)
+  — a Kargo `Project` (mirroring the reference platform's
+  `kargo-project-braintrust`) that reconciles to a **dedicated** `kargo-echo`
+  namespace and carries an auto-promotion policy for the `test` Stage. A Project
+  adopts a same-named namespace and adds its own `kargo.akuity.io/finalizer`, so
+  it is deliberately given its own namespace rather than the echo workload
+  namespace, which the namespaces component server-side-applies — sharing it
+  would risk finalizer/label contention. The namespace is registered centrally
+  ([`holos/namespaces.cue`](../namespaces.cue)) with the
+  `kargo.akuity.io/project: "true"` adoption label so Kargo adopts it, and the
+  `kargo.akuity.io/keep-namespace: "true"` annotation so Kargo never deletes it.
+- [`components/kargo-echo/`](../components/kargo-echo/buildplan.cue) — the
+  pipeline itself:
+  - a **`Warehouse`** (`freightCreationPolicy: Automatic`, `interval: 1m`) with
+    an `image` subscription to the bare rendered-manifests repo
+    `quay.holos.localhost/holos/holos-paas-manifests`, scoped by
+    `allowTags: ^render-[0-9a-f]{12}-[0-9a-f]{12}$` to the input-addressed tags
+    this workflow mints. It uses `imageSelectionStrategy: Lexical`, not SemVer
+    (the tags are not semver) and not NewestBuild (ORAS rendered-manifests
+    artifacts carry no build-timestamp metadata for NewestBuild to order by),
+    and `insecureSkipTLSVerify: true` for Quay's mkcert certificate.
+  - a **`Stage`** (`test`) that requests Freight directly from the Warehouse and,
+    on promotion, runs a single **`argocd-update`** step — **not**
+    `helm-template`. No in-promotion `kustomize-build` is needed: this workflow
+    already ran `kustomize build` client-side and pushed finished manifests, so
+    the Stage only repoints the Application's OCI `targetRevision` to the
+    Freight's **digest** (`${{ imageFrom("…/holos-paas-manifests").Digest }}`).
+  - the target Argo CD **`Application`** (`echo`, in `argocd`) with an **OCI**
+    source (`oci://…/holos-paas-manifests`) and the
+    `kargo.akuity.io/authorized-stage: kargo-echo:test` annotation authorizing
+    the Stage to patch it. It is authored standalone rather than through the
+    `userDefinedBuildPlan` gitops projection (the `argoAppDisabled` flip in
+    [`components/user-defined-build-plan.cue`](../components/user-defined-build-plan.cue)):
+    that projection emits a **git**-source Application for the deferred
+    whole-platform gitops delivery ([placeholders.md](placeholders.md)), which is
+    the wrong shape for Kargo to patch. Its `targetRevision` is **deliberately
+    omitted** from the committed manifest: Kargo's `argocd-update` step owns that
+    field, and `scripts/apply` re-applies every component with `kubectl apply
+    --server-side --force-conflicts`, so committing a value would seize it back on
+    every run and fight Kargo. Leaving it out means apply never asserts ownership
+    — the Application is Unknown until the first promotion, then Kargo is the sole
+    owner of the revision, the "imperative revision, declarative Application"
+    posture [argocd-application-source.md](argocd-application-source.md) documents.
+
+### Lexical ordering caveat (spike)
+
+The `render-<config12>-<appimage12>` tag is **input-addressed, not monotonic**,
+so the lexically-greatest tag is not necessarily the most recently published.
+For the single-app spike this is acceptable: `Automatic` Freight creation
+produces Freight for any newly discovered tag, and the verification below
+publishes one new artifact at a time. A production pipeline that needs strict
+most-recent-wins ordering should switch to a monotonic tag (a zero-padded
+counter or timestamp prefix) or a `Digest` strategy against a mutable tag.
+
+### End-to-end manual verification (on the local cluster)
+
+Prerequisites: the cluster is up and `scripts/apply` has run (Kargo, Argo CD,
+Quay, and the two `kargo-*-echo` components are applied). Two **imperative,
+uncommitted** credential Secrets are required (the repo's runtime-secret posture
+— neither is rendered into the deploy tree):
+
+1. **Argo CD's repo-server** PULLs the artifact using a repository credential
+   Secret in the `argocd` namespace (the `holos+robot` pull credential
+   `scripts/quay-init` provisions) — see the
+   [repository credential Secret](argocd-application-source.md#repository-credential-secret)
+   shape.
+2. **Kargo's controller** LISTs tags for the Warehouse using a separate
+   **Kargo-format image credential Secret** in the `kargo-echo` Project namespace.
+   Kargo discovers credentials from Secrets labeled
+   `kargo.akuity.io/cred-type: image` whose `repoURL` matches (or prefixes) the
+   subscription `repoURL`; without it, Warehouse discovery cannot authenticate to
+   the private Quay repo and no Freight is created. Create it from the same Quay
+   robot pull credential:
+
+   ```bash
+   kubectl --context k3d-holos -n kargo-echo create secret generic quay-manifests-creds \
+     --from-literal=repoURL=quay.holos.localhost/holos/holos-paas-manifests \
+     --from-literal=username=holos+robot \
+     --from-literal=password='<robot token>'
+   kubectl --context k3d-holos -n kargo-echo label secret quay-manifests-creds \
+     kargo.akuity.io/cred-type=image
+   ```
+
+```bash
+KCTX=k3d-holos
+
+# 0. The pipeline objects exist.
+kubectl --context "$KCTX" -n kargo-echo get warehouse,stage
+kubectl --context "$KCTX" -n argocd get application echo \
+  -o jsonpath='{.spec.source.targetRevision}{"\n"}'   # empty until first promotion
+
+# 1. Publish a new rendered-manifests artifact for echo (HOL-1239).  Use the
+#    in-cluster Quay app image repo; the default PUBLISH_REPO is the manifests
+#    repo the Warehouse watches.
+DIGEST=$(scripts/publish quay.holos.localhost/holos/echo:v1)
+echo "published $DIGEST"
+
+# 2. The Warehouse discovers the artifact and creates Freight (within ~interval).
+kubectl --context "$KCTX" -n kargo-echo get freight -w
+#    A Freight object appears whose image digest matches $DIGEST.
+
+# 3. Auto-promotion runs the Stage's argocd-update step; a Promotion succeeds.
+kubectl --context "$KCTX" -n kargo-echo get promotion
+#    PHASE column reaches Succeeded.
+
+# 4. The Argo CD Application's OCI targetRevision is now the new digest, and it
+#    syncs the rendered manifests.
+kubectl --context "$KCTX" -n argocd get application echo \
+  -o jsonpath='{.spec.source.targetRevision}{"  "}{.status.sync.status}{"\n"}'
+#    targetRevision == $DIGEST, sync status Synced.
+```
+
+This is the loop the issue's verification AC describes: publish → Warehouse
+creates Freight → Stage promotion sets the Argo CD Application `targetRevision`
+→ Argo CD syncs the new version.

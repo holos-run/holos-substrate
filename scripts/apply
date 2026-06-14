@@ -155,7 +155,16 @@ ROLLOUT_TIMEOUT_SECONDS="$(duration_seconds "${ROLLOUT_TIMEOUT}")" || exit 1
 # attach to, and cert-manager (the chart's internal webhooks server uses
 # cert-manager-issued self-signed certs) — all applied earlier — so appending
 # the pair keeps the established order stable.  Nothing downstream depends on
-# Kargo during bootstrap.
+# Kargo during bootstrap.  kargo-project-echo and kargo-echo wire the echo
+# delivery pipeline (HOL-1240) and close the sequence: the Project is a
+# kargo.akuity.io custom resource, so it trails kargo-crds (its type) and kargo
+# (the controller that reconciles it into the kargo-echo namespace); kargo-echo's
+# Warehouse and Stage are namespaced into that Project namespace, so they trail
+# the Project, which scripts/apply gates on (wait_kargo_project_echo) so the
+# namespace exists before they apply.  The argocd-update promotion step the Stage
+# runs targets the echo Argo CD Application in the argocd namespace, applied here
+# too; Argo CD itself was applied earlier (argocd).  Nothing during bootstrap
+# depends on these.
 COMPONENTS=(
   namespaces
   gateway-api
@@ -183,6 +192,8 @@ COMPONENTS=(
   webhook-subscriber
   kargo-crds
   kargo
+  kargo-project-echo
+  kargo-echo
 )
 
 # local-ca and istio-gateway create cert-manager.io resources (ClusterIssuer,
@@ -786,6 +797,64 @@ wait_kargo() {
     rollout status deployment/kargo-webhooks-server --timeout="${ROLLOUT_TIMEOUT}"
   kubectl --context "${KUBE_CONTEXT}" --namespace kargo \
     rollout status deployment/kargo-external-webhooks-server --timeout="${ROLLOUT_TIMEOUT}"
+}
+
+# kargo-project-echo: gate on the Kargo Project reconciling before the kargo-echo
+# Warehouse/Stage apply into its namespace.  The Project (cluster-scoped in Kargo
+# 1.10) adopts the pre-created kargo-echo namespace (created by the namespaces
+# component, carrying the kargo.akuity.io/project: "true" adoption label) and
+# reports Ready; only then does the namespace carry Kargo's project RBAC so
+# namespaced Warehouse/Stage resources apply cleanly.  Poll the Project's Ready
+# condition (rather than `kubectl wait`) so a Stalled Project — e.g. the adoption
+# label missing — fails the gate promptly with a clear pointer instead of
+# blocking the full timeout.
+wait_kargo_project_echo() {
+  local project="project.kargo.akuity.io/kargo-echo" state lookup_failures=0
+  local deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+  while true; do
+    # Project is cluster-scoped (no --namespace).
+    if state=$(kubectl --context "${KUBE_CONTEXT}" \
+      get "${project}" --ignore-not-found --request-timeout=10s \
+      -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
+      lookup_failures=0
+      if grep -q '^Ready=True$' <<<"${state}"; then
+        break
+      fi
+      if grep -q '^Stalled=True$' <<<"${state}"; then
+        echo "ERROR: ${project} is Stalled (often the kargo-echo namespace is missing the" >&2
+        echo "       kargo.akuity.io/project: \"true\" adoption label); inspect it with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} --namespace kargo-echo describe ${project}" >&2
+        return 1
+      fi
+    else
+      lookup_failures=$((lookup_failures + 1))
+      if [[ "${lookup_failures}" -ge 3 ]]; then
+        echo "ERROR: repeated failures reading ${project}; aborting the gate." >&2
+        return 1
+      fi
+    fi
+    if [[ "${SECONDS}" -ge "${deadline}" ]]; then
+      echo "ERROR: timed out waiting for ${project} to become Ready." >&2
+      return 1
+    fi
+    sleep 5
+  done
+}
+
+# kargo-echo: confirm the Warehouse, Stage, and target Argo CD Application
+# applied and exist.  This is a structural smoke check, not a full pipeline run:
+# the Warehouse cannot produce Freight until scripts/publish pushes an artifact,
+# and the Application stays Unknown until the first promotion sets its
+# targetRevision (deliberately uncommitted — Kargo owns the field) — both are
+# exercised by the manual verification in holos/docs/oci-publish-workflow.md, not
+# at apply time.
+wait_kargo_echo() {
+  kubectl --context "${KUBE_CONTEXT}" --namespace kargo-echo \
+    get warehouse.kargo.akuity.io/manifests --request-timeout=10s >/dev/null
+  kubectl --context "${KUBE_CONTEXT}" --namespace kargo-echo \
+    get stage.kargo.akuity.io/test --request-timeout=10s >/dev/null
+  kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
+    get application.argoproj.io/echo --request-timeout=10s >/dev/null
 }
 
 if ! command -v kubectl >/dev/null 2>&1; then

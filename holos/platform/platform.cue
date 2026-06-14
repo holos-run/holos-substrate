@@ -404,6 +404,37 @@ platform: {
 				cluster:   CLUSTER.name
 				labels: app: "kargo"
 			}}).output
+
+			// kargo-project-echo defines the Kargo Project for the echo sample
+			// app's delivery pipeline (HOL-1240): a minimal Project resource
+			// (mirroring the reference platform's kargo-project-braintrust) that
+			// reconciles to the dedicated kargo-echo namespace and carries the
+			// auto-promotion policy for the test Stage.  Registered after kargo:
+			// the Project is a kargo.akuity.io custom resource, so the CRDs
+			// (kargo-crds) and the controller that reconciles it (kargo) must be
+			// established first.  scripts/apply gates this on the Project
+			// reconciling its namespace before the kargo-echo Warehouse/Stage
+			// apply into it.
+			(#ComponentTemplate & {inputs: {
+				component: "kargo-project-echo"
+				cluster:   CLUSTER.name
+				labels: app: "kargo"
+			}}).output
+
+			// kargo-echo wires the echo delivery pipeline: a Warehouse watching
+			// the rendered-manifests OCI artifact scripts/publish pushes, a Stage
+			// whose promotion runs argocd-update to repoint the echo Argo CD
+			// Application's OCI targetRevision at the new artifact digest, and the
+			// target Application itself (HOL-1240).  Registered after
+			// kargo-project-echo: the Warehouse and Stage are namespaced into the
+			// Project's kargo-echo namespace, which the Project must reconcile
+			// (adopt) first, and the Application's authorized-stage annotation
+			// references the Project's Stage.
+			(#ComponentTemplate & {inputs: {
+				component: "kargo-echo"
+				cluster:   CLUSTER.name
+				labels: app: "kargo"
+			}}).output
 		}
 	}
 }

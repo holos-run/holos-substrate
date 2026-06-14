@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+    annotations:
+        kargo.akuity.io/authorized-stage: kargo-echo:test
+    labels:
+        app.kubernetes.io/name: echo
+    name: echo
+    namespace: argocd
+spec:
+    destination:
+        namespace: echo
+        server: https://kubernetes.default.svc
+    project: default
+    source:
+        path: .
+        repoURL: oci://quay.holos.localhost/holos/holos-paas-manifests
+    syncPolicy:
+        automated:
+            prune: true
+            selfHeal: true
+        syncOptions:
+            - CreateNamespace=false
