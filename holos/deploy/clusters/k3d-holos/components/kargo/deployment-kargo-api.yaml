@@ -22,7 +22,7 @@ spec:
   template:
     metadata:
       annotations:
-        configmap/checksum: 0586ceaa53203891010cadfb5a54d77250a6b3d4a87bd3343cfd98f1706d05ae
+        configmap/checksum: d0b36e4c2b61fc94730aead2417db5cf5d47bc458c476b4d090bc6513be1ebe0
         secret/checksum: d1de5656a573b5d57005b49b298a3441cfb54788b06b84fb66979d84ba7389a1
       labels:
         app.kubernetes.io/component: api
@@ -83,4 +83,36 @@ spec:
           grpc:
             port: 8080
           initialDelaySeconds: 10
+        volumeMounts:
+        - mountPath: /etc/ssl/certs
+          name: certs
+      initContainers:
+      - args:
+        - |
+          for file in /tmp/source/*; do
+            base_filename=$(basename "$file" .crt)
+            awk 'BEGIN {c=0;} /BEGIN CERT/{c++} { print > "/usr/local/share/ca-certificates/" base_filename "." c ".crt"}' base_filename="$base_filename" < $file
+          done
+          /usr/sbin/update-ca-certificates
+          find /etc/ssl/certs -type l -exec cp --remove-destination {} /etc/ssl/certs/ \;
+          cp -r /etc/ssl/certs/* /tmp/target/
+        command:
+        - /bin/sh
+        - -c
+        image: ghcr.io/akuity/kargo:v1.10.3
+        imagePullPolicy: IfNotPresent
+        name: parse-cabundle
+        securityContext:
+          runAsUser: 0
+        volumeMounts:
+        - mountPath: /tmp/source
+          name: cabundle
+        - mountPath: /tmp/target
+          name: certs
       serviceAccount: kargo-api
+      volumes:
+      - name: cabundle
+        secret:
+          secretName: kargo-local-ca
+      - emptyDir: {}
+        name: certs

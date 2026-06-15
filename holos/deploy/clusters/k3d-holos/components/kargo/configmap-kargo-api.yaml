@@ -1,8 +1,14 @@
 apiVersion: v1
 data:
+  GLOBAL_SERVICE_ACCOUNT_NAMESPACES: kargo
   KARGO_NAMESPACE: kargo
   LOG_FORMAT: JSON
   LOG_LEVEL: INFO
+  OIDC_ADDITIONAL_SCOPES: ""
+  OIDC_CLIENT_ID: kargo
+  OIDC_ENABLED: "true"
+  OIDC_ISSUER_URL: https://auth.holos.localhost/realms/holos
+  OIDC_USERNAME_CLAIM: email
   PERMISSIVE_CORS_POLICY_ENABLED: "false"
   ROLLOUTS_INTEGRATION_ENABLED: "false"
   SHARED_RESOURCES_NAMESPACE: kargo-shared-resources
