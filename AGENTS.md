@@ -72,6 +72,13 @@ components have been removed. Git history preserves them.
 - [holos/docs/mesh-enrollment.md](holos/docs/mesh-enrollment.md) — the
   ambient mesh enrollment convention for platform namespaces, how to verify
   it, and the exceptions.
+- [holos/docs/keycloak-clients.md](holos/docs/keycloak-clients.md) — the
+  declarative Keycloak OIDC client pattern: the `keycloak-config-cli`
+  reconciliation mechanism and apply-gate, public vs confidential PKCE clients
+  (argocd vs quay), the runtime client-secret bootstrap, the three protocol
+  mappers that feed the shared `groups` claim, the realm/client role model
+  (including `platform-owner` into the quay client), the Quay-superuser
+  limitation, and the guardrail checklist for adding a new PKCE client.
 - [holos/docs/argocd-application-source.md](holos/docs/argocd-application-source.md)
   — the MVP Argo CD `Application` source pattern: OCI rendered-manifests
   artifacts in the in-cluster Quay registry, the repository credential
@@ -96,7 +103,11 @@ components have been removed. Git history preserves them.
   rather than writing a new one for a refinement.
 - Every platform capability is modeled as Kubernetes resources
   ([ADR-2](docs/adr/ADR-2.md)); integrations like Keycloak group membership
-  and Quay self-service are CRDs with reconcilers, not imperative tools.
+  and Quay self-service are CRDs with reconcilers, not imperative tools. The
+  Keycloak OIDC clients (argocd, quay) are reconciled declaratively by the
+  `keycloak-config` keycloak-config-cli Job; the conventional declarative-client
+  pattern and the guardrails for adding another PKCE client are in
+  [holos/docs/keycloak-clients.md](holos/docs/keycloak-clients.md).
 - Deployment configuration and policy are CUE rendered with
   `holos render platform`; `scripts/render` renders and verifies the
   committed `holos/deploy/` tree is diff-clean.

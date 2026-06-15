@@ -15,9 +15,9 @@
 
 #### Quay OIDC PKCE Implementation (HOL-1233)
 - **Issue:** Quay's OIDC client does not fully implement PKCE — it fails to send the code_verifier during token exchange, causing "code_verifier_missing" errors in Keycloak logs.
-- **Workaround:** The Quay client in Keycloak is configured with `pkce.force: "false"` (optional PKCE) rather than required. This allows Quay to fall back to client-secret authentication if its PKCE implementation is incomplete.
-- **Status:** Temporary workaround. Monitor Quay releases for PKCE fix; if fixed, consider re-enabling PKCE requirement.
-- **Related:** `holos/components/keycloak/realm-config/buildplan.cue`, line 238
+- **Workaround:** The Quay client in Keycloak keeps PKCE **optional** (it advertises `pkce.code.challenge.method: "S256"` but does not force PKCE — equivalent to `pkce.force: "false"`) rather than required. This allows Quay to fall back to client-secret authentication if its PKCE implementation is incomplete. The client relies on Keycloak's default optional PKCE-force behavior rather than setting a `pkce.force` attribute explicitly.
+- **Status:** Temporary workaround. Monitor Quay releases for PKCE fix; if fixed, consider requiring PKCE by adding an explicit `pkce.force` attribute.
+- **Related:** `holos/components/keycloak/realm-config/buildplan.cue` (the `quay` client's `attributes`), and `holos/docs/keycloak-clients.md` (the PKCE guardrail checklist).
 
 ### Keycloak Configuration as Code
 - **Pattern:** The holos realm (users, groups, clients, roles, protocol mappers) is fully declarative, reconciled on every `scripts/apply` via a keycloak-config-cli Job.
@@ -28,3 +28,8 @@
 - **Rule:** OIDC client secrets are generated at runtime, never committed.
 - **Pattern:** A bootstrap Job generates the secret once and writes it to both the owning component's namespace and any consuming namespace (e.g., keycloak and quay for the Quay OIDC secret).
 - **Reference:** `holos/components/keycloak/realm-config/buildplan.cue`, QUAY_OIDC_BOOTSTRAP section
+
+### Adding a Keycloak OIDC (PKCE) Client
+- **Pattern:** The realm's OIDC clients (argocd, quay) are declared in `realm-config/buildplan.cue` and reconciled by the `keycloak-config` keycloak-config-cli Job. The conventional declarative-client pattern — public vs confidential decision, the `S256` attribute, the confidential secret-bootstrap Job, `IMPORT_VARSUBSTITUTION_ENABLED`, the three mappers that feed the shared `groups` claim, the role model, and the render-then-commit workflow — is documented as a guardrail checklist.
+- **Before adding another PKCE client:** Read `holos/docs/keycloak-clients.md` and follow its guardrail checklist rather than rediscovering the pattern. The `pkce.force` workaround documented above (HOL-1233) is one of its checklist items — relax or skip requiring PKCE only for a client with a demonstrated implementation gap. The current `quay` client declares only `pkce.code.challenge.method: "S256"` and relies on Keycloak's default (optional) PKCE-force behavior; it does not set `pkce.force` explicitly.
+- **Reference:** `holos/docs/keycloak-clients.md`
