@@ -12,6 +12,10 @@ import (
 	hrv1 "gateway.networking.k8s.io/httproute/v1"
 	gwv1 "gateway.networking.k8s.io/gateway/v1"
 	ap "argoproj.io/appproject/v1alpha1"
+	app "argoproj.io/application/v1alpha1"
+	kproject "kargo.akuity.io/project/v1alpha1"
+	kwarehouse "kargo.akuity.io/warehouse/v1alpha1"
+	kstage "kargo.akuity.io/stage/v1alpha1"
 	es "external-secrets.io/externalsecret/v1beta1"
 	ss "external-secrets.io/secretstore/v1beta1"
 	cnpg "postgresql.cnpg.io/cluster/v1"
@@ -29,6 +33,7 @@ import (
 	}
 
 	AppProject?: [_]:          ap.#AppProject
+	Application?: [_]:         app.#Application
 	AuthorizationPolicy?: [_]: azp.#AuthorizationPolicy
 	Certificate?: [_]:         certv1.#Certificate
 	Cluster?: [_]:             cnpg.#Cluster
@@ -49,6 +54,12 @@ import (
 	KeycloakRealmImport?: [_]:   kcri.#KeycloakRealmImport
 	Namespace?: [_]:             corev1.#Namespace
 	PersistentVolumeClaim?: [_]: corev1.#PersistentVolumeClaim
+	// Project is the Kargo Project custom resource (kargo.akuity.io).  Note that
+	// ProjectConfig (the sibling kargo.akuity.io kind that configures a
+	// Project's webhook receivers and promotion policies) has NO generated CUE
+	// type under cue.mod/gen/, so it is authored against the [Kind][Label]
+	// catch-all above rather than a typed entry here.
+	Project?: [_]:               kproject.#Project
 	ReferenceGrant?: [_]:        rgv1.#ReferenceGrant
 	Role?: [_]:                  rbacv1.#Role
 	RoleBinding?: [_]:           rbacv1.#RoleBinding
@@ -57,7 +68,9 @@ import (
 	Service?: [_]:               corev1.#Service
 	ServiceAccount?: [_]:        corev1.#ServiceAccount
 	ServiceEntry?: [_]:          se.#ServiceEntry
+	Stage?: [_]:                 kstage.#Stage
 	StatefulSet?: [_]:           appsv1.#StatefulSet
+	Warehouse?: [_]:             kwarehouse.#Warehouse
 
 	Gateway?: [_]: gwv1.#Gateway & {
 		spec: gatewayClassName: string | *"istio"

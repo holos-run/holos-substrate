@@ -394,6 +394,24 @@ platform: {
 				cluster:   CLUSTER.name
 				labels: app: "kargo"
 			}}).output
+
+			// my-project is the Layer 3 sample application's delivery scaffold
+			// (HOL-1268).  This phase (HOL-1269) emits an Argo CD AppProject and
+			// an Argo CD Application reconciling the my-project-config OCI
+			// artifact from the in-cluster Quay registry; the Kargo Project,
+			// ProjectConfig, Warehouse, and project-config promotion Stage that
+			// drive the Application's targetRevision land in the next phase
+			// (HOL-1270).  Registered after argocd and kargo: the Application and
+			// AppProject are argoproj.io custom resources (so the argocd CRDs and
+			// controller must be established first), and the authorized-stage
+			// annotation references the Kargo Stage the next phase adds (so the
+			// kargo CRDs and controller belong upstream of it too).  Nothing
+			// during bootstrap depends on my-project.
+			(#ComponentTemplate & {inputs: {
+				component: "my-project"
+				cluster:   CLUSTER.name
+				labels: app: "my-project"
+			}}).output
 		}
 	}
 }

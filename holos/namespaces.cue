@@ -217,4 +217,31 @@ namespaces: {
 			annotations: "kargo.akuity.io/keep-namespace": "true"
 		}
 	}
+
+	// my-project is the Kargo Project namespace for the my-project sample
+	// application's project-config delivery pipeline (HOL-1268): it holds the
+	// Kargo Project, ProjectConfig (quay webhook receiver), Warehouse, and the
+	// project-config promotion Stage added in the next phase (HOL-1270), whose
+	// promotion patches the my-project Argo CD Application's OCI targetRevision.
+	// Unlike the dedicated kargo-echo Project namespace, my-project IS the
+	// workload namespace as well: the Argo CD Application's destination targets
+	// it directly, so the rendered my-project-config artifact deploys here.  It
+	// is therefore ambient-enrolled (its workloads enroll in the mesh per the
+	// platform convention), in contrast to kargo-echo, which carries only Kargo
+	// control resources and stays unenrolled.
+	//
+	// The kargo.akuity.io/project label lets the Kargo Project controller ADOPT
+	// this pre-created namespace instead of refusing it (the controller requires
+	// the exact label value "true" to adopt an existing namespace), and the
+	// kargo.akuity.io/keep-namespace annotation tells Kargo not to delete this
+	// namespace if the Project is ever removed, since the namespaces component
+	// owns the base Namespace object.  This mirrors the kargo-echo adopt pattern
+	// above.
+	"my-project": {
+		_ambient: true
+		metadata: {
+			labels: "kargo.akuity.io/project":              "true"
+			annotations: "kargo.akuity.io/keep-namespace": "true"
+		}
+	}
 }
