@@ -376,10 +376,11 @@ sign in through Keycloak SSO** (below), not through a registry-local password.
 ### Quay OIDC SSO and roles
 
 Quay is a Single Sign-On relying party of the Keycloak `holos` realm: users
-log in with the **Holos SSO** button through the Authorization Code flow with
-PKCE (S256). The full design — why PKCE, the confidential client, the
-username-from-token behavior, and the roles model — is in
-[ADR-15](../docs/adr/ADR-15.md). The essentials:
+log in with the **Holos SSO** button through the Authorization Code flow,
+authenticated by the confidential client's secret (no PKCE — HOL-1257). The
+full design — why no PKCE, the confidential client, the username-from-token
+behavior, and the roles model — is in [ADR-15](../docs/adr/ADR-15.md). The
+essentials:
 
 - **Login flow.** Quay's `KEYCLOAK_LOGIN_CONFIG`
   ([components/quay/buildplan.cue](components/quay/buildplan.cue)) points at

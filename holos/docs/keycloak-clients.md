@@ -286,5 +286,5 @@ copy from.
 - [`docs/placeholders.md`](placeholders.md) — the resolved *Keycloak realm
   reconciliation* and *Quay OIDC login* entries.
 - [`CLAUDE.md`](../../CLAUDE.md) — the Guard Rails: CUE Component Rendering,
-  the Quay OIDC PKCE HOL-1233 workaround, Keycloak Configuration as Code, and
-  OIDC Client Secrets.
+  the Quay OIDC PKCE note (HOL-1233, disabled by HOL-1257), Keycloak
+  Configuration as Code, and OIDC Client Secrets.
