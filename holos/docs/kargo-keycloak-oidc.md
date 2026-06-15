@@ -112,11 +112,25 @@ access levels:
 `platform-editor` is grouped with the `authenticated` default-group baseline
 because it has no system-level edit role until project-scoped roles exist.
 
-**To grant a user Kargo access**, assign them the corresponding Keycloak realm
-role (or membership in a group that confers it) in the `holos` realm, and make
-sure their account has an email set. The next login carries the role name in the
-`groups` claim, and Kargo maps it to the access level above. No Kargo-side change
-is needed to add a user — only the Keycloak role assignment.
+**Baseline access is automatic for every realm user.** `authenticated` is a
+**realm default group** (`defaultGroups: ["/authenticated"]` in the realm-config
+component), so every user in the `holos` realm is a member of it from creation.
+That group name flows through the `groups` claim and matches
+`users.claims.groups`, so **any** Keycloak realm user with an email already
+receives Kargo's baseline `users` access (read of cluster-scoped resources) on
+first login — no explicit role assignment is required. Kargo is therefore *not*
+gated to an allow-list of users; it is gated to "anyone who can log into the
+holos realm", which on this single-user local cluster is the intended posture.
+Tightening that (a Kargo-specific realm group instead of the shared
+`authenticated` default group) would be a realm-config change, not a Kargo-side
+one.
+
+**To elevate a user above baseline** (viewer or admin), assign them the
+corresponding Keycloak realm role — `platform-viewer` or `platform-owner` — (or
+membership in a group that confers it) in the `holos` realm, and make sure their
+account has an email set. The next login carries the role name in the `groups`
+claim, and Kargo maps it to the access level above. No Kargo-side change is
+needed — only the Keycloak role assignment.
 
 ## Why `additionalScopes: []`
 
