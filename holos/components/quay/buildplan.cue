@@ -327,9 +327,9 @@ let CONFIG_TEMPLATE_CM = {
 // CONFIG_HASH is a short content hash of the rendered quay-config-template
 // ConfigMap (the CONFIG_YAML template the initContainer renders into
 // /conf/stack/config.yaml).  It is stamped onto the Quay Deployment pod
-// template as the app.holos.run/config-hash annotation (CONFIG_HASH_ANNOTATION
-// on DEPLOYMENT below) so any edit to CONFIG_YAML changes the pod template,
-// forcing a new ReplicaSet and a rollout on the next scripts/apply.
+// template as the app.holos.run/config-hash annotation (on DEPLOYMENT below) so
+// any edit to CONFIG_YAML changes the pod template, forcing a new ReplicaSet and
+// a rollout on the next scripts/apply.
 //
 // Without it the ConfigMap name is static and the pod template is byte-identical
 // across a config-only change, so kubectl apply updates the ConfigMap but never
