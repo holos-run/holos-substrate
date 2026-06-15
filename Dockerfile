@@ -18,10 +18,12 @@ COPY go.sum go.sum
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
-# Copy the source.  The internal/ tree was removed in HOL-1241 when the NATS
-# pipeline services were retired (ADR-16); re-add `COPY internal/ internal/`
-# here when a later phase reintroduces shared implementation packages.
+# Copy the source. cmd/holos-paas is the multi-service binary and internal/
+# holds all implementation (ADR-12) — the Fisk command tree lives in
+# internal/cli (ADR-17), which cmd/holos-paas/main.go imports, so internal/
+# must be copied for the build to resolve it.
 COPY cmd/ cmd/
+COPY internal/ internal/
 
 # Build a static, trimmed binary. CGO is disabled for a small, portable image;
 # TARGETOS/TARGETARCH (set by buildx, defaulting to linux) drive
