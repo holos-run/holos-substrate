@@ -390,6 +390,19 @@ userDefinedBuildPlan: {
 							//     authenticated default group → baseline read
 							//     (platform-editor has no system-level edit role
 							//     until project-scoped roles exist).
+							//   - cliClientID intentionally unset: this phase
+							//     wires web-UI SSO only (AC #2 is verified through
+							//     the browser).  Kargo CLI SSO
+							//     (`kargo login --sso`) uses a loopback
+							//     http://localhost:<port>/... redirect, which the
+							//     HOL-1250 kargo client does NOT register yet — that
+							//     client deliberately defers the CLI redirect URI
+							//     until the CLI's callback port/path is confirmed.
+							//     Until then CLI SSO would fail with
+							//     invalid_redirect_uri by design; enabling it is a
+							//     paired change here (set cliClientID) and in
+							//     components/keycloak/realm-config (add the loopback
+							//     redirect URI to the kargo client).
 							oidc: {
 								enabled:   true
 								issuerURL: "https://\(ISSUER_HOSTNAME)/realms/holos"
