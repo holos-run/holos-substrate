@@ -63,10 +63,19 @@ let CONFIG_REPO_OCI = "oci://quay.holos.localhost/my-project/my-project-config"
 //     Application can only sync artifacts published under my-project/.
 //   - destinations restricts deploys to the in-cluster API server, my-project
 //     namespace — matching the Application's destination below.
-//   - the permissive cluster/namespace resource whitelists (group "*", kind
-//     "*") let the rendered my-project-config manifests carry any kind; the
-//     destination namespace constraint is the real guard rail on a
-//     single-tenant cluster.
+//   - namespaceResourceWhitelist is permissive (group "*", kind "*") so the
+//     rendered my-project-config manifests can carry any NAMESPACED kind into
+//     the my-project namespace.
+//   - clusterResourceWhitelist is DELIBERATELY OMITTED (empty), which in Argo
+//     CD forbids the Application from deploying any cluster-scoped resource
+//     (CRDs, ClusterRoles, Namespaces, …).  my-project is a project-scoped
+//     sample app whose config artifact deploys only namespaced workloads into
+//     its own namespace; the platform owns cluster-scoped objects (CRDs,
+//     namespaces) through dedicated components, so the Application has no need
+//     to create them and the empty cluster whitelist keeps a stray
+//     cluster-scoped manifest in the artifact from escaping the namespace
+//     boundary.  Add specific {group, kind} entries here if a future
+//     my-project artifact legitimately needs a cluster-scoped resource.
 let APPPROJECT_RESOURCE = {
 	apiVersion: "argoproj.io/v1alpha1"
 	kind:       "AppProject"
@@ -80,10 +89,6 @@ let APPPROJECT_RESOURCE = {
 		destinations: [{
 			server:    "https://kubernetes.default.svc"
 			namespace: NAMESPACE
-		}]
-		clusterResourceWhitelist: [{
-			group: "*"
-			kind:  "*"
 		}]
 		namespaceResourceWhitelist: [{
 			group: "*"
@@ -103,14 +108,21 @@ let APPPROJECT_RESOURCE = {
 // Project's project-config Stage to modify this Application; without it Kargo's
 // argocd-update step refuses to touch it.  The value format is <project>:<stage>.
 //
-// targetRevision carries a placeholder ("HEAD") in this committed manifest:
-// Kargo's argocd-update step OWNS spec.source.targetRevision and patches it to
-// each promoted Freight's digest from HOL-1270 onward.  The placeholder is a
-// documented Kargo-managed field — Argo CD reports the Application Unknown until
-// the first promotion overwrites it with a real artifact digest.  (The echo
-// pipeline omits the field entirely to avoid a server-side-apply ownership war;
-// this phase keeps a placeholder per the acceptance criteria, and HOL-1270
-// revisits ownership when it wires the Stage.)
+// targetRevision is DELIBERATELY OMITTED from this committed manifest — the
+// same posture the echo pipeline takes (components/kargo-echo/buildplan.cue) and
+// the reason holos/docs/argocd-application-source.md gives.  Kargo's
+// argocd-update step (added in HOL-1270) OWNS spec.source.targetRevision: it
+// patches it to each promoted Freight's digest.  scripts/apply re-applies every
+// component with `kubectl apply --server-side --force-conflicts`, which would
+// seize a committed targetRevision back to its literal value on every run — a
+// reconciliation war that would repeatedly revert the Application after Kargo
+// promotes.  By leaving the field out of the desired state entirely, apply never
+// asserts ownership of it: the Application is created with no targetRevision
+// (Argo CD reports it Unknown until the first promotion), and from the first
+// promotion onward Kargo is the sole owner of the field, untouched by later
+// applies.  This is the "imperative revision, declarative Application" posture —
+// the Application shell is committed so Kargo has a stable target to patch, while
+// the revision itself is controller-owned.
 let APPLICATION_RESOURCE = {
 	apiVersion: "argoproj.io/v1alpha1"
 	kind:       "Application"
@@ -124,8 +136,7 @@ let APPLICATION_RESOURCE = {
 		project: NAME
 		source: {
 			repoURL: CONFIG_REPO_OCI
-			// Kargo-managed placeholder revision; see the comment above.
-			targetRevision: "HEAD"
+			// targetRevision is omitted — Kargo owns it (see the comment above).
 			// The manifests sit at the tarball root (scripts/publish packages
 			// the kustomize output flat), so the source path is ".".
 			path: "."

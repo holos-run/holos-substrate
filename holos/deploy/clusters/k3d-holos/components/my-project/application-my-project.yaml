@@ -15,7 +15,6 @@ spec:
   source:
     path: .
     repoURL: oci://quay.holos.localhost/my-project/my-project-config
-    targetRevision: HEAD
   syncPolicy:
     automated:
       prune: true
