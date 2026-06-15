@@ -568,7 +568,7 @@ userDefinedBuildPlan: {
 						// `OIDC_ADDITIONAL_SCOPES:` line that YAML parses as null —
 						// an invalid ConfigMap data value (data must be
 						// map[string]string), which the API server would reject on
-						// apply.  This strategic-merge patch overwrites that null
+						// apply.  This JSON 6902 patch overwrites that null
 						// with the quoted empty string the API expects (no extra
 						// scopes beyond the always-requested openid/profile/email),
 						// preserving the AC-required additionalScopes: [] intent
