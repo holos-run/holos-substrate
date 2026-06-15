@@ -12,6 +12,7 @@
 | 1        | 2026-06-10 | @jeffmccune | Initial design                                           |
 | 2        | 2026-06-11 | @jeffmccune | Add `holos/deploy/` and `holos/docs/` to the layout tree |
 | 3        | 2026-06-14 | @jeffmccune | Note the NATS webhook receiver/subscriber/deployer were retired (HOL-1241, [ADR-16](ADR-16.md)); the single-module/single-binary layout decision stands |
+| 4        | 2026-06-14 | @jeffmccune | The CLI is built with Fisk, not Cobra ([ADR-17](ADR-17.md)); the command tree lives in `internal/cli` |
 
 > **Note (rev 3):** The NATS webhook receiver, subscriber, and deployer named
 > below as motivating services were retired in HOL-1241 — deployment moved to
@@ -113,7 +114,7 @@ holos-paas/
 ├── go.mod                     # single module: github.com/holos-run/holos-paas
 ├── cmd/
 │   └── holos-paas/
-│       └── main.go            # cobra root; one subcommand per service
+│       └── main.go            # entry point → internal/cli (Fisk root, ADR-17)
 ├── api/                       # CRD types: api/<group>/<version>
 │   └── paas/v1alpha1/         # e.g. paas.holos.run: Project, Application
 ├── internal/                  # all implementation; no pkg/ directory
