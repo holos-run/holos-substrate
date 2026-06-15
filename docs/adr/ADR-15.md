@@ -162,7 +162,8 @@ Four protocol mappers on the `quay` client shape the token Quay consumes:
 Quay consumes the single `groups` claim
 (`PREFERRED_GROUP_CLAIM_NAME: groups`) for team synchronization
 (`FEATURE_TEAM_SYNCING: true`). A Quay **superuser** binds a Quay team to a
-Keycloak group (or folded client-role name) in the Quay organization UI —
+Keycloak group (or folded client-role or realm-role name) in the Quay
+organization UI —
 team-sync setup is a superuser action because this platform leaves
 `FEATURE_NONSUPERUSER_TEAM_SYNCING_SETUP` off; thereafter membership flows
 automatically. Quay re-syncs team membership on its `TEAM_RESYNC_STALE_TIME`
