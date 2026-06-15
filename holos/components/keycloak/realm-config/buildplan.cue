@@ -107,10 +107,14 @@ let GROUPS_CLAIM = "groups"
 
 // The Quay OIDC client (HOL-1218; Quay's OIDC login is wired in HOL-1219).
 // Unlike Argo CD this is a *confidential* client: Quay holds a client secret
-// and uses the Authorization Code flow with PKCE (S256) on top.  The secret is
-// generated once by the QUAY_OIDC bootstrap Job below and substituted into the
-// realm import at run time by keycloak-config-cli's $(env:...) expansion, so no
-// secret is ever committed.
+// and uses the Authorization Code flow authenticated by that secret.  PKCE is
+// deliberately NOT required for this client (no pkce.code.challenge.method
+// attribute) — Quay's confidential client-secret flow did not round-trip a
+// matching PKCE code_verifier, causing a "code exchange: 400" SSO failure, so
+// PKCE was dropped on both ends (HOL-1257).  The secret is generated once by the
+// QUAY_OIDC bootstrap Job below and substituted into the realm import at run
+// time by keycloak-config-cli's $(env:...) expansion, so no secret is ever
+// committed.
 let QUAY_CLIENT_ID = "quay"
 
 // quay.holos.localhost is the Quay UI/registry hostname (components/quay) and
@@ -230,7 +234,8 @@ let REALM_CONFIG = {
 	}, {
 		// HOL-1218: the Quay OIDC client.  Modeled on the argocd client above
 		// but confidential — Quay sends a client secret — and using the
-		// Authorization Code flow with PKCE (S256) on top.
+		// Authorization Code flow authenticated by that secret, without PKCE
+		// (HOL-1257; see the no-pkce.code.challenge.method note below).
 		//
 		// HOL-1245: the realm-role mapper below also emits the platform-owner
 		// realm role into the groups claim (mirroring the argocd client), so
@@ -245,7 +250,8 @@ let REALM_CONFIG = {
 		publicClient:        false // confidential: Quay sends a client secret
 		standardFlowEnabled: true
 		// Confidential client, but the additional confidential-only flows are
-		// off: Quay uses only the browser Authorization Code flow with PKCE.
+		// off: Quay uses only the browser Authorization Code flow, authenticated
+		// by the client secret (no PKCE — see the attributes note below).
 		serviceAccountsEnabled:    false
 		directAccessGrantsEnabled: false
 		// keycloak-config-cli substitutes the generated secret at run time from
@@ -253,7 +259,13 @@ let REALM_CONFIG = {
 		// is committed.  The bootstrap Job generates it once and never rotates
 		// it, so the value here stays stable across reconciles.
 		secret: "$(env:QUAY_OIDC_CLIENT_SECRET)"
-		attributes: "pkce.code.challenge.method": "S256"
+		// No pkce.code.challenge.method attribute: Keycloak treats a client that
+		// sets it as *requiring* PKCE, but Quay authenticates as a plain
+		// confidential client with the client secret above and does not reliably
+		// send a matching code_verifier — which produced the "code exchange: 400"
+		// SSO failure (HOL-1257).  Omitting the attribute leaves PKCE optional, so
+		// the confidential client-secret flow succeeds.  The argocd and kargo
+		// public clients DO keep pkce.code.challenge.method — only quay drops it.
 		redirectUris: ["\(QUAY_PUBLIC_URL)/*"]
 		webOrigins: [QUAY_PUBLIC_URL]
 		protocolMappers: [

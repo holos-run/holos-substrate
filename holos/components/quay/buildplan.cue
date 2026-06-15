@@ -154,8 +154,9 @@ let REDIS_METADATA = {
 //
 // OIDC / Keycloak SSO (HOL-1219, Phase 2 of HOL-1217):
 //   - AUTHENTICATION_TYPE OIDC + KEYCLOAK_LOGIN_CONFIG point Quay at the
-//     holos realm's confidential "quay" client (enabled with PKCE S256 in
-//     Phase 1, HOL-1218, in components/keycloak/realm-config).  OIDC_SERVER
+//     holos realm's confidential "quay" client (HOL-1218, in
+//     components/keycloak/realm-config), which authenticates with a client
+//     secret and does NOT use PKCE (see the PKCE field note below).  OIDC_SERVER
 //     is the realm issuer URL with a REQUIRED trailing slash — Quay's config
 //     validator normalises the issuer to TrimSuffix(issuer,"/")+"/", so the
 //     slash must be present here to match Keycloak's issuer exactly.
@@ -171,8 +172,16 @@ let REDIS_METADATA = {
 //   - FEATURE_USERNAME_CONFIRMATION false is the key requirement from the
 //     issue: the username is taken verbatim from PREFERRED_USERNAME_CLAIM_NAME
 //     (preferred_username) with no prompt to choose or edit it.
-//   - USE_PKCE/PKCE_METHOD S256 match the Keycloak client's
-//     pkce.code.challenge.method S256 (requires Quay 3.16.0+; this pins 3.17.3).
+//   - PKCE is deliberately NOT used: Quay authenticates as a confidential
+//     client with a client secret (CLIENT_SECRET above), Red Hat's recommended
+//     baseline OIDC integration, so USE_PKCE/PKCE_METHOD are omitted (Quay
+//     defaults USE_PKCE to false and sends no code_challenge).  Quay's OIDC
+//     client did not reliably round-trip a PKCE code_verifier at the token
+//     endpoint, producing a "code exchange: 400" SSO failure; dropping PKCE on
+//     both ends (the Keycloak quay client no longer sets
+//     pkce.code.challenge.method either) removes that failure mode.  This is the
+//     documented exception to the platform's PKCE default — see the
+//     Quay↔Keycloak OIDC runbook (HOL-1256 docs phase / HOL-1233).
 //   - FEATURE_TEAM_SYNCING true keeps Quay teams in sync with the Keycloak
 //     groups claim (TEAM_RESYNC_STALE_TIME cadence); that claim carries both
 //     Keycloak group membership and the quay client roles (platform-admin,
@@ -228,8 +237,6 @@ let CONFIG_YAML = """
 	  PREFERRED_USERNAME_CLAIM_NAME: preferred_username
 	  VERIFIED_EMAIL_CLAIM_NAME: email
 	  PREFERRED_GROUP_CLAIM_NAME: groups
-	  USE_PKCE: true
-	  PKCE_METHOD: S256
 	SUPER_USERS:
 	  - admin
 	FEATURE_MAILING: false

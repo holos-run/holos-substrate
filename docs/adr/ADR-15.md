@@ -1,4 +1,4 @@
-# Quay↔Keycloak OIDC SSO with PKCE
+# Quay↔Keycloak OIDC SSO
 
 | Metadata | Value                                  |
 |----------|----------------------------------------|
@@ -7,9 +7,10 @@
 | Status   | `Implemented`                          |
 | Tags     | registry, oidc, security               |
 
-| Revision | Date       | Author      | Info           |
-|----------|------------|-------------|----------------|
-| 1        | 2026-06-13 | @jeffmccune | Initial design |
+| Revision | Date       | Author      | Info                                                                 |
+|----------|------------|-------------|----------------------------------------------------------------------|
+| 1        | 2026-06-13 | @jeffmccune | Initial design                                                       |
+| 2        | 2026-06-15 | @jeffmccune | HOL-1257: drop PKCE — Quay is a plain confidential client (see below) |
 
 ## Context and Problem Statement
 
@@ -43,34 +44,43 @@ behavior.
 
 ## Design
 
-### Login flow: Authorization Code with PKCE (S256)
+### Login flow: Authorization Code, confidential client (no PKCE)
 
 Quay logs users in through the Keycloak `holos` realm using the OAuth 2.0
-Authorization Code flow with PKCE (Proof Key for Code Exchange), challenge
-method `S256`. PKCE is enabled on both ends so they agree:
+Authorization Code flow, authenticated by the client secret. PKCE is **not**
+used for this client — neither end sets it:
 
 - Quay (`holos/components/quay/buildplan.cue`,
-  `KEYCLOAK_LOGIN_CONFIG`): `USE_PKCE: true`, `PKCE_METHOD: S256`.
+  `KEYCLOAK_LOGIN_CONFIG`): no `USE_PKCE`/`PKCE_METHOD` (Quay defaults
+  `USE_PKCE` to `false`, so it sends no `code_challenge`).
 - The Keycloak `quay` client
-  (`holos/components/keycloak/realm-config/buildplan.cue`):
-  `attributes."pkce.code.challenge.method": "S256"`.
+  (`holos/components/keycloak/realm-config/buildplan.cue`): no
+  `attributes."pkce.code.challenge.method"` (Keycloak treats a client that
+  sets it as *requiring* PKCE).
 
-The decision is to **use PKCE wherever the flow supports it**, as a matter of
-modern OAuth best practice and for consistency with the realm's `argocd`
-client and the holos reference platform. PKCE binds the authorization code to
-the client instance that requested it, so an intercepted code cannot be
-redeemed by an attacker — protection that matters for an interactive browser
-login regardless of whether the client also holds a secret.
+**Revision 2 (HOL-1257) supersedes the original decision to use PKCE.** The
+initial design enabled PKCE (S256) on both ends for consistency with the
+public `argocd` client. In practice Quay's confidential OIDC client did not
+reliably round-trip a matching PKCE `code_verifier` at the token endpoint:
+Quay sent a `code_challenge` while the Keycloak client *required* PKCE, and a
+missing/mismatched `code_verifier` produced `Got non-2XX response for code
+exchange: 400`, blocking SSO login entirely. Removing PKCE from **both** ends
+together — the only mutually-consistent state — restores login. Quay then
+authenticates purely as a plain confidential client with its client secret,
+which is Red Hat's recommended baseline Quay↔Keycloak OIDC integration. This
+is the documented exception to the platform's "use PKCE wherever the flow
+supports it" default ([keycloak-clients.md](../../holos/docs/keycloak-clients.md),
+and the related HOL-1233 note in `CLAUDE.md`); the public `argocd` and `kargo`
+clients keep PKCE.
 
-### Confidential client with PKCE layered on
+### Confidential client authenticated by a client secret
 
 Unlike the public `argocd` client, the `quay` client is **confidential**
 (`publicClient: false`, `standardFlowEnabled: true`,
 `serviceAccountsEnabled: false`, `directAccessGrantsEnabled: false`). Quay's
 `KEYCLOAK_LOGIN_CONFIG` validator requires a `CLIENT_SECRET`, so Quay cannot
-run as a public client; PKCE is layered **on top of** the confidential client
-rather than replacing the secret. The two protections are complementary: the
-secret authenticates the application, PKCE binds the code to the login attempt.
+run as a public client; the client secret alone authenticates the application
+(PKCE is not layered on — see the login-flow section above).
 
 The shared client secret is the `quay-oidc` Secret (key `client_secret`)
 provisioned once by HOL-1218's bootstrap Job into **both** the `keycloak` and
@@ -192,8 +202,9 @@ the break-glass superuser still works with `FEATURE_DIRECT_LOGIN: false`.
 
 ## Decision
 
-Quay authenticates against the Keycloak `holos` realm as a **confidential
-OIDC client with PKCE (S256) layered on**, using the Authorization Code flow.
+Quay authenticates against the Keycloak `holos` realm as a **plain confidential
+OIDC client authenticated by a client secret, without PKCE** (Revision 2,
+HOL-1257), using the Authorization Code flow.
 Usernames come from the ID token's `preferred_username` claim with no user
 customization, the personal namespace is scoped to that username, and Keycloak
 client roles, realm roles, and groups flow through a single `groups` claim into
@@ -208,7 +219,11 @@ client, roles, mappers, and secret are reconciled declaratively by the
   the only interactive login (`FEATURE_DIRECT_LOGIN: false`). The local
   `admin` superuser is retained in `SUPER_USERS` as a break-glass account and
   for `scripts/quay-init`.
-- PKCE S256 requires Quay 3.16.0+; the component pins **3.17.3**.
+- PKCE is deliberately **not** used for the `quay` client (Revision 2,
+  HOL-1257): Quay's confidential client-secret flow did not reliably round-trip
+  a PKCE `code_verifier`, producing `code exchange: 400` SSO failures, so PKCE
+  was removed from both ends. This is the documented exception to the platform's
+  PKCE-by-default posture; the public `argocd` and `kargo` clients keep PKCE.
 - Team membership changes are **eventually consistent** on the 30-minute
   `TEAM_RESYNC_STALE_TIME` cadence, not immediate.
 - The `quay-oidc` client secret must exist identically in both the `keycloak`

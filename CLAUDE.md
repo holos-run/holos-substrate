@@ -13,11 +13,12 @@
 
 ### Known Issues & Workarounds
 
-#### Quay OIDC PKCE Implementation (HOL-1233)
-- **Issue:** Quay's OIDC client does not fully implement PKCE — it fails to send the code_verifier during token exchange, causing "code_verifier_missing" errors in Keycloak logs.
-- **Workaround:** The Quay client in Keycloak keeps PKCE **optional** (it advertises `pkce.code.challenge.method: "S256"` but does not force PKCE — equivalent to `pkce.force: "false"`) rather than required. This allows Quay to fall back to client-secret authentication if its PKCE implementation is incomplete. The client relies on Keycloak's default optional PKCE-force behavior rather than setting a `pkce.force` attribute explicitly.
-- **Status:** Temporary workaround. Monitor Quay releases for PKCE fix; if fixed, consider requiring PKCE by adding an explicit `pkce.force` attribute.
-- **Related:** `holos/components/keycloak/realm-config/buildplan.cue` (the `quay` client's `attributes`), and `holos/docs/keycloak-clients.md` (the PKCE guardrail checklist).
+#### Quay OIDC PKCE — disabled (HOL-1233, resolved by HOL-1257)
+- **Issue:** Quay's OIDC client does not fully implement PKCE — it fails to send the code_verifier during token exchange, producing "code_verifier_missing" / `Got non-2XX response for code exchange: 400` SSO failures.
+- **Resolution (HOL-1257):** PKCE is **disabled** for the `quay` client on both ends. The Keycloak `quay` client carries **no** `pkce.code.challenge.method` attribute (Keycloak treats a client that sets it as *requiring* PKCE), and Quay's `KEYCLOAK_LOGIN_CONFIG` no longer sets `USE_PKCE`/`PKCE_METHOD`. Quay authenticates as a plain confidential client with its client secret — Red Hat's recommended baseline integration.
+- **History:** An earlier workaround kept PKCE *optional* (advertising `pkce.code.challenge.method: "S256"` while relying on Keycloak's default `pkce.force: "false"`). HOL-1257 superseded that by removing the attribute entirely, which is the current state.
+- **Status:** Resolved. If a future Quay release fully implements PKCE, consider re-enabling it by restoring the `pkce.code.challenge.method: "S256"` attribute on the client and `USE_PKCE`/`PKCE_METHOD` in Quay's config.
+- **Related:** `holos/components/keycloak/realm-config/buildplan.cue` (the `quay` client — no `attributes`), `holos/components/quay/buildplan.cue` (the `KEYCLOAK_LOGIN_CONFIG` block), `docs/adr/ADR-15.md` (Revision 2), and `holos/docs/keycloak-clients.md` (the PKCE guardrail checklist).
 
 ### Keycloak Configuration as Code
 - **Pattern:** The holos realm (users, groups, clients, roles, protocol mappers) is fully declarative, reconciled on every `scripts/apply` via a keycloak-config-cli Job.
@@ -31,5 +32,5 @@
 
 ### Adding a Keycloak OIDC (PKCE) Client
 - **Pattern:** The realm's OIDC clients (argocd, quay) are declared in `realm-config/buildplan.cue` and reconciled by the `keycloak-config` keycloak-config-cli Job. The conventional declarative-client pattern — public vs confidential decision, the `S256` attribute, the confidential secret-bootstrap Job, `IMPORT_VARSUBSTITUTION_ENABLED`, the three mappers that feed the shared `groups` claim, the role model, and the render-then-commit workflow — is documented as a guardrail checklist.
-- **Before adding another PKCE client:** Read `holos/docs/keycloak-clients.md` and follow its guardrail checklist rather than rediscovering the pattern. The `pkce.force` workaround documented above (HOL-1233) is one of its checklist items — relax or skip requiring PKCE only for a client with a demonstrated implementation gap. The current `quay` client declares only `pkce.code.challenge.method: "S256"` and relies on Keycloak's default (optional) PKCE-force behavior; it does not set `pkce.force` explicitly.
+- **Before adding another PKCE client:** Read `holos/docs/keycloak-clients.md` and follow its guardrail checklist rather than rediscovering the pattern. Relax or skip requiring PKCE only for a client with a demonstrated implementation gap — the `quay` client is the documented exception (HOL-1257 disabled PKCE for it entirely; see the *Quay OIDC PKCE* note above). The public `argocd` and `kargo` clients keep `pkce.code.challenge.method: "S256"`.
 - **Reference:** `holos/docs/keycloak-clients.md`
