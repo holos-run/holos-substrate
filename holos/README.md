@@ -330,9 +330,11 @@ realm. What it reconciles:
   `keycloak` and `quay` namespaces and substituted into the import document at
   run time (never committed).
 
-The declarative-client pattern itself — public vs confidential PKCE clients, the
-secret bootstrap, the three mappers that feed the shared `groups` claim, the
-role model, and the guardrail checklist for adding another PKCE client — is
+The declarative-client pattern itself — public vs confidential clients (and
+whether PKCE applies; the public `argocd`/`kargo` clients use PKCE S256, the
+confidential `quay` client does not), the secret bootstrap, the three mappers
+that feed the shared `groups` claim, the role model, and the guardrail
+checklist for adding another client — is
 documented in
 [docs/keycloak-clients.md](docs/keycloak-clients.md).
 
