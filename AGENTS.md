@@ -83,6 +83,10 @@ components have been removed. Git history preserves them.
   — the MVP Argo CD `Application` source pattern: OCI rendered-manifests
   artifacts in the in-cluster Quay registry, the repository credential
   Secret shape, and how the repo-server reaches Quay.
+- [holos/docs/kargo-keycloak-oidc.md](holos/docs/kargo-keycloak-oidc.md) — the
+  Kargo↔Keycloak OIDC (PKCE) integration: the public kargo client and
+  groups-claim role mapping, issuer-cert trust via the local-ca cabundle, and
+  the verification/maintenance runbook.
 - [holos/docs/oci-publish-workflow.md](holos/docs/oci-publish-workflow.md)
   — the client-side build-and-publish workflow (`scripts/publish` /
   `make publish`): render the platform with an injected app image digest,
