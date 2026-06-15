@@ -92,6 +92,35 @@ creates only the realm shell; the live `quay` client is owned and reconciled
 by the `keycloak-config` Job. The earlier disabled placeholder client in that
 import was removed in HOL-1221 so the two never disagree.
 
+### Deferred: automatic `platform-owner` → Quay superuser sync
+
+**Deferred.** Granting a user the `platform-owner` realm role does **not**
+automatically make them a Quay **superuser**. As of HOL-1245 the `quay` client
+emits the `platform-owner` realm role into the shared `groups` claim (the
+realm-role mapper, mirroring the `argocd` client), and the
+[Keycloak realm reconciliation](#keycloak-realm-reconciliation) Job keeps that
+mapper converged — but the claim only carries the role *name* for team sync. It
+confers no superuser status, because Quay's `SUPER_USERS` is a **static
+username list in `config.yaml`** with no claim-driven superuser sync: there is
+no mechanism for Quay to promote a user to superuser from an OIDC claim.
+
+What exists today: the realm-role→`groups`-claim mapper (HOL-1245) makes
+`platform-owner` recognizable to Quay's team sync, and the **manual
+`SUPER_USERS` bootstrap** is the supported path to grant superuser — add the
+user's `preferred_username` to `SUPER_USERS` in
+[`components/quay/buildplan.cue`](../components/quay/buildplan.cue) and
+re-render/apply. The local `admin` account stays in `SUPER_USERS` as a
+break-glass superuser.
+
+Why deferred: closing the gap means a claim-driven superuser reconciler (Quay
+exposes no such hook today, so it would be custom automation against Quay's
+admin API), which is out of MVP scope. The full role/superuser model and the
+client pattern are documented in
+[keycloak-clients.md](keycloak-clients.md) (see *The Quay-superuser limitation
+(not automatic)*); the operator-facing summary is the **Superusers** bullet in
+[`holos/README.md`](../README.md#quay-oidc-sso-and-roles). If a future issue
+adds the sync, replace this stub with a link to the real documentation.
+
 ## Node-level registry trust for in-cluster pulls
 
 Pushes to `quay.holos.localhost` from the host work (the host resolves
