@@ -28,7 +28,8 @@ at the new digest. See
 [holos/docs/argocd-application-source.md](holos/docs/argocd-application-source.md).
 
 ```text
-cmd/holos-paas/            # the multi-service binary (cobra root command)
+cmd/holos-paas/            # the multi-service binary (Fisk root command, ADR-17)
+internal/cli/              # the Fisk command tree (one register* func per command)
 internal/                  # all implementation
 Makefile                   # go fmt/vet/test and the container image targets
 Dockerfile                 # two-stage cross-compile → distroless runtime
@@ -49,6 +50,10 @@ components have been removed. Git history preserves them.
 - [docs/adr/](docs/adr/README.md) — Architecture Decision Records: the
   binding design decisions. Start with the index; follow
   [writing-adrs.md](docs/adr/writing-adrs.md) before adding or revising one.
+- [docs/cli-guardrails.md](docs/cli-guardrails.md) — **binding guardrail** for
+  the holos-paas CLI: every command, subcommand, and flag is added with Fisk
+  (not Cobra), in `internal/cli`, following the `deploy` command as the
+  template ([ADR-17](docs/adr/ADR-17.md)). Read it before touching the CLI.
 - [docs/planning/holos-paas-mvp-milestones.md](docs/planning/holos-paas-mvp-milestones.md)
   — the MVP plan; mirrors the Linear *Holos PaaS* project milestones.
 - [docs/research/](docs/research/) — research reports informing decisions.
@@ -97,11 +102,17 @@ components have been removed. Git history preserves them.
   committed `holos/deploy/` tree is diff-clean.
 - Go code lives in the single root module `github.com/holos-run/holos-paas`
   laid out per [ADR-12](docs/adr/ADR-12.md): the multi-service binary under
-  `cmd/holos-paas/` (one cobra subcommand per service) and all
+  `cmd/holos-paas/` (one subcommand per service) and all
   implementation under `internal/`. `make test` (gofmt, `go vet`, then the
   race-enabled test suite) is the entry point; the `Go` job in
   [.github/workflows/ci.yaml](.github/workflows/ci.yaml) runs it alongside
   `golangci-lint`.
+- The CLI is built with **Fisk, not Cobra** ([ADR-17](docs/adr/ADR-17.md)) so
+  commands, subcommands, and flags are self-documenting and legible to AI
+  coding agents (`--help-llm`, `--fisk-introspect`, cheats). Add every command
+  and flag with Fisk in `internal/cli`, following the `deploy` command as the
+  template — see [docs/cli-guardrails.md](docs/cli-guardrails.md). Never
+  reintroduce Cobra or `pflag`.
 - Label and annotation keys owned by the platform configuration layer —
   aspects of the holos configuration itself, independent of site-specific
   configuration — default to the `holos.run` domain (e.g.

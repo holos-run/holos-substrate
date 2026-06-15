@@ -45,6 +45,7 @@ to the template above.
 | [ADR-14](ADR-14.md) | api, nats, protobuf, conventions | **Deprecated** (see ADR-16) — NATS message schemas are ConnectRPC protobuf definitions; not used / deferred (no in-cluster task subscribers under the pivot) |
 | [ADR-15](ADR-15.md) | registry, oidc, security | Quay↔Keycloak OIDC SSO with PKCE: confidential client, username from the ID token, roles/groups via the `groups` claim into Quay teams |
 | [ADR-16](ADR-16.md) | pipeline, kargo, oci, oras, kustomize, argocd, mvp | Kargo-driven promotion with a client-side CLI build-and-publish (ORAS) workflow; Kustomize OCI artifact, not Helm; supersedes the NATS pipeline (ADR-6, ADR-13) |
+| [ADR-17](ADR-17.md) | cli, conventions, agents, build | Fisk (not Cobra) for the holos-paas CLI: LLM-friendly help and JSON-schema introspection for AI coding agents; the `deploy` subcommand fronts the ADR-16 publish workflow |
 
 ## Status values
 
