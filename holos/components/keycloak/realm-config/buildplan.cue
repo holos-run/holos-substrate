@@ -220,6 +220,13 @@ let REALM_CONFIG = {
 		// HOL-1218: the Quay OIDC client.  Modeled on the argocd client above
 		// but confidential — Quay sends a client secret — and using the
 		// Authorization Code flow with PKCE (S256) on top.
+		//
+		// HOL-1245: the realm-role mapper below also emits the platform-owner
+		// realm role into the groups claim (mirroring the argocd client), so
+		// the privileged platform-owner role is recognizable to Quay's team
+		// sync and any future relying party the same way group names are.  See
+		// HOL-1242 for the platform-owner role; Quay superuser grants stay out
+		// of scope (SUPER_USERS is a static config list).
 		clientId:            QUAY_CLIENT_ID
 		name:                "Quay"
 		enabled:             true
@@ -268,6 +275,26 @@ let REALM_CONFIG = {
 					"id.token.claim":                      "true"
 					"access.token.claim":                  "true"
 					"userinfo.token.claim":                "true"
+				}
+			},
+			{
+				name:           "realm-roles"
+				protocol:       "openid-connect"
+				protocolMapper: "oidc-usermodel-realm-role-mapper"
+				config: {
+					// Same claim as the group/client-role mappers: a single groups
+					// claim carries group membership, the quay client roles, and the
+					// platform realm roles (platform-owner/editor/viewer), so Quay's
+					// team sync and any future relying party key on platform-owner the
+					// same way they key on group names.  Emitted unconditionally — set
+					// in the ID, access, and userinfo tokens, not gated by an optional
+					// client scope.
+					"claim.name":           GROUPS_CLAIM
+					"jsonType.label":       "String"
+					"multivalued":          "true"
+					"id.token.claim":       "true"
+					"access.token.claim":   "true"
+					"userinfo.token.claim": "true"
 				}
 			},
 			{
