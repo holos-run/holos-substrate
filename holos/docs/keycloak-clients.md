@@ -62,8 +62,11 @@ operator-facing overview of this gate.
 A client is an entry in the `clients` list of the `REALM_CONFIG` value in
 [`realm-config/buildplan.cue`](../components/keycloak/realm-config/buildplan.cue).
 Each entry sets the standard Keycloak client fields and a `protocolMappers`
-list. The platform runs two clients today — `argocd` and `quay` — and they
-differ in exactly one axis: **public vs confidential**.
+list. The platform runs two clients today — `argocd` and `quay`. They differ in
+the usual per-client details (redirect URIs, web origins, roles, and which
+protocol mappers they carry), but the key template distinction is
+**public vs confidential**, which also decides whether a client-secret bootstrap
+is needed.
 
 ### Public PKCE client (argocd)
 
