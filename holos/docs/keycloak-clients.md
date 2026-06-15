@@ -9,9 +9,13 @@ These are operational guidelines, not decisions. The decision record for the
 Quay SSO integration is [ADR-15](../../docs/adr/ADR-15.md) — link to it, do not
 duplicate it. The authoritative source for every client, role, and mapper
 discussed here is
-[`components/keycloak/realm-config/buildplan.cue`](../components/keycloak/realm-config/buildplan.cue);
-version pins (keycloak-config-cli, Keycloak, Quay) live there too — this doc
-quotes them where useful but the buildplan is the source of truth.
+[`components/keycloak/realm-config/buildplan.cue`](../components/keycloak/realm-config/buildplan.cue),
+which also pins the keycloak-config-cli image (`6.5.1-26.5.5`). The Keycloak
+version pin (`KeycloakVersion`) lives in
+[`components/keycloak/keycloak.cue`](../components/keycloak/keycloak.cue) and
+Quay's in [`components/quay/buildplan.cue`](../components/quay/buildplan.cue) —
+this doc quotes versions where useful but those CUE files are the source of
+truth.
 
 ## The reconciliation mechanism
 
