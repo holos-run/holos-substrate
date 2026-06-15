@@ -17,12 +17,25 @@ package holos
 // replicas of each server.  None of that fits a local single-user cluster, so
 // this component instead:
 //
-//   - Disables OIDC and the chart's admin account (no auth): the API runs
-//     unauthenticated on the local cluster, the same MVP no-auth posture the
-//     other host-facing platform consoles take.  This is recorded as a deferral in
-//     holos/docs/placeholders.md.  No admin Secret is generated, so there is
-//     nothing to commit or rotate, and the kubectl-slice below strips any
-//     Secret the chart would emit.
+//   - Authenticates the API against the Keycloak holos realm with OIDC using
+//     the Authorization Code flow + PKCE (S256).  The public kargo client — no
+//     client secret — is provisioned declaratively by the keycloak-config
+//     component (components/keycloak/realm-config, HOL-1250), which also emits
+//     the groups claim carrying both Keycloak group names and realm-role names.
+//     api.oidc below points the API at that issuer and client and maps the
+//     realm roles to Kargo access levels (platform-owner → system-wide admin,
+//     platform-viewer → read-only, platform-editor/authenticated → baseline
+//     read).  The backchannel OIDC path (discovery/JWKS/token) runs in-cluster:
+//     the SERVICE_ENTRY below makes the issuer hostname auth.holos.localhost a
+//     service the mesh resolves to the shared Istio Gateway (the argocd
+//     pattern), and the CA_CERTIFICATE below materialises the local-CA root
+//     into the kargo namespace so the API trusts the issuer cert without any
+//     skip-verify knob (Kargo has none — the quay CA_CERTIFICATE pattern).  The
+//     chart's admin account stays disabled (adminAccount.enabled: false), so
+//     there is no UI break-glass account and no admin Secret to commit or
+//     rotate — Keycloak SSO is the only way in.  The chart still renders an
+//     EMPTY Secret/kargo-api (no token signing key is required for OIDC); the
+//     kubectl-slice below keeps it because the API Deployment references it.
 //   - Exposes the API/UI at https://kargo.holos.localhost through the shared
 //     Istio Gateway (components/istio-gateway), the argocd pattern: the Gateway
 //     terminates TLS with its wildcard-holos-localhost Certificate (no
@@ -88,6 +101,27 @@ let HOSTNAME = "kargo.holos.localhost"
 // (the argocd/quay component note).
 let GATEWAY_NAMESPACE = "istio-gateways" & #RegisteredNamespace
 let GATEWAY_NAME = "default"
+
+// The Keycloak issuer hostname (components/keycloak/instance HOSTNAME and the
+// api.oidc.issuerURL below).  The API's OIDC backchannel must resolve and route
+// this name in-cluster — see SERVICE_ENTRY.
+let ISSUER_HOSTNAME = "auth.holos.localhost"
+
+// CA_CERT_SECRET carries the local-ca root certificate in its ca.crt key.  The
+// Kargo API performs its OIDC discovery/JWKS/token calls to the issuer
+// (https://auth.holos.localhost) server-side with TLS verification ON and has
+// no per-OIDC "insecure skip verify" knob (unlike Argo CD), so it must trust
+// the local CA that signed the shared Gateway's *.holos.localhost certificate.
+// A cert-manager Certificate issued by the local-ca ClusterIssuer
+// (components/local-ca) writes this Secret into the kargo namespace with the
+// signing CA in ca.crt; api.cabundle.secretName below points the chart at it,
+// and the chart's parse-cabundle initContainer installs every cert in the
+// Secret into the API's system trust store on start.  Mounting a per-namespace
+// cert-manager Secret (rather than the Gateway's wildcard-holos-localhost
+// Secret, which lives in the istio-gateways namespace) keeps the trust anchor
+// local to this pod's namespace — a pod can only mount Secrets from its own
+// namespace.
+let CA_CERT_SECRET = "kargo-local-ca"
 
 // The chart names the API/UI Service kargo-api.  With api.tls.enabled: false
 // it serves plain HTTP on service port 80 (the chart default), so the Gateway
@@ -161,6 +195,82 @@ let HTTPROUTE_REDIRECT = {
 	}
 }
 
+// CA_CERTIFICATE issues a short-lived leaf certificate in the kargo namespace
+// from the local-ca ClusterIssuer purely as a vehicle for its ca.crt: every
+// cert-manager-issued Secret carries the signing CA in ca.crt, so this puts the
+// local-ca root PEM into a Secret (CA_CERT_SECRET) the Kargo API pod can mount
+// from its own namespace.  The leaf cert itself is unused — only ca.crt is
+// consumed by the chart's parse-cabundle initContainer — but a Certificate is
+// the lightest cert-manager-native way to materialise the CA into an arbitrary
+// namespace without trust-manager (not deployed here).  The dnsName is a stable
+// placeholder local to this namespace; it is never served.  The quay
+// CA_CERTIFICATE pattern.
+let CA_CERTIFICATE = {
+	apiVersion: "cert-manager.io/v1"
+	kind:       "Certificate"
+	metadata: {
+		name:      CA_CERT_SECRET
+		namespace: NAMESPACE
+		labels: "app.kubernetes.io/name": NAME
+	}
+	spec: {
+		secretName: CA_CERT_SECRET
+		// Only ca.crt is consumed; the leaf is never served, so a single
+		// in-namespace placeholder dnsName suffices to satisfy the schema.
+		dnsNames: ["\(CA_CERT_SECRET).\(NAMESPACE).svc.cluster.local"]
+		issuerRef: {
+			group: "cert-manager.io"
+			kind:  "ClusterIssuer"
+			name:  "local-ca"
+		}
+	}
+}
+
+// SERVICE_ENTRY makes the Keycloak issuer hostname auth.holos.localhost a
+// service the mesh resolves, so the Kargo API's server-side OIDC calls
+// (discovery/JWKS/token) reach Keycloak in-cluster.  This is the argocd
+// SERVICE_ENTRY pattern (components/argocd/controller/buildplan.cue), applied
+// here for the same reason: the kargo namespace is ambient-enrolled
+// (holos/namespaces.cue), and *.localhost names resolve to loopback both
+// upstream of CoreDNS (the host resolver implements RFC 6761) and inside
+// ztunnel's DNS proxy (which special-cases *.localhost before forwarding), so a
+// CoreDNS rewrite never sees queries from enrolled pods — a plain DNS override
+// cannot fix this.  The ServiceEntry fixes both layers at once: it makes the
+// hostname a service the mesh knows, so ztunnel answers enrolled pods' queries
+// with the auto-allocated VIP and routes connections to that VIP to the shared
+// Gateway, which terminates TLS for *.holos.localhost and routes by SNI/Host to
+// the keycloak HTTPRoute — the API traverses the exact host path browsers use,
+// and the existing Gateway→Keycloak DestinationRule re-encrypts to the backend,
+// so the issuer serves https://auth.holos.localhost/realms/holos end-to-end and
+// the iss claim matches api.oidc.issuerURL.  protocol TLS keeps ztunnel at L4
+// (the Gateway terminates TLS, then re-encrypts); resolution DNS tracks the
+// Gateway Service by name so the entry survives ClusterIP changes — the
+// "<gateway>-istio" Service name is Istio's gateway auto-deployment convention,
+// coupled to GATEWAY_NAME above.  Lives in the kargo namespace (the consumer);
+// exportTo is left at its mesh-wide default, harmless since only the Kargo API
+// resolves this issuer hostname.
+let SERVICE_ENTRY = {
+	apiVersion: "networking.istio.io/v1"
+	kind:       "ServiceEntry"
+	metadata: {
+		name:      "auth-holos-localhost"
+		namespace: NAMESPACE
+		labels: "app.kubernetes.io/name": NAME
+	}
+	spec: {
+		hosts: [ISSUER_HOSTNAME]
+		ports: [{
+			number:   443
+			name:     "tls"
+			protocol: "TLS"
+		}]
+		resolution: "DNS"
+		endpoints: [{
+			address: "\(GATEWAY_NAME)-istio.\(GATEWAY_NAMESPACE).svc.cluster.local"
+		}]
+	}
+}
+
 userDefinedBuildPlan: {
 	metadata: name: NAME
 	spec: artifacts: manifests: {
@@ -213,16 +323,21 @@ userDefinedBuildPlan: {
 							systemResources: createNamespace: false
 							sharedResources: createNamespace: false
 
-							// Non-root pod posture for every Kargo pod.  The
-							// chart applies global.securityContext as the pod
-							// securityContext on each Deployment/CronJob (each
-							// component's per-pod securityContext defaults to
-							// this), and the upstream akuity/kargo image runs as
-							// a non-root user, so requiring runAsNonRoot is safe
-							// without pinning a uid that could drift from the
-							// image.  The cabundle initContainer that hardcodes
-							// runAsUser: 0 only renders when api.cabundle is set,
-							// which it is not here.  seccompProfile:
+							// Non-root posture for every Kargo container.  The
+							// chart applies global.securityContext at the
+							// CONTAINER level on each Deployment/CronJob (each
+							// component's per-container securityContext defaults
+							// to this), NOT as a pod-level securityContext, and
+							// the upstream akuity/kargo image runs as a non-root
+							// user, so requiring runAsNonRoot is safe without
+							// pinning a uid that could drift from the image.  The
+							// api.cabundle parse-cabundle initContainer (now
+							// rendered — see api.cabundle below) hardcodes its own
+							// runAsUser: 0 to write into the system trust store;
+							// that is admissible precisely because
+							// global.securityContext is applied per-container, so
+							// there is no pod-level runAsNonRoot to conflict with
+							// the root initContainer.  seccompProfile:
 							// RuntimeDefault matches the platform's bootstrap-Job
 							// hardening (the quay precedent).
 							securityContext: {
@@ -233,7 +348,7 @@ userDefinedBuildPlan: {
 
 						api: {
 							// Laptop footprint: a single API replica.
-							replicas: 1
+							replicas:  1
 							logFormat: "JSON"
 							// The host the API derives its issuer/callback URLs
 							// from; it MUST match the HTTPRoute hostname.  The
@@ -241,25 +356,73 @@ userDefinedBuildPlan: {
 							// tls.terminatedUpstream below.
 							host: HOSTNAME
 
-							// No auth on the local single-user cluster (MVP
-							// posture, deferred — see
-							// holos/docs/placeholders.md):
-							//   - OIDC disabled: no external identity provider is
-							//     wired in for the local cluster (the reference's
-							//     Thomson-Reuters issuer is deliberately not
-							//     copied).
-							//   - dex disabled: the bundled OIDC broker is not
-							//     needed without OIDC.
-							//   - adminAccount disabled: enabling it makes the
-							//     chart `fail` unless a bcrypt passwordHash and a
-							//     token signing key are supplied, which would mean
-							//     generating and committing a Secret; leaving it
-							//     off keeps the API unauthenticated with no Secret
-							//     to manage.
+							// SSO is OIDC against the Keycloak holos realm
+							// (HOL-1251) using the Authorization Code flow +
+							// PKCE (S256), not dex:
+							//   - enabled: turn on OIDC authentication.  Kargo is
+							//     a public client and uses PKCE automatically (no
+							//     client secret), against the public kargo client
+							//     the keycloak-config component provisions
+							//     (HOL-1250).
+							//   - issuerURL/clientID: the holos realm issuer and
+							//     the public kargo client ID.  The issuer is
+							//     Keycloak's public hostname so the iss claim
+							//     matches; the SERVICE_ENTRY above resolves and
+							//     routes the backchannel in-cluster, and the
+							//     CA_CERTIFICATE above + api.cabundle below make
+							//     the API trust the issuer cert.
+							//   - dex disabled: Keycloak is a first-class OIDC
+							//     provider, so the API talks to it directly and
+							//     the bundled dex broker renders no pods.
+							//   - additionalScopes []: override the chart default
+							//     [groups].  openid/profile/email are always
+							//     requested; the groups claim arrives
+							//     unconditionally from the client-side protocol
+							//     mappers (HOL-1250), so requesting a "groups"
+							//     scope — which is not a registered client scope
+							//     — would make Keycloak reject the auth request
+							//     with invalid_scope.
+							//   - admins/viewers/users: map realm-role membership
+							//     (surfaced in the groups claim) to Kargo access
+							//     levels.  platform-owner → system-wide admin (AC
+							//     #1); platform-viewer → read-only all resources
+							//     (parity with argocd); platform-editor and the
+							//     authenticated default group → baseline read
+							//     (platform-editor has no system-level edit role
+							//     until project-scoped roles exist).
 							oidc: {
-								enabled: false
+								enabled:   true
+								issuerURL: "https://\(ISSUER_HOSTNAME)/realms/holos"
+								clientID:  "kargo"
 								dex: enabled: false
+								additionalScopes: []
+								admins: claims: groups: ["platform-owner"]
+								viewers: claims: groups: ["platform-viewer"]
+								users: claims: groups: ["platform-editor", "authenticated"]
 							}
+
+							// The local-CA root the API must trust to verify the
+							// Keycloak issuer cert on the OIDC backchannel.  Kargo
+							// has no per-OIDC skip-verify knob; the only trust
+							// mechanism is api.cabundle, which the chart mounts
+							// and whose certs its parse-cabundle initContainer
+							// installs into the system trust store.  CA_CERTIFICATE
+							// above materialises CA_CERT_SECRET (ca.crt) into this
+							// namespace; only ca.crt is needed.
+							cabundle: secretName: CA_CERT_SECRET
+
+							// The chart's admin account stays disabled: enabling
+							// it makes the chart `fail` unless a bcrypt
+							// passwordHash and a token signing key are supplied,
+							// which would mean generating and committing a Secret.
+							// OIDC does NOT require the kargo-api token signing key
+							// (the chart only fails for it when adminAccount is
+							// enabled), so leaving the account off keeps Keycloak
+							// SSO as the only way in — there is no UI break-glass
+							// account — with no Secret to manage.  The chart still
+							// renders an EMPTY Secret/kargo-api, which the
+							// kubectl-slice below keeps because the API Deployment
+							// references it.
 							adminAccount: enabled: false
 
 							// GitOps manages Kargo Projects declaratively (the
@@ -331,7 +494,7 @@ userDefinedBuildPlan: {
 						// Issuer/Certificate render and the Kubernetes API server
 						// trusts the internal webhook over TLS.
 						webhooksServer: {
-							replicas: 1
+							replicas:  1
 							logFormat: "JSON"
 							resources: {
 								requests: {
@@ -343,7 +506,7 @@ userDefinedBuildPlan: {
 							pdb: enabled: false
 						}
 						externalWebhooksServer: {
-							replicas: 1
+							replicas:  1
 							logFormat: "JSON"
 							resources: {
 								requests: {
@@ -387,6 +550,8 @@ userDefinedBuildPlan: {
 						(HTTPROUTE.metadata.name):          HTTPROUTE
 						(HTTPROUTE_REDIRECT.metadata.name): HTTPROUTE_REDIRECT
 					}
+					Certificate: (CA_CERTIFICATE.metadata.name): CA_CERTIFICATE
+					ServiceEntry: (SERVICE_ENTRY.metadata.name): SERVICE_ENTRY
 				}
 			}]
 			transformers: [
@@ -394,7 +559,32 @@ userDefinedBuildPlan: {
 					kind: "Kustomize"
 					inputs: [for G in generators {G.output}]
 					output: "kustomize-output-bundle.yaml"
-					kustomize: kustomization: resources: inputs
+					kustomize: kustomization: {
+						resources: inputs
+						// Coerce OIDC_ADDITIONAL_SCOPES to an explicit empty
+						// string.  The chart template renders
+						// `OIDC_ADDITIONAL_SCOPES: {{ join "," .additionalScopes }}`
+						// unquoted, so our additionalScopes: [] produces a bare
+						// `OIDC_ADDITIONAL_SCOPES:` line that YAML parses as null —
+						// an invalid ConfigMap data value (data must be
+						// map[string]string), which the API server would reject on
+						// apply.  This strategic-merge patch overwrites that null
+						// with the quoted empty string the API expects (no extra
+						// scopes beyond the always-requested openid/profile/email),
+						// preserving the AC-required additionalScopes: [] intent
+						// while keeping the manifest applyable.
+						patches: [{
+							target: {
+								kind: "ConfigMap"
+								name: "kargo-api"
+							}
+							patch: """
+								- op: replace
+								  path: /data/OIDC_ADDITIONAL_SCOPES
+								  value: ""
+								"""
+						}]
+					}
 				},
 				{
 					kind: "Command"
