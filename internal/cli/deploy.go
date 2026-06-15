@@ -79,12 +79,35 @@ type publishInvocation struct {
 }
 
 // String renders the invocation as a copy-pasteable shell command for --dry-run.
+// Each token is shell-quoted so a script path, image ref, or override value
+// containing spaces or shell metacharacters round-trips correctly when pasted.
 func (p publishInvocation) String() string {
 	parts := make([]string, 0, len(p.Env)+len(p.Args)+1)
-	parts = append(parts, p.Env...)
-	parts = append(parts, p.Script)
-	parts = append(parts, p.Args...)
+	for _, e := range p.Env {
+		parts = append(parts, shellQuote(e))
+	}
+	parts = append(parts, shellQuote(p.Script))
+	for _, a := range p.Args {
+		parts = append(parts, shellQuote(a))
+	}
 	return strings.Join(parts, " ")
+}
+
+// shellQuoteSafe is the set of characters that need no quoting in POSIX shell
+// word context, including '=' and ',' so KEY=value env entries stay readable.
+const shellQuoteSafe = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_=:/.@%+-,"
+
+// shellQuote returns s safe to paste as a single POSIX shell word. Tokens made
+// only of unambiguous characters are returned unquoted; anything else is
+// single-quoted with embedded single quotes escaped as '\”.
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	if strings.IndexFunc(s, func(r rune) bool { return !strings.ContainsRune(shellQuoteSafe, r) }) < 0 {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // invocation translates the options into a scripts/publish call. repoRoot must

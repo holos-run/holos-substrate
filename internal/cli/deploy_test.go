@@ -113,6 +113,37 @@ func TestPublishInvocationString(t *testing.T) {
 	}
 }
 
+func TestPublishInvocationStringQuotesSpecialChars(t *testing.T) {
+	inv := publishInvocation{
+		Script: "/repo dir/scripts/publish",
+		Args:   []string{"app:v1"},
+		Env:    []string{"ARTIFACT_TAG=has space"},
+	}
+	want := `'ARTIFACT_TAG=has space' '/repo dir/scripts/publish' app:v1`
+	if got := inv.String(); got != want {
+		t.Errorf("String() = %q, want %q", got, want)
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"", "''"},
+		{"safe-value", "safe-value"},
+		{"KEY=value", "KEY=value"},
+		{"registry/app@sha256:abc", "registry/app@sha256:abc"},
+		{"has space", "'has space'"},
+		{"it's", `'it'\''s'`},
+		{"a;rm -rf", "'a;rm -rf'"},
+	}
+	for _, tt := range tests {
+		if got := shellQuote(tt.in); got != tt.want {
+			t.Errorf("shellQuote(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestFindRepoRoot(t *testing.T) {
 	root := t.TempDir()
 	scripts := filepath.Join(root, "scripts")
