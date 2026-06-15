@@ -141,7 +141,7 @@ Per-project roles follow the same client-role convention: add a client role
 on the `quay` client named for the project, and grant it to the users who
 should administer that project.
 
-Three protocol mappers on the `quay` client shape the token Quay consumes:
+Four protocol mappers on the `quay` client shape the token Quay consumes:
 
 1. A group-membership mapper writes Keycloak group names (bare, e.g.
    `authenticated`) into the `groups` claim.
@@ -150,7 +150,14 @@ Three protocol mappers on the `quay` client shape the token Quay consumes:
    role names into the same `groups` claim**. Granting a user the `quay`
    `platform-admin` role therefore surfaces `platform-admin` in their `groups`
    claim alongside their group memberships.
-3. A `preferred_username` property mapper writes the username claim.
+3. A realm-role mapper (`oidc-usermodel-realm-role-mapper`, HOL-1245)
+   **folds realm-role names — including `platform-owner` (HOL-1242) — into the
+   same `groups` claim**, mirroring the `argocd` client. Granting a user the
+   `platform-owner` realm role therefore surfaces `platform-owner` in their
+   `groups` claim, so Quay team sync and any future relying party key on it the
+   same way they key on group names. This only surfaces the role to Quay; it
+   does not confer Quay superuser (see `SUPER_USERS` below).
+4. A `preferred_username` property mapper writes the username claim.
 
 Quay consumes the single `groups` claim
 (`PREFERRED_GROUP_CLAIM_NAME: groups`) for team synchronization
