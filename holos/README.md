@@ -381,7 +381,10 @@ Quay is a Single Sign-On relying party of the Keycloak `holos` realm: users
 log in with the **Holos SSO** button through the Authorization Code flow,
 authenticated by the confidential client's secret (no PKCE — HOL-1257). The
 full design — why no PKCE, the confidential client, the username-from-token
-behavior, and the roles model — is in [ADR-15](../docs/adr/ADR-15.md). The
+behavior, and the roles model — is in [ADR-15](../docs/adr/ADR-15.md), and the
+operational companion (wiring, secret rotation, and the `code exchange: 400`
+troubleshooting) is the
+[Quay↔Keycloak OIDC runbook](../docs/runbooks/quay-keycloak-oidc.md). The
 essentials:
 
 - **Login flow.** Quay's `KEYCLOAK_LOGIN_CONFIG`

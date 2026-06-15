@@ -183,8 +183,9 @@ let REALM_IMPORT = {
 			enabled: true
 			// No clients are declared here.  This bootstrap import creates
 			// only the realm shell (realm holos, enabled: true); the live
-			// "quay" OIDC client — enabled, with PKCE, roles, mappers, and a
-			// provisioned secret — is owned and reconciled on every apply by
+			// "quay" OIDC client — enabled, confidential (client-secret auth,
+			// no PKCE — HOL-1257), with roles, mappers, and a provisioned
+			// secret — is owned and reconciled on every apply by
 			// the realm-config component's keycloak-config-cli Job
 			// (components/keycloak/realm-config, HOL-1218/HOL-1219).  A
 			// disabled placeholder client used to live here, but it could

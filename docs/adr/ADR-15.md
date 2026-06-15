@@ -41,6 +41,10 @@ behavior.
   ([components/keycloak/realm-config/buildplan.cue](../../holos/components/keycloak/realm-config/buildplan.cue)).
 - The holos reference Quay OIDC configuration is the authoritative source for
   the exact Quay config keys.
+- [Quay↔Keycloak OIDC runbook](../runbooks/quay-keycloak-oidc.md): the
+  operational companion to this decision record — how the integration is wired,
+  the no-PKCE exception, secret rotation, and the `code exchange: 400`
+  troubleshooting.
 
 ## Design
 

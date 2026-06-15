@@ -263,9 +263,11 @@ let REALM_CONFIG = {
 		// sets it as *requiring* PKCE, but Quay authenticates as a plain
 		// confidential client with the client secret above and does not reliably
 		// send a matching code_verifier — which produced the "code exchange: 400"
-		// SSO failure (HOL-1257).  Omitting the attribute leaves PKCE optional, so
-		// the confidential client-secret flow succeeds.  The argocd and kargo
-		// public clients DO keep pkce.code.challenge.method — only quay drops it.
+		// SSO failure (HOL-1257).  Omitting the attribute disables PKCE for this
+		// client, so the confidential client-secret flow succeeds.  The argocd and
+		// kargo public clients DO keep pkce.code.challenge.method — only quay
+		// drops it.  See docs/runbooks/quay-keycloak-oidc.md for the no-PKCE
+		// exception.
 		redirectUris: ["\(QUAY_PUBLIC_URL)/*"]
 		webOrigins: [QUAY_PUBLIC_URL]
 		protocolMappers: [
