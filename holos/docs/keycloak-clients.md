@@ -98,8 +98,10 @@ exception to the platform's PKCE-by-default posture — Quay's confidential
 client-secret flow did not reliably round-trip a PKCE `code_verifier`, producing
 `code exchange: 400` SSO failures, so PKCE was removed from both ends (Quay's
 `KEYCLOAK_LOGIN_CONFIG` no longer sets `USE_PKCE`/`PKCE_METHOD` either). See
-[ADR-15](../../docs/adr/ADR-15.md) Revision 2 and the HOL-1233 note in
-[`CLAUDE.md`](../../CLAUDE.md). The `secret` field holds a `$(env:...)`
+[ADR-15](../../docs/adr/ADR-15.md) Revision 2, the operational
+[Quay↔Keycloak OIDC runbook](../../docs/runbooks/quay-keycloak-oidc.md), and the
+HOL-1233 note in [`CLAUDE.md`](../../CLAUDE.md). The `secret` field holds a
+`$(env:...)`
 placeholder, never a literal value:
 
 ```cue
@@ -262,7 +264,9 @@ copy from.
    therefore carries **no** `pkce.*` attribute. (Historical note: the earlier
    *Quay OIDC PKCE Implementation (HOL-1233)* guard rail in
    [`CLAUDE.md`](../../CLAUDE.md) kept PKCE *optional* via the default
-   `pkce.force` behavior; HOL-1257 supersedes that with full removal.) Only
+   `pkce.force` behavior; HOL-1257 supersedes that with full removal.) The
+   operational details and `code exchange: 400` troubleshooting live in the
+   [Quay↔Keycloak OIDC runbook](../../docs/runbooks/quay-keycloak-oidc.md). Only
    relax or skip requiring PKCE for a client with a demonstrated implementation
    gap.
 8. **Render then commit.** This is a `holos/components/` change, so follow the
@@ -278,6 +282,9 @@ copy from.
 - [ADR-15 — Quay↔Keycloak OIDC SSO](../../docs/adr/ADR-15.md) — the
   decision record for the Quay SSO integration (Revision 2 dropped PKCE for the
   `quay` client).
+- [Quay↔Keycloak OIDC runbook](../../docs/runbooks/quay-keycloak-oidc.md) — the
+  operational companion: wiring, the no-PKCE exception, secret rotation, and the
+  `code exchange: 400` troubleshooting.
 - [`components/keycloak/realm-config/buildplan.cue`](../components/keycloak/realm-config/buildplan.cue)
   — the authoritative source: the keycloak-config-cli Job, the `argocd` and
   `quay` clients, the three mapper types, and the `quay-oidc` bootstrap.
