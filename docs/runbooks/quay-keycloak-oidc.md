@@ -178,15 +178,16 @@ for the authoritative procedure. In brief:
 
 ### Inspect or rotate the `quay-oidc` secret
 
-The secret is generate-once and never auto-rotated. Inspect the two copies and
-confirm they match:
+The secret is generate-once and never auto-rotated. Confirm the two copies match
+**without printing the secret** — compare hashes of the base64-encoded values, so
+the plaintext secret never lands in terminal scrollback or incident notes:
 
 ```bash
-kubectl -n keycloak get secret quay-oidc -o jsonpath='{.data.client_secret}' | base64 -d
-kubectl -n quay     get secret quay-oidc -o jsonpath='{.data.client_secret}' | base64 -d
+kubectl -n keycloak get secret quay-oidc -o jsonpath='{.data.client_secret}' | sha256sum
+kubectl -n quay     get secret quay-oidc -o jsonpath='{.data.client_secret}' | sha256sum
 ```
 
-The two values **must be identical**. To rotate (rarely needed — e.g. a
+The two hashes **must be identical**. To rotate (rarely needed — e.g. a
 suspected leak), delete the Secret in **both** namespaces and re-run
 `scripts/apply` so the bootstrap Job regenerates one fresh value into both;
 then restart the Quay Deployment so its initContainer re-renders `config.yaml`
@@ -196,7 +197,7 @@ with the new secret:
 kubectl -n keycloak delete secret quay-oidc
 kubectl -n quay     delete secret quay-oidc
 scripts/apply
-kubectl -n quay rollout restart deploy/quay-app
+kubectl -n quay rollout restart deploy/quay
 ```
 
 ### Force a realm reconcile
@@ -207,8 +208,9 @@ recreates it:
 
 ```bash
 scripts/apply
-# or, to force the Job to re-run on the next apply:
-kubectl -n keycloak delete job -l app.holos.run/component.name=keycloak-config
+# or, to force the Job to re-run on the next apply, delete the completed Job by
+# label (the same selector scripts/apply uses):
+kubectl -n keycloak delete job -l app.kubernetes.io/name=keycloak-config
 ```
 
 After editing the realm import document
@@ -221,7 +223,7 @@ applying — see
 
 **Symptom.** A user clicks "Holos SSO", authenticates in Keycloak, is
 redirected back to Quay, and login fails. Quay logs (`kubectl -n quay logs
-deploy/quay-app`) show:
+deploy/quay`) show:
 
 ```
 Got non-2XX response for code exchange: 400
@@ -236,10 +238,11 @@ endpoint** returns a non-2xx status during the authorization-code exchange. A
 
 ```bash
 # Quay app (the relying party that reports the 400):
-kubectl -n quay logs deploy/quay-app --tail=100 | grep -i "code exchange"
+kubectl -n quay logs deploy/quay --tail=100 | grep -i "code exchange"
 
-# Keycloak (the authoritative reason for the 400):
-kubectl -n keycloak logs deploy/keycloak --tail=200 | grep -iE "error|invalid|pkce|code_verifier"
+# Keycloak (the authoritative reason for the 400) — the server is the
+# operator-managed StatefulSet backing the Keycloak CR, not a Deployment:
+kubectl -n keycloak logs statefulset/keycloak --tail=200 | grep -iE "error|invalid|pkce|code_verifier"
 ```
 
 **Root-cause checklist** (most-likely first), with the Keycloak `error` you'll
