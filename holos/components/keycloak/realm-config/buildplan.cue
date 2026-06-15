@@ -86,6 +86,17 @@ let ARGOCD_CLIENT_ID = "argocd"
 // resolve to 127.0.0.1 on the host per docs/local-cluster.md.
 let ARGOCD_PUBLIC_URL = "https://argocd.holos.localhost"
 
+// The Kargo OIDC client (HOL-1250; the Kargo consumer side that authenticates
+// against it is wired in HOL-1251).  Like Argo CD this is a public PKCE client:
+// Kargo's web UI and CLI are public OAuth clients that cannot hold a secret, so
+// they use the Authorization Code flow with PKCE (S256) — modeled on the argocd
+// client above, NOT the confidential quay client.
+let KARGO_CLIENT_ID = "kargo"
+
+// kargo.holos.localhost is the Kargo UI hostname (components/kargo/buildplan.cue
+// HOSTNAME) and resolves to 127.0.0.1 on the host per docs/local-cluster.md.
+let KARGO_PUBLIC_URL = "https://kargo.holos.localhost"
+
 // The two protocol mappers that populate the groups claim Argo CD's RBAC keys
 // on (HOL-1211).  Both write claim.name "groups" into the ID and access
 // tokens: the group-membership mapper emits the user's group names (full.path
@@ -311,6 +322,69 @@ let REALM_CONFIG = {
 					"user.attribute":       "username"
 					"claim.name":           "preferred_username"
 					"jsonType.label":       "String"
+					"id.token.claim":       "true"
+					"access.token.claim":   "true"
+					"userinfo.token.claim": "true"
+				}
+			},
+		]
+	}, {
+		// HOL-1250: the Kargo OIDC client.  Mirrors the argocd public PKCE
+		// client above (NOT the confidential quay client): a public client that
+		// holds no secret and uses the Authorization Code flow with PKCE (S256).
+		// No client secret and no bootstrap Job are involved.
+		//
+		// The realm-role mapper below emits the platform realm roles
+		// (platform-owner/platform-editor/platform-viewer) into the groups claim
+		// unconditionally — set in the ID, access, and userinfo tokens, not gated
+		// by an optional client scope — which satisfies HOL-1249 AC #3.
+		clientId:            KARGO_CLIENT_ID
+		name:                "Kargo"
+		enabled:             true
+		protocol:            "openid-connect"
+		publicClient:        true
+		standardFlowEnabled: true
+		// Confidential-only flows are off: a public client holds no secret, so
+		// the client-credentials and direct-access-grant flows must not be
+		// available.
+		serviceAccountsEnabled:    false
+		directAccessGrantsEnabled: false
+		attributes: "pkce.code.challenge.method": "S256"
+		// The /* wildcard covers Kargo's web-UI OAuth callback (the quay client
+		// uses the same form).  The Kargo CLI's loopback SSO redirect URI
+		// (http://localhost:<port>/...) is intentionally NOT registered yet — the
+		// web UI is the path AC #2 is verified through; a CLI redirect URI can be
+		// added once the CLI's callback port/path is confirmed.
+		redirectUris: ["\(KARGO_PUBLIC_URL)/*"]
+		webOrigins: [KARGO_PUBLIC_URL]
+		protocolMappers: [
+			{
+				name:           "groups"
+				protocol:       "openid-connect"
+				protocolMapper: "oidc-group-membership-mapper"
+				config: {
+					"claim.name": GROUPS_CLAIM
+					// Bare group names ("authenticated"), not paths
+					// ("/authenticated"), matching the argocd precedent.
+					"full.path":            "false"
+					"id.token.claim":       "true"
+					"access.token.claim":   "true"
+					"userinfo.token.claim": "true"
+				}
+			},
+			{
+				name:           "realm-roles"
+				protocol:       "openid-connect"
+				protocolMapper: "oidc-usermodel-realm-role-mapper"
+				config: {
+					// Same claim as the group mapper: a single groups claim
+					// carries both group membership and the platform realm-role
+					// names (platform-owner/editor/viewer).  This mapper satisfies
+					// HOL-1249 AC #3 — it folds the realm roles into the groups
+					// claim unconditionally.
+					"claim.name":           GROUPS_CLAIM
+					"jsonType.label":       "String"
+					"multivalued":          "true"
 					"id.token.claim":       "true"
 					"access.token.claim":   "true"
 					"userinfo.token.claim": "true"
