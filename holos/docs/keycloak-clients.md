@@ -144,7 +144,8 @@ The realm-role and client-role mappers set `id.token.claim`,
 **unconditionally**, not gated by an optional client scope.
 
 - The `argocd` client carries the **group-membership** and **realm-role**
-  mappers, so Argo CD RBAC keys on `platform-owner`/`editor`/`viewer` and group
+  mappers, so Argo CD RBAC keys on the
+  `platform-owner`/`platform-editor`/`platform-viewer` realm roles and group
   names through one claim.
 - The `quay` client carries **all three** (plus a `preferred_username` property
   mapper), so Quay's team sync keys on group memberships, the `quay`
@@ -233,10 +234,16 @@ copy from.
 7. **`pkce.force` workaround for incomplete clients.** If the relying party's
    PKCE implementation is incomplete, the client may need optional rather than
    required PKCE. Quay hits this — see the *Quay OIDC PKCE Implementation
-   (HOL-1233)* guard rail in [`CLAUDE.md`](../../CLAUDE.md): the `quay` client
-   uses `pkce.force: "false"` so Quay can fall back to client-secret auth when it
-   fails to send the `code_verifier`. Only relax PKCE for a client with a
-   demonstrated implementation gap.
+   (HOL-1233)* guard rail in [`CLAUDE.md`](../../CLAUDE.md): the documented
+   workaround is to set the client's `pkce.force` attribute to `"false"`
+   (optional PKCE) so Quay can fall back to client-secret auth when it fails to
+   send the `code_verifier`. Note the current realm config relies on the default
+   (optional) PKCE-force behavior rather than setting the attribute explicitly —
+   the `quay` client declares only `pkce.code.challenge.method: "S256"` in
+   [`realm-config/buildplan.cue`](../components/keycloak/realm-config/buildplan.cue);
+   if a future client needs PKCE *required*, that is where you would add an
+   explicit `pkce.force` attribute. Only relax (or skip requiring) PKCE for a
+   client with a demonstrated implementation gap.
 8. **Render then commit.** This is a `holos/components/` change, so follow the
    render contract in [`CLAUDE.md`](../../CLAUDE.md) and
    [`component-guidelines.md`](component-guidelines.md): commit the `.cue`
@@ -260,5 +267,3 @@ copy from.
 - [`CLAUDE.md`](../../CLAUDE.md) — the Guard Rails: CUE Component Rendering,
   the Quay OIDC PKCE HOL-1233 workaround, Keycloak Configuration as Code, and
   OIDC Client Secrets.
-</content>
-</invoke>
