@@ -36,9 +36,11 @@ All commands, subcommands, and flags in the holos-paas CLI MUST be added with
 2. Give the command a one-line help string and a `HelpLong(...)` block
    describing what it does and how it composes with the platform.
 3. Add a `Cheat("<name>", ...)` with copy-pasteable example invocations.
-4. For **every** flag: a clear, complete help string and a `PlaceHolder(...)`.
-   Mark required flags `Required()`; give optional flags sensible `Default(...)`
-   values where one exists.
+4. For **every** flag: a clear, complete help string. Give every
+   **value-taking** flag a `PlaceHolder(...)` naming its argument; boolean
+   switches take no value, so they have no placeholder. Mark required flags
+   `Required()`; give optional flags sensible `Default(...)` values where one
+   exists.
 5. **Never accept secrets as flags.** Read credentials and other secrets from
    the environment so they are not exposed on the command line or in shell
    history (see `deploy`, which reads `ORAS_USERNAME` / `ORAS_PASSWORD` etc.

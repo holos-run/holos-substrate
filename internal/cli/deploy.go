@@ -204,8 +204,9 @@ func (o *deployOptions) run(ctx context.Context, stdout, stderr io.Writer) error
 }
 
 // registerDeploy adds the deploy subcommand and its flags to app. Every flag
-// carries a documented help string and a PlaceHolder; this function is the
-// template for adding further Fisk commands (see docs/cli-guardrails.md).
+// carries a documented help string, and each value-taking flag a PlaceHolder;
+// this function is the template for adding further Fisk commands (see
+// docs/cli-guardrails.md).
 func registerDeploy(app *fisk.Application) {
 	opts := &deployOptions{}
 

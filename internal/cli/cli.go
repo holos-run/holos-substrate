@@ -20,9 +20,9 @@
 // Every new subcommand and flag MUST be added with Fisk, in its own register*
 // function called from New, following the deploy command as the template:
 // a fisk help string on the command, a HelpLong block for detail, a Cheat for
-// the task-oriented summary, and a clear, fully documented help string with a
-// PlaceHolder on every flag. See docs/cli-guardrails.md (indexed in AGENTS.md)
-// for the binding convention.
+// the task-oriented summary, and a clear help string on every flag with a
+// PlaceHolder on each value-taking flag. See docs/cli-guardrails.md (indexed in
+// AGENTS.md) for the binding convention.
 package cli
 
 import (
