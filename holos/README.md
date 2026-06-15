@@ -322,11 +322,19 @@ realm. What it reconciles:
 - the confidential PKCE **`quay` OIDC client** (`publicClient: false`,
   `pkce.code.challenge.method: S256`, the `quay.holos.localhost` callback
   redirect URIs) and its `platform-admin` / `project-admin` **client roles**,
-  with mappers that write group memberships, the `quay` client-role names, and
-  `preferred_username` into the token — the SSO login Quay relies on, designed
-  in [ADR-15](../docs/adr/ADR-15.md). The client secret is the `quay-oidc`
-  Secret, generated once into both the `keycloak` and `quay` namespaces and
-  substituted into the import document at run time (never committed).
+  with mappers that write group memberships, the `quay` client-role names, the
+  `platform-owner` **realm role** (a realm-role mapper added in HOL-1245,
+  mirroring the `argocd` client), and `preferred_username` into the token — the
+  SSO login Quay relies on, designed in [ADR-15](../docs/adr/ADR-15.md). The
+  client secret is the `quay-oidc` Secret, generated once into both the
+  `keycloak` and `quay` namespaces and substituted into the import document at
+  run time (never committed).
+
+The declarative-client pattern itself — public vs confidential PKCE clients, the
+secret bootstrap, the three mappers that feed the shared `groups` claim, the
+role model, and the guardrail checklist for adding another PKCE client — is
+documented in
+[docs/keycloak-clients.md](docs/keycloak-clients.md).
 
 The import document is authored in CUE and marshalled to JSON in a
 `ConfigMap` the Job mounts at `/config/holos.json`; it carries
@@ -386,13 +394,18 @@ username-from-token behavior, and the roles model — is in
   organization scope and cannot be renamed.
 - **Roles → teams.** The `quay` client roles `platform-admin` and
   `project-admin` (and per-project roles by the same convention) are folded
-  into the `groups` claim alongside Keycloak group memberships. They are
-  identity labels, not privileges in themselves: a Quay **superuser** binds a
-  Quay team to the group/role name (team-sync setup is superuser-only here —
+  into the `groups` claim alongside Keycloak group memberships. The `quay`
+  client also emits the `platform-owner` **realm role** into that same claim
+  (the realm-role mapper added in HOL-1245, mirroring the `argocd` client), so
+  the privileged platform-owner role is recognizable to Quay's team sync the
+  same way group names are. They are identity labels, not privileges in
+  themselves: a Quay **superuser** binds a Quay team to the group/role name
+  (team-sync setup is superuser-only here —
   `FEATURE_NONSUPERUSER_TEAM_SYNCING_SETUP` is off), and the team's
   permissions are what grant access. `FEATURE_TEAM_SYNCING: true` then keeps
   membership in sync, re-syncing on the 30-minute `TEAM_RESYNC_STALE_TIME`
-  cadence.
+  cadence. The full declarative-client pattern and the role model are in
+  [docs/keycloak-clients.md](docs/keycloak-clients.md).
 - **Superusers.** Superuser status comes solely from `SUPER_USERS` in the
   config (by `preferred_username`), not from the `groups` claim and not from
   the `platform-admin` role; the local `admin` bootstrap account is kept there

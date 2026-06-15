@@ -28,3 +28,8 @@
 - **Rule:** OIDC client secrets are generated at runtime, never committed.
 - **Pattern:** A bootstrap Job generates the secret once and writes it to both the owning component's namespace and any consuming namespace (e.g., keycloak and quay for the Quay OIDC secret).
 - **Reference:** `holos/components/keycloak/realm-config/buildplan.cue`, QUAY_OIDC_BOOTSTRAP section
+
+### Adding a Keycloak OIDC (PKCE) Client
+- **Pattern:** The realm's OIDC clients (argocd, quay) are declared in `realm-config/buildplan.cue` and reconciled by the `keycloak-config` keycloak-config-cli Job. The conventional declarative-client pattern — public vs confidential decision, the `S256` attribute, the confidential secret-bootstrap Job, `IMPORT_VARSUBSTITUTION_ENABLED`, the three mappers that feed the shared `groups` claim, the role model, and the render-then-commit workflow — is documented as a guardrail checklist.
+- **Before adding another PKCE client:** Read `holos/docs/keycloak-clients.md` and follow its guardrail checklist rather than rediscovering the pattern. The `pkce.force: "false"` workaround above is one of its checklist items (relax PKCE only for a client with a demonstrated implementation gap, as Quay has in HOL-1233).
+- **Reference:** `holos/docs/keycloak-clients.md`
