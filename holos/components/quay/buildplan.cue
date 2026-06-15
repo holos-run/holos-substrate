@@ -1,5 +1,11 @@
 package holos
 
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
+)
+
 // quay renders the Quay registry as a plain Deployment backed by the
 // quay-db CNPG Postgres Cluster (components/cnpg-clusters) and a minimal
 // single-pod Redis, with registry blob storage on a local-path PVC, exposed
@@ -318,6 +324,28 @@ let CONFIG_TEMPLATE_CM = {
 	data: "config.yaml": CONFIG_YAML
 }
 
+// CONFIG_HASH is a short content hash of the rendered quay-config-template
+// ConfigMap (the CONFIG_YAML template the initContainer renders into
+// /conf/stack/config.yaml).  It is stamped onto the Quay Deployment pod
+// template as the app.holos.run/config-hash annotation (CONFIG_HASH_ANNOTATION
+// on DEPLOYMENT below) so any edit to CONFIG_YAML changes the pod template,
+// forcing a new ReplicaSet and a rollout on the next scripts/apply.
+//
+// Without it the ConfigMap name is static and the pod template is byte-identical
+// across a config-only change, so kubectl apply updates the ConfigMap but never
+// rolls the Deployment — the running pod keeps serving the stale config until it
+// is manually restarted (HOL-1260).  This mirrors the CONFIG_HASH precedent in
+// the keycloak-config Job (components/keycloak/realm-config) but stamps an
+// annotation rather than renaming a resource, the more common Kubernetes idiom,
+// which avoids leaving orphaned old-named ConfigMaps behind.
+//
+// The hash is over CONFIG_TEMPLATE_CM.data["config.yaml"] alone — the only
+// content the volume mounts — so it is stable across re-renders (scripts/render
+// stays diff-clean) and changes only when the config content does.  8 hex chars
+// (32 bits) is ample for a change-detection annotation.
+let CONFIG_HASH = strings.SliceRunes(hex.Encode(sha256.Sum256(
+	CONFIG_TEMPLATE_CM.data["config.yaml"])), 0, 8)
+
 // The bootstrap resources carry their own app.kubernetes.io/name — NOT the
 // Quay Deployment's — because the quay Service selects on that label: a
 // probe-less bootstrap pod labeled like the Quay pod would become a dead
@@ -598,7 +626,14 @@ let DEPLOYMENT = {
 		strategy: type:        "Recreate"
 		selector: matchLabels: METADATA.labels
 		template: {
-			metadata: labels: METADATA.labels
+			metadata: {
+				labels: METADATA.labels
+				// Stamp the config content hash onto the pod template so a
+				// CONFIG_YAML/ConfigMap-only change rolls the Deployment on the
+				// next scripts/apply instead of leaving the running pod on the
+				// stale /conf/stack/config.yaml (HOL-1260) — see CONFIG_HASH.
+				annotations: "app.holos.run/config-hash": CONFIG_HASH
+			}
 			spec: {
 				// The dedicated ServiceAccount pins the pod's mesh identity
 				// for the Redis AuthorizationPolicy.  Its token IS mounted
