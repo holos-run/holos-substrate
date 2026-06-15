@@ -121,9 +121,13 @@ receives Kargo's baseline `users` access (read of cluster-scoped resources) on
 first login — no explicit role assignment is required. Kargo is therefore *not*
 gated to an allow-list of users; it is gated to "anyone who can log into the
 holos realm", which on this single-user local cluster is the intended posture.
-Tightening that (a Kargo-specific realm group instead of the shared
-`authenticated` default group) would be a realm-config change, not a Kargo-side
-one.
+Tightening that takes a **paired** change: introduce a Kargo-specific realm
+group (or role) in the realm-config component, **and** replace `authenticated`
+in `api.oidc.users.claims.groups` in
+[`components/kargo/buildplan.cue`](../components/kargo/buildplan.cue) with that
+new group — because Kargo's own claim mapping is what authorizes the
+`authenticated` default group. Leaving the Kargo-side claim on `authenticated`
+keeps every realm user authorized no matter what the realm-config side does.
 
 **To elevate a user above baseline** (viewer or admin), assign them the
 corresponding Keycloak realm role — `platform-viewer` or `platform-owner` — (or
@@ -157,8 +161,12 @@ that patch still targets the right key.
 Change which realm role maps to which Kargo level by editing the
 `api.oidc.admins/viewers/users.claims.groups` lists in
 [`components/kargo/buildplan.cue`](../components/kargo/buildplan.cue), then run
-`scripts/render` and commit the regenerated `configmap-kargo-api.yaml`. To add a
-new realm role to the claim, add it to the realm roles in
+`scripts/render` and commit the regenerated **ServiceAccount** manifests —
+`serviceaccount-kargo-admin.yaml`, `serviceaccount-kargo-viewer.yaml`, and
+`serviceaccount-kargo-user.yaml`, whose `rbac.kargo.akuity.io/claims` annotations
+carry the group lists (the `OIDC_*` keys in `configmap-kargo-api.yaml` hold only
+`enabled`/`issuerURL`/`clientID`/`additionalScopes`/the username claim, not the
+role mapping). To add a new realm role to the claim, add it to the realm roles in
 [`components/keycloak/realm-config/buildplan.cue`](../components/keycloak/realm-config/buildplan.cue)
 (the `realm-roles` mapper emits all realm-role names automatically).
 
