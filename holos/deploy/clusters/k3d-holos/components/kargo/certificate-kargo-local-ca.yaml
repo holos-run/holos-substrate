@@ -1,0 +1,15 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  labels:
+    app.kubernetes.io/name: kargo
+  name: kargo-local-ca
+  namespace: kargo
+spec:
+  dnsNames:
+  - kargo-local-ca.kargo.svc.cluster.local
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: local-ca
+  secretName: kargo-local-ca
