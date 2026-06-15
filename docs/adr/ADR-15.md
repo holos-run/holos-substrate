@@ -195,8 +195,9 @@ Quay authenticates against the Keycloak `holos` realm as a **confidential
 OIDC client with PKCE (S256) layered on**, using the Authorization Code flow.
 Usernames come from the ID token's `preferred_username` claim with no user
 customization, the personal namespace is scoped to that username, and Keycloak
-client roles and groups flow through a single `groups` claim into Quay teams
-via team syncing — while superuser status comes solely from `SUPER_USERS`. The
+client roles, realm roles, and groups flow through a single `groups` claim into
+Quay teams via team syncing — while superuser status comes solely from
+`SUPER_USERS`. The
 client, roles, mappers, and secret are reconciled declaratively by the
 `keycloak-config` Job; nothing secret is committed.
 
