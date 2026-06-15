@@ -151,27 +151,6 @@ webhook ingress to authenticate and no in-cluster NATS surface to harden, so bot
 placeholders no longer apply. If a messaging backbone is reintroduced later, its
 authentication posture should be recorded as a fresh placeholder.
 
-## Kargo API authentication
-
-The Kargo control plane ([`components/kargo/`](../components/kargo/buildplan.cue))
-runs its API/UI **without authentication** for the local single-user k3d
-cluster: OIDC is disabled (`api.oidc.enabled: false`), the chart's built-in
-admin account is disabled (`api.adminAccount.enabled: false`, which also avoids
-generating and committing an admin Secret), and the bundled Dex broker is off.
-The API is reachable from the host only through the shared Gateway at
-`https://kargo.holos.localhost` (→ `127.0.0.1`, never off the machine), and the
-`kargo` namespace is ambient-enrolled so the Gateway→API hop is secured by the
-mesh — the same MVP no-auth posture the other host-facing platform consoles take.
-
-The reference platform wires Kargo to a Thomson-Reuters Keycloak OIDC issuer
-with group-based admin/viewer RBAC; that issuer and its RBAC are deliberately
-**not** copied here. Authenticating the Kargo API — most naturally OIDC against
-the Keycloak `holos` realm with a public PKCE client provisioned by the
-[`keycloak-config`](../components/keycloak/realm-config/buildplan.cue) component
-(the Argo CD SSO pattern), mapping realm roles to Kargo's admin/viewer/user
-roles — is deferred to a later issue. Until then the local API is unauthenticated
-and the deferral lives here.
-
 ## Production deployment area
 
 The only registered cluster is the local `k3d-holos` development cluster.
