@@ -87,6 +87,13 @@ components have been removed. Git history preserves them.
   Kargo↔Keycloak OIDC (PKCE) integration: the public kargo client and
   groups-claim role mapping, issuer-cert trust via the local-ca cabundle, and
   the verification/maintenance runbook.
+- [docs/runbooks/quay-keycloak-oidc.md](docs/runbooks/quay-keycloak-oidc.md) —
+  operational runbook for the Quay↔Keycloak OIDC SSO integration: how the
+  confidential `quay` client and the `quay-oidc` secret bootstrap are wired, the
+  documented **no-PKCE exception** (Quay is the one relying party without PKCE,
+  unlike public `argocd`/`kargo`), grant/rotate/reconcile operations, and
+  troubleshooting the `code exchange: 400` login failure. Companion to
+  [ADR-15](docs/adr/ADR-15.md).
 - [holos/docs/oci-publish-workflow.md](holos/docs/oci-publish-workflow.md)
   — the client-side build-and-publish workflow (`scripts/publish` /
   `make publish`): render the platform with an injected app image digest,
