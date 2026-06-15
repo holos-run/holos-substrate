@@ -87,14 +87,19 @@ directAccessGrantsEnabled: false
 attributes: "pkce.code.challenge.method": "S256"
 ```
 
-### Confidential PKCE client (quay)
+### Confidential client, no PKCE (quay)
 
 Quay's `KEYCLOAK_LOGIN_CONFIG` validator requires a `CLIENT_SECRET`, so the
-`quay` client is **confidential** (`publicClient: false`) with PKCE layered on
-top — the secret authenticates the application, PKCE binds the authorization
-code to the login attempt. The two protections are complementary, not
-alternatives. The `secret` field holds a `$(env:...)` placeholder, never a
-literal value:
+`quay` client is **confidential** (`publicClient: false`) and authenticates with
+that secret alone. Unlike `argocd`, it does **not** use PKCE: the client sets no
+`pkce.code.challenge.method` attribute (HOL-1257). This is the documented
+exception to the platform's PKCE-by-default posture — Quay's confidential
+client-secret flow did not reliably round-trip a PKCE `code_verifier`, producing
+`code exchange: 400` SSO failures, so PKCE was removed from both ends (Quay's
+`KEYCLOAK_LOGIN_CONFIG` no longer sets `USE_PKCE`/`PKCE_METHOD` either). See
+[ADR-15](../../docs/adr/ADR-15.md) Revision 2 and the HOL-1233 note in
+[`CLAUDE.md`](../../CLAUDE.md). The `secret` field holds a `$(env:...)`
+placeholder, never a literal value:
 
 ```cue
 clientId:                  QUAY_CLIENT_ID
@@ -103,7 +108,8 @@ standardFlowEnabled:       true
 serviceAccountsEnabled:    false
 directAccessGrantsEnabled: false
 secret: "$(env:QUAY_OIDC_CLIENT_SECRET)"
-attributes: "pkce.code.challenge.method": "S256"
+// No pkce.code.challenge.method: Quay authenticates with the client secret
+// alone; setting the attribute would make Keycloak *require* PKCE (HOL-1257).
 ```
 
 ### The runtime client-secret bootstrap
@@ -217,8 +223,12 @@ copy from.
    complete steps 4–5.
 2. **PKCE `S256`.** Set
    `attributes: "pkce.code.challenge.method": "S256"` on the client. Use PKCE
-   wherever the flow supports it — including on confidential clients, where it
-   layers on top of the secret.
+   wherever the flow supports it, as the platform default — both `argocd` and
+   `kargo` (public) carry it. The one documented exception is the confidential
+   `quay` client, which omits PKCE because its OIDC client did not reliably
+   round-trip a `code_verifier` and failed with `code exchange: 400`
+   (HOL-1257); only relax PKCE for a client with a demonstrated implementation
+   gap (see step 7).
 3. **Redirect URIs and web origins.** Set `redirectUris` to the relying party's
    callback URL(s) (host resolves to `127.0.0.1` per
    [`docs/local-cluster.md`](../../docs/local-cluster.md)) and `webOrigins` to
@@ -238,19 +248,22 @@ copy from.
    needs (see [the table above](#the-groups-claim-and-the-three-mapper-types)).
    Write them all into the shared `groups` claim unless the relying party
    requires a different claim name.
-7. **`pkce.force` workaround for incomplete clients.** If the relying party's
-   PKCE implementation is incomplete, the client may need optional rather than
-   required PKCE. Quay hits this — see the *Quay OIDC PKCE Implementation
-   (HOL-1233)* guard rail in [`CLAUDE.md`](../../CLAUDE.md): the documented
-   workaround is to set the client's `pkce.force` attribute to `"false"`
-   (optional PKCE) so Quay can fall back to client-secret auth when it fails to
-   send the `code_verifier`. Note the current realm config relies on the default
-   (optional) PKCE-force behavior rather than setting the attribute explicitly —
-   the `quay` client declares only `pkce.code.challenge.method: "S256"` in
-   [`realm-config/buildplan.cue`](../components/keycloak/realm-config/buildplan.cue);
-   if a future client needs PKCE *required*, that is where you would add an
-   explicit `pkce.force` attribute. Only relax (or skip requiring) PKCE for a
-   client with a demonstrated implementation gap.
+7. **No PKCE for clients with an implementation gap.** If the relying party's
+   PKCE implementation is incomplete, do not require PKCE for its client. Quay
+   hit this — its confidential OIDC client did not reliably round-trip a
+   `code_verifier`, producing `code exchange: 400` at the token endpoint. The
+   resolution (HOL-1257) was to **drop PKCE entirely** for the `quay` client:
+   omit the `pkce.code.challenge.method` attribute (Keycloak treats a client
+   that sets it as *requiring* PKCE) and remove `USE_PKCE`/`PKCE_METHOD` from
+   Quay's `KEYCLOAK_LOGIN_CONFIG`, leaving Quay to authenticate with its client
+   secret alone. The `quay` client in
+   [`realm-config/buildplan.cue`](../components/keycloak/realm-config/buildplan.cue)
+   therefore carries **no** `pkce.*` attribute. (Historical note: the earlier
+   *Quay OIDC PKCE Implementation (HOL-1233)* guard rail in
+   [`CLAUDE.md`](../../CLAUDE.md) kept PKCE *optional* via the default
+   `pkce.force` behavior; HOL-1257 supersedes that with full removal.) Only
+   relax or skip requiring PKCE for a client with a demonstrated implementation
+   gap.
 8. **Render then commit.** This is a `holos/components/` change, so follow the
    render contract in [`CLAUDE.md`](../../CLAUDE.md) and
    [`component-guidelines.md`](component-guidelines.md): commit the `.cue`
@@ -261,8 +274,9 @@ copy from.
 
 ## References
 
-- [ADR-15 — Quay↔Keycloak OIDC SSO with PKCE](../../docs/adr/ADR-15.md) — the
-  decision record for the Quay SSO integration.
+- [ADR-15 — Quay↔Keycloak OIDC SSO](../../docs/adr/ADR-15.md) — the
+  decision record for the Quay SSO integration (Revision 2 dropped PKCE for the
+  `quay` client).
 - [`components/keycloak/realm-config/buildplan.cue`](../components/keycloak/realm-config/buildplan.cue)
   — the authoritative source: the keycloak-config-cli Job, the `argocd` and
   `quay` clients, the three mapper types, and the `quay-oidc` bootstrap.

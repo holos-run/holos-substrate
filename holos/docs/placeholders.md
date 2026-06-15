@@ -74,8 +74,9 @@ purge is deliberately not enabled).
 ## Quay OIDC login against the Keycloak `holos` realm
 
 **Resolved.** Quay now signs users in through the Keycloak `holos` realm with
-the Authorization Code flow plus PKCE (S256), using the confidential `quay`
-client reconciled by the `keycloak-config` Job. The username is taken from the
+the Authorization Code flow, using the confidential `quay` client (authenticated
+by its client secret, without PKCE — HOL-1257) reconciled by the
+`keycloak-config` Job. The username is taken from the
 ID token's `preferred_username` claim with no customization, and the `quay`
 client roles (`platform-admin`, `project-admin`) plus Keycloak groups flow
 through the `groups` claim into Quay teams via `FEATURE_TEAM_SYNCING`. The

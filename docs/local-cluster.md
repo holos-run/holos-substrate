@@ -227,8 +227,9 @@ auto-created by push are private).
 
 **Verify Keycloak SSO login.** Beyond the local `admin` account, real users
 sign in to Quay through the Keycloak `holos` realm with the Authorization Code
-flow plus PKCE (the confidential `quay` client the `keycloak-config` Job
-provisions). The design is in [ADR-15](adr/ADR-15.md); verify it end to end:
+flow (the confidential `quay` client the `keycloak-config` Job provisions,
+authenticated by its client secret without PKCE). The design is in
+[ADR-15](adr/ADR-15.md); verify it end to end:
 
 1. Create a realm user (or reuse the one from
    [Verify Argo CD](#verify-argo-cd)) in the Keycloak admin console at
