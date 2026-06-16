@@ -1,0 +1,117 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  labels:
+    app.kubernetes.io/name: quay-admin-bootstrap
+  name: quay-admin-bootstrap
+  namespace: quay
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: quay-admin-bootstrap
+    spec:
+      containers:
+      - command:
+        - /bin/sh
+        - -c
+        - |-
+          set -eu
+          if kubectl -n quay get secret quay-initial-admin >/dev/null 2>&1; then
+            echo "Secret quay-initial-admin already exists; leaving it untouched."
+            exit 0
+          fi
+          echo "Waiting for Quay to answer at http://quay.quay.svc.cluster.local:8080/health/instance ..."
+          i=0
+          until curl -fsS --max-time 10 -o /dev/null "http://quay.quay.svc.cluster.local:8080/health/instance"; do
+            i=$((i + 1))
+            if [ "${i}" -ge 120 ]; then
+              echo "ERROR: Quay did not become healthy in time." >&2
+              exit 1
+            fi
+            sleep 10
+          done
+          # Superuser local login stays reachable even with FEATURE_DIRECT_LOGIN
+          # false, so this 48-char alphanumeric password is the break-glass UI
+          # credential; the OAuth token below is what bootstrap Jobs consume.
+          PASSWORD="$(head -c 256 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c 1-48)"
+          [ "${#PASSWORD}" -eq 48 ]
+          cat > /tmp/initialize-request.json <<EOF
+          {"username": "admin", "password": "${PASSWORD}", "email": "admin@holos.localhost", "access_token": true}
+          EOF
+          # The canonical Host header makes any server-side host validation see Quay's
+          # SERVER_HOSTNAME even though the request rides the in-cluster Service.
+          HTTP="$(curl -sS --max-time 30 -o /tmp/initialize.json -w '%{http_code}' \
+            -X POST -H 'Content-Type: application/json' -H 'Host: quay.holos.localhost' \
+            --data @/tmp/initialize-request.json \
+            "http://quay.quay.svc.cluster.local:8080/api/v1/user/initialize")"
+          if [ "${HTTP}" != 200 ]; then
+            echo "ERROR: /api/v1/user/initialize returned HTTP ${HTTP}:" >&2
+            cat /tmp/initialize.json >&2 || true
+            echo >&2
+            echo "       The endpoint only works while the registry has no users.  If Quay" >&2
+            echo "       was initialized outside this Job there is no recoverable token —" >&2
+            echo "       reset the registry state and re-run (see docs/local-cluster.md)." >&2
+            exit 1
+          fi
+          TOKEN="$(grep -o '"access_token"[^,}]*' /tmp/initialize.json | head -1 | sed 's/^.*"access_token"//; s/^[^"]*"//; s/".*$//')"
+          if [ -z "${TOKEN}" ]; then
+            echo "ERROR: initialize succeeded but no access_token was in the response." >&2
+            exit 1
+          fi
+          # Arm the last-resort dump only across the one-shot window (token obtained,
+          # Secret not yet stored); clear it on success so a normal exit is silent.
+          emit_recovery() {
+            cat >&2 <<RECOVERY
+          ERROR: admin user created but storing Secret quay-initial-admin failed.
+                 Store it manually before anything re-initializes the registry:
+                   kubectl -n quay create secret generic quay-initial-admin --from-literal=username='admin' --from-literal=password="${PASSWORD}" --from-literal=token="${TOKEN}"
+          RECOVERY
+          }
+          trap emit_recovery EXIT
+          kubectl -n quay create -f - <<EOF
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: quay-initial-admin
+            namespace: quay
+          stringData:
+            username: "admin"
+            password: "${PASSWORD}"
+            token: "${TOKEN}"
+          EOF
+          trap - EXIT
+          echo "Created admin user 'admin' and stored Secret quay-initial-admin."
+        env:
+        - name: HOME
+          value: /tmp
+        image: docker.io/alpine/kubectl:1.33.3
+        name: bootstrap
+        resources:
+          limits:
+            memory: 64Mi
+          requests:
+            cpu: 10m
+            memory: 32Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - mountPath: /tmp
+          name: tmp
+      restartPolicy: Never
+      securityContext:
+        runAsGroup: 65534
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: quay-admin-bootstrap
+      volumes:
+      - emptyDir: {}
+        name: tmp
+  ttlSecondsAfterFinished: 86400
