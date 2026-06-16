@@ -76,6 +76,13 @@ let STAGE = "project-config"
 let CONFIG_REPO = "quay.holos.localhost/my-project/my-project-config"
 let CONFIG_REPO_OCI = "oci://\(CONFIG_REPO)"
 
+// CONFIG_TAG_REGEX matches the input-addressed tags scripts/publish mints:
+// render-<config-digest-12>-<appimage-digest-12> (holos/docs/oci-publish-workflow.md,
+// scripts/publish).  It scopes the Warehouse image subscription to only the
+// rendered-manifests artifacts, ignoring any other tag that might land in the
+// repo.  Identical in shape to the kargo-echo Warehouse's MANIFESTS_TAG_REGEX.
+let CONFIG_TAG_REGEX = "^render-[0-9a-f]{12}-[0-9a-f]{12}$"
+
 // APPPROJECT_RESOURCE is the Argo CD AppProject that scopes what the
 // my-project Application may deploy.  It is intentionally minimal but
 // functional for the local single-tenant cluster:
@@ -418,17 +425,27 @@ let WEBHOOK_BOOTSTRAP_JOB = {
 // oci://, no tag) — ADR-16's resolution for discovering a plain-manifest OCI
 // artifact.
 //
-// imageSelectionStrategy: Digest — the publish workflow for my-project-config is
-// expected to push to a single mutable tag (e.g. latest) whose digest changes on
-// each publish, so the Digest strategy tracks "the current digest of the watched
-// tag" directly.  strictSemvers has no effect under Digest (it only gates the
-// SemVer strategy) but is set false to document that semver tagging is not in
-// use.  discoveryLimit: 1 — Digest tracks one reference.  FALLBACK (ADR-16 "Open
-// validation item"): if Digest discovers nothing against the published artifact,
-// switch to Lexical (or SemVer) with an allowTags regex scoping the tag shape,
-// mirroring the kargo-echo Warehouse — recorded here so the next live-validation
-// pass has the alternative in hand.  The artifact does not exist yet, so the
-// concrete strategy is confirmed when phase 4 publishes the first artifact.
+// imageSelectionStrategy: Lexical — matching the kargo-echo Warehouse and for the
+// same reason.  scripts/publish tags the my-project-config artifact
+// input-addressed as render-<config12>-<appimage12> (CONFIG_TAG_REGEX above), NOT
+// a mutable tag like latest, so the Digest strategy (which tracks the digest of a
+// single named/mutable tag) would discover nothing here.  The render-* tags are
+// not semver, ruling out SemVer; and NewestBuild orders by an image's build
+// timestamp read from the OCI config blob / created annotation, which ORAS-pushed
+// artifacts do not carry — so Lexical, which sorts the matching tag strings
+// descending and needs only each tag's digest, is the robust strategy for these
+// artifacts.  allowTags scopes discovery to the render-* artifacts.
+//
+// Spike caveat (inherited from kargo-echo): the render-<config12>-<appimage12>
+// tag is input-addressed, not monotonic, so "lexically greatest tag" is not
+// strictly "most recently published".  For this single-app pipeline it is
+// acceptable — freightCreationPolicy: Automatic creates Freight for any newly
+// discovered tag regardless of ordering, and live validation publishes one
+// artifact at a time.  A pipeline needing strict most-recent-wins ordering would
+// switch to a monotonic tag (zero-padded counter/timestamp) or a Digest strategy
+// against a mutable tag; tracked as future work.  The artifact does not exist yet
+// (provisioning + first publish land in later phases — HOL-1272 onward), so this
+// strategy is confirmed live then.
 //
 // insecureSkipTLSVerify: true — the in-cluster Quay serves *.holos.localhost with
 // a mkcert-signed certificate not in the Kargo controller's trust store (same
@@ -449,10 +466,10 @@ let WAREHOUSE_RESOURCE = kargowarehouse.#Warehouse & {
 		subscriptions: [{
 			image: {
 				repoURL:                CONFIG_REPO
-				imageSelectionStrategy: "Digest"
-				strictSemvers:          false
+				imageSelectionStrategy: "Lexical"
+				allowTags:              CONFIG_TAG_REGEX
 				insecureSkipTLSVerify:  true
-				discoveryLimit:         1
+				discoveryLimit:         20
 			}
 		}]
 	}
