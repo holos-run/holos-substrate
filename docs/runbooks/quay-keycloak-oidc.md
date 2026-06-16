@@ -152,7 +152,7 @@ mutually-consistent state:
 
 This exception is recorded as a guardrail-checklist item in
 [holos/docs/keycloak-clients.md](../../holos/docs/keycloak-clients.md) and as
-the HOL-1233 note in [CLAUDE.md](../../CLAUDE.md). **Do not re-enable PKCE on
+the HOL-1233 note in [AGENTS.md](../../AGENTS.md). **Do not re-enable PKCE on
 the `quay` client** without a demonstrated Quay-side fix; doing so reintroduces
 the `code exchange: 400` failure. The `argocd` and `kargo` clients keep their
 PKCE attribute — only `quay` omits it.
@@ -272,4 +272,4 @@ the Quay Deployment so its initContainer re-renders `config.yaml`.
   — Quay's `KEYCLOAK_LOGIN_CONFIG`.
 - [holos/components/keycloak/realm-config/buildplan.cue](../../holos/components/keycloak/realm-config/buildplan.cue)
   — the Keycloak `quay` client and the secret bootstrap Job.
-- [CLAUDE.md](../../CLAUDE.md) — the HOL-1233 PKCE workaround note.
+- [AGENTS.md](../../AGENTS.md) — the HOL-1233 PKCE workaround note.

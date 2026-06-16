@@ -74,7 +74,7 @@ authenticates purely as a plain confidential client with its client secret,
 which is Red Hat's recommended baseline Quay↔Keycloak OIDC integration. This
 is the documented exception to the platform's "use PKCE wherever the flow
 supports it" default ([keycloak-clients.md](../../holos/docs/keycloak-clients.md),
-and the related HOL-1233 note in `CLAUDE.md`); the public `argocd` and `kargo`
+and the related HOL-1233 note in `AGENTS.md`); the public `argocd` and `kargo`
 clients keep PKCE.
 
 ### Confidential client authenticated by a client secret

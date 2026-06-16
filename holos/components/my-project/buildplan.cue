@@ -332,7 +332,7 @@ let PROJECT_CONFIG_RESOURCE = {
 }
 
 // The Quay webhook receiver Secret is generated at runtime, never committed (the
-// repo's runtime-secret posture; see CLAUDE.md "OIDC Client Secrets" and the
+// repo's runtime-secret posture; see AGENTS.md "OIDC Client Secrets" and the
 // quay secret-keys precedent).  A small create-if-absent Job generates the token
 // once and leaves an existing Secret untouched, so the value stays stable across
 // re-applies (Kargo derives the hard-to-guess receiver URL from it — a rotation

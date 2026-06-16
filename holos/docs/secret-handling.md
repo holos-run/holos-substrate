@@ -76,6 +76,6 @@ does not read, the AC is wrong — use the correct key and remove the named one.
   `secret` key the Kargo quay receiver reads.
 - **Quay OIDC client secret** — `holos/components/keycloak/realm-config/`
   bootstrap Job: generated once, written into both the owning and consuming
-  namespaces (see CLAUDE.md "OIDC Client Secrets").
+  namespaces (see AGENTS.md "OIDC Client Secrets").
 - **Quay secret-keys** — `holos/components/quay/` bootstrap Job: the original
   generate-once, create-if-absent precedent this guardrail generalizes.
