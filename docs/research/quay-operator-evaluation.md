@@ -46,8 +46,10 @@ Operator now.** The single decisive fact:
 > own API types — the `ComponentKind` constants are exactly `quay`, `postgres`,
 > `clair`, `clairpostgres`, `redis`, `horizontalpodautoscaler`, `objectstorage`,
 > `route`, `mirror`, `monitoring`, `tls` and nothing else
-> ([`apis/quay/v1/quayregistry_types.go`](https://github.com/quay/quay-operator/blob/master/apis/quay/v1/quayregistry_types.go),
-> [`docs/components.md`](https://github.com/quay/quay-operator/blob/master/docs/components.md)).
+> ([`apis/quay/v1/quayregistry_types.go`](https://github.com/quay/quay-operator/blob/master/apis/quay/v1/quayregistry_types.go)
+> and the [`QuayRegistry` CRD](https://github.com/quay/quay-operator/blob/master/config/crd/bases/quay.redhat.com_quayregistries.yaml);
+> the operator's [`docs/components.md`](https://github.com/quay/quay-operator/blob/master/docs/components.md)
+> documents the managed/unmanaged model but lists only a subset of these kinds).
 
 Goals 1 and 2 — the genuinely hard, holos-paas-specific goals — are **data-plane**
 concerns the Quay Operator does not address. They are reachable only through
@@ -57,9 +59,10 @@ A future `Repository`/`ProjectRequest` CRD with a reconciler that calls that API
 the registry itself is deployed — it is needed whether Quay runs from
 hand-authored manifests or from a `QuayRegistry`. Adopting the operator would
 therefore *not* advance Goals 1 or 2, while it *would* add an Operator Lifecycle
-Manager (OLM) dependency and force most of its components into `unmanaged` mode
-on the non-OpenShift (k3d) target — eroding the operator's main benefit on
-exactly our platform.
+Manager (OLM) dependency and force its OpenShift-coupled components
+(`route`, `tls`, `objectstorage`, `monitoring`) into `unmanaged` mode on the
+non-OpenShift (k3d) target — eroding the operator's main "batteries included"
+benefit on exactly our platform.
 
 The one goal the operator helps with is Goal 3 (the production path), and only
 if/when the production target becomes OpenShift. That is a re-evaluation
@@ -161,28 +164,33 @@ match our target (Goal 4).
 
 ### Running on non-OpenShift / a laptop (Goal 4)
 
-The operator is designed for OpenShift first. On vanilla Kubernetes (our k3d
-laptop target) several managed components have no upstream-native backend and
-must be set `unmanaged`:
+The operator is designed for OpenShift first. Its capability detection forces
+the components that depend on OpenShift-only APIs to `unmanaged` when those APIs
+are absent — on vanilla Kubernetes (our k3d laptop target) that set is
+`route`, `tls`, `objectstorage`, and `monitoring`. The remaining components —
+`quay` (always managed), `postgres`, `redis`, `clair`, and
+`horizontalpodautoscaler` — still default to managed:
 
-- **`objectstorage` (managed)** consumes the `ObjectBucketClaim` API, normally
-  provided by NooBaa / OpenShift Data Foundation — not present on k3d. To run
-  on a laptop you would set `objectstorage: managed: false` and point Quay at an
-  S3-compatible service (e.g. MinIO) or use Quay's `LocalStorage` in
-  `config.yaml` — i.e. reproduce what the current PVC approach already does.
-  (See Red Hat's
-  [object-storage/component docs](https://docs.redhat.com/en/documentation/red_hat_quay/3.15/html-single/deploying_the_red_hat_quay_operator_on_openshift_container_platform/index).)
-- **`route` (managed)** creates an OpenShift `Route`; on k8s you terminate at
+- **`objectstorage`** (managed) consumes the `ObjectBucketClaim` API, normally
+  provided by NooBaa / OpenShift Data Foundation — not present on k3d. On a
+  laptop you set `objectstorage: managed: false` and point Quay at an external
+  S3-compatible service (e.g. MinIO) via the config bundle. This is **not** a
+  drop-in for today's local-path PVC: the operator's managed Quay Deployment
+  does not mount a blob-storage PVC at `/datastorage/registry` and the
+  `QuayRegistry` CRD exposes no arbitrary volume mounts for the Quay pod, so the
+  current `LocalStorage`-on-PVC pattern is not reproducible under the operator —
+  the realistic supported path is external object storage.
+- **`route`** (managed) creates an OpenShift `Route`; on k8s you terminate at
   your own Ingress/Gateway — as we do at the Istio Gateway today — so `route`
-  and likely `tls` go `unmanaged`.
-- **`monitoring` (managed)** wires into OpenShift's Prometheus stack →
+  (and the coupled `tls`) go `unmanaged`.
+- **`monitoring`** (managed) wires into OpenShift's Prometheus stack →
   `unmanaged` off-OpenShift.
 
-Net: on a laptop the operator runs with `quay` + `postgres`/`redis` managed and
-`objectstorage` + `route` + `tls` + `monitoring` + `horizontalpodautoscaler`
-unmanaged — and it still expects OLM. You can do it, but most of the operator's
-"batteries included" value is switched off, and you add OLM + the `QuayRegistry`
-reconciler for the privilege.
+Net: on a laptop the operator runs `quay` + `postgres`/`redis`/`clair`/`hpa`
+managed but `route` + `tls` + `objectstorage` + `monitoring` unmanaged — and it
+still expects OLM. You can do it, but the OpenShift-coupled "batteries" are
+switched off, blob storage must move off the local PVC to an external S3
+service, and you add OLM + the `QuayRegistry` reconciler for the privilege.
 
 ### Database (Goal 5)
 
@@ -190,7 +198,7 @@ The operator's `postgres: managed: true` deploys **its own** single Postgres
 Deployment — *not* CNPG. To keep CNPG you set `postgres: managed: false` and
 supply `DB_URI` (plus manually enabling the `pg_trgm` extension) in the config
 bundle — the
-[external/unmanaged-database path](https://docs.redhat.com/en/documentation/red_hat_quay/3.15/html/deploying_the_red_hat_quay_operator_on_openshift_container_platform/configuring-the-database-poc).
+[external/unmanaged-database path](https://docs.projectquay.io/deploy_red_hat_quay_operator.html).
 That `DB_URI` would point at the *same* CNPG `quay-db` cluster the repo already
 runs. So for Goal 5 the operator adds nothing: CNPG is `unmanaged` Postgres
 either way, and the current approach already wires exactly that
@@ -280,7 +288,7 @@ Quay Operator (`quay/quay-operator`, `master` / release branches):
 Upstream / vendor docs:
 
 - [Deploying the Project Quay Operator](https://docs.projectquay.io/deploy_red_hat_quay_operator.html)
-- [Configuring the database (unmanaged Postgres, `pg_trgm`)](https://docs.redhat.com/en/documentation/red_hat_quay/3.15/html/deploying_the_red_hat_quay_operator_on_openshift_container_platform/configuring-the-database-poc)
+- [Configure Project Quay — `DB_URI` database fields](https://docs.projectquay.io/config_quay.html) (unmanaged Postgres; `pg_trgm` extension requirement is documented in the [operator deploy guide](https://docs.projectquay.io/deploy_red_hat_quay_operator.html))
 - [Deploying the Red Hat Quay Operator (3.15) — object storage / components](https://docs.redhat.com/en/documentation/red_hat_quay/3.15/html-single/deploying_the_red_hat_quay_operator_on_openshift_container_platform/index)
 - [Use Project Quay (REST API automation)](https://docs.projectquay.io/use_quay.html), [Repository Notifications](https://docs.quay.io/guides/notifications.html)
 - [Kargo Quay webhook receiver](https://docs.kargo.io/user-guide/reference-docs/webhook-receivers/quay/)
