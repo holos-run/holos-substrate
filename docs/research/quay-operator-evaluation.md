@@ -167,9 +167,10 @@ match our target (Goal 4).
 The operator is designed for OpenShift first. Its capability detection forces
 the components that depend on OpenShift-only APIs to `unmanaged` when those APIs
 are absent — on vanilla Kubernetes (our k3d laptop target) that set is
-`route`, `tls`, `objectstorage`, and `monitoring`. The remaining components —
-`quay` (always managed), `postgres`, `redis`, `clair`, and
-`horizontalpodautoscaler` — still default to managed:
+`route`, `tls`, `objectstorage`, and `monitoring`. Every other component has no
+capability check and still defaults to managed — `quay` (always managed),
+`postgres`, `redis`, `clair`, `clairpostgres`, `mirror`, and
+`horizontalpodautoscaler`:
 
 - **`objectstorage`** (managed) consumes the `ObjectBucketClaim` API, normally
   provided by NooBaa / OpenShift Data Foundation — not present on k3d. On a
@@ -186,8 +187,9 @@ are absent — on vanilla Kubernetes (our k3d laptop target) that set is
 - **`monitoring`** (managed) wires into OpenShift's Prometheus stack →
   `unmanaged` off-OpenShift.
 
-Net: on a laptop the operator runs `quay` + `postgres`/`redis`/`clair`/`hpa`
-managed but `route` + `tls` + `objectstorage` + `monitoring` unmanaged — and it
+Net: on a laptop the operator runs `quay` + `postgres` + `redis` + `clair` +
+`clairpostgres` + `mirror` + `hpa` managed but `route` + `tls` + `objectstorage`
++ `monitoring` unmanaged — and it
 still expects OLM. You can do it, but the OpenShift-coupled "batteries" are
 switched off, blob storage must move off the local PVC to an external S3
 service, and you add OLM + the `QuayRegistry` reconciler for the privilege.
