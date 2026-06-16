@@ -734,7 +734,33 @@ wait_kargo_echo() {
 #   - my-project-quay-bootstrap (quay ns, HOL-1272) provisions the Quay org,
 #     repo, pull robot, the Argo CD repository Secret, and the repo_push webhook.
 #     It runs in the quay namespace because the admin OAuth token lives there.
+#
+# It also pre-applies the component's ServiceAccounts and their RBAC (Roles +
+# RoleBindings) ahead of the main component apply (HOL-1275).  The main apply is
+# `kubectl apply -f <dir>/`, which processes the rendered files in filename order
+# — and `job-my-project-quay-bootstrap.yaml` sorts before
+# `serviceaccount-my-project-quay-bootstrap.yaml`, so the Job is created before
+# its ServiceAccount exists.  The Job controller then immediately tries to create
+# a pod and fails with `error looking up service account
+# quay/my-project-quay-bootstrap: serviceaccount "my-project-quay-bootstrap" not
+# found`.  Applying the ServiceAccounts and RBAC here first guarantees they exist
+# before the Job is created, so that race never happens.  Server-side apply is
+# convergent, so the main apply re-applying these same objects is a no-op.
 pre_my_project() {
+  # Pre-apply ServiceAccounts + RBAC before the Jobs (see comment above).  The
+  # shell expands each glob to the matching rendered files; the `[[ -e ]]` guard
+  # drops a non-matching pattern (nullglob is not set) so a missing kind is not
+  # passed to kubectl as a literal path.
+  local dir="${COMPONENTS_DIR}/my-project"
+  local rbac_files=() f
+  for f in "${dir}"/serviceaccount-*.yaml "${dir}"/role-*.yaml "${dir}"/rolebinding-*.yaml; do
+    [[ -e "${f}" ]] && rbac_files+=(-f "${f}")
+  done
+  if ((${#rbac_files[@]})); then
+    kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
+      "${rbac_files[@]}"
+  fi
+
   kubectl --context "${KUBE_CONTEXT}" --namespace my-project \
     delete job -l app.kubernetes.io/name=my-project-quay-webhook-bootstrap \
     --ignore-not-found --cascade=foreground --wait --request-timeout=60s
