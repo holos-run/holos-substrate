@@ -526,13 +526,22 @@ let BOOTSTRAP_JOB = {
 //
 // Crash window: the initialize endpoint is one-shot, so a token obtained but
 // not stored is lost for good (recovery is a registry reset).  The Secret is
-// written immediately after the token is obtained, and an EXIT trap armed only
-// across that window prints the credential to the pod log as a last resort —
-// normally forbidden, but it beats guaranteed loss (the same defense
-// scripts/quay-init makes).
+// written immediately after the token is obtained; if that write fails the Job
+// fails with reset guidance but does NOT print the credential — the token is a
+// non-expiring superuser credential and pod logs (readable by any principal
+// with log access) would bypass the Secret's RBAC.  This is the one place this
+// Job is deliberately stricter than scripts/quay-init, whose last-resort dump
+// targets an operator's terminal rather than durable cluster logs.
 let ADMIN_BOOTSTRAP_SCRIPT = """
 	set -eu
-	if kubectl -n \(NAMESPACE) get secret \(ADMIN_SECRET) >/dev/null 2>&1; then
+	# --ignore-not-found prints nothing and exits 0 when the Secret is absent,
+	# while any OTHER kubectl failure (RBAC denial, API outage) exits non-zero
+	# and aborts via set -e — so "missing" is never conflated with "broken",
+	# which matters before consuming the one-shot initialize endpoint (the
+	# scripts/quay-init precedent).  Suppressing stderr (2>&1 >/dev/null) inside
+	# an `if` would mask that distinction.
+	EXISTING="$(kubectl -n \(NAMESPACE) get secret \(ADMIN_SECRET) -o name --ignore-not-found)"
+	if [ -n "${EXISTING}" ]; then
 	  echo "Secret \(ADMIN_SECRET) already exists; leaving it untouched."
 	  exit 0
 	fi
@@ -574,17 +583,16 @@ let ADMIN_BOOTSTRAP_SCRIPT = """
 	  echo "ERROR: initialize succeeded but no access_token was in the response." >&2
 	  exit 1
 	fi
-	# Arm the last-resort dump only across the one-shot window (token obtained,
-	# Secret not yet stored); clear it on success so a normal exit is silent.
-	emit_recovery() {
-	  cat >&2 <<RECOVERY
-	ERROR: admin user created but storing Secret \(ADMIN_SECRET) failed.
-	       Store it manually before anything re-initializes the registry:
-	         kubectl -n \(NAMESPACE) create secret generic \(ADMIN_SECRET) --from-literal=username='\(ADMIN_USER)' --from-literal=password="${PASSWORD}" --from-literal=token="${TOKEN}"
-	RECOVERY
-	}
-	trap emit_recovery EXIT
-	kubectl -n \(NAMESPACE) create -f - <<EOF
+	# Store the credential immediately.  Piped on stdin as stringData so the
+	# values never appear in the container's argv (/proc-visible) and need no
+	# manual base64.  The token must NEVER be echoed to the pod log: it is a
+	# non-expiring superuser credential, and pod logs are readable by any
+	# principal with log access, bypassing the Secret's RBAC.  So on a write
+	# failure we surface the failure and the recovery path (a registry reset,
+	# since the one-shot token is unrecoverable) WITHOUT printing the secret —
+	# unlike scripts/quay-init, whose output goes to an operator's terminal, not
+	# to durable cluster logs.
+	if kubectl -n \(NAMESPACE) create -f - <<EOF
 	apiVersion: v1
 	kind: Secret
 	metadata:
@@ -595,8 +603,17 @@ let ADMIN_BOOTSTRAP_SCRIPT = """
 	  password: "${PASSWORD}"
 	  token: "${TOKEN}"
 	EOF
-	trap - EXIT
-	echo "Created admin user '\(ADMIN_USER)' and stored Secret \(ADMIN_SECRET)."
+	then
+	  echo "Created admin user '\(ADMIN_USER)' and stored Secret \(ADMIN_SECRET)."
+	else
+	  cat >&2 <<RECOVERY
+	ERROR: the admin user was initialized but storing Secret \(ADMIN_SECRET) failed.
+	       The /api/v1/user/initialize endpoint is one-shot, so the superuser token
+	       cannot be recovered — and it must not be printed to the pod log.  Reset
+	       the registry state and re-run scripts/apply (see docs/local-cluster.md).
+	RECOVERY
+	  exit 1
+	fi
 	"""
 
 let ADMIN_BOOTSTRAP_METADATA = {

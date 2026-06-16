@@ -551,7 +551,20 @@ wait_keycloak_config() {
 # --ignore-not-found tolerates the first apply (no Job yet) and the post-TTL-GC
 # case; --cascade=foreground --wait blocks until the old Job and its pod are
 # fully gone so a stale pod cannot race the fresh attempt.
+#
+# Pre-apply the admin-bootstrap ServiceAccount + RBAC before deleting the Job:
+# `kubectl apply -f <dir>` applies a component's files in alphabetical order, so
+# job-quay-admin-bootstrap.yaml is created before
+# serviceaccount-quay-admin-bootstrap.yaml — on a fresh cluster the Job's pod
+# would fail admission ("error looking up service account") until the SA lands.
+# Pre-applying the identity here closes that race (the pre_my_project
+# precedent), then the main apply re-applies it idempotently.
 pre_quay() {
+  local dir="${COMPONENTS_DIR}/quay"
+  kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
+    -f "${dir}/serviceaccount-quay-admin-bootstrap.yaml" \
+    -f "${dir}/role-quay-admin-bootstrap.yaml" \
+    -f "${dir}/rolebinding-quay-admin-bootstrap.yaml"
   kubectl --context "${KUBE_CONTEXT}" --namespace quay \
     delete job -l app.kubernetes.io/name=quay-admin-bootstrap \
     --ignore-not-found --cascade=foreground --wait --request-timeout=60s
