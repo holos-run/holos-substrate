@@ -100,7 +100,7 @@ client-secret flow did not reliably round-trip a PKCE `code_verifier`, producing
 `KEYCLOAK_LOGIN_CONFIG` no longer sets `USE_PKCE`/`PKCE_METHOD` either). See
 [ADR-15](../../docs/adr/ADR-15.md) Revision 2, the operational
 [Quay↔Keycloak OIDC runbook](../../docs/runbooks/quay-keycloak-oidc.md), and the
-HOL-1233 note in [`CLAUDE.md`](../../CLAUDE.md). The `secret` field holds a
+HOL-1233 note in [`AGENTS.md`](../../AGENTS.md). The `secret` field holds a
 `$(env:...)`
 placeholder, never a literal value:
 
@@ -133,7 +133,7 @@ a given namespace, never overwrites, and **fails loudly** if the two namespaces'
 copies disagree (Keycloak and Quay must authenticate with the same secret). So
 the value is stable across re-applies and the two ends always share one secret.
 This mirrors the secret-bootstrap pattern described in
-[`CLAUDE.md`](../../CLAUDE.md)'s *OIDC Client Secrets* guard rail.
+[`AGENTS.md`](../../AGENTS.md)'s *OIDC Client Secrets* guard rail.
 
 The `secret: "$(env:...)"` substitution only works because the Job sets
 `IMPORT_VARSUBSTITUTION_ENABLED: "true"`. keycloak-config-cli defaults this to
@@ -263,14 +263,14 @@ copy from.
    [`realm-config/buildplan.cue`](../components/keycloak/realm-config/buildplan.cue)
    therefore carries **no** `pkce.*` attribute. (Historical note: the earlier
    *Quay OIDC PKCE Implementation (HOL-1233)* guard rail in
-   [`CLAUDE.md`](../../CLAUDE.md) kept PKCE *optional* via the default
+   [`AGENTS.md`](../../AGENTS.md) kept PKCE *optional* via the default
    `pkce.force` behavior; HOL-1257 supersedes that with full removal.) The
    operational details and `code exchange: 400` troubleshooting live in the
    [Quay↔Keycloak OIDC runbook](../../docs/runbooks/quay-keycloak-oidc.md). Only
    relax or skip requiring PKCE for a client with a demonstrated implementation
    gap.
 8. **Render then commit.** This is a `holos/components/` change, so follow the
-   render contract in [`CLAUDE.md`](../../CLAUDE.md) and
+   render contract in [`AGENTS.md`](../../AGENTS.md) and
    [`component-guidelines.md`](component-guidelines.md): commit the `.cue`
    change, run `scripts/render`, then commit the regenerated `holos/deploy/`
    tree (the `configmap-keycloak-realm-config.yaml` import document and the
@@ -293,6 +293,6 @@ copy from.
   [Quay OIDC SSO and roles](../README.md#quay-oidc-sso-and-roles).
 - [`docs/placeholders.md`](placeholders.md) — the resolved *Keycloak realm
   reconciliation* and *Quay OIDC login* entries.
-- [`CLAUDE.md`](../../CLAUDE.md) — the Guard Rails: CUE Component Rendering,
+- [`AGENTS.md`](../../AGENTS.md) — the Guard Rails: CUE Component Rendering,
   the Quay OIDC PKCE note (HOL-1233, disabled by HOL-1257), Keycloak
   Configuration as Code, and OIDC Client Secrets.
