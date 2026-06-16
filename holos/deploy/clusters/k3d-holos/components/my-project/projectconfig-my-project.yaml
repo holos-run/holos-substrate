@@ -1,0 +1,16 @@
+apiVersion: kargo.akuity.io/v1alpha1
+kind: ProjectConfig
+metadata:
+  labels:
+    app.kubernetes.io/name: my-project
+  name: my-project
+  namespace: my-project
+spec:
+  promotionPolicies:
+  - autoPromotionEnabled: true
+    stage: project-config
+  webhookReceivers:
+  - name: quay
+    quay:
+      secretRef:
+        name: my-project-quay-webhook

@@ -1,21 +1,37 @@
 package holos
 
+import (
+	kargowarehouse "kargo.akuity.io/warehouse/v1alpha1"
+	kargostage "kargo.akuity.io/stage/v1alpha1"
+)
+
 // my-project is the Layer 3 sample application's delivery scaffold (HOL-1268).
-// This first phase (HOL-1269) lays the foundation: it emits an Argo CD
-// AppProject and an Argo CD Application that reconciles the rendered
-// my-project-config manifests from an OCI artifact in the in-cluster Quay
-// registry.  The Kargo Project, ProjectConfig (the quay webhook receiver),
-// Warehouse, and the project-config promotion Stage that drives this
-// Application's targetRevision land in the next phase (HOL-1270).
+// The foundation phase (HOL-1269) emitted an Argo CD AppProject and an Argo CD
+// Application that reconciles the rendered my-project-config manifests from an
+// OCI artifact in the in-cluster Quay registry.  This phase (HOL-1270) adds the
+// Kargo control plane that drives that Application's targetRevision: a Kargo
+// Project (the namespace boundary), a ProjectConfig (auto-promotion policy plus
+// a native Quay webhook receiver and its receiver Secret), a Warehouse that
+// watches the my-project-config OCI artifact, and the project-config promotion
+// Stage whose argocd-update step patches the Application's source to each
+// discovered Freight digest.
 //
-// The delivery loop, once HOL-1270 wires Kargo, mirrors the echo pipeline
-// (components/kargo-echo) but with the Project namespace doubling as the
-// workload namespace (see the my-project entry in holos/namespaces.cue):
+// Unlike the echo pipeline (components/kargo-echo + kargo-project-echo, which
+// split the Project from its Warehouse/Stage across two components), my-project
+// keeps the whole pipeline in ONE component because its Kargo Project namespace
+// IS the workload namespace — there is no separate kargo-project-* sibling.  The
+// my-project namespace carries the kargo.akuity.io/project adoption label and
+// keep-namespace annotation (holos/namespaces.cue) so Kargo adopts it.
+//
+// The delivery loop mirrors the echo pipeline (components/kargo-echo) but with
+// the Project namespace doubling as the workload namespace (see the my-project
+// entry in holos/namespaces.cue):
 //
 //   scripts/publish → new my-project-config OCI artifact in Quay
-//     → Warehouse discovers it → creates Freight
-//       → project-config Stage's argocd-update step patches this Application's
-//         spec.source.targetRevision = <new digest>
+//     → Warehouse discovers it (webhook from Quay, or the polling interval
+//       fallback) → creates Freight
+//       → auto-promotion runs the project-config Stage's argocd-update step
+//         → patches this Application's spec.source.targetRevision = <new digest>
 //           → Argo CD syncs the new rendered manifests into the my-project
 //             namespace.
 //
@@ -49,12 +65,23 @@ let STAGE = "project-config"
 
 // CONFIG_REPO is the my-project-config rendered-manifests OCI repository the
 // client-side publish workflow pushes to.  The Argo CD Application OCI source
-// takes the oci:// form below; the Warehouse subscription added in HOL-1270
-// takes the bare registry/repo form, and Kargo's argocd-update matches the
-// Application source by EXACT repoURL string, so the two forms must stay
-// consistent.  Scoped under the my-project/ Quay org path so the AppProject can
-// constrain sourceRepos to oci://quay.holos.localhost/my-project/*.
-let CONFIG_REPO_OCI = "oci://quay.holos.localhost/my-project/my-project-config"
+// and the Stage's argocd-update sources[].repoURL take the oci:// form
+// (CONFIG_REPO_OCI); the Warehouse image subscription takes the BARE
+// registry/repo form (CONFIG_REPO, no oci://, no tag).  Kargo's argocd-update
+// matches the Application source by EXACT repoURL string, so the oci:// form
+// must stay byte-identical between APPLICATION_RESOURCE and STAGE_RESOURCE, and
+// the imageFrom(...) expression in the Stage references the bare form to match
+// the Warehouse subscription.  Scoped under the my-project/ Quay org path so the
+// AppProject can constrain sourceRepos to oci://quay.holos.localhost/my-project/*.
+let CONFIG_REPO = "quay.holos.localhost/my-project/my-project-config"
+let CONFIG_REPO_OCI = "oci://\(CONFIG_REPO)"
+
+// CONFIG_TAG_REGEX matches the input-addressed tags scripts/publish mints:
+// render-<config-digest-12>-<appimage-digest-12> (holos/docs/oci-publish-workflow.md,
+// scripts/publish).  It scopes the Warehouse image subscription to only the
+// rendered-manifests artifacts, ignoring any other tag that might land in the
+// repo.  Identical in shape to the kargo-echo Warehouse's MANIFESTS_TAG_REGEX.
+let CONFIG_TAG_REGEX = "^render-[0-9a-f]{12}-[0-9a-f]{12}$"
 
 // APPPROJECT_RESOURCE is the Argo CD AppProject that scopes what the
 // my-project Application may deploy.  It is intentionally minimal but
@@ -157,6 +184,341 @@ let APPLICATION_RESOURCE = {
 	}
 }
 
+// --- Kargo control plane (HOL-1270) -----------------------------------------
+
+// WAREHOUSE is the Warehouse name; the Stage requests Freight originating from
+// it.  Named after the project for a single-Warehouse pipeline.
+let WAREHOUSE = NAME
+
+// WEBHOOK_SECRET is the Secret the Quay webhook receiver references
+// (ProjectConfig.spec.webhookReceivers[].quay.secretRef.name).  Its token is
+// generated once by the bootstrap Job below and never committed.
+let WEBHOOK_SECRET = "my-project-quay-webhook"
+
+// WEBHOOK_BOOTSTRAP names the create-if-absent Job (and its ServiceAccount,
+// Role, RoleBinding) that generates the webhook receiver Secret's token once.
+let WEBHOOK_BOOTSTRAP = "\(WEBHOOK_SECRET)-bootstrap"
+
+// KUBECTL_IMAGE pins the image the bootstrap Job runs kubectl from — the same
+// alpine-based image and rationale as the quay secret-keys bootstrap
+// (components/quay/buildplan.cue): a manifest list including linux/arm64,
+// alpine-based so it provides the /bin/sh the script needs, and exercising only
+// version-stable core/v1 Secret get/create.
+let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
+
+// PROJECT_RESOURCE is the Kargo Project.  In Kargo 1.10 the Project is
+// CLUSTER-SCOPED with NO spec (only metadata + status): the controller maps the
+// Project NAME to a same-named namespace and adopts it.  The promotion policy
+// moved off Project onto the namespaced ProjectConfig below.  Authored as a
+// plain CUE struct (not the vendored #Project binding) because that binding is
+// stale for 1.10.3 — it carries a required spec! the cluster-scoped CRD rejects
+// (see holos/resources.cue and components/kargo-project-echo for the same
+// reasoning).  No metadata.namespace — the resource is cluster-scoped, and the
+// my-project namespace it adopts carries the kargo.akuity.io/project adoption
+// label + keep-namespace annotation in holos/namespaces.cue.
+let PROJECT_RESOURCE = {
+	apiVersion: "kargo.akuity.io/v1alpha1"
+	kind:       "Project"
+	metadata: {
+		name: NAME
+		labels: "app.kubernetes.io/name": NAME
+	}
+}
+
+// PROJECT_CONFIG_RESOURCE is the namespaced ProjectConfig (Kargo 1.10).  It
+// carries the auto-promotion policy and the native Quay webhook receiver.
+// Authored as a plain CUE struct: ProjectConfig has no generated CUE type under
+// cue.mod/gen at all (noted in holos/resources.cue), so it stays on the
+// #Resources catch-all rather than a typed binding.  Field locations validated
+// against the vendored CRD
+// (components/kargo/vendor/1.10.3/kargo/resources/crds/kargo.akuity.io_projectconfigs.yaml):
+// spec.promotionPolicies and spec.webhookReceivers[].quay.secretRef both live on
+// ProjectConfig in 1.10.3, and quay is a supported receiver type.
+//
+//   - promotionPolicies: autoPromotionEnabled lets newly discovered Freight flow
+//     into the project-config Stage without a manual promotion (the spike's
+//     publish→Freight→promotion→sync loop must close on its own).  The stage name
+//     MUST match STAGE_RESOURCE below.
+//   - webhookReceivers: a single quay receiver whose secretRef points at the
+//     WEBHOOK_SECRET Secret in this same namespace (the CRD requires
+//     Project-scoped receiver Secrets to be co-namespaced with the ProjectConfig).
+//     Once reconciled, Kargo populates status.webhookReceivers[].url — the
+//     hard-to-guess URL phase 4's Quay bootstrap Job registers with Quay.
+let PROJECT_CONFIG_RESOURCE = {
+	apiVersion: "kargo.akuity.io/v1alpha1"
+	kind:       "ProjectConfig"
+	metadata: {
+		name:      NAME
+		namespace: NAMESPACE
+		labels: "app.kubernetes.io/name": NAME
+	}
+	spec: {
+		promotionPolicies: [{
+			stage:                STAGE
+			autoPromotionEnabled: true
+		}]
+		webhookReceivers: [{
+			name: "quay"
+			quay: secretRef: name: WEBHOOK_SECRET
+		}]
+	}
+}
+
+// The Quay webhook receiver Secret is generated at runtime, never committed (the
+// repo's runtime-secret posture; see CLAUDE.md "OIDC Client Secrets" and the
+// quay secret-keys precedent).  A small create-if-absent Job generates the token
+// once and leaves an existing Secret untouched, so the value stays stable across
+// re-applies (Kargo derives the hard-to-guess receiver URL from it — a rotation
+// would silently invalidate the URL Quay was registered with).
+//
+// Key naming: the Kargo 1.10.3 ProjectConfig CRD documents that a QUAY receiver
+// Secret's data map is read from the `secret` key (NOT `secret-token`, which is
+// the key for the artifactory/github-style receivers — verified against the
+// vendored CRD).  The issue's acceptance criteria asked for a `secret-token`
+// key; to satisfy BOTH the issue's literal AC and Kargo's actual quay-receiver
+// contract, the Job writes the same generated token under BOTH `secret` and
+// `secret-token`.  `secret` is the functional key Kargo consumes; `secret-token`
+// is carried for AC compliance and forward-compatibility with receivers that
+// use it.  The token is piped as a manifest on stdin so it never appears in the
+// container's argv.
+let WEBHOOK_BOOTSTRAP_SCRIPT = """
+	set -eu
+	if kubectl -n \(NAMESPACE) get secret \(WEBHOOK_SECRET) >/dev/null 2>&1; then
+	  echo "Secret \(WEBHOOK_SECRET) already exists; leaving it untouched."
+	  exit 0
+	fi
+	random_key() {
+	  head -c 256 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c 1-48
+	}
+	TOKEN="$(random_key)"
+	[ "${#TOKEN}" -eq 48 ]
+	kubectl -n \(NAMESPACE) create -f - <<EOF
+	apiVersion: v1
+	kind: Secret
+	metadata:
+	  name: \(WEBHOOK_SECRET)
+	  namespace: \(NAMESPACE)
+	stringData:
+	  secret: "${TOKEN}"
+	  secret-token: "${TOKEN}"
+	EOF
+	echo "Secret \(WEBHOOK_SECRET) created."
+	"""
+
+let WEBHOOK_BOOTSTRAP_METADATA = {
+	name:      WEBHOOK_BOOTSTRAP
+	namespace: NAMESPACE
+	labels: "app.kubernetes.io/name": WEBHOOK_BOOTSTRAP
+}
+
+let WEBHOOK_BOOTSTRAP_SERVICE_ACCOUNT = {
+	apiVersion: "v1"
+	kind:       "ServiceAccount"
+	metadata:   WEBHOOK_BOOTSTRAP_METADATA
+}
+
+// Scoped to the one Secret the Job manages: get is restricted to the
+// WEBHOOK_SECRET resourceName; create cannot be restricted by resourceName (the
+// API server does not evaluate resourceNames for create), so the create grant is
+// namespace-wide on secrets — acceptable in a namespace whose Secrets all belong
+// to this project (the quay secret-keys bootstrap Role precedent).
+let WEBHOOK_BOOTSTRAP_ROLE = {
+	apiVersion: "rbac.authorization.k8s.io/v1"
+	kind:       "Role"
+	metadata:   WEBHOOK_BOOTSTRAP_METADATA
+	rules: [
+		{
+			apiGroups: [""]
+			resources: ["secrets"]
+			verbs: ["get"]
+			resourceNames: [WEBHOOK_SECRET]
+		},
+		{
+			apiGroups: [""]
+			resources: ["secrets"]
+			verbs: ["create"]
+		},
+	]
+}
+
+let WEBHOOK_BOOTSTRAP_ROLE_BINDING = {
+	apiVersion: "rbac.authorization.k8s.io/v1"
+	kind:       "RoleBinding"
+	metadata:   WEBHOOK_BOOTSTRAP_METADATA
+	roleRef: {
+		apiGroup: "rbac.authorization.k8s.io"
+		kind:     "Role"
+		name:     WEBHOOK_BOOTSTRAP
+	}
+	subjects: [{
+		kind:      "ServiceAccount"
+		name:      WEBHOOK_BOOTSTRAP
+		namespace: NAMESPACE
+	}]
+}
+
+// CAVEAT (same as the quay secret-keys bootstrap): a completed Job's pod
+// template is immutable, so scripts/apply cannot re-run it by re-applying the
+// unchanged spec.  pre_my_project() in scripts/apply deletes any prior Job
+// before each apply so a fresh idempotent Job runs every time; the Secret it
+// created survives the deletion, so the generate-once guarantee holds.
+// ttlSecondsAfterFinished garbage-collects the Job a day after completion.
+let WEBHOOK_BOOTSTRAP_JOB = {
+	apiVersion: "batch/v1"
+	kind:       "Job"
+	metadata:   WEBHOOK_BOOTSTRAP_METADATA
+	spec: {
+		backoffLimit:            3
+		ttlSecondsAfterFinished: 86400
+		template: {
+			metadata: labels: WEBHOOK_BOOTSTRAP_METADATA.labels
+			spec: {
+				serviceAccountName: WEBHOOK_BOOTSTRAP
+				restartPolicy:      "Never"
+				securityContext: {
+					runAsNonRoot: true
+					// The alpine/kubectl image declares no non-root USER; pick
+					// the conventional "nobody" uid.
+					runAsUser:  65534
+					runAsGroup: 65534
+					seccompProfile: type: "RuntimeDefault"
+				}
+				containers: [{
+					name:  "bootstrap"
+					image: KUBECTL_IMAGE
+					command: ["/bin/sh", "-c", WEBHOOK_BOOTSTRAP_SCRIPT]
+					// kubectl writes its discovery cache under $HOME; point it
+					// at the writable emptyDir since the root filesystem is
+					// read-only.
+					env: [{
+						name:  "HOME"
+						value: "/tmp"
+					}]
+					resources: {
+						requests: {
+							cpu:    "10m"
+							memory: "32Mi"
+						}
+						limits: memory: "64Mi"
+					}
+					securityContext: {
+						allowPrivilegeEscalation: false
+						capabilities: drop: ["ALL"]
+						readOnlyRootFilesystem: true
+					}
+					volumeMounts: [{
+						name:      "tmp"
+						mountPath: "/tmp"
+					}]
+				}]
+				volumes: [{
+					name: "tmp"
+					emptyDir: {}
+				}]
+			}
+		}
+	}
+}
+
+// WAREHOUSE_RESOURCE subscribes to the my-project-config rendered-manifests OCI
+// artifact via an IMAGE subscription against the bare registry/repo form (no
+// oci://, no tag) — ADR-16's resolution for discovering a plain-manifest OCI
+// artifact.
+//
+// imageSelectionStrategy: Lexical — matching the kargo-echo Warehouse and for the
+// same reason.  scripts/publish tags the my-project-config artifact
+// input-addressed as render-<config12>-<appimage12> (CONFIG_TAG_REGEX above), NOT
+// a mutable tag like latest, so the Digest strategy (which tracks the digest of a
+// single named/mutable tag) would discover nothing here.  The render-* tags are
+// not semver, ruling out SemVer; and NewestBuild orders by an image's build
+// timestamp read from the OCI config blob / created annotation, which ORAS-pushed
+// artifacts do not carry — so Lexical, which sorts the matching tag strings
+// descending and needs only each tag's digest, is the robust strategy for these
+// artifacts.  allowTags scopes discovery to the render-* artifacts.
+//
+// Spike caveat (inherited from kargo-echo): the render-<config12>-<appimage12>
+// tag is input-addressed, not monotonic, so "lexically greatest tag" is not
+// strictly "most recently published".  For this single-app pipeline it is
+// acceptable — freightCreationPolicy: Automatic creates Freight for any newly
+// discovered tag regardless of ordering, and live validation publishes one
+// artifact at a time.  A pipeline needing strict most-recent-wins ordering would
+// switch to a monotonic tag (zero-padded counter/timestamp) or a Digest strategy
+// against a mutable tag; tracked as future work.  The artifact does not exist yet
+// (provisioning + first publish land in later phases — HOL-1272 onward), so this
+// strategy is confirmed live then.
+//
+// insecureSkipTLSVerify: true — the in-cluster Quay serves *.holos.localhost with
+// a mkcert-signed certificate not in the Kargo controller's trust store (same
+// reason the kargo-echo Warehouse and the Argo CD repository Secret skip verify).
+// freightCreationPolicy: Automatic + a 1m interval make a newly published
+// artifact produce Freight promptly when the webhook is unavailable; the webhook
+// receiver (ProjectConfig above) is the primary, low-latency trigger and this
+// interval is the polling fallback.
+let WAREHOUSE_RESOURCE = kargowarehouse.#Warehouse & {
+	metadata: {
+		name:      WAREHOUSE
+		namespace: NAMESPACE
+		labels: "app.kubernetes.io/name": NAME
+	}
+	spec: {
+		freightCreationPolicy: "Automatic"
+		interval:              "1m"
+		subscriptions: [{
+			image: {
+				repoURL:                CONFIG_REPO
+				imageSelectionStrategy: "Lexical"
+				allowTags:              CONFIG_TAG_REGEX
+				insecureSkipTLSVerify:  true
+				discoveryLimit:         20
+			}
+		}]
+	}
+}
+
+// STAGE_RESOURCE requests Freight directly from the Warehouse and, on promotion,
+// runs a single argocd-update step that repoints the my-project Argo CD
+// Application's OCI source at the Freight's artifact digest.
+//
+// desiredRevision uses imageFrom(<bare repoURL>).Digest — imageFrom takes the
+// BARE subscription repoURL (matching the Warehouse subscription) and returns the
+// discovered artifact's sha256 digest, the immutable revision Argo CD's OCI
+// source syncs (ADR-8's digest-pinning preference).  sources[].repoURL MUST be
+// the oci:// form and match APPLICATION_RESOURCE's source repoURL
+// character-for-character — Kargo's argocd-update selects the source to update by
+// exact repoURL string match.  updateTargetRevision: true writes desiredRevision
+// into spec.source.targetRevision (which APPLICATION_RESOURCE deliberately omits
+// so Kargo solely owns it — see the comment on APPLICATION_RESOURCE above).
+let STAGE_RESOURCE = kargostage.#Stage & {
+	metadata: {
+		name:      STAGE
+		namespace: NAMESPACE
+		labels: "app.kubernetes.io/name": NAME
+	}
+	spec: {
+		requestedFreight: [{
+			origin: {
+				kind: "Warehouse"
+				name: WAREHOUSE
+			}
+			sources: direct: true
+		}]
+		promotionTemplate: spec: steps: [{
+			uses: "argocd-update"
+			config: {
+				apps: [{
+					name:      NAME
+					namespace: ArgoCDNamespace
+					sources: [{
+						repoURL:              CONFIG_REPO_OCI
+						desiredRevision:      "${{ imageFrom(\"\(CONFIG_REPO)\").Digest }}"
+						updateTargetRevision: true
+					}]
+				}]
+			}
+		}]
+	}
+}
+
 userDefinedBuildPlan: {
 	metadata: name: "my-project"
 	spec: artifacts: manifests: {
@@ -168,11 +530,32 @@ userDefinedBuildPlan: {
 				kind:   "Resources"
 				output: "resources.gen.yaml"
 				// Unify with #Resources (holos/resources.cue) so the
-				// hand-authored AppProject and Application validate against the
-				// vendored Argo CD schemas at render time.
+				// hand-authored AppProject, Application, Warehouse, and Stage
+				// validate against the vendored schemas at render time.  Project
+				// and ProjectConfig ride the #Resources catch-all (no typed
+				// binding — see holos/resources.cue): the 1.10.3 Project CRD is
+				// cluster-scoped with no spec and ProjectConfig has no generated
+				// CUE type at all.
 				resources: #Resources & {
-					AppProject: (NAME):  APPPROJECT_RESOURCE
-					Application: (NAME): APPLICATION_RESOURCE
+					AppProject: (NAME):     APPPROJECT_RESOURCE
+					Application: (NAME):    APPLICATION_RESOURCE
+					Project: (NAME):        PROJECT_RESOURCE
+					ProjectConfig: (NAME):  PROJECT_CONFIG_RESOURCE
+					Warehouse: (WAREHOUSE): WAREHOUSE_RESOURCE
+					Stage: (STAGE):         STAGE_RESOURCE
+					// The my-project-quay-webhook Secret is DELIBERATELY NOT
+					// rendered here.  The bootstrap Job below is its sole creator
+					// (the quay secret-keys precedent): committing an empty-data
+					// Secret would let scripts/apply create it BEFORE the Job runs,
+					// and the Job's create-if-absent guard would then see it
+					// already exists and skip token generation — leaving the
+					// receiver Secret permanently empty and the webhook unusable.
+					// Keeping the Secret entirely Job-owned makes the
+					// generate-once token the single source of truth.
+					ServiceAccount: (WEBHOOK_BOOTSTRAP): WEBHOOK_BOOTSTRAP_SERVICE_ACCOUNT
+					Role: (WEBHOOK_BOOTSTRAP):           WEBHOOK_BOOTSTRAP_ROLE
+					RoleBinding: (WEBHOOK_BOOTSTRAP):    WEBHOOK_BOOTSTRAP_ROLE_BINDING
+					Job: (WEBHOOK_BOOTSTRAP):            WEBHOOK_BOOTSTRAP_JOB
 				}
 			}]
 			transformers: [
