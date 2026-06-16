@@ -28,17 +28,16 @@ import (
 #Resources: {
 	[Kind=string]: [InternalLabel=string]: {
 		kind: Kind
-		// Open the catch-all entry (and its metadata) so kinds without a typed
-		// binding above (e.g. the Kargo Project and ProjectConfig — see the
-		// comment on the Kargo kinds below) can carry their own apiVersion,
-		// spec, namespace, labels, and other fields.  Typed entries below still
-		// constrain their kinds against the vendored schemas; only the untyped
-		// catch-all is permissive.
+		// metadata is OPEN (the trailing `...`) so every resource may carry the
+		// standard object-meta fields (namespace, labels, annotations, …) that
+		// the typed bindings below already permit and that the open Project /
+		// ProjectConfig entries need.  The ENTRY ITSELF stays closed: a Kind
+		// without a typed binding (e.g. a misspelled Warehose) still cannot
+		// carry a spec, so render-time validation keeps catching typos.
 		metadata: {
 			name: string | *InternalLabel
 			...
 		}
-		...
 	}
 
 	AppProject?: [_]:          ap.#AppProject
@@ -63,23 +62,38 @@ import (
 	KeycloakRealmImport?: [_]:   kcri.#KeycloakRealmImport
 	Namespace?: [_]:             corev1.#Namespace
 	PersistentVolumeClaim?: [_]: corev1.#PersistentVolumeClaim
-	// The Kargo Project and ProjectConfig kinds (kargo.akuity.io) are
-	// DELIBERATELY left on the [Kind][Label] catch-all above rather than given
-	// typed entries here:
+	// The Kargo Project and ProjectConfig kinds (kargo.akuity.io) get explicit
+	// but DELIBERATELY OPEN entries (the trailing `...`) rather than a vendored
+	// binding:
 	//   - Project: the vendored #Project binding
 	//     (cue.mod/gen/kargo.akuity.io/project/v1alpha1) is STALE for the Kargo
 	//     1.10.3 CRD this platform installs (components/kargo-crds).  The binding
 	//     carries a required spec! (#ProjectSpec with promotionPolicies) from an
 	//     older Kargo, but the 1.10.3 Project CRD is cluster-scoped with NO spec
 	//     at all (the promotion policy moved onto the namespaced ProjectConfig
-	//     CRD).  A typed Project? entry would force every Project author into the
-	//     wrong schema — a spec the server prunes or rejects.  components/kargo-
-	//     project-echo authors its Project as a plain struct for exactly this
-	//     reason; the next phase's my-project Project (HOL-1270) does the same.
+	//     CRD).  A binding-typed Project? entry would force every Project author
+	//     into the wrong schema — a spec the server prunes or rejects.
+	//     components/kargo-project-echo authors its Project as a plain struct
+	//     outside #Resources for exactly this reason; my-project (HOL-1270)
+	//     unifies through #Resources, so the entry must exist and be open.
 	//   - ProjectConfig: has no generated CUE type under cue.mod/gen/ at all.
-	// Warehouse and Stage below ARE typed: their 1.10.3 CRDs are namespaced with
-	// a required spec, matching the vendored bindings (kargo-echo validates
-	// against them today).
+	// They are OPEN (apiVersion, spec, metadata.namespace, labels, …) precisely
+	// because no schema constrains them; this openness is SCOPED to these two
+	// kinds only, so the generic catch-all above stays CLOSED and a misspelled
+	// Kind (e.g. Warehose) still fails render-time validation.  Warehouse and
+	// Stage below are fully typed: their 1.10.3 CRDs are namespaced with a
+	// required spec matching the vendored bindings (kargo-echo validates against
+	// them today).
+	Project?: [_]: {
+		kind: "Project"
+		metadata: name: string
+		...
+	}
+	ProjectConfig?: [_]: {
+		kind: "ProjectConfig"
+		metadata: name: string
+		...
+	}
 	ReferenceGrant?: [_]:        rgv1.#ReferenceGrant
 	Role?: [_]:                  rbacv1.#Role
 	RoleBinding?: [_]:           rbacv1.#RoleBinding
