@@ -384,11 +384,19 @@ kubectl --context "$KCTX" -n argocd get application my-project \
 kubectl --context "$KCTX" -n my-project get projectconfig my-project \
   -o jsonpath='{.status.webhookReceivers[?(@.name=="quay")].url}{"\n"}'
 
-# 1. Publish a first my-project-config rendered-manifests artifact.  Pass the
-#    my-project config repo the Warehouse watches as the second positional
-#    argument (the publish target), so the artifact lands where the Warehouse
-#    looks instead of the default holos-paas-manifests repo.  (Substitute a
-#    real app image; the sample app itself is future work.)
+# 1. Publish a project-scoped my-project-config artifact to the repo the
+#    Warehouse watches (the second positional argument is the publish target).
+#
+#    SCOPE NOTE: scripts/publish today packages the WHOLE-platform render
+#    (`holos render platform` → every rendered resource, including cluster-scoped
+#    CRDs/ClusterRoles/Namespaces and other namespaces' objects).  The my-project
+#    AppProject deliberately omits clusterResourceWhitelist and scopes
+#    destinations to the my-project namespace, so a whole-platform artifact would
+#    fail the Application sync in step 4.  A project-scoped my-project-config
+#    artifact — manifests that fit inside the my-project namespace — is the
+#    sample app's own future work (the artifact does not exist yet).  Until a
+#    project-scoped publisher exists, treat step 4 as the contract this scaffold
+#    will satisfy, not a command to run against the platform render.
 DIGEST=$(scripts/publish \
   quay.holos.localhost/my-project/<app-image>:<tag> \
   quay.holos.localhost/my-project/my-project-config)
@@ -405,6 +413,7 @@ kubectl --context "$KCTX" -n my-project get promotion
 #    PHASE column reaches Succeeded.
 
 # 4. The Argo CD Application's OCI targetRevision is now the new digest and syncs.
+#    Syncs cleanly only for a project-scoped artifact (see the SCOPE NOTE above).
 kubectl --context "$KCTX" -n argocd get application my-project \
   -o jsonpath='{.spec.source.targetRevision}{"  "}{.status.sync.status}{"\n"}'
 #    targetRevision == $DIGEST, sync status Synced.
@@ -413,4 +422,8 @@ kubectl --context "$KCTX" -n argocd get application my-project \
 The end-to-end path is identical in shape to the echo loop — publish →
 webhook → Warehouse Freight → Stage promotion → Application sync — but driven
 by the real `repo_push` webhook and requiring no hand-created credential
-Secrets, because the `my-project` bootstrap Jobs provisioned them.
+Secrets, because the `my-project` bootstrap Jobs provisioned them. The one
+remaining gap is the **content** of the published artifact: discovery and
+promotion (steps 2–3) work for any artifact, but a clean Application **sync**
+(step 4) needs a project-scoped artifact, which is the sample app's future
+work — not the whole-platform render `scripts/publish` produces today.

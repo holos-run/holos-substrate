@@ -259,13 +259,15 @@ replaced the direct apply: every component still renders with
 `argoAppDisabled: true`, so the `userDefinedBuildPlan` per-component gitops
 projection emits no `Application` resources until that projection is enabled
 (see [docs/placeholders.md](docs/placeholders.md#argocd-gitops-delivery)).
-That deferred projection is distinct from the **hand-authored** sample
+That deferred projection emits a **git**-source Application per component
+(`repoURL: https://github.com/holos-run/holos-paas`, `targetRevision: main`,
+`path: holos/deploy/...`) and is distinct from the **hand-authored** sample
 `Application`s the Kargo delivery pipelines own — `echo` (the spike) and
 `my-project` (see [The `my-project` delivery scaffold](#the-my-project-delivery-scaffold))
-— which Argo CD *does* reconcile once their OCI artifacts are published. The
-`Application` source pattern both the deferred projection and the
-hand-authored Applications use — OCI artifacts in the in-cluster Quay
-registry — is decided, verified, and documented in
+— which carry an **OCI** source pointing at a rendered-manifests artifact in
+the in-cluster Quay registry and which Argo CD *does* reconcile once that
+artifact is published. The OCI `Application` source pattern the hand-authored
+Applications use is decided, verified, and documented in
 [docs/argocd-application-source.md](docs/argocd-application-source.md).
 
 ### Keycloak admin credentials and verification
