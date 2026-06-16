@@ -1,0 +1,22 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/name: my-project-quay-bootstrap
+  name: my-project-quay-bootstrap-argocd
+  namespace: argocd
+rules:
+- apiGroups:
+  - ""
+  resourceNames:
+  - my-project-config
+  resources:
+  - secrets
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create

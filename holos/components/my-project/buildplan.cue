@@ -206,6 +206,65 @@ let WEBHOOK_BOOTSTRAP = "\(WEBHOOK_SECRET)-bootstrap"
 // version-stable core/v1 Secret get/create.
 let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 
+// --- Quay provisioning bootstrap (HOL-1272) ---------------------------------
+
+// QUAY_NAMESPACE is the namespace the Quay-provisioning Job and its
+// ServiceAccount render into.  The Job runs THERE — not in my-project — because
+// the credentials it needs live there: the admin OAuth token
+// (quay-initial-admin Secret, key `token`) and the local-CA trust cert
+// (quay-local-ca Secret, key `ca.crt`).  Unifying with #RegisteredNamespace ties
+// the literal to the registry (holos/namespaces.cue).
+let QUAY_NAMESPACE = "quay" & #RegisteredNamespace
+
+// QUAY_BOOTSTRAP names the Quay-provisioning Job and its ServiceAccount/Roles.
+// It creates the my-project org + my-project-config repo, a pull robot, the
+// ArgoCD repository Secret, and the repo_push webhook — all idempotently, so it
+// re-runs on every apply (the quay-init script's check-then-mutate posture).
+let QUAY_BOOTSTRAP = "my-project-quay-bootstrap"
+
+// QUAY_ORG / QUAY_REPO are the Quay organization and repository the Job creates.
+// The org doubles as the my-project name; the repo holds the rendered
+// my-project-config OCI artifact CONFIG_REPO points at.
+let QUAY_ORG = NAME
+let QUAY_REPO = "my-project-config"
+
+// ROBOT_SHORTNAME is the pull robot's org-scoped short name; its fully-qualified
+// account name is <org>+<shortname> (Quay's robot naming).  The robot is granted
+// READ (pull) on the my-project-config repo and its token feeds the ArgoCD
+// repository Secret so Argo CD's repo-server can pull the private OCI artifact.
+let ROBOT_SHORTNAME = "argocd-pull"
+let ROBOT_ACCOUNT = "\(QUAY_ORG)+\(ROBOT_SHORTNAME)"
+
+// ARGOCD_REPO_SECRET is the Argo CD repository Secret the Job writes into the
+// argocd namespace (label argocd.argoproj.io/secret-type: repository, type: oci)
+// so the my-project Application can pull the private my-project-config artifact.
+// Named after the repo per holos/docs/argocd-application-source.md.
+let ARGOCD_REPO_SECRET = QUAY_REPO
+
+// QUAY_API is the in-cluster Quay REST API base URL.  The Job reaches Quay's
+// /api/v1 REST API over the plain-HTTP cluster Service (quay.quay.svc:8080), NOT
+// the public https://quay.holos.localhost hostname, on purpose:
+// holos/docs/argocd-application-source.md documents that curl/libcurl hardcode
+// *.localhost to loopback and bypass the quay-holos-localhost ServiceEntry, so a
+// public-hostname curl from this pod would never reach Quay.  The /api/v1 REST
+// endpoints (organization, repository, robots, notification) are plain JSON and
+// do NOT depend on Quay's v2 registry token-auth realm (the one piece that pins
+// the public hostname — SERVER_HOSTNAME in components/quay), so the Service URL
+// is the robust in-cluster path and needs no CA trust.  The webhook config.url
+// the Job registers with Quay is still the public Kargo receiver URL — Quay's
+// server (not this Job) POSTs to it later, resolving it via the
+// kargo-webhooks-holos-localhost ServiceEntry from the quay namespace.
+let QUAY_API = "http://quay.quay.svc.cluster.local:8080"
+
+// K8S_IMAGE pins the image the Quay-provisioning Job runs.  Unlike the
+// webhook-token Job (KUBECTL_IMAGE, kubectl-only), this Job also needs curl and
+// jq to drive Quay's REST API, so it uses alpine/k8s — the same upstream
+// alpine/* family, a manifest list including linux/arm64, bundling kubectl,
+// curl, and jq in one /bin/sh image.  Pinned to the same 1.33.3 kubectl minor as
+// KUBECTL_IMAGE so both Jobs track one Kubernetes client version.  Verified
+// multi-arch (amd64+arm64) and that it carries kubectl+curl+jq.
+let K8S_IMAGE = "docker.io/alpine/k8s:1.33.3"
+
 // PROJECT_RESOURCE is the Kargo Project.  In Kargo 1.10 the Project is
 // CLUSTER-SCOPED with NO spec (only metadata + status): the controller maps the
 // Project NAME to a same-named namespace and adopts it.  The promotion policy
@@ -420,6 +479,401 @@ let WEBHOOK_BOOTSTRAP_JOB = {
 	}
 }
 
+// --- Quay-provisioning Job (HOL-1272) ---------------------------------------
+
+// QUAY_BOOTSTRAP_SCRIPT idempotently provisions everything the my-project
+// delivery loop needs on the Quay side, then registers the Kargo push webhook.
+// Every step is check-then-mutate (the scripts/quay-init posture) so a re-apply
+// is a no-op.  It runs in the quay namespace where the admin token lives.
+//
+// Reachability: the REST API is driven over the plain-HTTP cluster Service
+// (QUAY_API = quay.quay.svc:8080) — see the QUAY_API comment for why the public
+// hostname is unreachable from this pod.  No CA trust is needed for that path.
+//
+// Webhook auth model (verified against the Kargo 1.10.3 ProjectConfig CRD): the
+// Kargo quay receiver does NOT validate a shared token in the request — the CRD
+// documents that the receiver Secret's `secret` value is used ONLY by Kargo to
+// derive a "complex, hard-to-guess URL, which implicitly serves as a shared
+// secret" and "does NOT need to be shared directly with Quay".  So the Job reads
+// the hard-to-guess receiver URL from ProjectConfig.status and registers it
+// verbatim as the webhook config.url; the URL itself is the credential.  The Job
+// still reads the my-project-quay-webhook Secret's token (AC compliance / a
+// guard that the receiver Secret exists), but Quay's webhook config carries no
+// token because the receiver ignores one.
+//
+// Polling: ProjectConfig.status.webhookReceivers[].url is populated
+// asynchronously by Kargo after the ProjectConfig reconciles, so the script
+// polls until the quay receiver's URL appears (bounded) before registering it.
+let QUAY_BOOTSTRAP_SCRIPT = """
+	set -eu
+
+	QUAY_API="\(QUAY_API)"
+	ORG="\(QUAY_ORG)"
+	REPO="\(QUAY_REPO)"
+	ROBOT_SHORT="\(ROBOT_SHORTNAME)"
+	ROBOT="\(ROBOT_ACCOUNT)"
+	REPO_PATH="${ORG}/${REPO}"
+
+	# Admin OAuth token (quay-initial-admin Secret, key `token`, quay ns).  Quay's
+	# API takes the Bearer token; basic auth is not accepted.
+	TOKEN="$(kubectl -n \(QUAY_NAMESPACE) get secret quay-initial-admin -o jsonpath='{.data.token}' | base64 -d)"
+	[ -n "${TOKEN}" ]
+
+	# http METHOD PATH [JSON_BODY]: prints the numeric HTTP status to stdout and
+	# leaves the response body in /tmp/resp.  The Bearer token rides in a 0600
+	# config file (curl --config) so it never appears in the process list/argv.
+	printf 'header = "Authorization: Bearer %s"\\n' "${TOKEN}" > /tmp/auth.curlrc
+	chmod 600 /tmp/auth.curlrc
+	http() {
+	  _m="$1"; _p="$2"; _body="${3:-}"
+	  if [ -n "${_body}" ]; then
+	    curl -sS --max-time 30 -o /tmp/resp -w '%{http_code}' \\
+	      --config /tmp/auth.curlrc -H 'Content-Type: application/json' \\
+	      -X "${_m}" --data "${_body}" "${QUAY_API}${_p}"
+	  else
+	    curl -sS --max-time 30 -o /tmp/resp -w '%{http_code}' \\
+	      --config /tmp/auth.curlrc -X "${_m}" "${QUAY_API}${_p}"
+	  fi
+	}
+
+	# --- organization (create-if-404) ---
+	st="$(http GET "/api/v1/organization/${ORG}")"
+	if [ "${st}" = "200" ]; then
+	  echo "Organization ${ORG} exists; skipping."
+	elif [ "${st}" = "404" ]; then
+	  st="$(http POST /api/v1/organization/ "$(jq -nc --arg n "${ORG}" --arg e "org+${ORG}@holos.localhost" '{name:$n,email:$e}')")"
+	  [ "${st}" = "201" ] || { echo "ERROR: create org ${ORG} (HTTP ${st})"; cat /tmp/resp; exit 1; }
+	  echo "Created organization ${ORG}."
+	else
+	  echo "ERROR: checking org ${ORG} (HTTP ${st})"; cat /tmp/resp; exit 1
+	fi
+
+	# --- repository (create-if-absent) ---
+	st="$(http GET "/api/v1/repository/${REPO_PATH}")"
+	if [ "${st}" = "200" ]; then
+	  echo "Repository ${REPO_PATH} exists; skipping."
+	elif [ "${st}" = "404" ]; then
+	  st="$(http POST /api/v1/repository "$(jq -nc --arg ns "${ORG}" --arg r "${REPO}" '{namespace:$ns,repository:$r,visibility:"private",repo_kind:"image"}')")"
+	  [ "${st}" = "201" ] || { echo "ERROR: create repo ${REPO_PATH} (HTTP ${st})"; cat /tmp/resp; exit 1; }
+	  echo "Created repository ${REPO_PATH}."
+	else
+	  echo "ERROR: checking repo ${REPO_PATH} (HTTP ${st})"; cat /tmp/resp; exit 1
+	fi
+
+	# --- robot (create-if-absent; capture its token) ---
+	ROBOT_TOKEN=""
+	st="$(http GET "/api/v1/organization/${ORG}/robots/${ROBOT_SHORT}")"
+	if [ "${st}" = "200" ]; then
+	  echo "Robot ${ROBOT} exists; skipping create."
+	  ROBOT_TOKEN="$(jq -r '.token' < /tmp/resp)"
+	elif [ "${st}" = "400" ] || [ "${st}" = "404" ]; then
+	  st="$(http PUT "/api/v1/organization/${ORG}/robots/${ROBOT_SHORT}" "$(jq -nc '{description:"ArgoCD pull robot for my-project-config (HOL-1272)."}')")"
+	  [ "${st}" = "201" ] || { echo "ERROR: create robot ${ROBOT} (HTTP ${st})"; cat /tmp/resp; exit 1; }
+	  echo "Created robot ${ROBOT}."
+	  ROBOT_TOKEN="$(jq -r '.token' < /tmp/resp)"
+	else
+	  echo "ERROR: checking robot ${ROBOT} (HTTP ${st})"; cat /tmp/resp; exit 1
+	fi
+	[ -n "${ROBOT_TOKEN}" ] && [ "${ROBOT_TOKEN}" != "null" ] || { echo "ERROR: robot carried no token"; exit 1; }
+
+	# --- grant the robot READ (pull) on the repository (upsert; idempotent) ---
+	st="$(http PUT "/api/v1/repository/${REPO_PATH}/permissions/user/${ROBOT}" "$(jq -nc '{role:"read"}')")"
+	[ "${st}" = "200" ] || { echo "ERROR: grant robot pull on ${REPO_PATH} (HTTP ${st})"; cat /tmp/resp; exit 1; }
+	echo "Granted ${ROBOT} read access on ${REPO_PATH}."
+
+	# --- ArgoCD repository Secret (create-if-absent; argocd ns) ---
+	# Holds the robot pull credential so Argo CD's repo-server can pull the private
+	# OCI artifact (holos/docs/argocd-application-source.md).  Job-owned and left
+	# untouched if it already exists so the robot token stays stable across
+	# re-applies (a regenerated token would break Argo CD until it re-syncs).
+	if kubectl -n \(ArgoCDNamespace) get secret \(ARGOCD_REPO_SECRET) >/dev/null 2>&1; then
+	  echo "Argo CD repository Secret \(ARGOCD_REPO_SECRET) exists; leaving it untouched."
+	else
+	  kubectl -n \(ArgoCDNamespace) create -f - <<EOF
+	apiVersion: v1
+	kind: Secret
+	metadata:
+	  name: \(ARGOCD_REPO_SECRET)
+	  namespace: \(ArgoCDNamespace)
+	  labels:
+	    argocd.argoproj.io/secret-type: repository
+	    app.kubernetes.io/name: \(NAME)
+	stringData:
+	  name: \(ARGOCD_REPO_SECRET)
+	  url: \(CONFIG_REPO_OCI)
+	  type: oci
+	  username: ${ROBOT}
+	  password: ${ROBOT_TOKEN}
+	  insecure: "true"
+	EOF
+	  echo "Created Argo CD repository Secret \(ARGOCD_REPO_SECRET) in \(ArgoCDNamespace)."
+	fi
+
+	# --- read the Kargo receiver URL from ProjectConfig.status (poll) ---
+	# Kargo fills status.webhookReceivers[].url asynchronously after the
+	# ProjectConfig reconciles; poll until the quay receiver's URL appears.
+	RECEIVER_URL=""
+	i=0
+	while [ "${i}" -lt 60 ]; do
+	  RECEIVER_URL="$(kubectl -n \(NAMESPACE) get projectconfig \(NAME) -o jsonpath='{.status.webhookReceivers[?(@.name=="quay")].url}' 2>/dev/null || true)"
+	  [ -n "${RECEIVER_URL}" ] && break
+	  echo "Waiting for ProjectConfig \(NAME) quay receiver URL... (${i})"
+	  i=$((i + 1))
+	  sleep 5
+	done
+	[ -n "${RECEIVER_URL}" ] || { echo "ERROR: ProjectConfig \(NAME) quay receiver URL never populated"; exit 1; }
+	echo "Kargo quay receiver URL: ${RECEIVER_URL}"
+
+	# Read (and require) the receiver Secret's token.  The Kargo quay receiver does
+	# NOT validate a token in the request — the hard-to-guess RECEIVER_URL is the
+	# shared secret (Kargo 1.10.3 ProjectConfig CRD) — so it is NOT sent to Quay;
+	# this read just asserts the receiver Secret exists (it backs the URL above).
+	kubectl -n \(NAMESPACE) get secret \(WEBHOOK_SECRET) >/dev/null 2>&1 || { echo "ERROR: receiver Secret \(WEBHOOK_SECRET) missing"; exit 1; }
+
+	# --- repo_push webhook notification (create-if-absent) ---
+	# List existing notifications and skip if an equivalent webhook already points
+	# at the receiver URL (idempotency); otherwise create it.
+	st="$(http GET "/api/v1/repository/${REPO_PATH}/notification/")"
+	[ "${st}" = "200" ] || { echo "ERROR: list notifications on ${REPO_PATH} (HTTP ${st})"; cat /tmp/resp; exit 1; }
+	if jq -e --arg u "${RECEIVER_URL}" '.notifications // [] | .[] | select(.event=="repo_push" and .method=="webhook" and .config.url==$u)' < /tmp/resp >/dev/null; then
+	  echo "repo_push webhook to the receiver URL already exists; skipping."
+	else
+	  st="$(http POST "/api/v1/repository/${REPO_PATH}/notification/" "$(jq -nc --arg u "${RECEIVER_URL}" '{event:"repo_push",method:"webhook",config:{url:$u},eventConfig:{},title:"kargo-my-project"}')")"
+	  [ "${st}" = "201" ] || { echo "ERROR: create repo_push webhook on ${REPO_PATH} (HTTP ${st})"; cat /tmp/resp; exit 1; }
+	  echo "Created repo_push webhook on ${REPO_PATH} -> ${RECEIVER_URL}."
+	fi
+
+	echo "Quay provisioning complete for ${REPO_PATH}."
+	"""
+
+// QUAY_BOOTSTRAP_METADATA labels the Job/SA/Role/RoleBinding in the quay
+// namespace.  Its own app.kubernetes.io/name (NOT the Quay Deployment's) keeps
+// the Service selector from ever matching this short-lived pod, the same caveat
+// the quay secret-keys bootstrap documents.
+let QUAY_BOOTSTRAP_METADATA = {
+	name:      QUAY_BOOTSTRAP
+	namespace: QUAY_NAMESPACE
+	labels: "app.kubernetes.io/name": QUAY_BOOTSTRAP
+}
+
+let QUAY_BOOTSTRAP_SERVICE_ACCOUNT = {
+	apiVersion: "v1"
+	kind:       "ServiceAccount"
+	metadata:   QUAY_BOOTSTRAP_METADATA
+}
+
+// The three Role/RoleBinding pairs carry a namespace-suffixed metadata.name
+// (<base>-<namespace>) so kubectl-slice writes a distinct file per resource:
+// the slicer keys filenames on kind+metadata.name, so three Roles all named
+// QUAY_BOOTSTRAP would collide into one file even though they live in different
+// namespaces.  This mirrors the quay-oidc-bootstrap Roles
+// (components/keycloak/realm-config), which span keycloak+quay the same way.
+// The roleRef.name and the bound subject ServiceAccount stay constant — only the
+// Role/RoleBinding object names are suffixed.
+
+// Role in the quay namespace: read the admin OAuth token the Job authenticates
+// with.  Scoped by resourceName to the one Secret it reads.  (The Job drives the
+// REST API over the plain-HTTP Service, so it needs no local-CA cert — only
+// quay-initial-admin is granted.)
+let QUAY_BOOTSTRAP_ROLE_QUAY = {
+	apiVersion: "rbac.authorization.k8s.io/v1"
+	kind:       "Role"
+	metadata: {
+		name:      "\(QUAY_BOOTSTRAP)-quay"
+		namespace: QUAY_NAMESPACE
+		labels: "app.kubernetes.io/name": QUAY_BOOTSTRAP
+	}
+	rules: [{
+		apiGroups: [""]
+		resources: ["secrets"]
+		verbs: ["get"]
+		resourceNames: ["quay-initial-admin"]
+	}]
+}
+
+let QUAY_BOOTSTRAP_ROLE_BINDING_QUAY = {
+	apiVersion: "rbac.authorization.k8s.io/v1"
+	kind:       "RoleBinding"
+	metadata: {
+		name:      "\(QUAY_BOOTSTRAP)-quay"
+		namespace: QUAY_NAMESPACE
+		labels: "app.kubernetes.io/name": QUAY_BOOTSTRAP
+	}
+	roleRef: {
+		apiGroup: "rbac.authorization.k8s.io"
+		kind:     "Role"
+		name:     "\(QUAY_BOOTSTRAP)-quay"
+	}
+	subjects: [{
+		kind:      "ServiceAccount"
+		name:      QUAY_BOOTSTRAP
+		namespace: QUAY_NAMESPACE
+	}]
+}
+
+// Role in the my-project namespace: get the ProjectConfig (to read the
+// status receiver URL) and get the webhook receiver Secret.  Bound to the
+// quay-namespace ServiceAccount.
+let QUAY_BOOTSTRAP_ROLE_PROJECT = {
+	apiVersion: "rbac.authorization.k8s.io/v1"
+	kind:       "Role"
+	metadata: {
+		name:      "\(QUAY_BOOTSTRAP)-project"
+		namespace: NAMESPACE
+		labels: "app.kubernetes.io/name": QUAY_BOOTSTRAP
+	}
+	rules: [
+		{
+			apiGroups: ["kargo.akuity.io"]
+			resources: ["projectconfigs"]
+			verbs: ["get"]
+			resourceNames: [NAME]
+		},
+		{
+			apiGroups: [""]
+			resources: ["secrets"]
+			verbs: ["get"]
+			resourceNames: [WEBHOOK_SECRET]
+		},
+	]
+}
+
+let QUAY_BOOTSTRAP_ROLE_BINDING_PROJECT = {
+	apiVersion: "rbac.authorization.k8s.io/v1"
+	kind:       "RoleBinding"
+	metadata: {
+		name:      "\(QUAY_BOOTSTRAP)-project"
+		namespace: NAMESPACE
+		labels: "app.kubernetes.io/name": QUAY_BOOTSTRAP
+	}
+	roleRef: {
+		apiGroup: "rbac.authorization.k8s.io"
+		kind:     "Role"
+		name:     "\(QUAY_BOOTSTRAP)-project"
+	}
+	subjects: [{
+		kind:      "ServiceAccount"
+		name:      QUAY_BOOTSTRAP
+		namespace: QUAY_NAMESPACE
+	}]
+}
+
+// Role in the argocd namespace: get (to check existence) and create the
+// repository Secret.  create cannot be restricted by resourceName (the API
+// server does not evaluate resourceNames for create), so the create grant is
+// namespace-wide on secrets — the same scoping the quay secret-keys bootstrap
+// Role accepts; get IS scoped to the one Secret.  Bound to the quay-namespace
+// ServiceAccount.
+let QUAY_BOOTSTRAP_ROLE_ARGOCD = {
+	apiVersion: "rbac.authorization.k8s.io/v1"
+	kind:       "Role"
+	metadata: {
+		name:      "\(QUAY_BOOTSTRAP)-argocd"
+		namespace: ArgoCDNamespace
+		labels: "app.kubernetes.io/name": QUAY_BOOTSTRAP
+	}
+	rules: [
+		{
+			apiGroups: [""]
+			resources: ["secrets"]
+			verbs: ["get"]
+			resourceNames: [ARGOCD_REPO_SECRET]
+		},
+		{
+			apiGroups: [""]
+			resources: ["secrets"]
+			verbs: ["create"]
+		},
+	]
+}
+
+let QUAY_BOOTSTRAP_ROLE_BINDING_ARGOCD = {
+	apiVersion: "rbac.authorization.k8s.io/v1"
+	kind:       "RoleBinding"
+	metadata: {
+		name:      "\(QUAY_BOOTSTRAP)-argocd"
+		namespace: ArgoCDNamespace
+		labels: "app.kubernetes.io/name": QUAY_BOOTSTRAP
+	}
+	roleRef: {
+		apiGroup: "rbac.authorization.k8s.io"
+		kind:     "Role"
+		name:     "\(QUAY_BOOTSTRAP)-argocd"
+	}
+	subjects: [{
+		kind:      "ServiceAccount"
+		name:      QUAY_BOOTSTRAP
+		namespace: QUAY_NAMESPACE
+	}]
+}
+
+// CAVEAT (same as the webhook-token bootstrap): a completed Job's pod template is
+// immutable, so scripts/apply cannot re-run it by re-applying the unchanged spec.
+// pre_my_project() in scripts/apply deletes any prior Job before each apply so a
+// fresh idempotent Job runs every time; the resources it created (org, repo,
+// robot, Secret, webhook) are all check-then-mutate, so a re-run converges
+// without duplicating anything.  ttlSecondsAfterFinished garbage-collects the Job
+// a day after completion.
+let QUAY_BOOTSTRAP_JOB = {
+	apiVersion: "batch/v1"
+	kind:       "Job"
+	metadata:   QUAY_BOOTSTRAP_METADATA
+	spec: {
+		// The receiver-URL poll can take a while (Kargo fills status
+		// asynchronously); a higher activeDeadline guards a wedged poll, and
+		// backoffLimit allows a couple of transient-API retries.
+		backoffLimit:            3
+		activeDeadlineSeconds:   600
+		ttlSecondsAfterFinished: 86400
+		template: {
+			metadata: labels: QUAY_BOOTSTRAP_METADATA.labels
+			spec: {
+				serviceAccountName: QUAY_BOOTSTRAP
+				restartPolicy:      "Never"
+				securityContext: {
+					runAsNonRoot: true
+					// alpine/k8s declares no non-root USER; pick the
+					// conventional "nobody" uid (mirrors the quay bootstrap).
+					runAsUser:  65534
+					runAsGroup: 65534
+					seccompProfile: type: "RuntimeDefault"
+				}
+				containers: [{
+					name:  "bootstrap"
+					image: K8S_IMAGE
+					command: ["/bin/sh", "-c", QUAY_BOOTSTRAP_SCRIPT]
+					// kubectl and curl write caches under $HOME; point it at the
+					// writable emptyDir since the root filesystem is read-only.
+					env: [{
+						name:  "HOME"
+						value: "/tmp"
+					}]
+					resources: {
+						requests: {
+							cpu:    "10m"
+							memory: "64Mi"
+						}
+						limits: memory: "128Mi"
+					}
+					securityContext: {
+						allowPrivilegeEscalation: false
+						capabilities: drop: ["ALL"]
+						readOnlyRootFilesystem: true
+					}
+					volumeMounts: [{
+						name:      "tmp"
+						mountPath: "/tmp"
+					}]
+				}]
+				volumes: [{
+					name: "tmp"
+					emptyDir: {}
+				}]
+			}
+		}
+	}
+}
+
 // WAREHOUSE_RESOURCE subscribes to the my-project-config rendered-manifests OCI
 // artifact via an IMAGE subscription against the bare registry/repo form (no
 // oci://, no tag) — ADR-16's resolution for discovering a plain-manifest OCI
@@ -556,6 +1010,23 @@ userDefinedBuildPlan: {
 					Role: (WEBHOOK_BOOTSTRAP):           WEBHOOK_BOOTSTRAP_ROLE
 					RoleBinding: (WEBHOOK_BOOTSTRAP):    WEBHOOK_BOOTSTRAP_ROLE_BINDING
 					Job: (WEBHOOK_BOOTSTRAP):            WEBHOOK_BOOTSTRAP_JOB
+
+					// Quay-provisioning Job (HOL-1272).  Its ServiceAccount and
+					// Job render into the quay namespace; its three Role/RoleBinding
+					// pairs span the quay, my-project, and argocd namespaces.  Each
+					// #Resources entry is keyed by a UNIQUE internal label per Kind
+					// (the namespace alone does not disambiguate map keys), so the
+					// three Roles/RoleBindings carry "-quay"/"-project"/"-argocd"
+					// suffixes; the rendered metadata.name stays QUAY_BOOTSTRAP in
+					// every namespace (one name, three namespaces).
+					ServiceAccount: (QUAY_BOOTSTRAP):              QUAY_BOOTSTRAP_SERVICE_ACCOUNT
+					Job: (QUAY_BOOTSTRAP):                         QUAY_BOOTSTRAP_JOB
+					Role: (QUAY_BOOTSTRAP_ROLE_QUAY.metadata.name):                    QUAY_BOOTSTRAP_ROLE_QUAY
+					RoleBinding: (QUAY_BOOTSTRAP_ROLE_BINDING_QUAY.metadata.name):      QUAY_BOOTSTRAP_ROLE_BINDING_QUAY
+					Role: (QUAY_BOOTSTRAP_ROLE_PROJECT.metadata.name):                 QUAY_BOOTSTRAP_ROLE_PROJECT
+					RoleBinding: (QUAY_BOOTSTRAP_ROLE_BINDING_PROJECT.metadata.name):   QUAY_BOOTSTRAP_ROLE_BINDING_PROJECT
+					Role: (QUAY_BOOTSTRAP_ROLE_ARGOCD.metadata.name):                  QUAY_BOOTSTRAP_ROLE_ARGOCD
+					RoleBinding: (QUAY_BOOTSTRAP_ROLE_BINDING_ARGOCD.metadata.name):    QUAY_BOOTSTRAP_ROLE_BINDING_ARGOCD
 				}
 			}]
 			transformers: [
