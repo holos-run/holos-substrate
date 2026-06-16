@@ -25,8 +25,14 @@
 - **Scope:** The Job imports only `realm: "holos"` — it does NOT manage `enabled` or `identity-provider` fields, which are owned by the KeycloakRealmImport CR in the instance component. This prevents contention between the two reconciliation paths.
 - **Generate-once guarantee:** Secrets generated at runtime (e.g., Quay OIDC client secret) are created once and never rotated, so they remain stable across reconciles. Bootstrap Jobs idempotently check for existing secrets before creating.
 
+### Runtime Secret Handling (binding guardrail)
+- **Rule:** Secrets are created at runtime — via an `ExternalSecret` or a create-if-absent bootstrap `Job` — and never committed to the repo (not even empty-data or placeholder Secrets). The deploy tree under `holos/deploy/` never holds a Secret's material.
+- **Resolving ambiguous AC:** When an acceptance criterion asks a `Secret` to "render"/"be committed"/appear under `holos/deploy/`, **resolve it directly by handling the Secret at runtime** — do NOT mark the issue `needs-human-review` or leave it open for a human to confirm. The tradeoff is already decided by this guardrail.
+- **Key naming:** Write only the key(s) the consumer actually reads (verified against its contract, e.g. the vendored CRD). Never carry an extra unread key "for AC compliance" — it is dead code. If an AC names a wrong key, use the correct one and drop the named one.
+- **Reference:** `holos/docs/secret-handling.md` (the full guardrail, indexed in `AGENTS.md`).
+
 ### OIDC Client Secrets
-- **Rule:** OIDC client secrets are generated at runtime, never committed.
+- **Rule:** OIDC client secrets are generated at runtime, never committed. (A specific case of *Runtime Secret Handling* above.)
 - **Pattern:** A bootstrap Job generates the secret once and writes it to both the owning component's namespace and any consuming namespace (e.g., keycloak and quay for the Quay OIDC secret).
 - **Reference:** `holos/components/keycloak/realm-config/buildplan.cue`, QUAY_OIDC_BOOTSTRAP section
 

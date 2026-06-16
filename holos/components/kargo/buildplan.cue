@@ -231,8 +231,8 @@ let HTTPROUTE_REDIRECT = {
 // Gateway's https listener for kargo-webhooks.holos.localhost — the same
 // HTTPRoute shape as HTTPROUTE above, pointed at the
 // kargo-external-webhooks-server Service.  The webhook receiver endpoint
-// accepts authenticated POSTs from Quay (the secret-token validates the
-// caller), so it is served over the https listener; the companion redirect
+// accepts authenticated POSTs from Quay (the receiver's shared secret validates
+// the caller), so it is served over the https listener; the companion redirect
 // route below sends plaintext port 80 to HTTPS.  Cross-namespace attachment
 // needs no ReferenceGrant because the shared listener sets
 // allowedRoutes.namespaces.from: All (istio-gateway component).

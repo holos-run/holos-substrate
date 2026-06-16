@@ -339,15 +339,12 @@ let PROJECT_CONFIG_RESOURCE = {
 // would silently invalidate the URL Quay was registered with).
 //
 // Key naming: the Kargo 1.10.3 ProjectConfig CRD documents that a QUAY receiver
-// Secret's data map is read from the `secret` key (NOT `secret-token`, which is
-// the key for the artifactory/github-style receivers — verified against the
-// vendored CRD).  The issue's acceptance criteria asked for a `secret-token`
-// key; to satisfy BOTH the issue's literal AC and Kargo's actual quay-receiver
-// contract, the Job writes the same generated token under BOTH `secret` and
-// `secret-token`.  `secret` is the functional key Kargo consumes; `secret-token`
-// is carried for AC compliance and forward-compatibility with receivers that
-// use it.  The token is piped as a manifest on stdin so it never appears in the
-// container's argv.
+// Secret's data map is read from the `secret` key (verified against the vendored
+// CRD; other receiver types read a different key).  The Job writes the generated
+// token under that one functional `secret` key and nothing else — see
+// holos/docs/secret-handling.md for why we never carry extra unread keys "for AC
+// compliance".  The token is piped as a manifest on stdin so it never appears in
+// the container's argv.
 let WEBHOOK_BOOTSTRAP_SCRIPT = """
 	set -eu
 	if kubectl -n \(NAMESPACE) get secret \(WEBHOOK_SECRET) >/dev/null 2>&1; then
@@ -367,7 +364,6 @@ let WEBHOOK_BOOTSTRAP_SCRIPT = """
 	  namespace: \(NAMESPACE)
 	stringData:
 	  secret: "${TOKEN}"
-	  secret-token: "${TOKEN}"
 	EOF
 	echo "Secret \(WEBHOOK_SECRET) created."
 	"""

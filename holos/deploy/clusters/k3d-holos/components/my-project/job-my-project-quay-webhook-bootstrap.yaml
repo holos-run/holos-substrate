@@ -35,7 +35,6 @@ spec:
             namespace: my-project
           stringData:
             secret: "${TOKEN}"
-            secret-token: "${TOKEN}"
           EOF
           echo "Secret my-project-quay-webhook created."
         env:
