@@ -339,19 +339,24 @@ let PROJECT_CONFIG_RESOURCE = {
 // would silently invalidate the URL Quay was registered with).
 //
 // Key naming: the Kargo 1.10.3 ProjectConfig CRD documents that a QUAY receiver
-// Secret's data map is read from the `secret` key (NOT `secret-token`, which is
-// the key for the artifactory/github-style receivers — verified against the
-// vendored CRD).  The issue's acceptance criteria asked for a `secret-token`
-// key; to satisfy BOTH the issue's literal AC and Kargo's actual quay-receiver
-// contract, the Job writes the same generated token under BOTH `secret` and
-// `secret-token`.  `secret` is the functional key Kargo consumes; `secret-token`
-// is carried for AC compliance and forward-compatibility with receivers that
-// use it.  The token is piped as a manifest on stdin so it never appears in the
-// container's argv.
+// Secret's data map is read from the `secret` key (verified against the vendored
+// CRD; other receiver types read a different key).  The Job writes the generated
+// token under that one functional `secret` key and nothing else — see
+// holos/docs/secret-handling.md for why we never carry extra unread keys "for AC
+// compliance".  The token is piped as a manifest on stdin so it never appears in
+// the container's argv.
 let WEBHOOK_BOOTSTRAP_SCRIPT = """
 	set -eu
 	if kubectl -n \(NAMESPACE) get secret \(WEBHOOK_SECRET) >/dev/null 2>&1; then
-	  echo "Secret \(WEBHOOK_SECRET) already exists; leaving it untouched."
+	  echo "Secret \(WEBHOOK_SECRET) already exists; leaving its generated token untouched."
+	  # One-time migration (HOL-1274): older revisions of this Job also wrote a
+	  # duplicate, unread `secret-token` key.  Prune it if present, without
+	  # touching the functional `secret` value, so clusters that ran an older
+	  # revision converge on the single key the Kargo quay receiver reads.
+	  if kubectl -n \(NAMESPACE) get secret \(WEBHOOK_SECRET) -o 'jsonpath={.data.secret-token}' | grep -q .; then
+	    kubectl -n \(NAMESPACE) patch secret \(WEBHOOK_SECRET) --type=json -p='[{"op": "remove", "path": "/data/secret-token"}]'
+	    echo "Removed legacy secret-token key from \(WEBHOOK_SECRET)."
+	  fi
 	  exit 0
 	fi
 	random_key() {
@@ -367,7 +372,6 @@ let WEBHOOK_BOOTSTRAP_SCRIPT = """
 	  namespace: \(NAMESPACE)
 	stringData:
 	  secret: "${TOKEN}"
-	  secret-token: "${TOKEN}"
 	EOF
 	echo "Secret \(WEBHOOK_SECRET) created."
 	"""
@@ -384,11 +388,13 @@ let WEBHOOK_BOOTSTRAP_SERVICE_ACCOUNT = {
 	metadata:   WEBHOOK_BOOTSTRAP_METADATA
 }
 
-// Scoped to the one Secret the Job manages: get is restricted to the
-// WEBHOOK_SECRET resourceName; create cannot be restricted by resourceName (the
-// API server does not evaluate resourceNames for create), so the create grant is
-// namespace-wide on secrets — acceptable in a namespace whose Secrets all belong
-// to this project (the quay secret-keys bootstrap Role precedent).
+// Scoped to the one Secret the Job manages: get and patch are restricted to the
+// WEBHOOK_SECRET resourceName (the API server evaluates resourceNames for both);
+// patch is needed only for the one-time legacy-key migration in the script.
+// create cannot be restricted by resourceName (the API server does not evaluate
+// resourceNames for create), so the create grant is namespace-wide on secrets —
+// acceptable in a namespace whose Secrets all belong to this project (the quay
+// secret-keys bootstrap Role precedent).
 let WEBHOOK_BOOTSTRAP_ROLE = {
 	apiVersion: "rbac.authorization.k8s.io/v1"
 	kind:       "Role"
@@ -397,7 +403,7 @@ let WEBHOOK_BOOTSTRAP_ROLE = {
 		{
 			apiGroups: [""]
 			resources: ["secrets"]
-			verbs: ["get"]
+			verbs: ["get", "patch"]
 			resourceNames: [WEBHOOK_SECRET]
 		},
 		{

@@ -69,6 +69,13 @@ components have been removed. Git history preserves them.
 - [holos/docs/component-guidelines.md](holos/docs/component-guidelines.md)
   — how to add a Holos component: anatomy, guardrails, and the
   render-then-commit workflow.
+- [holos/docs/secret-handling.md](holos/docs/secret-handling.md) — **binding
+  guardrail**: secrets are created at runtime (an `ExternalSecret` or a
+  create-if-absent bootstrap `Job`) and never committed to the repo. Read it
+  before resolving any acceptance criterion about a `Secret` — it makes the
+  ambiguous "render a committed Secret" AC unambiguous (resolve it at runtime
+  directly; never defer to `needs-human-review`) and forbids carrying unread
+  Secret keys "for AC compliance".
 - [holos/docs/mesh-enrollment.md](holos/docs/mesh-enrollment.md) — the
   ambient mesh enrollment convention for platform namespaces, how to verify
   it, and the exceptions.
