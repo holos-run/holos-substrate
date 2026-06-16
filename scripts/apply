@@ -155,7 +155,13 @@ ROLLOUT_TIMEOUT_SECONDS="$(duration_seconds "${ROLLOUT_TIMEOUT}")" || exit 1
 # namespace exists before they apply.  The argocd-update promotion step the Stage
 # runs targets the echo Argo CD Application in the argocd namespace, applied here
 # too; Argo CD itself was applied earlier (argocd).  Nothing during bootstrap
-# depends on these.
+# depends on these.  my-project closes the sequence (HOL-1269): it emits an Argo
+# CD AppProject and Application for the Layer 3 sample app, so it trails argocd
+# (its argoproj.io types and controller) and kargo (the next phase's Stage that
+# patches the Application lives in the kargo.akuity.io group).  The Application
+# stays Unknown until scripts/publish pushes the first my-project-config OCI
+# artifact and HOL-1270 wires the Kargo promotion, so no wait_my_project gate is
+# needed this phase; nothing during bootstrap depends on it.
 COMPONENTS=(
   namespaces
   gateway-api
@@ -182,6 +188,7 @@ COMPONENTS=(
   kargo
   kargo-project-echo
   kargo-echo
+  my-project
 )
 
 # local-ca and istio-gateway create cert-manager.io resources (ClusterIssuer,

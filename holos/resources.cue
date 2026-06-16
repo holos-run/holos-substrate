@@ -12,6 +12,9 @@ import (
 	hrv1 "gateway.networking.k8s.io/httproute/v1"
 	gwv1 "gateway.networking.k8s.io/gateway/v1"
 	ap "argoproj.io/appproject/v1alpha1"
+	app "argoproj.io/application/v1alpha1"
+	kwarehouse "kargo.akuity.io/warehouse/v1alpha1"
+	kstage "kargo.akuity.io/stage/v1alpha1"
 	es "external-secrets.io/externalsecret/v1beta1"
 	ss "external-secrets.io/secretstore/v1beta1"
 	cnpg "postgresql.cnpg.io/cluster/v1"
@@ -29,6 +32,7 @@ import (
 	}
 
 	AppProject?: [_]:          ap.#AppProject
+	Application?: [_]:         app.#Application
 	AuthorizationPolicy?: [_]: azp.#AuthorizationPolicy
 	Certificate?: [_]:         certv1.#Certificate
 	Cluster?: [_]:             cnpg.#Cluster
@@ -49,6 +53,23 @@ import (
 	KeycloakRealmImport?: [_]:   kcri.#KeycloakRealmImport
 	Namespace?: [_]:             corev1.#Namespace
 	PersistentVolumeClaim?: [_]: corev1.#PersistentVolumeClaim
+	// The Kargo Project and ProjectConfig kinds (kargo.akuity.io) are
+	// DELIBERATELY left on the [Kind][Label] catch-all above rather than given
+	// typed entries here:
+	//   - Project: the vendored #Project binding
+	//     (cue.mod/gen/kargo.akuity.io/project/v1alpha1) is STALE for the Kargo
+	//     1.10.3 CRD this platform installs (components/kargo-crds).  The binding
+	//     carries a required spec! (#ProjectSpec with promotionPolicies) from an
+	//     older Kargo, but the 1.10.3 Project CRD is cluster-scoped with NO spec
+	//     at all (the promotion policy moved onto the namespaced ProjectConfig
+	//     CRD).  A typed Project? entry would force every Project author into the
+	//     wrong schema — a spec the server prunes or rejects.  components/kargo-
+	//     project-echo authors its Project as a plain struct for exactly this
+	//     reason; the next phase's my-project Project (HOL-1270) does the same.
+	//   - ProjectConfig: has no generated CUE type under cue.mod/gen/ at all.
+	// Warehouse and Stage below ARE typed: their 1.10.3 CRDs are namespaced with
+	// a required spec, matching the vendored bindings (kargo-echo validates
+	// against them today).
 	ReferenceGrant?: [_]:        rgv1.#ReferenceGrant
 	Role?: [_]:                  rbacv1.#Role
 	RoleBinding?: [_]:           rbacv1.#RoleBinding
@@ -57,7 +78,9 @@ import (
 	Service?: [_]:               corev1.#Service
 	ServiceAccount?: [_]:        corev1.#ServiceAccount
 	ServiceEntry?: [_]:          se.#ServiceEntry
+	Stage?: [_]:                 kstage.#Stage
 	StatefulSet?: [_]:           appsv1.#StatefulSet
+	Warehouse?: [_]:             kwarehouse.#Warehouse
 
 	Gateway?: [_]: gwv1.#Gateway & {
 		spec: gatewayClassName: string | *"istio"
