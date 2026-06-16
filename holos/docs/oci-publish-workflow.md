@@ -341,3 +341,76 @@ kubectl --context "$KCTX" -n argocd get application echo \
 This is the loop the issue's verification AC describes: publish → Warehouse
 creates Freight → Stage promotion sets the Argo CD Application `targetRevision`
 → Argo CD syncs the new version.
+
+## Downstream: the `my-project` delivery scaffold
+
+The `echo` spike above wires the pipeline for the platform's permanent
+smoke-test workload. The
+[`my-project`](../components/my-project/buildplan.cue) component
+([holos/README.md → The `my-project` delivery scaffold](../README.md#the-my-project-delivery-scaffold))
+is the **project-shaped** instance of the same pattern — the reference for a
+future self-service `ProjectRequest` — and differs from the echo spike in two
+ways that simplify the operator workflow:
+
+- **One component, one namespace.** The Kargo `Project`, `ProjectConfig`,
+  `Warehouse`, and `Stage` all live in the single `my-project` component, and
+  the Kargo Project namespace *is* the workload namespace (no separate
+  `kargo-project-*` sibling).
+- **Credentials and the webhook are bootstrapped automatically.** The
+  `my-project-quay-bootstrap` Job (HOL-1272) provisions the Quay org, the
+  `my-project/my-project-config` repository, the pull robot, the Argo CD
+  repository Secret in `argocd`, **and** a `repo_push` webhook on the repo. So
+  unlike the echo verification — which has you create the Argo CD repo Secret
+  and the Kargo `image`-credential Secret by hand — `my-project` needs no manual
+  credential Secrets, and a push triggers Freight discovery via the webhook
+  immediately rather than waiting on the Warehouse poll interval.
+
+### Publish a first artifact and verify end-to-end
+
+Prerequisites: the cluster is up and `scripts/apply` has run (so both
+`my-project` bootstrap Jobs completed — `wait_my_project` gates them — leaving
+the Quay org/repo/webhook and the Argo CD repository Secret in place).
+
+```bash
+KCTX=k3d-holos
+
+# 0. The scaffold exists: the Kargo pipeline objects, the Argo CD Application
+#    (targetRevision empty until the first promotion), the Quay repo, and the
+#    repo_push webhook the bootstrap Job registered.
+kubectl --context "$KCTX" -n my-project get projectconfig,warehouse,stage
+kubectl --context "$KCTX" -n argocd get application my-project \
+  -o jsonpath='{.spec.source.targetRevision}{"\n"}'   # empty until first promotion
+#    The receiver URL the webhook targets (filled in asynchronously by Kargo):
+kubectl --context "$KCTX" -n my-project get projectconfig my-project \
+  -o jsonpath='{.status.webhookReceivers[?(@.name=="quay")].url}{"\n"}'
+
+# 1. Publish a first my-project-config rendered-manifests artifact.  Pass the
+#    my-project config repo the Warehouse watches as the second positional
+#    argument (the publish target), so the artifact lands where the Warehouse
+#    looks instead of the default holos-paas-manifests repo.  (Substitute a
+#    real app image; the sample app itself is future work.)
+DIGEST=$(scripts/publish \
+  quay.holos.localhost/my-project/<app-image>:<tag> \
+  quay.holos.localhost/my-project/my-project-config)
+echo "published $DIGEST"
+
+# 2. The repo_push webhook POSTs to the Kargo receiver; the Warehouse discovers
+#    the artifact and creates Freight (immediately via the webhook, or within
+#    the poll interval as a fallback).
+kubectl --context "$KCTX" -n my-project get freight -w
+#    A Freight object appears whose image digest matches $DIGEST.
+
+# 3. Auto-promotion runs the project-config Stage's argocd-update step.
+kubectl --context "$KCTX" -n my-project get promotion
+#    PHASE column reaches Succeeded.
+
+# 4. The Argo CD Application's OCI targetRevision is now the new digest and syncs.
+kubectl --context "$KCTX" -n argocd get application my-project \
+  -o jsonpath='{.spec.source.targetRevision}{"  "}{.status.sync.status}{"\n"}'
+#    targetRevision == $DIGEST, sync status Synced.
+```
+
+The end-to-end path is identical in shape to the echo loop — publish →
+webhook → Warehouse Freight → Stage promotion → Application sync — but driven
+by the real `repo_push` webhook and requiring no hand-created credential
+Secrets, because the `my-project` bootstrap Jobs provisioned them.

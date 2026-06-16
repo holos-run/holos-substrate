@@ -254,13 +254,18 @@ resulting field-manager churn) on every re-apply of those two components,
 including every re-run of `scripts/apply`.
 
 Argo CD itself is now installed by `scripts/apply` (the `argocd-crds` and
-`argocd` components), but ArgoCD-based delivery has not yet replaced the
-direct apply: every component still renders with `argoAppDisabled: true`
-and no `Application` resources are emitted, so Argo CD reconciles nothing
-until the gitops Application projection is enabled. See
-[docs/placeholders.md](docs/placeholders.md#argocd-gitops-delivery). The
-`Application` source pattern that delivery will use — OCI artifacts in
-the in-cluster Quay registry — is decided, verified, and documented in
+`argocd` components). Whole-platform ArgoCD-based delivery has not yet
+replaced the direct apply: every component still renders with
+`argoAppDisabled: true`, so the `userDefinedBuildPlan` per-component gitops
+projection emits no `Application` resources until that projection is enabled
+(see [docs/placeholders.md](docs/placeholders.md#argocd-gitops-delivery)).
+That deferred projection is distinct from the **hand-authored** sample
+`Application`s the Kargo delivery pipelines own — `echo` (the spike) and
+`my-project` (see [The `my-project` delivery scaffold](#the-my-project-delivery-scaffold))
+— which Argo CD *does* reconcile once their OCI artifacts are published. The
+`Application` source pattern both the deferred projection and the
+hand-authored Applications use — OCI artifacts in the in-cluster Quay
+registry — is decided, verified, and documented in
 [docs/argocd-application-source.md](docs/argocd-application-source.md).
 
 ### Keycloak admin credentials and verification
@@ -785,3 +790,69 @@ promotes them through its Project/Warehouse/Stage resources.
 > `TASKS` streams, the `webhooks.>`/`tasks.deploy` subject hierarchy, the
 > DeployTask schema, and the receiver/subscriber service contracts) was
 > removed with it.
+
+### The `my-project` delivery scaffold
+
+[`components/my-project/`](components/my-project/buildplan.cue) is the Layer 3
+sample-application delivery scaffold (HOL-1268). It is a single component that
+lays down everything one project needs to receive Kargo-driven OCI delivery
+([ADR-16](../docs/adr/ADR-16.md)), authored by hand today and the template for
+a future self-service `ProjectRequest` (below). Its rendered resources are:
+
+- a **Namespace** (`my-project`) — registered centrally in
+  [`namespaces.cue`](namespaces.cue), **not** emitted by the component (per
+  [component-guidelines.md](docs/component-guidelines.md#namespaces-are-registered-centrally)),
+  and carrying the `kargo.akuity.io/project: "true"` adoption label and
+  `kargo.akuity.io/keep-namespace: "true"` annotation so Kargo adopts it. This
+  one namespace doubles as both the Kargo Project namespace and the workload
+  namespace — unlike the echo spike, which splits them across
+  `components/kargo-project-echo/` and `components/kargo-echo/`.
+- an **Argo CD `AppProject` + `Application`** (in `argocd`) — the AppProject
+  scopes `sourceRepos` to `oci://quay.holos.localhost/my-project/*` and
+  destinations to the `my-project` namespace; the Application has an OCI source
+  (`oci://quay.holos.localhost/my-project/my-project-config`) and the
+  `kargo.akuity.io/authorized-stage: my-project:project-config` annotation
+  authorizing the Stage to patch its `targetRevision`. The Application is
+  hand-authored (not the deferred `argoAppDisabled` projection — see
+  [docs/placeholders.md](docs/placeholders.md#argocd-gitops-delivery)) and its
+  `targetRevision` is deliberately omitted so Kargo owns that field.
+- the **Kargo control plane**: a `Project` (the namespace boundary), a
+  `ProjectConfig` (auto-promotion policy plus a native Quay webhook receiver
+  and its receiver Secret), a `Warehouse` that watches the `my-project-config`
+  OCI artifact, and the `project-config` `Stage` whose `argocd-update` step
+  patches the Application's source to each discovered Freight digest.
+- the **Quay org / repo / webhook bootstrap** (HOL-1272): a `Job`
+  (`my-project-quay-bootstrap`, run in the `quay` namespace where the admin
+  token lives) that idempotently creates the `my-project` Quay org, the
+  `my-project/my-project-config` repository, a pull robot (writing an Argo CD
+  repository Secret into `argocd`), and a `repo_push` webhook on the repo that
+  POSTs to the my-project Warehouse's Kargo receiver URL — so a push triggers
+  Freight discovery immediately instead of waiting for the Warehouse poll
+  interval. A second `Job` (`my-project-quay-webhook-bootstrap`, in the
+  `my-project` namespace) generates the receiver Secret's shared token.
+
+**Where it sits in the apply order.** `scripts/apply` applies `my-project`
+**last** in its `COMPONENTS` array, after `quay`, `argocd`, `kargo-crds`,
+`kargo`, and the `kargo-*-echo` pipeline: the Argo CD and Kargo CRDs and
+controllers must be established before its `argoproj.io`/`kargo.akuity.io`
+custom resources, and the bootstrap Jobs need the Quay admin token (`quay`),
+the Argo CD namespace (`argocd`), and the Kargo receiver URL (`kargo` + its own
+ProjectConfig) to already exist. `pre_my_project` deletes the prior bootstrap
+Jobs so each apply re-runs the idempotent provisioning, and `wait_my_project`
+gates both Jobs' completion plus the Kargo Project's adoption of the
+`my-project` namespace. The Application stays `Unknown`/`Missing` until the
+first `my-project-config` artifact is published — expected scaffolding, since
+the sample app's config artifact is future work.
+
+**Toward self-service `ProjectRequest`.** Everything above is what a future
+self-service `ProjectRequest` API would generate per tenant: a namespace, a
+scoped Argo CD AppProject/Application, a Kargo Project/ProjectConfig/Warehouse/
+Stage, and the Quay org/repo/webhook/robot bootstrap. `my-project` is the
+hand-authored reference instance that proves the shape end-to-end before that
+generator exists.
+
+**Publishing and verifying end-to-end.** To publish a first
+`my-project-config` artifact (`oras push` via `scripts/publish`) and verify the
+push → webhook → Warehouse Freight → Stage promotion → Application sync path,
+see
+[oci-publish-workflow.md → my-project delivery scaffold](docs/oci-publish-workflow.md#downstream-the-my-project-delivery-scaffold).

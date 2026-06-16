@@ -22,9 +22,25 @@ adapter
 projects an ArgoCD `Application` per component through its `gitops`
 artifacts, gated by `argoAppDisabled: bool | *true`. The future delivery
 issue flips the default to `false` and renders the Application resources
-under `deploy/clusters/<cluster>/gitops/`. Until then no Application
-resources are emitted, ArgoCD reconciles nothing, and manifests are applied
-per [`holos/README.md`](../README.md#how-rendered-manifests-reach-the-cluster).
+under `deploy/clusters/<cluster>/gitops/`. Until then this projection emits
+no Application resources, and the platform's own components are applied per
+[`holos/README.md`](../README.md#how-rendered-manifests-reach-the-cluster)
+rather than reconciled by ArgoCD.
+
+> **Not to be confused with the hand-authored sample Applications.** This
+> deferred stub concerns the **per-component `argoAppDisabled` projection**
+> that would reconcile *the platform's own components*. It is distinct from the
+> **hand-authored** Argo CD `Application`s the Kargo delivery pipelines own —
+> `echo` ([`components/kargo-echo/`](../components/kargo-echo/buildplan.cue))
+> and `my-project`
+> ([`components/my-project/`](../components/my-project/buildplan.cue), see
+> [holos/README.md → The `my-project` delivery scaffold](../README.md#the-my-project-delivery-scaffold)).
+> Those Applications carry an **OCI** source pointing at a rendered-manifests
+> artifact and are reconciled by ArgoCD today (once their artifact is
+> published); the deferred projection would emit a **git**-source Application
+> per component, which is the wrong shape for Kargo to patch. The two are
+> independent: enabling the projection does not change the hand-authored
+> sample Applications, and the sample Applications do not depend on it.
 
 ## Observability dashboards
 
