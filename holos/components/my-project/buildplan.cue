@@ -348,7 +348,15 @@ let PROJECT_CONFIG_RESOURCE = {
 let WEBHOOK_BOOTSTRAP_SCRIPT = """
 	set -eu
 	if kubectl -n \(NAMESPACE) get secret \(WEBHOOK_SECRET) >/dev/null 2>&1; then
-	  echo "Secret \(WEBHOOK_SECRET) already exists; leaving it untouched."
+	  echo "Secret \(WEBHOOK_SECRET) already exists; leaving its generated token untouched."
+	  # One-time migration (HOL-1274): older revisions of this Job also wrote a
+	  # duplicate, unread `secret-token` key.  Prune it if present, without
+	  # touching the functional `secret` value, so clusters that ran an older
+	  # revision converge on the single key the Kargo quay receiver reads.
+	  if kubectl -n \(NAMESPACE) get secret \(WEBHOOK_SECRET) -o 'jsonpath={.data.secret-token}' | grep -q .; then
+	    kubectl -n \(NAMESPACE) patch secret \(WEBHOOK_SECRET) --type=json -p='[{"op": "remove", "path": "/data/secret-token"}]'
+	    echo "Removed legacy secret-token key from \(WEBHOOK_SECRET)."
+	  fi
 	  exit 0
 	fi
 	random_key() {
@@ -380,11 +388,13 @@ let WEBHOOK_BOOTSTRAP_SERVICE_ACCOUNT = {
 	metadata:   WEBHOOK_BOOTSTRAP_METADATA
 }
 
-// Scoped to the one Secret the Job manages: get is restricted to the
-// WEBHOOK_SECRET resourceName; create cannot be restricted by resourceName (the
-// API server does not evaluate resourceNames for create), so the create grant is
-// namespace-wide on secrets — acceptable in a namespace whose Secrets all belong
-// to this project (the quay secret-keys bootstrap Role precedent).
+// Scoped to the one Secret the Job manages: get and patch are restricted to the
+// WEBHOOK_SECRET resourceName (the API server evaluates resourceNames for both);
+// patch is needed only for the one-time legacy-key migration in the script.
+// create cannot be restricted by resourceName (the API server does not evaluate
+// resourceNames for create), so the create grant is namespace-wide on secrets —
+// acceptable in a namespace whose Secrets all belong to this project (the quay
+// secret-keys bootstrap Role precedent).
 let WEBHOOK_BOOTSTRAP_ROLE = {
 	apiVersion: "rbac.authorization.k8s.io/v1"
 	kind:       "Role"
@@ -393,7 +403,7 @@ let WEBHOOK_BOOTSTRAP_ROLE = {
 		{
 			apiGroups: [""]
 			resources: ["secrets"]
-			verbs: ["get"]
+			verbs: ["get", "patch"]
 			resourceNames: [WEBHOOK_SECRET]
 		},
 		{

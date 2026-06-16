@@ -19,7 +19,15 @@ spec:
         - |-
           set -eu
           if kubectl -n my-project get secret my-project-quay-webhook >/dev/null 2>&1; then
-            echo "Secret my-project-quay-webhook already exists; leaving it untouched."
+            echo "Secret my-project-quay-webhook already exists; leaving its generated token untouched."
+            # One-time migration (HOL-1274): older revisions of this Job also wrote a
+            # duplicate, unread `secret-token` key.  Prune it if present, without
+            # touching the functional `secret` value, so clusters that ran an older
+            # revision converge on the single key the Kargo quay receiver reads.
+            if kubectl -n my-project get secret my-project-quay-webhook -o 'jsonpath={.data.secret-token}' | grep -q .; then
+              kubectl -n my-project patch secret my-project-quay-webhook --type=json -p='[{"op": "remove", "path": "/data/secret-token"}]'
+              echo "Removed legacy secret-token key from my-project-quay-webhook."
+            fi
             exit 0
           fi
           random_key() {
