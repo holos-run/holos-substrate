@@ -336,9 +336,14 @@ kubectl -n argocd logs deploy/argocd-server | grep -iE 'oidc|x509|dial' || echo 
 
 A clean run shows no OIDC discovery/JWKS or x509 errors.
 
-Argo CD reconciles nothing yet — no `Application` resources are emitted
-until the gitops Application projection is enabled (see
-[placeholders.md](../holos/docs/placeholders.md#argocd-gitops-delivery)).
+The deferred per-component gitops projection emits no `Application`
+resources until it is enabled (see
+[placeholders.md](../holos/docs/placeholders.md#argocd-gitops-delivery)),
+so Argo CD reconciles nothing from *that* path yet. It does own the
+hand-authored sample `Application`s the Kargo delivery pipelines drive —
+`echo` and `my-project` — which stay `Unknown`/`Missing` until their OCI
+artifacts are published (see
+[The `my-project` delivery scaffold](../holos/README.md#the-my-project-delivery-scaffold)).
 For the full verification steps, the SSO/RBAC configuration, and the
 service contract, see
 [Argo CD admin credentials and verification](../holos/README.md#argo-cd-admin-credentials-and-verification).
