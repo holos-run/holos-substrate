@@ -539,6 +539,37 @@ wait_keycloak_config() {
   done
 }
 
+# quay: force a fresh admin-bootstrap Job on every apply.  Its name is
+# constant (no config hash), so a prior Complete OR Failed Job is never re-run
+# by `kubectl apply` (a completed Job's pod template is immutable).  A Failed
+# admin-bootstrap that never created the quay-initial-admin Secret would
+# otherwise wedge wait_quay's gate forever.  The Job is idempotent — it exits 0
+# leaving an existing Secret untouched — so recreating it on every apply just
+# re-verifies (and repairs) the credential.  The Secret it created survives the
+# Job deletion (separate objects), so the generate-once guarantee holds.  This
+# is the pre_keycloak_config precedent applied to quay (HOL-1276).
+# --ignore-not-found tolerates the first apply (no Job yet) and the post-TTL-GC
+# case; --cascade=foreground --wait blocks until the old Job and its pod are
+# fully gone so a stale pod cannot race the fresh attempt.
+#
+# Pre-apply the admin-bootstrap ServiceAccount + RBAC before deleting the Job:
+# `kubectl apply -f <dir>` applies a component's files in alphabetical order, so
+# job-quay-admin-bootstrap.yaml is created before
+# serviceaccount-quay-admin-bootstrap.yaml — on a fresh cluster the Job's pod
+# would fail admission ("error looking up service account") until the SA lands.
+# Pre-applying the identity here closes that race (the pre_my_project
+# precedent), then the main apply re-applies it idempotently.
+pre_quay() {
+  local dir="${COMPONENTS_DIR}/quay"
+  kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
+    -f "${dir}/serviceaccount-quay-admin-bootstrap.yaml" \
+    -f "${dir}/role-quay-admin-bootstrap.yaml" \
+    -f "${dir}/rolebinding-quay-admin-bootstrap.yaml"
+  kubectl --context "${KUBE_CONTEXT}" --namespace quay \
+    delete job -l app.kubernetes.io/name=quay-admin-bootstrap \
+    --ignore-not-found --cascade=foreground --wait --request-timeout=60s
+}
+
 # quay: the Quay smoke check.  First the secret-keys bootstrap Job — the
 # pod's initContainer cannot resolve its Secret env until it completes, so
 # gating here names the actual culprit in the error instead of a generic
@@ -596,6 +627,36 @@ wait_quay() {
   done
   kubectl --context "${KUBE_CONTEXT}" --namespace quay \
     rollout status deployment/quay --timeout="${QUAY_TIMEOUT}"
+
+  # Then the admin-bootstrap Job: it seeds the first superuser through Quay's
+  # one-shot /api/v1/user/initialize endpoint and stores the returned OAuth
+  # token in the quay-initial-admin Secret (HOL-1276) — the credential
+  # downstream declarative bootstrap Jobs (e.g. my-project-quay-bootstrap)
+  # authenticate to Quay's REST API with.  The Job self-waits on the rollout
+  # the gate above just confirmed, then initializes; gating it here names the
+  # actual culprit if the credential never materialises instead of surfacing it
+  # as a "secrets quay-initial-admin not found" failure in a later component.
+  # pre_quay recreates the Job on every apply, so it is present here; gate_job
+  # tolerates a TTL-GC'd Job (the Secret check below is the real contract) — the
+  # wait_keycloak_config quay-oidc precedent.
+  gate_job quay quay-admin-bootstrap || return 1
+
+  # Defense in depth for the GC'd-Job case: the quay-initial-admin Secret is
+  # the actual contract downstream Jobs depend on, so verify it directly even
+  # when the admin-bootstrap Job is already gone.
+  local secret_deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+  while true; do
+    if kubectl --context "${KUBE_CONTEXT}" --namespace quay \
+      get secret quay-initial-admin --request-timeout=10s >/dev/null 2>&1; then
+      break
+    fi
+    if ((SECONDS >= secret_deadline)); then
+      echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for the quay-initial-admin Secret; inspect the bootstrap Job with:" >&2
+      echo "       kubectl --context ${KUBE_CONTEXT} --namespace quay describe job/quay-admin-bootstrap" >&2
+      return 1
+    fi
+    sleep 5
+  done
 }
 
 # argocd-crds: the Argo CD controllers require the argoproj.io types at

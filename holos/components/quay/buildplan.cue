@@ -11,9 +11,13 @@ import (
 // single-pod Redis, with registry blob storage on a local-path PVC, exposed
 // at https://quay.holos.localhost through the shared Gateway
 // (components/istio-gateway).  This component brings up the UI and the v2
-// registry API; users and credentials are bootstrapped by scripts/quay-init
-// (HOL-1177), which uses the /api/v1/user/initialize endpoint enabled by
-// FEATURE_USER_INITIALIZE below.
+// registry API.  The superuser credential is bootstrapped automatically by
+// the admin-bootstrap Job below (HOL-1276), which seeds the first user through
+// the /api/v1/user/initialize endpoint (enabled by FEATURE_USER_INITIALIZE)
+// and stores the returned superuser OAuth token in the quay-initial-admin
+// Secret — the credential declarative automation Jobs authenticate with.  The
+// org/robot/team scaffolding is bootstrapped separately by scripts/quay-init
+// (HOL-1177), which reuses that same Secret.
 //
 // Quay reads /conf/stack/config.yaml and performs no environment-variable
 // substitution, and the database credentials are CNPG-generated (never
@@ -132,6 +136,33 @@ let PVC_NAME = "quay-datastorage"
 let CONFIG_TEMPLATE = "quay-config-template"
 let BOOTSTRAP = "quay-secret-keys-bootstrap"
 
+// The Quay superuser bootstrap credential (HOL-1276).  ADMIN_SECRET is the
+// Secret the admin-bootstrap Job below creates once and never rotates: its
+// `token` key holds a non-expiring superuser OAuth token, the credential that
+// declarative automation Jobs (e.g. the my-project-quay-bootstrap Job that
+// provisions an org/repo/webhook) authenticate to Quay's REST API with.  The
+// Job is the in-cluster, automated equivalent of step 1 of scripts/quay-init:
+// it POSTs to the one-shot /api/v1/user/initialize endpoint (enabled by
+// FEATURE_USER_INITIALIZE in the config above) — Quay's recommended way to
+// seed a first superuser headlessly in Kubernetes — and stores the returned
+// token.  This is what fixes "secrets quay-initial-admin not found": the
+// credential is now created by `scripts/apply` rather than by a manual
+// scripts/quay-init run.  See CLAUDE.md "Quay Superuser Bootstrap Credential".
+let ADMIN_SECRET = "quay-initial-admin"
+let ADMIN_BOOTSTRAP = "quay-admin-bootstrap"
+let ADMIN_USER = "admin"
+// Matches the ADMIN_EMAIL in scripts/quay-init so both bootstrap paths agree
+// on the admin identity (the domain is the bare local domain, not the quay
+// subdomain in HOSTNAME).
+let ADMIN_EMAIL = "admin@holos.localhost"
+
+// The Job reaches Quay over the plain-HTTP in-cluster Service (no local-CA
+// trust needed — the quay-local-ca cert is only for callers using the public
+// https://quay.holos.localhost hostname), the same convention declarative
+// bootstrap Jobs follow (CLAUDE.md, the Quay org/repo/webhook bootstrap
+// convention).
+let QUAY_SERVICE_URL = "http://\(NAME).\(NAMESPACE).svc.cluster.local:\(PORT)"
+
 let METADATA = {
 	name:      NAME
 	namespace: NAMESPACE
@@ -155,7 +186,7 @@ let REDIS_METADATA = {
 //   - BUILDLOGS_REDIS and USER_EVENTS_REDIS are both mandatory even though
 //     the build feature is unused.
 //   - FEATURE_USER_INITIALIZE enables the one-shot /api/v1/user/initialize
-//     endpoint scripts/quay-init (HOL-1177) uses to create the admin user.
+//     endpoint the admin-bootstrap Job (HOL-1276) uses to create the admin user.
 //   - SETUP_COMPLETE skips the interactive setup flow.
 //
 // OIDC / Keycloak SSO (HOL-1219, Phase 2 of HOL-1217):
@@ -194,8 +225,8 @@ let REDIS_METADATA = {
 //     project-admin) folded in by the Phase 1 protocol mappers.  Team sync only
 //     populates Quay teams from the groups claim — it does NOT grant Quay
 //     superuser; superuser comes solely from SUPER_USERS below.
-//   - SUPER_USERS keeps the local "admin" entry that scripts/quay-init (HOL-1177)
-//     bootstraps the local org with — it stays reachable because Quay always
+//   - SUPER_USERS keeps the local "admin" entry the admin-bootstrap Job
+//     (HOL-1276) seeds — it stays reachable because Quay always
 //     permits superuser local login even with FEATURE_DIRECT_LOGIN false.  The
 //     holos realm seeds no users yet, so there is no realm preferred_username to
 //     grant SSO superuser to; a Keycloak-backed platform admin is bootstrapped
@@ -443,6 +474,238 @@ let BOOTSTRAP_JOB = {
 					// kubectl writes its discovery cache under $HOME; point
 					// it at the writable emptyDir since the root filesystem
 					// is read-only.
+					env: [{
+						name:  "HOME"
+						value: "/tmp"
+					}]
+					resources: {
+						requests: {
+							cpu:    "10m"
+							memory: "32Mi"
+						}
+						limits: memory: "64Mi"
+					}
+					securityContext: {
+						allowPrivilegeEscalation: false
+						capabilities: drop: ["ALL"]
+						readOnlyRootFilesystem: true
+					}
+					volumeMounts: [{
+						name:      "tmp"
+						mountPath: "/tmp"
+					}]
+				}]
+				volumes: [{
+					name: "tmp"
+					emptyDir: {}
+				}]
+			}
+		}
+	}
+}
+
+// The admin-bootstrap script: create the quay-initial-admin Secret holding a
+// superuser OAuth token (HOL-1276).  It is the automated, in-cluster
+// equivalent of step 1 of scripts/quay-init — Quay has no operator to seed a
+// first user, so the upstream-recommended path is the one-shot
+// /api/v1/user/initialize endpoint (enabled by FEATURE_USER_INITIALIZE).
+//
+// Generate-once and idempotent, mirroring BOOTSTRAP_SCRIPT: the initialize
+// endpoint only answers while the registry has no users, so the Secret is
+// never rotated — an existing Secret is left untouched and a re-run exits 0.
+// Unlike the secret-keys Job (which must run BEFORE the Quay pod, supplying
+// keys the initContainer needs), this Job runs AFTER Quay is serving, so it
+// self-gates on /health/instance before initializing — the first pod start
+// runs the database migrations and can take minutes.
+//
+// The alpine/kubectl image ships curl but not jq, so the OAuth token is
+// extracted from the flat JSON response with grep/sed; Quay tokens are
+// alphanumeric, carrying no commas or quotes to confuse the parse.  The
+// request body and the Secret are staged via heredocs (no values in argv,
+// /proc-visible) and the password rides in stringData (no manual base64).
+//
+// Crash window: the initialize endpoint is one-shot, so a token obtained but
+// not stored is lost for good (recovery is a registry reset).  The Secret is
+// written immediately after the token is obtained; if that write fails the Job
+// fails with reset guidance but does NOT print the credential — the token is a
+// non-expiring superuser credential and pod logs (readable by any principal
+// with log access) would bypass the Secret's RBAC.  This is the one place this
+// Job is deliberately stricter than scripts/quay-init, whose last-resort dump
+// targets an operator's terminal rather than durable cluster logs.
+let ADMIN_BOOTSTRAP_SCRIPT = """
+	set -eu
+	# --ignore-not-found prints nothing and exits 0 when the Secret is absent,
+	# while any OTHER kubectl failure (RBAC denial, API outage) exits non-zero
+	# and aborts via set -e — so "missing" is never conflated with "broken",
+	# which matters before consuming the one-shot initialize endpoint (the
+	# scripts/quay-init precedent).  Suppressing stderr (2>&1 >/dev/null) inside
+	# an `if` would mask that distinction.
+	EXISTING="$(kubectl -n \(NAMESPACE) get secret \(ADMIN_SECRET) -o name --ignore-not-found)"
+	if [ -n "${EXISTING}" ]; then
+	  echo "Secret \(ADMIN_SECRET) already exists; leaving it untouched."
+	  exit 0
+	fi
+	echo "Waiting for Quay to answer at \(QUAY_SERVICE_URL)/health/instance ..."
+	i=0
+	until curl -fsS --max-time 10 -o /dev/null "\(QUAY_SERVICE_URL)/health/instance"; do
+	  i=$((i + 1))
+	  if [ "${i}" -ge 120 ]; then
+	    echo "ERROR: Quay did not become healthy in time." >&2
+	    exit 1
+	  fi
+	  sleep 10
+	done
+	# Superuser local login stays reachable even with FEATURE_DIRECT_LOGIN
+	# false, so this 48-char alphanumeric password is the break-glass UI
+	# credential; the OAuth token below is what bootstrap Jobs consume.
+	PASSWORD="$(head -c 256 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c 1-48)"
+	[ "${#PASSWORD}" -eq 48 ]
+	cat > /tmp/initialize-request.json <<EOF
+	{"username": "\(ADMIN_USER)", "password": "${PASSWORD}", "email": "\(ADMIN_EMAIL)", "access_token": true}
+	EOF
+	# The canonical Host header makes any server-side host validation see Quay's
+	# SERVER_HOSTNAME even though the request rides the in-cluster Service.
+	HTTP="$(curl -sS --max-time 30 -o /tmp/initialize.json -w '%{http_code}' \\
+	  -X POST -H 'Content-Type: application/json' -H 'Host: \(HOSTNAME)' \\
+	  --data @/tmp/initialize-request.json \\
+	  "\(QUAY_SERVICE_URL)/api/v1/user/initialize")"
+	if [ "${HTTP}" != 200 ]; then
+	  echo "ERROR: /api/v1/user/initialize returned HTTP ${HTTP}:" >&2
+	  cat /tmp/initialize.json >&2 || true
+	  echo >&2
+	  echo "       The endpoint only works while the registry has no users.  If Quay" >&2
+	  echo "       was initialized outside this Job there is no recoverable token —" >&2
+	  echo "       reset the registry state and re-run (see docs/local-cluster.md)." >&2
+	  exit 1
+	fi
+	TOKEN="$(grep -o '"access_token"[^,}]*' /tmp/initialize.json | head -1 | sed 's/^.*"access_token"//; s/^[^"]*"//; s/".*$//')"
+	if [ -z "${TOKEN}" ]; then
+	  echo "ERROR: initialize succeeded but no access_token was in the response." >&2
+	  exit 1
+	fi
+	# Store the credential immediately.  Piped on stdin as stringData so the
+	# values never appear in the container's argv (/proc-visible) and need no
+	# manual base64.  The token must NEVER be echoed to the pod log: it is a
+	# non-expiring superuser credential, and pod logs are readable by any
+	# principal with log access, bypassing the Secret's RBAC.  So on a write
+	# failure we surface the failure and the recovery path (a registry reset,
+	# since the one-shot token is unrecoverable) WITHOUT printing the secret —
+	# unlike scripts/quay-init, whose output goes to an operator's terminal, not
+	# to durable cluster logs.
+	if kubectl -n \(NAMESPACE) create -f - <<EOF
+	apiVersion: v1
+	kind: Secret
+	metadata:
+	  name: \(ADMIN_SECRET)
+	  namespace: \(NAMESPACE)
+	stringData:
+	  username: "\(ADMIN_USER)"
+	  password: "${PASSWORD}"
+	  token: "${TOKEN}"
+	EOF
+	then
+	  echo "Created admin user '\(ADMIN_USER)' and stored Secret \(ADMIN_SECRET)."
+	else
+	  cat >&2 <<RECOVERY
+	ERROR: the admin user was initialized but storing Secret \(ADMIN_SECRET) failed.
+	       The /api/v1/user/initialize endpoint is one-shot, so the superuser token
+	       cannot be recovered — and it must not be printed to the pod log.  Reset
+	       the registry state and re-run scripts/apply (see docs/local-cluster.md).
+	RECOVERY
+	  exit 1
+	fi
+	"""
+
+let ADMIN_BOOTSTRAP_METADATA = {
+	name:      ADMIN_BOOTSTRAP
+	namespace: NAMESPACE
+	labels: "app.kubernetes.io/name": ADMIN_BOOTSTRAP
+}
+
+let ADMIN_BOOTSTRAP_SERVICE_ACCOUNT = {
+	apiVersion: "v1"
+	kind:       "ServiceAccount"
+	metadata:   ADMIN_BOOTSTRAP_METADATA
+}
+
+// Scoped to the one Secret the Job manages, like BOOTSTRAP_ROLE: get is
+// restricted to the quay-initial-admin resourceName; create cannot be
+// restricted by resourceName (the API server does not evaluate resourceNames
+// for create), so the create grant is namespace-wide on secrets — acceptable
+// in a namespace whose Secrets all belong to this service.
+let ADMIN_BOOTSTRAP_ROLE = {
+	apiVersion: "rbac.authorization.k8s.io/v1"
+	kind:       "Role"
+	metadata:   ADMIN_BOOTSTRAP_METADATA
+	rules: [
+		{
+			apiGroups: [""]
+			resources: ["secrets"]
+			verbs: ["get"]
+			resourceNames: [ADMIN_SECRET]
+		},
+		{
+			apiGroups: [""]
+			resources: ["secrets"]
+			verbs: ["create"]
+		},
+	]
+}
+
+let ADMIN_BOOTSTRAP_ROLE_BINDING = {
+	apiVersion: "rbac.authorization.k8s.io/v1"
+	kind:       "RoleBinding"
+	metadata:   ADMIN_BOOTSTRAP_METADATA
+	roleRef: {
+		apiGroup: "rbac.authorization.k8s.io"
+		kind:     "Role"
+		name:     ADMIN_BOOTSTRAP
+	}
+	subjects: [{
+		kind:      "ServiceAccount"
+		name:      ADMIN_BOOTSTRAP
+		namespace: NAMESPACE
+	}]
+}
+
+// Same immutable-pod-template caveat as BOOTSTRAP_JOB: a re-apply is a no-op
+// while the Job exists and ttlSecondsAfterFinished GCs it a day after
+// completion.  scripts/apply's pre_quay hook deletes this Job before every
+// apply so a Failed run (which would leave no Secret) is always re-attempted
+// rather than skipped — the pre_keycloak_config precedent.  backoffLimit is
+// higher than the secret-keys Job's because this one races Quay's first start;
+// each pod self-waits on /health/instance, but a pod evicted mid-wait should
+// still get fresh attempts.
+let ADMIN_BOOTSTRAP_JOB = {
+	apiVersion: "batch/v1"
+	kind:       "Job"
+	metadata:   ADMIN_BOOTSTRAP_METADATA
+	spec: {
+		backoffLimit:            6
+		ttlSecondsAfterFinished: 86400
+		template: {
+			// The distinct label keeps this pod out of the quay Service's
+			// endpoints (see BOOTSTRAP_METADATA).
+			metadata: labels: ADMIN_BOOTSTRAP_METADATA.labels
+			spec: {
+				serviceAccountName: ADMIN_BOOTSTRAP
+				restartPolicy:      "Never"
+				securityContext: {
+					runAsNonRoot: true
+					// The alpine/kubectl image declares no non-root USER;
+					// pick the conventional "nobody" uid.
+					runAsUser:  65534
+					runAsGroup: 65534
+					seccompProfile: type: "RuntimeDefault"
+				}
+				containers: [{
+					name:  "bootstrap"
+					image: KUBECTL_IMAGE
+					command: ["/bin/sh", "-c", ADMIN_BOOTSTRAP_SCRIPT]
+					// kubectl writes its discovery cache under $HOME, and the
+					// script stages request/response files there; point HOME at
+					// the writable emptyDir since the root filesystem is
+					// read-only.
 					env: [{
 						name:  "HOME"
 						value: "/tmp"
@@ -1087,12 +1350,22 @@ userDefinedBuildPlan: {
 				resources: #Resources & {
 					ConfigMap: (CONFIG_TEMPLATE_CM.metadata.name): CONFIG_TEMPLATE_CM
 					ServiceAccount: {
-						(BOOTSTRAP_SERVICE_ACCOUNT.metadata.name): BOOTSTRAP_SERVICE_ACCOUNT
-						(QUAY_SERVICE_ACCOUNT.metadata.name):      QUAY_SERVICE_ACCOUNT
+						(BOOTSTRAP_SERVICE_ACCOUNT.metadata.name):       BOOTSTRAP_SERVICE_ACCOUNT
+						(ADMIN_BOOTSTRAP_SERVICE_ACCOUNT.metadata.name): ADMIN_BOOTSTRAP_SERVICE_ACCOUNT
+						(QUAY_SERVICE_ACCOUNT.metadata.name):            QUAY_SERVICE_ACCOUNT
 					}
-					Role: (BOOTSTRAP_ROLE.metadata.name):                BOOTSTRAP_ROLE
-					RoleBinding: (BOOTSTRAP_ROLE_BINDING.metadata.name): BOOTSTRAP_ROLE_BINDING
-					Job: (BOOTSTRAP_JOB.metadata.name):                  BOOTSTRAP_JOB
+					Role: {
+						(BOOTSTRAP_ROLE.metadata.name):       BOOTSTRAP_ROLE
+						(ADMIN_BOOTSTRAP_ROLE.metadata.name): ADMIN_BOOTSTRAP_ROLE
+					}
+					RoleBinding: {
+						(BOOTSTRAP_ROLE_BINDING.metadata.name):       BOOTSTRAP_ROLE_BINDING
+						(ADMIN_BOOTSTRAP_ROLE_BINDING.metadata.name): ADMIN_BOOTSTRAP_ROLE_BINDING
+					}
+					Job: {
+						(BOOTSTRAP_JOB.metadata.name):       BOOTSTRAP_JOB
+						(ADMIN_BOOTSTRAP_JOB.metadata.name): ADMIN_BOOTSTRAP_JOB
+					}
 					Deployment: {
 						(DEPLOYMENT.metadata.name):       DEPLOYMENT
 						(REDIS_DEPLOYMENT.metadata.name): REDIS_DEPLOYMENT

@@ -369,13 +369,22 @@ apply order above.
 
 ### Quay bootstrap and credentials
 
-Quay has no operator to bootstrap users the way the Keycloak operator
-does, so `scripts/quay-init` fills that role: run it once after
-`scripts/apply` to create the initial `admin` user, the `holos`
-organization, and the `holos+robot` robot account, with the generated
-credentials stored in the `quay-initial-admin` and `quay-robot-pull`
-Secrets (`quay` namespace) — never committed to this repository. The
-script is idempotent. See the
+Quay has no operator to bootstrap users the way the Keycloak operator does.
+The superuser credential is seeded automatically during `scripts/apply`: the
+`quay` component's `quay-admin-bootstrap` Job calls Quay's one-shot
+`/api/v1/user/initialize` endpoint (the upstream-recommended way to create a
+first user headlessly in Kubernetes) and stores the returned superuser OAuth
+token in the **`quay-initial-admin`** Secret (`quay` namespace) — never
+committed to this repository. That token is the credential declarative
+automation Jobs (e.g. the `my-project-quay-bootstrap` Job) authenticate to
+Quay's REST API with; see the *Quay Superuser Bootstrap Credential* guard rail
+in [`CLAUDE.md`](../CLAUDE.md). `wait_quay` gates on the Job and the Secret, so
+the credential is present before any downstream component runs (HOL-1276).
+
+`scripts/quay-init` then provisions the registry-level scaffolding — the
+`holos` organization and the `holos+robot` robot account (stored in
+`quay-robot-pull`) — **reusing** the `quay-initial-admin` token rather than
+re-creating it. Run it once after `scripts/apply`; it is idempotent. See the
 [Verify Quay](../docs/local-cluster.md#verify-quay) section of the local
 cluster guide for the bootstrap and the `docker push` verification flow.
 

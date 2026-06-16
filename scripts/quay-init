@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
-# Bootstrap the Quay registry deployed by the quay component: create the
+# Bootstrap the Quay registry deployed by the quay component: ensure the
 # initial admin user, the holos organization, and an organization robot
 # account (holos+robot) that can push to not-yet-existing repositories
 # under the holos org (a team with the creator role auto-creates
 # repositories on push).
 #
-# Run this once after `scripts/apply` brings the quay Deployment up.  The
-# script is idempotent: every step is check-then-create, so a second run
+# As of HOL-1276 the admin user and the quay-initial-admin Secret are created
+# automatically by the quay component's quay-admin-bootstrap Job during
+# `scripts/apply` (the same /api/v1/user/initialize flow this script's step 1
+# implements).  Step 1 below therefore normally takes its reuse path —
+# reading the token from the existing Secret — and this script's remaining job
+# is the org/robot/team scaffolding.  Run it once after `scripts/apply`; it
+# still self-initializes the admin user if the Secret is somehow absent (e.g.
+# the Job was removed), so it remains a complete standalone bootstrap.
+#
+# The script is idempotent: every step is check-then-create, so a second run
 # against an already-initialized registry exits 0 without changing state.
 #
 # No credentials are committed to the repository — everything is generated
