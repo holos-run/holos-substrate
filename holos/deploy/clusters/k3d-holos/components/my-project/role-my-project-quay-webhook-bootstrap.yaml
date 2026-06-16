@@ -1,0 +1,22 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/name: my-project-quay-webhook-bootstrap
+  name: my-project-quay-webhook-bootstrap
+  namespace: my-project
+rules:
+- apiGroups:
+  - ""
+  resourceNames:
+  - my-project-quay-webhook
+  resources:
+  - secrets
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create

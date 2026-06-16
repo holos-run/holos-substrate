@@ -155,13 +155,17 @@ ROLLOUT_TIMEOUT_SECONDS="$(duration_seconds "${ROLLOUT_TIMEOUT}")" || exit 1
 # namespace exists before they apply.  The argocd-update promotion step the Stage
 # runs targets the echo Argo CD Application in the argocd namespace, applied here
 # too; Argo CD itself was applied earlier (argocd).  Nothing during bootstrap
-# depends on these.  my-project closes the sequence (HOL-1269): it emits an Argo
-# CD AppProject and Application for the Layer 3 sample app, so it trails argocd
-# (its argoproj.io types and controller) and kargo (the next phase's Stage that
-# patches the Application lives in the kargo.akuity.io group).  The Application
-# stays Unknown until scripts/publish pushes the first my-project-config OCI
-# artifact and HOL-1270 wires the Kargo promotion, so no wait_my_project gate is
-# needed this phase; nothing during bootstrap depends on it.
+# depends on these.  my-project closes the sequence (HOL-1269/HOL-1270): it emits
+# the Layer 3 sample app's Argo CD AppProject + Application AND its Kargo control
+# plane (Project, ProjectConfig with a quay webhook receiver, Warehouse, the
+# project-config promotion Stage, and the webhook-token bootstrap Job), so it
+# trails argocd (its argoproj.io types and controller) and kargo (its
+# kargo.akuity.io types and controller).  pre_my_project deletes the prior
+# webhook-token bootstrap Job so each apply runs a fresh idempotent generate;
+# wait_my_project gates the bootstrap Job's completion and the Kargo Project's
+# adoption of the my-project namespace.  The Application stays Unknown until
+# scripts/publish pushes the first my-project-config OCI artifact; nothing during
+# bootstrap depends on it.
 COMPONENTS=(
   namespaces
   gateway-api
@@ -714,6 +718,101 @@ wait_kargo_echo() {
     get stage.kargo.akuity.io/test --request-timeout=10s >/dev/null
   kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
     get application.argoproj.io/echo --request-timeout=10s >/dev/null
+}
+
+# my-project: delete the prior webhook-token bootstrap Job before the apply.  Its
+# name is constant (no config hash), so a completed Job is never re-run by a
+# server-side apply of the unchanged spec; recreating it on every apply re-runs
+# the idempotent generate (which exits 0 leaving an existing Secret untouched, so
+# the generate-once token survives) and lets wait_my_project gate a genuinely
+# fresh run.  --cascade=foreground --wait reaps the old Job's pod first so the new
+# Job is the only one wait_my_project can match.  Mirrors pre_keycloak_config.
+pre_my_project() {
+  kubectl --context "${KUBE_CONTEXT}" --namespace my-project \
+    delete job -l app.kubernetes.io/name=my-project-quay-webhook-bootstrap \
+    --ignore-not-found --cascade=foreground --wait --request-timeout=60s
+}
+
+# my-project: gate the webhook-token bootstrap Job's completion and the Kargo
+# Project's adoption of the my-project namespace.
+#
+# The bootstrap Job generates the my-project-quay-webhook receiver Secret's token
+# once; phase 4's Quay bootstrap reads that token to register the webhook, so a
+# Failed bootstrap must surface here by name rather than as a missing-Secret error
+# two phases later.  pre_my_project recreates the Job on every apply, so it is
+# present; polled (not `kubectl wait --for=condition=Complete`) so a Failed Job
+# fails the gate on the next poll instead of blocking the full timeout, and
+# --ignore-not-found tolerates a TTL-GC'd Job (the Secret it created survives).
+# This mirrors the wait_keycloak_config bootstrap-gate shape.
+#
+# The Project (cluster-scoped in Kargo 1.10) adopts the pre-created my-project
+# namespace (created by the namespaces component, carrying the
+# kargo.akuity.io/project: "true" adoption label) and reports Ready; only then
+# does the namespace carry Kargo's project RBAC so the namespaced ProjectConfig,
+# Warehouse, and Stage reconcile.  Poll the Ready condition (mirrors
+# wait_kargo_project_echo) so a Stalled Project — e.g. the adoption label missing
+# — fails promptly with a clear pointer.
+wait_my_project() {
+  local job="job/my-project-quay-webhook-bootstrap"
+  local job_state lookup_failures=0
+  local deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+  while true; do
+    if job_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace my-project \
+      get "${job}" --ignore-not-found --request-timeout=10s \
+      -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
+      lookup_failures=0
+      if [[ -z "${job_state}" ]] || grep -q '^Complete=True$' <<<"${job_state}"; then
+        break
+      fi
+      if grep -q '^Failed=True$' <<<"${job_state}"; then
+        echo "ERROR: ${job} failed; inspect it with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} --namespace my-project describe ${job}" >&2
+        return 1
+      fi
+    else
+      lookup_failures=$((lookup_failures + 1))
+      if ((lookup_failures >= 3)); then
+        echo "ERROR: cannot query ${job}: ${lookup_failures} consecutive lookup failures." >&2
+        return 1
+      fi
+    fi
+    if ((SECONDS >= deadline)); then
+      echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for ${job} to complete." >&2
+      return 1
+    fi
+    sleep 5
+  done
+
+  local project="project.kargo.akuity.io/my-project" state proj_lookup_failures=0
+  local proj_deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+  while true; do
+    # Project is cluster-scoped (no --namespace).
+    if state=$(kubectl --context "${KUBE_CONTEXT}" \
+      get "${project}" --ignore-not-found --request-timeout=10s \
+      -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
+      proj_lookup_failures=0
+      if grep -q '^Ready=True$' <<<"${state}"; then
+        break
+      fi
+      if grep -q '^Stalled=True$' <<<"${state}"; then
+        echo "ERROR: ${project} is Stalled (often the my-project namespace is missing the" >&2
+        echo "       kargo.akuity.io/project: \"true\" adoption label); inspect it with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} --namespace my-project describe ${project}" >&2
+        return 1
+      fi
+    else
+      proj_lookup_failures=$((proj_lookup_failures + 1))
+      if ((proj_lookup_failures >= 3)); then
+        echo "ERROR: repeated failures reading ${project}; aborting the gate." >&2
+        return 1
+      fi
+    fi
+    if ((SECONDS >= proj_deadline)); then
+      echo "ERROR: timed out waiting for ${project} to become Ready." >&2
+      return 1
+    fi
+    sleep 5
+  done
 }
 
 if ! command -v kubectl >/dev/null 2>&1; then

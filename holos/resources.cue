@@ -28,7 +28,17 @@ import (
 #Resources: {
 	[Kind=string]: [InternalLabel=string]: {
 		kind: Kind
-		metadata: name: string | *InternalLabel
+		// Open the catch-all entry (and its metadata) so kinds without a typed
+		// binding above (e.g. the Kargo Project and ProjectConfig — see the
+		// comment on the Kargo kinds below) can carry their own apiVersion,
+		// spec, namespace, labels, and other fields.  Typed entries below still
+		// constrain their kinds against the vendored schemas; only the untyped
+		// catch-all is permissive.
+		metadata: {
+			name: string | *InternalLabel
+			...
+		}
+		...
 	}
 
 	AppProject?: [_]:          ap.#AppProject
