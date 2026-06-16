@@ -720,21 +720,32 @@ wait_kargo_echo() {
     get application.argoproj.io/echo --request-timeout=10s >/dev/null
 }
 
-# my-project: delete the prior webhook-token bootstrap Job before the apply.  Its
-# name is constant (no config hash), so a completed Job is never re-run by a
-# server-side apply of the unchanged spec; recreating it on every apply re-runs
-# the idempotent generate (which exits 0 leaving an existing Secret untouched, so
-# the generate-once token survives) and lets wait_my_project gate a genuinely
-# fresh run.  --cascade=foreground --wait reaps the old Job's pod first so the new
-# Job is the only one wait_my_project can match.  Mirrors pre_keycloak_config.
+# my-project: delete the prior bootstrap Jobs before the apply.  Their names are
+# constant (no config hash), so a completed Job is never re-run by a server-side
+# apply of the unchanged spec; recreating them on every apply re-runs the
+# idempotent generate/provision (each exits 0 leaving existing state untouched)
+# and lets wait_my_project gate a genuinely fresh run.  --cascade=foreground
+# --wait reaps the old Jobs' pods first so the new Jobs are the only ones
+# wait_my_project can match.  Mirrors pre_keycloak_config.
+#
+# Two Jobs, two namespaces:
+#   - my-project-quay-webhook-bootstrap (my-project ns) generates the Kargo
+#     webhook receiver Secret's token (HOL-1270).
+#   - my-project-quay-bootstrap (quay ns, HOL-1272) provisions the Quay org,
+#     repo, pull robot, the Argo CD repository Secret, and the repo_push webhook.
+#     It runs in the quay namespace because the admin OAuth token lives there.
 pre_my_project() {
   kubectl --context "${KUBE_CONTEXT}" --namespace my-project \
     delete job -l app.kubernetes.io/name=my-project-quay-webhook-bootstrap \
     --ignore-not-found --cascade=foreground --wait --request-timeout=60s
+  kubectl --context "${KUBE_CONTEXT}" --namespace quay \
+    delete job -l app.kubernetes.io/name=my-project-quay-bootstrap \
+    --ignore-not-found --cascade=foreground --wait --request-timeout=60s
 }
 
-# my-project: gate the webhook-token bootstrap Job's completion and the Kargo
-# Project's adoption of the my-project namespace.
+# my-project: gate the webhook-token bootstrap Job's completion, the Kargo
+# Project's adoption of the my-project namespace, and the Quay-provisioning Job's
+# completion (HOL-1272).
 #
 # The bootstrap Job generates the my-project-quay-webhook receiver Secret's token
 # once; phase 4's Quay bootstrap reads that token to register the webhook, so a
@@ -752,12 +763,20 @@ pre_my_project() {
 # Warehouse, and Stage reconcile.  Poll the Ready condition (mirrors
 # wait_kargo_project_echo) so a Stalled Project — e.g. the adoption label missing
 # — fails promptly with a clear pointer.
-wait_my_project() {
-  local job="job/my-project-quay-webhook-bootstrap"
+# gate_job NAMESPACE JOB_NAME: poll a bootstrap Job to completion, returning 0
+# when it reports Complete=True (or is already TTL-GC'd / absent — the state it
+# created survives the Job, so a missing Job is success), and 1 when it reports
+# Failed=True, times out, or cannot be queried repeatedly.  Polled rather than
+# `kubectl wait --for=condition=Complete` so a Failed Job fails the gate on the
+# next poll instead of blocking the full timeout.  Both my-project bootstrap Jobs
+# share this shape (the webhook-token Job in my-project, the Quay-provisioning Job
+# in quay), so the poll lives here once.
+gate_job() {
+  local namespace="$1" job="job/$2"
   local job_state lookup_failures=0
   local deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
   while true; do
-    if job_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace my-project \
+    if job_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace "${namespace}" \
       get "${job}" --ignore-not-found --request-timeout=10s \
       -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
       lookup_failures=0
@@ -765,23 +784,30 @@ wait_my_project() {
         break
       fi
       if grep -q '^Failed=True$' <<<"${job_state}"; then
-        echo "ERROR: ${job} failed; inspect it with:" >&2
-        echo "       kubectl --context ${KUBE_CONTEXT} --namespace my-project describe ${job}" >&2
+        echo "ERROR: ${namespace}/${job} failed; inspect it with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} --namespace ${namespace} describe ${job}" >&2
         return 1
       fi
     else
       lookup_failures=$((lookup_failures + 1))
       if ((lookup_failures >= 3)); then
-        echo "ERROR: cannot query ${job}: ${lookup_failures} consecutive lookup failures." >&2
+        echo "ERROR: cannot query ${namespace}/${job}: ${lookup_failures} consecutive lookup failures." >&2
         return 1
       fi
     fi
     if ((SECONDS >= deadline)); then
-      echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for ${job} to complete." >&2
+      echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for ${namespace}/${job} to complete." >&2
       return 1
     fi
     sleep 5
   done
+}
+
+wait_my_project() {
+  # The webhook-token Job (my-project ns) generates the receiver Secret's token;
+  # phase 4's Quay Job reads it, so surface a Failed bootstrap here by name rather
+  # than as a missing-Secret error two phases later.
+  gate_job my-project my-project-quay-webhook-bootstrap || return 1
 
   local project="project.kargo.akuity.io/my-project" state proj_lookup_failures=0
   local proj_deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
@@ -813,6 +839,14 @@ wait_my_project() {
     fi
     sleep 5
   done
+
+  # The Quay-provisioning Job (quay ns, HOL-1272) runs last: it depends on the
+  # Project being Ready (so the namespaced ProjectConfig reconciles and Kargo
+  # populates status.webhookReceivers[].url, which the Job reads to register the
+  # webhook) and on the webhook-token Secret existing.  Gate its completion so a
+  # failed Quay provisioning (missing org/repo/robot/webhook, or an unpopulated
+  # receiver URL) surfaces here rather than as a silently broken delivery loop.
+  gate_job quay my-project-quay-bootstrap || return 1
 }
 
 if ! command -v kubectl >/dev/null 2>&1; then
