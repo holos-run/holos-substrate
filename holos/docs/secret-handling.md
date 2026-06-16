@@ -8,9 +8,18 @@ HOL-1274 after HOL-1270 deferred exactly this kind of AC.
 
 ## Rule
 
-Secrets MUST be created at runtime and MUST NOT be committed to this repository
-— not as data, not as empty-data placeholders, not as base64 stubs. The deploy
-tree under `holos/deploy/` never contains a `Secret`'s sensitive material.
+A `Secret`'s sensitive **material** MUST NOT be committed to this repository —
+not as data, not as base64 stubs, not as a values file the render reads. The
+deploy tree under `holos/deploy/` never contains a Secret's material; the
+material is created at runtime.
+
+The rule is about material the platform owns. It does **not** forbid committing a
+Secret *manifest* that carries no material — for example a chart-owned,
+empty-data Secret that a third-party controller later populates in place (Helm
+renders `kargo-api` and `argocd-secret` this way, with `stringData: {}` / no
+`data`). What is forbidden is committing the secret value itself, and — for any
+Secret whose value a create-if-absent bootstrap Job generates (below) — even an
+empty-data placeholder for it, which would defeat the Job.
 
 Two runtime mechanisms are sanctioned, in order of preference:
 
@@ -26,9 +35,12 @@ Two runtime mechanisms are sanctioned, in order of preference:
    token is piped to `kubectl create -f -` on stdin so it never appears in the
    container's argv.
 
-A committed empty-data `Secret` is specifically forbidden: `scripts/apply` would
-create it before the bootstrap Job runs, tripping the Job's create-if-absent
-guard and leaving the value permanently empty.
+A committed empty-data placeholder for a **bootstrap-Job-managed** Secret is
+specifically forbidden: `scripts/apply` would create it before the Job runs,
+tripping the Job's create-if-absent guard and leaving the value permanently
+empty. (This is narrower than a blanket ban on empty Secrets — a chart-owned
+empty Secret that no bootstrap Job manages, populated by its own controller, is
+fine.)
 
 ## Resolving an ambiguous or literal AC about a Secret
 
