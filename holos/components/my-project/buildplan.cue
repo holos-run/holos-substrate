@@ -241,6 +241,13 @@ let ROBOT_ACCOUNT = "\(QUAY_ORG)+\(ROBOT_SHORTNAME)"
 // Named after the repo per holos/docs/argocd-application-source.md.
 let ARGOCD_REPO_SECRET = QUAY_REPO
 
+// KARGO_IMAGE_SECRET is the Kargo-format image credential Secret the Job writes
+// into the my-project namespace (label kargo.akuity.io/cred-type: image) so the
+// Kargo controller can authenticate to the PRIVATE my-project-config repo when
+// listing tags for the Warehouse (holos/docs/oci-publish-workflow.md).  Without
+// it, Warehouse discovery cannot reach the private repo and no Freight is created.
+let KARGO_IMAGE_SECRET = "\(QUAY_REPO)-image-creds"
+
 // QUAY_API is the in-cluster Quay REST API base URL.  The Job reaches Quay's
 // /api/v1 REST API over the plain-HTTP cluster Service (quay.quay.svc:8080), NOT
 // the public https://quay.holos.localhost hostname, on purpose:
@@ -581,15 +588,16 @@ let QUAY_BOOTSTRAP_SCRIPT = """
 	[ "${st}" = "200" ] || { echo "ERROR: grant robot pull on ${REPO_PATH} (HTTP ${st})"; cat /tmp/resp; exit 1; }
 	echo "Granted ${ROBOT} read access on ${REPO_PATH}."
 
-	# --- ArgoCD repository Secret (create-if-absent; argocd ns) ---
+	# --- ArgoCD repository Secret (reconcile; argocd ns) ---
 	# Holds the robot pull credential so Argo CD's repo-server can pull the private
-	# OCI artifact (holos/docs/argocd-application-source.md).  Job-owned and left
-	# untouched if it already exists so the robot token stays stable across
-	# re-applies (a regenerated token would break Argo CD until it re-syncs).
-	if kubectl -n \(ArgoCDNamespace) get secret \(ARGOCD_REPO_SECRET) >/dev/null 2>&1; then
-	  echo "Argo CD repository Secret \(ARGOCD_REPO_SECRET) exists; leaving it untouched."
-	else
-	  kubectl -n \(ArgoCDNamespace) create -f - <<EOF
+	# OCI artifact (holos/docs/argocd-application-source.md).  RECONCILED on every
+	# run (kubectl apply --server-side), NOT create-if-absent: Quay returns the
+	# robot's current token on the GET above, so applying it converges a stale URL
+	# or a rotated/regenerated robot token instead of leaving Argo CD wedged with a
+	# credential that no longer authenticates.  The token is stable across re-runs
+	# while the robot is unchanged, so a steady-state apply is a no-op.  Piped on
+	# stdin so the token never appears in argv.
+	kubectl -n \(ArgoCDNamespace) apply --server-side --force-conflicts -f - <<EOF
 	apiVersion: v1
 	kind: Secret
 	metadata:
@@ -606,12 +614,40 @@ let QUAY_BOOTSTRAP_SCRIPT = """
 	  password: ${ROBOT_TOKEN}
 	  insecure: "true"
 	EOF
-	  echo "Created Argo CD repository Secret \(ARGOCD_REPO_SECRET) in \(ArgoCDNamespace)."
-	fi
+	echo "Reconciled Argo CD repository Secret \(ARGOCD_REPO_SECRET) in \(ArgoCDNamespace)."
+
+	# --- Kargo image credential Secret (reconcile; my-project ns) ---
+	# Kargo's controller LISTs tags for the Warehouse using a Kargo-format image
+	# credential Secret (label kargo.akuity.io/cred-type: image) whose repoURL
+	# matches the subscription's bare repoURL (holos/docs/oci-publish-workflow.md).
+	# The my-project-config repo is PRIVATE, so without this Secret Warehouse
+	# discovery cannot authenticate and no Freight is ever created — the
+	# publish→deploy loop stalls.  Same robot pull credential as the Argo CD Secret;
+	# reconciled for the same reason.
+	kubectl -n \(NAMESPACE) apply --server-side --force-conflicts -f - <<EOF
+	apiVersion: v1
+	kind: Secret
+	metadata:
+	  name: \(KARGO_IMAGE_SECRET)
+	  namespace: \(NAMESPACE)
+	  labels:
+	    kargo.akuity.io/cred-type: image
+	    app.kubernetes.io/name: \(NAME)
+	stringData:
+	  repoURL: \(CONFIG_REPO)
+	  username: ${ROBOT}
+	  password: ${ROBOT_TOKEN}
+	EOF
+	echo "Reconciled Kargo image credential Secret \(KARGO_IMAGE_SECRET) in \(NAMESPACE)."
 
 	# --- read the Kargo receiver URL from ProjectConfig.status (poll) ---
 	# Kargo fills status.webhookReceivers[].url asynchronously after the
 	# ProjectConfig reconciles; poll until the quay receiver's URL appears.
+	#
+	# The receiver URL is itself the shared secret for the Kargo quay receiver (it
+	# embeds a hash derived from the receiver Secret — Kargo 1.10.3 ProjectConfig
+	# CRD), so it is NEVER echoed to the Job log: anyone reading the log could
+	# otherwise replay it.  Only its presence/absence is logged.
 	RECEIVER_URL=""
 	i=0
 	while [ "${i}" -lt 60 ]; do
@@ -622,17 +658,18 @@ let QUAY_BOOTSTRAP_SCRIPT = """
 	  sleep 5
 	done
 	[ -n "${RECEIVER_URL}" ] || { echo "ERROR: ProjectConfig \(NAME) quay receiver URL never populated"; exit 1; }
-	echo "Kargo quay receiver URL: ${RECEIVER_URL}"
+	echo "Resolved the Kargo quay receiver URL (value withheld — it is a shared secret)."
 
-	# Read (and require) the receiver Secret's token.  The Kargo quay receiver does
-	# NOT validate a token in the request — the hard-to-guess RECEIVER_URL is the
-	# shared secret (Kargo 1.10.3 ProjectConfig CRD) — so it is NOT sent to Quay;
-	# this read just asserts the receiver Secret exists (it backs the URL above).
+	# Require the receiver Secret to exist.  The Kargo quay receiver does NOT
+	# validate a token in the request — the hard-to-guess RECEIVER_URL is the shared
+	# secret (Kargo 1.10.3 ProjectConfig CRD) — so it is NOT sent to Quay; this read
+	# just asserts the receiver Secret exists (it backs the URL above).
 	kubectl -n \(NAMESPACE) get secret \(WEBHOOK_SECRET) >/dev/null 2>&1 || { echo "ERROR: receiver Secret \(WEBHOOK_SECRET) missing"; exit 1; }
 
 	# --- repo_push webhook notification (create-if-absent) ---
 	# List existing notifications and skip if an equivalent webhook already points
-	# at the receiver URL (idempotency); otherwise create it.
+	# at the receiver URL (idempotency); otherwise create it.  The receiver URL is a
+	# shared secret, so it is never echoed — only the repo path is logged.
 	st="$(http GET "/api/v1/repository/${REPO_PATH}/notification/")"
 	[ "${st}" = "200" ] || { echo "ERROR: list notifications on ${REPO_PATH} (HTTP ${st})"; cat /tmp/resp; exit 1; }
 	if jq -e --arg u "${RECEIVER_URL}" '.notifications // [] | .[] | select(.event=="repo_push" and .method=="webhook" and .config.url==$u)' < /tmp/resp >/dev/null; then
@@ -640,7 +677,7 @@ let QUAY_BOOTSTRAP_SCRIPT = """
 	else
 	  st="$(http POST "/api/v1/repository/${REPO_PATH}/notification/" "$(jq -nc --arg u "${RECEIVER_URL}" '{event:"repo_push",method:"webhook",config:{url:$u},eventConfig:{},title:"kargo-my-project"}')")"
 	  [ "${st}" = "201" ] || { echo "ERROR: create repo_push webhook on ${REPO_PATH} (HTTP ${st})"; cat /tmp/resp; exit 1; }
-	  echo "Created repo_push webhook on ${REPO_PATH} -> ${RECEIVER_URL}."
+	  echo "Created repo_push webhook on ${REPO_PATH}."
 	fi
 
 	echo "Quay provisioning complete for ${REPO_PATH}."
@@ -711,9 +748,13 @@ let QUAY_BOOTSTRAP_ROLE_BINDING_QUAY = {
 	}]
 }
 
-// Role in the my-project namespace: get the ProjectConfig (to read the
-// status receiver URL) and get the webhook receiver Secret.  Bound to the
-// quay-namespace ServiceAccount.
+// Role in the my-project namespace: get the ProjectConfig (to read the status
+// receiver URL), get the webhook receiver Secret, and reconcile the Kargo image
+// credential Secret (server-side apply needs get+create+patch).  create cannot be
+// restricted by resourceName (the API server does not evaluate resourceNames for
+// create), so the create grant is namespace-wide on secrets — the same scoping
+// the quay secret-keys bootstrap Role accepts; get/patch ARE scoped to the
+// specific Secrets.  Bound to the quay-namespace ServiceAccount.
 let QUAY_BOOTSTRAP_ROLE_PROJECT = {
 	apiVersion: "rbac.authorization.k8s.io/v1"
 	kind:       "Role"
@@ -732,8 +773,13 @@ let QUAY_BOOTSTRAP_ROLE_PROJECT = {
 		{
 			apiGroups: [""]
 			resources: ["secrets"]
-			verbs: ["get"]
-			resourceNames: [WEBHOOK_SECRET]
+			verbs: ["get", "patch"]
+			resourceNames: [WEBHOOK_SECRET, KARGO_IMAGE_SECRET]
+		},
+		{
+			apiGroups: [""]
+			resources: ["secrets"]
+			verbs: ["create"]
 		},
 	]
 }
@@ -758,12 +804,12 @@ let QUAY_BOOTSTRAP_ROLE_BINDING_PROJECT = {
 	}]
 }
 
-// Role in the argocd namespace: get (to check existence) and create the
-// repository Secret.  create cannot be restricted by resourceName (the API
+// Role in the argocd namespace: reconcile the repository Secret via server-side
+// apply (get+create+patch).  create cannot be restricted by resourceName (the API
 // server does not evaluate resourceNames for create), so the create grant is
 // namespace-wide on secrets — the same scoping the quay secret-keys bootstrap
-// Role accepts; get IS scoped to the one Secret.  Bound to the quay-namespace
-// ServiceAccount.
+// Role accepts; get/patch ARE scoped to the one Secret.  Bound to the
+// quay-namespace ServiceAccount.
 let QUAY_BOOTSTRAP_ROLE_ARGOCD = {
 	apiVersion: "rbac.authorization.k8s.io/v1"
 	kind:       "Role"
@@ -776,7 +822,7 @@ let QUAY_BOOTSTRAP_ROLE_ARGOCD = {
 		{
 			apiGroups: [""]
 			resources: ["secrets"]
-			verbs: ["get"]
+			verbs: ["get", "patch"]
 			resourceNames: [ARGOCD_REPO_SECRET]
 		},
 		{

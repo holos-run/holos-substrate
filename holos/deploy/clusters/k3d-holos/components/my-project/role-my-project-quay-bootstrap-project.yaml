@@ -18,7 +18,15 @@ rules:
   - ""
   resourceNames:
   - my-project-quay-webhook
+  - my-project-config-image-creds
   resources:
   - secrets
   verbs:
   - get
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create

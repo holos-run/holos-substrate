@@ -94,15 +94,16 @@ spec:
           [ "${st}" = "200" ] || { echo "ERROR: grant robot pull on ${REPO_PATH} (HTTP ${st})"; cat /tmp/resp; exit 1; }
           echo "Granted ${ROBOT} read access on ${REPO_PATH}."
 
-          # --- ArgoCD repository Secret (create-if-absent; argocd ns) ---
+          # --- ArgoCD repository Secret (reconcile; argocd ns) ---
           # Holds the robot pull credential so Argo CD's repo-server can pull the private
-          # OCI artifact (holos/docs/argocd-application-source.md).  Job-owned and left
-          # untouched if it already exists so the robot token stays stable across
-          # re-applies (a regenerated token would break Argo CD until it re-syncs).
-          if kubectl -n argocd get secret my-project-config >/dev/null 2>&1; then
-            echo "Argo CD repository Secret my-project-config exists; leaving it untouched."
-          else
-            kubectl -n argocd create -f - <<EOF
+          # OCI artifact (holos/docs/argocd-application-source.md).  RECONCILED on every
+          # run (kubectl apply --server-side), NOT create-if-absent: Quay returns the
+          # robot's current token on the GET above, so applying it converges a stale URL
+          # or a rotated/regenerated robot token instead of leaving Argo CD wedged with a
+          # credential that no longer authenticates.  The token is stable across re-runs
+          # while the robot is unchanged, so a steady-state apply is a no-op.  Piped on
+          # stdin so the token never appears in argv.
+          kubectl -n argocd apply --server-side --force-conflicts -f - <<EOF
           apiVersion: v1
           kind: Secret
           metadata:
@@ -119,12 +120,40 @@ spec:
             password: ${ROBOT_TOKEN}
             insecure: "true"
           EOF
-            echo "Created Argo CD repository Secret my-project-config in argocd."
-          fi
+          echo "Reconciled Argo CD repository Secret my-project-config in argocd."
+
+          # --- Kargo image credential Secret (reconcile; my-project ns) ---
+          # Kargo's controller LISTs tags for the Warehouse using a Kargo-format image
+          # credential Secret (label kargo.akuity.io/cred-type: image) whose repoURL
+          # matches the subscription's bare repoURL (holos/docs/oci-publish-workflow.md).
+          # The my-project-config repo is PRIVATE, so without this Secret Warehouse
+          # discovery cannot authenticate and no Freight is ever created — the
+          # publish→deploy loop stalls.  Same robot pull credential as the Argo CD Secret;
+          # reconciled for the same reason.
+          kubectl -n my-project apply --server-side --force-conflicts -f - <<EOF
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: my-project-config-image-creds
+            namespace: my-project
+            labels:
+              kargo.akuity.io/cred-type: image
+              app.kubernetes.io/name: my-project
+          stringData:
+            repoURL: quay.holos.localhost/my-project/my-project-config
+            username: ${ROBOT}
+            password: ${ROBOT_TOKEN}
+          EOF
+          echo "Reconciled Kargo image credential Secret my-project-config-image-creds in my-project."
 
           # --- read the Kargo receiver URL from ProjectConfig.status (poll) ---
           # Kargo fills status.webhookReceivers[].url asynchronously after the
           # ProjectConfig reconciles; poll until the quay receiver's URL appears.
+          #
+          # The receiver URL is itself the shared secret for the Kargo quay receiver (it
+          # embeds a hash derived from the receiver Secret — Kargo 1.10.3 ProjectConfig
+          # CRD), so it is NEVER echoed to the Job log: anyone reading the log could
+          # otherwise replay it.  Only its presence/absence is logged.
           RECEIVER_URL=""
           i=0
           while [ "${i}" -lt 60 ]; do
@@ -135,17 +164,18 @@ spec:
             sleep 5
           done
           [ -n "${RECEIVER_URL}" ] || { echo "ERROR: ProjectConfig my-project quay receiver URL never populated"; exit 1; }
-          echo "Kargo quay receiver URL: ${RECEIVER_URL}"
+          echo "Resolved the Kargo quay receiver URL (value withheld — it is a shared secret)."
 
-          # Read (and require) the receiver Secret's token.  The Kargo quay receiver does
-          # NOT validate a token in the request — the hard-to-guess RECEIVER_URL is the
-          # shared secret (Kargo 1.10.3 ProjectConfig CRD) — so it is NOT sent to Quay;
-          # this read just asserts the receiver Secret exists (it backs the URL above).
+          # Require the receiver Secret to exist.  The Kargo quay receiver does NOT
+          # validate a token in the request — the hard-to-guess RECEIVER_URL is the shared
+          # secret (Kargo 1.10.3 ProjectConfig CRD) — so it is NOT sent to Quay; this read
+          # just asserts the receiver Secret exists (it backs the URL above).
           kubectl -n my-project get secret my-project-quay-webhook >/dev/null 2>&1 || { echo "ERROR: receiver Secret my-project-quay-webhook missing"; exit 1; }
 
           # --- repo_push webhook notification (create-if-absent) ---
           # List existing notifications and skip if an equivalent webhook already points
-          # at the receiver URL (idempotency); otherwise create it.
+          # at the receiver URL (idempotency); otherwise create it.  The receiver URL is a
+          # shared secret, so it is never echoed — only the repo path is logged.
           st="$(http GET "/api/v1/repository/${REPO_PATH}/notification/")"
           [ "${st}" = "200" ] || { echo "ERROR: list notifications on ${REPO_PATH} (HTTP ${st})"; cat /tmp/resp; exit 1; }
           if jq -e --arg u "${RECEIVER_URL}" '.notifications // [] | .[] | select(.event=="repo_push" and .method=="webhook" and .config.url==$u)' < /tmp/resp >/dev/null; then
@@ -153,7 +183,7 @@ spec:
           else
             st="$(http POST "/api/v1/repository/${REPO_PATH}/notification/" "$(jq -nc --arg u "${RECEIVER_URL}" '{event:"repo_push",method:"webhook",config:{url:$u},eventConfig:{},title:"kargo-my-project"}')")"
             [ "${st}" = "201" ] || { echo "ERROR: create repo_push webhook on ${REPO_PATH} (HTTP ${st})"; cat /tmp/resp; exit 1; }
-            echo "Created repo_push webhook on ${REPO_PATH} -> ${RECEIVER_URL}."
+            echo "Created repo_push webhook on ${REPO_PATH}."
           fi
 
           echo "Quay provisioning complete for ${REPO_PATH}."
