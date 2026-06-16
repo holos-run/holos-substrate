@@ -210,10 +210,11 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 
 // QUAY_NAMESPACE is the namespace the Quay-provisioning Job and its
 // ServiceAccount render into.  The Job runs THERE — not in my-project — because
-// the credentials it needs live there: the admin OAuth token
-// (quay-initial-admin Secret, key `token`) and the local-CA trust cert
-// (quay-local-ca Secret, key `ca.crt`).  Unifying with #RegisteredNamespace ties
-// the literal to the registry (holos/namespaces.cue).
+// the admin OAuth token it authenticates with (quay-initial-admin Secret, key
+// `token`) lives there.  No local-CA trust cert is needed: the Job drives Quay's
+// REST API over the plain-HTTP cluster Service (see QUAY_API), so there is no TLS
+// to trust.  Unifying with #RegisteredNamespace ties the literal to the registry
+// (holos/namespaces.cue).
 let QUAY_NAMESPACE = "quay" & #RegisteredNamespace
 
 // QUAY_BOOTSTRAP names the Quay-provisioning Job and its ServiceAccount/Roles.
@@ -504,9 +505,8 @@ let WEBHOOK_BOOTSTRAP_JOB = {
 // secret" and "does NOT need to be shared directly with Quay".  So the Job reads
 // the hard-to-guess receiver URL from ProjectConfig.status and registers it
 // verbatim as the webhook config.url; the URL itself is the credential.  The Job
-// still reads the my-project-quay-webhook Secret's token (AC compliance / a
-// guard that the receiver Secret exists), but Quay's webhook config carries no
-// token because the receiver ignores one.
+// asserts the my-project-quay-webhook receiver Secret exists (it backs the URL),
+// but does NOT send its token to Quay, because the receiver ignores any token.
 //
 // Polling: ProjectConfig.status.webhookReceivers[].url is populated
 // asynchronously by Kargo after the ProjectConfig reconciles, so the script
@@ -1061,10 +1061,13 @@ userDefinedBuildPlan: {
 					// Job render into the quay namespace; its three Role/RoleBinding
 					// pairs span the quay, my-project, and argocd namespaces.  Each
 					// #Resources entry is keyed by a UNIQUE internal label per Kind
-					// (the namespace alone does not disambiguate map keys), so the
-					// three Roles/RoleBindings carry "-quay"/"-project"/"-argocd"
-					// suffixes; the rendered metadata.name stays QUAY_BOOTSTRAP in
-					// every namespace (one name, three namespaces).
+					// (the namespace alone does not disambiguate map keys), AND
+					// kubectl-slice keys output filenames on kind+metadata.name — so
+					// the three Roles/RoleBindings carry a "-quay"/"-project"/"-argocd"
+					// suffix on BOTH the map key and their metadata.name (otherwise
+					// three same-named Roles would collide into one sliced file).  The
+					// ServiceAccount and Job keep the bare QUAY_BOOTSTRAP name (one
+					// each, no collision).
 					ServiceAccount: (QUAY_BOOTSTRAP):              QUAY_BOOTSTRAP_SERVICE_ACCOUNT
 					Job: (QUAY_BOOTSTRAP):                         QUAY_BOOTSTRAP_JOB
 					Role: (QUAY_BOOTSTRAP_ROLE_QUAY.metadata.name):                    QUAY_BOOTSTRAP_ROLE_QUAY
