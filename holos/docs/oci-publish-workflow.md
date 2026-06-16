@@ -365,65 +365,74 @@ ways that simplify the operator workflow:
   credential Secrets, and a push triggers Freight discovery via the webhook
   immediately rather than waiting on the Warehouse poll interval.
 
-### Publish a first artifact and verify end-to-end
+### Verify the scaffold, and the end-to-end contract it will satisfy
 
 Prerequisites: the cluster is up and `scripts/apply` has run (so both
 `my-project` bootstrap Jobs completed — `wait_my_project` gates them — leaving
 the Quay org/repo/webhook and the Argo CD repository Secret in place).
 
+> **The publish step is future work — do not run it against the platform
+> render.** `scripts/publish` today packages the **whole-platform** render
+> (`holos render platform` → every rendered resource, including cluster-scoped
+> CRDs/ClusterRoles/Namespaces and other namespaces' objects). The `my-project`
+> AppProject deliberately omits `clusterResourceWhitelist` and scopes
+> destinations to the `my-project` namespace, so a whole-platform artifact
+> **cannot** sync into this Application. The artifact this scaffold consumes is
+> a **project-scoped** `my-project-config` bundle (manifests that fit inside the
+> `my-project` namespace), which is the sample app's own future work and does
+> not exist yet. So the publish command below is shown only to name the eventual
+> entry point, **not** as a step to run today; steps 1–3 (publish → webhook →
+> Freight → promotion) describe the contract the scaffold satisfies once that
+> project-scoped artifact exists, and the step-4 `Synced` result is reachable
+> only for such an artifact.
+
+What you **can** verify today is that the scaffold is in place:
+
 ```bash
 KCTX=k3d-holos
 
-# 0. The scaffold exists: the Kargo pipeline objects, the Argo CD Application
-#    (targetRevision empty until the first promotion), the Quay repo, and the
-#    repo_push webhook the bootstrap Job registered.
+# The Kargo pipeline objects, the Argo CD Application (targetRevision empty
+# until the first promotion), and the repo_push webhook receiver URL the
+# bootstrap Job registered (filled in asynchronously by Kargo).
 kubectl --context "$KCTX" -n my-project get projectconfig,warehouse,stage
 kubectl --context "$KCTX" -n argocd get application my-project \
   -o jsonpath='{.spec.source.targetRevision}{"\n"}'   # empty until first promotion
-#    The receiver URL the webhook targets (filled in asynchronously by Kargo):
 kubectl --context "$KCTX" -n my-project get projectconfig my-project \
   -o jsonpath='{.status.webhookReceivers[?(@.name=="quay")].url}{"\n"}'
+```
 
-# 1. Publish a project-scoped my-project-config artifact to the repo the
-#    Warehouse watches (the second positional argument is the publish target).
-#
-#    SCOPE NOTE: scripts/publish today packages the WHOLE-platform render
-#    (`holos render platform` → every rendered resource, including cluster-scoped
-#    CRDs/ClusterRoles/Namespaces and other namespaces' objects).  The my-project
-#    AppProject deliberately omits clusterResourceWhitelist and scopes
-#    destinations to the my-project namespace, so a whole-platform artifact would
-#    fail the Application sync in step 4.  A project-scoped my-project-config
-#    artifact — manifests that fit inside the my-project namespace — is the
-#    sample app's own future work (the artifact does not exist yet).  Until a
-#    project-scoped publisher exists, treat step 4 as the contract this scaffold
-#    will satisfy, not a command to run against the platform render.
-DIGEST=$(scripts/publish \
-  quay.holos.localhost/my-project/<app-image>:<tag> \
-  quay.holos.localhost/my-project/my-project-config)
-echo "published $DIGEST"
+The full delivery loop the scaffold will drive, once a project-scoped
+`my-project-config` artifact is published to the repo the Warehouse watches
+(`quay.holos.localhost/my-project/my-project-config` — the second positional
+argument to `scripts/publish`, the publish target):
+
+```bash
+# 1. (future) Publish a PROJECT-SCOPED my-project-config artifact — see the
+#    callout above; scripts/publish does not produce one today.
+#    DIGEST=$(scripts/publish <app-image-ref> \
+#      quay.holos.localhost/my-project/my-project-config)
 
 # 2. The repo_push webhook POSTs to the Kargo receiver; the Warehouse discovers
 #    the artifact and creates Freight (immediately via the webhook, or within
-#    the poll interval as a fallback).
+#    the poll interval as a fallback).  A Freight object appears whose image
+#    digest matches the published digest.
 kubectl --context "$KCTX" -n my-project get freight -w
-#    A Freight object appears whose image digest matches $DIGEST.
 
-# 3. Auto-promotion runs the project-config Stage's argocd-update step.
+# 3. Auto-promotion runs the project-config Stage's argocd-update step; the
+#    Promotion PHASE column reaches Succeeded.
 kubectl --context "$KCTX" -n my-project get promotion
-#    PHASE column reaches Succeeded.
 
-# 4. The Argo CD Application's OCI targetRevision is now the new digest and syncs.
-#    Syncs cleanly only for a project-scoped artifact (see the SCOPE NOTE above).
+# 4. The Argo CD Application's OCI targetRevision is now the new digest and syncs
+#    (Synced only for a project-scoped artifact — see the callout above).
 kubectl --context "$KCTX" -n argocd get application my-project \
   -o jsonpath='{.spec.source.targetRevision}{"  "}{.status.sync.status}{"\n"}'
-#    targetRevision == $DIGEST, sync status Synced.
 ```
 
-The end-to-end path is identical in shape to the echo loop — publish →
-webhook → Warehouse Freight → Stage promotion → Application sync — but driven
-by the real `repo_push` webhook and requiring no hand-created credential
-Secrets, because the `my-project` bootstrap Jobs provisioned them. The one
-remaining gap is the **content** of the published artifact: discovery and
-promotion (steps 2–3) work for any artifact, but a clean Application **sync**
-(step 4) needs a project-scoped artifact, which is the sample app's future
-work — not the whole-platform render `scripts/publish` produces today.
+The path is identical in shape to the echo loop — publish → webhook →
+Warehouse Freight → Stage promotion → Application sync — but driven by the real
+`repo_push` webhook and requiring no hand-created credential Secrets, because
+the `my-project` bootstrap Jobs provisioned them. The remaining gap is the
+**content** of the published artifact: discovery and promotion (steps 2–3) work
+for any artifact, but a clean Application **sync** (step 4) needs a
+project-scoped `my-project-config` artifact, which is the sample app's future
+work.

@@ -853,8 +853,12 @@ Stage, and the Quay org/repo/webhook/robot bootstrap. `my-project` is the
 hand-authored reference instance that proves the shape end-to-end before that
 generator exists.
 
-**Publishing and verifying end-to-end.** To publish a first
-`my-project-config` artifact (`oras push` via `scripts/publish`) and verify the
-push → webhook → Warehouse Freight → Stage promotion → Application sync path,
-see
-[oci-publish-workflow.md → my-project delivery scaffold](docs/oci-publish-workflow.md#downstream-the-my-project-delivery-scaffold).
+**Verifying the scaffold, and the end-to-end contract it will satisfy.** The
+scaffold (Kargo pipeline, Application, Quay repo + webhook) is verifiable today;
+the publish step that drives the full push → webhook → Warehouse Freight →
+Stage promotion → Application sync loop is **future work**, because a clean
+sync needs a **project-scoped** `my-project-config` artifact and `scripts/publish`
+today produces only the whole-platform render, which the constrained
+`my-project` AppProject cannot sync. The verification commands and that scope
+boundary are documented in
+[oci-publish-workflow.md → the `my-project` delivery scaffold](docs/oci-publish-workflow.md#downstream-the-my-project-delivery-scaffold).
