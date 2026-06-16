@@ -244,8 +244,10 @@ whether or not we adopt the operator at layer 1**.
 1. **Keep the current hand-authored Quay deployment for the MVP.** It already
    satisfies Goals 4 and 5 cleanly, provides the Goal-1 credential, and carries
    the Goal-2 webhook wiring (in the `my-project` scaffold). Adopting the
-   operator now would add OLM and a `QuayRegistry` reconciler, force most
-   components unmanaged on k3d, and advance *none* of Goals 1, 2, 4, or 5.
+   operator now would add OLM and a `QuayRegistry` reconciler, force the
+   OpenShift-coupled components (`route`, `tls`, `objectstorage`, `monitoring`)
+   unmanaged on k3d and push blob storage off the local PVC, and advance *none*
+   of Goals 1, 2, 4, or 5.
 2. **Invest the next increment in a holos-paas `Repository` (and
    `ProjectRequest`) CRD + reconciler** that calls Quay's REST API to create the
    org/repo/robot and register the `repo_push` webhook against the project's
