@@ -22,7 +22,7 @@ spec:
   template:
     metadata:
       annotations:
-        configmap/checksum: b79c2a9fd506293d4214437e7b5013b8ee656050595962c23bd3396fce809a04
+        configmap/checksum: f9e9b4280b69d1a793d4e9abed4f4d404422f867f646f0bdbf18680368db68ed
       labels:
         app.kubernetes.io/component: external-webhooks-server
         app.kubernetes.io/instance: kargo
@@ -60,18 +60,16 @@ spec:
           httpGet:
             path: /healthz
             port: 8080
-            scheme: HTTPS
           initialDelaySeconds: 10
         name: webhooks-server
         ports:
         - containerPort: 8080
-          name: https
+          name: http
           protocol: TCP
         readinessProbe:
           httpGet:
             path: /healthz
             port: 8080
-            scheme: HTTPS
           initialDelaySeconds: 5
         resources:
           limits:
@@ -83,19 +81,4 @@ spec:
           runAsNonRoot: true
           seccompProfile:
             type: RuntimeDefault
-        volumeMounts:
-        - mountPath: /etc/kargo
-          name: config
-          readOnly: true
       serviceAccount: kargo-external-webhooks-server
-      volumes:
-      - name: config
-        projected:
-          sources:
-          - secret:
-              items:
-              - key: tls.crt
-                path: tls.crt
-              - key: tls.key
-                path: tls.key
-              name: kargo-external-webhooks-server-cert

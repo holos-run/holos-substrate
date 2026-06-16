@@ -1,13 +1,10 @@
 apiVersion: v1
 data:
-  EXTERNAL_WEBHOOK_SERVER_BASE_URL: https://localhost
+  EXTERNAL_WEBHOOK_SERVER_BASE_URL: https://kargo-webhooks.holos.localhost
   KARGO_NAMESPACE: kargo
   LOG_FORMAT: JSON
   LOG_LEVEL: INFO
   SYSTEM_RESOURCES_NAMESPACE: kargo-system-resources
-  TLS_CERT_PATH: /etc/kargo/tls.crt
-  TLS_ENABLED: "true"
-  TLS_KEY_PATH: /etc/kargo/tls.key
 kind: ConfigMap
 metadata:
   labels:
