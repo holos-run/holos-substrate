@@ -43,12 +43,23 @@ package holos
 //     kargo-api Service to it.  api.tls.enabled: false makes the API serve
 //     plain HTTP behind the Gateway; the kargo namespace is ambient-enrolled
 //     (holos/namespaces.cue), so the Gateway→api hop is secured by the mesh.
-//   - Keeps the chart's cert-manager-issued self-signed certificates for the
-//     internal webhooks server (webhooksServer.tls.selfSignedCert: true, the
+//   - Keeps the chart's cert-manager-issued self-signed certificate for the
+//     INTERNAL webhooks server (webhooksServer.tls.selfSignedCert: true, the
 //     chart default): cert-manager IS installed on this cluster
 //     (components/cert-manager), so the chart's Issuer/Certificate render and
 //     the Kubernetes API server trusts the webhook over TLS without the
 //     reference's external-CA webhook patches.
+//   - Exposes the EXTERNAL webhooks server at
+//     https://kargo-webhooks.holos.localhost through the same shared Gateway
+//     (HOL-1271): the WEBHOOK_HTTPROUTE pair attaches the
+//     kargo-external-webhooks-server Service to the Gateway and
+//     externalWebhooksServer.host sets the EXTERNAL_WEBHOOK_SERVER_BASE_URL the
+//     ProjectConfig webhook receivers advertise (the URL Quay POSTs to in
+//     HOL-1272).  externalWebhooksServer.tls.enabled: false makes the server
+//     serve plain HTTP behind the Gateway (the kargo-api posture, secured by
+//     the ambient mesh); terminatedUpstream: true keeps the advertised URL
+//     https.  WEBHOOK_SERVICE_ENTRY makes the hostname resolvable in-cluster so
+//     callers in other namespaces (Quay) reach it via the Gateway.
 //   - Runs one replica of each server (laptop footprint).
 //
 // The Project / Warehouse / Stage configuration is out of scope this phase
@@ -95,6 +106,18 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 // docs/local-cluster.md.
 let HOSTNAME = "kargo.holos.localhost"
 
+// kargo-webhooks.holos.localhost is the hostname the external-webhooks server
+// advertises in ProjectConfig.status.webhookReceivers[].url and the hostname
+// the shared Gateway routes to the kargo-external-webhooks-server Service.  It
+// matches the same *.holos.localhost wildcard listener and resolves to
+// 127.0.0.1 on the host (docs/local-cluster.md).  Giving the external-webhooks
+// server its OWN hostname (rather than a /webhooks path under
+// kargo.holos.localhost) keeps the receiver URL self-contained — the chart
+// derives the base URL from externalWebhooksServer.host below, and the
+// WEBHOOK_SERVICE_ENTRY makes it resolvable for in-cluster callers (Quay in the
+// quay namespace).
+let WEBHOOK_HOSTNAME = "kargo-webhooks.holos.localhost"
+
 // The shared Gateway's namespace and name (components/istio-gateway).  Nothing
 // ties these literals to the istio-gateway component at render time, so a
 // Gateway rename surfaces only at runtime — update both components together
@@ -129,6 +152,15 @@ let CA_CERT_SECRET = "kargo-local-ca"
 // pattern.
 let API_SERVICE = "kargo-api"
 let API_PORT = 80
+
+// The chart names the external-webhooks Service kargo-external-webhooks-server.
+// With externalWebhooksServer.tls.enabled: false it serves plain HTTP on
+// service port 80 (the chart's service template switches the port from 443 to
+// 80 when tls.enabled is false), so the Gateway terminates TLS and the backend
+// hop is plain HTTP behind the ambient mesh — identical to the kargo-api
+// posture above.
+let WEBHOOK_SERVICE = "kargo-external-webhooks-server"
+let WEBHOOK_PORT = 80
 
 // HTTPROUTE attaches the Kargo API/UI to the shared Gateway's https listener
 // only: the UI carries session credentials, so it must never be served over
@@ -191,6 +223,110 @@ let HTTPROUTE_REDIRECT = {
 					statusCode: 301
 				}
 			}]
+		}]
+	}
+}
+
+// WEBHOOK_HTTPROUTE attaches the Kargo external-webhooks server to the shared
+// Gateway's https listener for kargo-webhooks.holos.localhost — the same
+// HTTPRoute shape as HTTPROUTE above, pointed at the
+// kargo-external-webhooks-server Service.  The webhook receiver endpoint
+// accepts authenticated POSTs from Quay (the secret-token validates the
+// caller), so it is served over the https listener; the companion redirect
+// route below sends plaintext port 80 to HTTPS.  Cross-namespace attachment
+// needs no ReferenceGrant because the shared listener sets
+// allowedRoutes.namespaces.from: All (istio-gateway component).
+let WEBHOOK_HTTPROUTE = {
+	apiVersion: "gateway.networking.k8s.io/v1"
+	kind:       "HTTPRoute"
+	metadata: {
+		name:      WEBHOOK_SERVICE
+		namespace: NAMESPACE
+		labels: "app.kubernetes.io/name": NAME
+	}
+	spec: {
+		parentRefs: [{
+			name:        GATEWAY_NAME
+			namespace:   GATEWAY_NAMESPACE
+			sectionName: "https"
+		}]
+		hostnames: [WEBHOOK_HOSTNAME]
+		rules: [{
+			matches: [{path: {type: "PathPrefix", value: "/"}}]
+			backendRefs: [{
+				name: WEBHOOK_SERVICE
+				port: WEBHOOK_PORT
+			}]
+		}]
+	}
+}
+
+// Companion to WEBHOOK_HTTPROUTE: bound to the http listener only, it
+// permanently redirects plaintext requests for the webhook hostname to HTTPS
+// (mirroring HTTPROUTE_REDIRECT for the API hostname).  A RequestRedirect
+// filter terminates the request at the Gateway; no backendRefs.
+let WEBHOOK_HTTPROUTE_REDIRECT = {
+	apiVersion: "gateway.networking.k8s.io/v1"
+	kind:       "HTTPRoute"
+	metadata: {
+		name:      "\(WEBHOOK_SERVICE)-redirect-http"
+		namespace: NAMESPACE
+		labels: "app.kubernetes.io/name": NAME
+	}
+	spec: {
+		parentRefs: [{
+			name:        GATEWAY_NAME
+			namespace:   GATEWAY_NAMESPACE
+			sectionName: "http"
+		}]
+		hostnames: [WEBHOOK_HOSTNAME]
+		rules: [{
+			filters: [{
+				type: "RequestRedirect"
+				requestRedirect: {
+					scheme:     "https"
+					statusCode: 301
+				}
+			}]
+		}]
+	}
+}
+
+// WEBHOOK_SERVICE_ENTRY makes kargo-webhooks.holos.localhost a service the mesh
+// resolves, so in-cluster callers — notably the Quay webhook Job in the quay
+// namespace (HOL-1272) — reach the external-webhooks server through the shared
+// Gateway exactly as the host would.  This is the quay.holos.localhost
+// ServiceEntry pattern (components/quay/buildplan.cue) and the auth.holos.localhost
+// SERVICE_ENTRY above, applied here for the same reason: *.localhost names
+// resolve to loopback both upstream of CoreDNS (RFC 6761) and inside ztunnel's
+// DNS proxy, so a CoreDNS rewrite never sees queries from ambient-enrolled
+// pods.  The ServiceEntry fixes both layers at once — ztunnel answers enrolled
+// pods' queries with the auto-allocated VIP and routes connections to that VIP
+// to the shared Gateway, which terminates TLS for *.holos.localhost and routes
+// by Host to WEBHOOK_HTTPROUTE.  protocol TLS keeps ztunnel at L4 (the Gateway
+// terminates TLS); resolution DNS tracks the Gateway Service by name so the
+// entry survives ClusterIP changes.  Lives in the kargo namespace (where the
+// receiver Service lives); exportTo is left at its mesh-wide default so every
+// enrolled namespace — including quay — resolves the receiver hostname, exactly
+// as the quay and auth ServiceEntries do.
+let WEBHOOK_SERVICE_ENTRY = {
+	apiVersion: "networking.istio.io/v1"
+	kind:       "ServiceEntry"
+	metadata: {
+		name:      "kargo-webhooks-holos-localhost"
+		namespace: NAMESPACE
+		labels: "app.kubernetes.io/name": NAME
+	}
+	spec: {
+		hosts: [WEBHOOK_HOSTNAME]
+		ports: [{
+			number:   443
+			name:     "tls"
+			protocol: "TLS"
+		}]
+		resolution: "DNS"
+		endpoints: [{
+			address: "\(GATEWAY_NAME)-istio.\(GATEWAY_NAMESPACE).svc.cluster.local"
 		}]
 	}
 }
@@ -499,13 +635,16 @@ userDefinedBuildPlan: {
 						}
 
 						// The remaining servers run one replica each (laptop
-						// footprint) with modest resources.  The internal and
-						// external webhooks servers keep the chart's
-						// cert-manager-issued self-signed certs
-						// (tls.selfSignedCert: true, the chart default):
+						// footprint) with modest resources.  The INTERNAL webhooks
+						// server keeps the chart's cert-manager-issued self-signed
+						// cert (tls.selfSignedCert: true, the chart default):
 						// cert-manager is installed on this cluster, so the
 						// Issuer/Certificate render and the Kubernetes API server
-						// trusts the internal webhook over TLS.
+						// trusts the internal webhook over TLS.  The EXTERNAL
+						// webhooks server, by contrast, is exposed through the
+						// shared Gateway and serves plain HTTP behind the ambient
+						// mesh (externalWebhooksServer.host/tls below) - the
+						// kargo-api posture.
 						webhooksServer: {
 							replicas:  1
 							logFormat: "JSON"
@@ -521,6 +660,28 @@ userDefinedBuildPlan: {
 						externalWebhooksServer: {
 							replicas:  1
 							logFormat: "JSON"
+							// The host the external-webhooks server advertises in
+							// EXTERNAL_WEBHOOK_SERVER_BASE_URL (the value Kargo
+							// publishes in ProjectConfig.status.webhookReceivers[].url
+							// and that Quay POSTs to).  It MUST match the
+							// WEBHOOK_HTTPROUTE hostname; the https scheme is inferred
+							// from tls.terminatedUpstream below.
+							host: WEBHOOK_HOSTNAME
+							// The shared Gateway terminates TLS for
+							// kargo-webhooks.holos.localhost (WEBHOOK_HTTPROUTE); the
+							// server serves plain HTTP behind it, exactly as the
+							// kargo-api server does (api.tls above).  tls.enabled:
+							// false switches the chart's Service port from 443 to 80
+							// and emits no self-signed cert Secret/Issuer for this
+							// server; terminatedUpstream: true still forces the
+							// advertised base URL to https so Quay's receiver URL uses
+							// the browser-facing scheme.  The kargo namespace is
+							// ambient-enrolled (holos/namespaces.cue), so the
+							// Gateway-to-server hop is secured by the mesh.
+							tls: {
+								enabled:            false
+								terminatedUpstream: true
+							}
 							resources: {
 								requests: {
 									cpu:    "20m"
@@ -560,11 +721,16 @@ userDefinedBuildPlan: {
 				// API schemas at render time.
 				resources: #Resources & {
 					HTTPRoute: {
-						(HTTPROUTE.metadata.name):          HTTPROUTE
-						(HTTPROUTE_REDIRECT.metadata.name): HTTPROUTE_REDIRECT
+						(HTTPROUTE.metadata.name):                  HTTPROUTE
+						(HTTPROUTE_REDIRECT.metadata.name):         HTTPROUTE_REDIRECT
+						(WEBHOOK_HTTPROUTE.metadata.name):          WEBHOOK_HTTPROUTE
+						(WEBHOOK_HTTPROUTE_REDIRECT.metadata.name): WEBHOOK_HTTPROUTE_REDIRECT
 					}
 					Certificate: (CA_CERTIFICATE.metadata.name): CA_CERTIFICATE
-					ServiceEntry: (SERVICE_ENTRY.metadata.name): SERVICE_ENTRY
+					ServiceEntry: {
+						(SERVICE_ENTRY.metadata.name):         SERVICE_ENTRY
+						(WEBHOOK_SERVICE_ENTRY.metadata.name): WEBHOOK_SERVICE_ENTRY
+					}
 				}
 			}]
 			transformers: [

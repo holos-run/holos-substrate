@@ -45,6 +45,16 @@ This installs dnsmasq via Homebrew, writes
 LaunchDaemon idempotently, and writes `/etc/resolver/holos.localhost`.
 Requires `sudo` for system DNS configuration.
 
+The single wildcard rule covers every per-service hostname the platform
+serves through the shared Istio Gateway, so no per-host `/etc/hosts` entries
+are needed. The hostnames in use today are `auth.holos.localhost` (Keycloak),
+`quay.holos.localhost` (Quay registry), `argocd.holos.localhost` (Argo CD),
+`kargo.holos.localhost` (Kargo API/UI), and `kargo-webhooks.holos.localhost`
+(Kargo's external-webhooks receiver — the URL Kargo advertises in
+`ProjectConfig.status.webhookReceivers[].url` for Quay to POST to). Each
+resolves to `127.0.0.1` on the host via the wildcard above and to the shared
+Gateway VIP in-cluster via a `ServiceEntry`.
+
 ## Create the Cluster
 
 Create a local k3d cluster with a container registry:

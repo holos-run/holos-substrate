@@ -22,7 +22,7 @@ spec:
   template:
     metadata:
       annotations:
-        configmap/checksum: cf3fad4e66a003766281f806000d1250be7d96e9aa95415ac3e07f2a376fd0eb
+        configmap/checksum: 21dc0e71636212b80daaad5c926751965a22f6d0fb53791228e847881c05c889
       labels:
         app.kubernetes.io/component: management-controller
         app.kubernetes.io/instance: kargo
