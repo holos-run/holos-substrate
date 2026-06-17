@@ -100,11 +100,12 @@ shared `groups` claim. Automatic group→Quay-team synchronization is **on**
 (`FEATURE_TEAM_SYNCING: true`, `TEAM_RESYNC_STALE_TIME: 30m`, ADR-15 Revision 4):
 under the OIDC backend the user handler syncs OIDC groups, so Quay team
 membership tracks the claim on the 30-minute resync cadence. The design is
-recorded in [ADR-15](../../docs/adr/ADR-15.md); the operator-facing overview is
-in [`holos/README.md`](../README.md#quay-oidc-sso-and-roles) and the
-verification steps are in
-[Verify Quay](../../docs/local-cluster.md#verify-quay). There is no local `admin`
-user; the seeded superusers are the two Keycloak realm users
+recorded in [ADR-15](../../docs/adr/ADR-15.md) and the verification steps are in
+[Verify Quay](../../docs/local-cluster.md#verify-quay). (The
+[`holos/README.md`](../README.md#quay-oidc-sso-and-roles) Quay overview still
+describes the prior Database backend; it is brought in line with this
+OIDC-backend model by the HOL-1293 cleanup phase, HOL-1298.) There is no local
+`admin` user; the seeded superusers are the two Keycloak realm users
 `svc-quay-resource-controller` (a service account) and `quay-admin` (a human
 administrator) in `SUPER_USERS`.
 

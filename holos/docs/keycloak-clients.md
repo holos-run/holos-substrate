@@ -214,10 +214,11 @@ user's `preferred_username` to `SUPER_USERS` in
 re-render/apply. Under the OIDC backend there is no local `admin` user; the
 seeded superusers are the two Keycloak realm users `svc-quay-resource-controller`
 (a service account) and `quay-admin` (a human administrator), both in
-`SUPER_USERS` (ADR-15 Revision 4). This keeps the README's
-[Quay OIDC SSO and roles](../README.md#quay-oidc-sso-and-roles) statement
-consistent: superuser status comes solely from `SUPER_USERS`, never from the
-`groups` claim.
+`SUPER_USERS` (ADR-15 Revision 4). The invariant holds: superuser status comes
+solely from `SUPER_USERS`, never from the `groups` claim. (The README's
+[Quay OIDC SSO and roles](../README.md#quay-oidc-sso-and-roles) section still
+describes the prior Database backend — it is updated by the HOL-1293 cleanup
+phase, HOL-1298.)
 
 ## Guardrail checklist: adding a new PKCE client
 
@@ -293,8 +294,10 @@ copy from.
   — the authoritative source: the keycloak-config-cli Job, the `argocd` and
   `quay` clients, the three mapper types, and the `quay-oidc` bootstrap.
 - [`holos/README.md`](../README.md#keycloak-config-realm-reconciliation) — the
-  operator-facing overview of `keycloak-config` and
-  [Quay OIDC SSO and roles](../README.md#quay-oidc-sso-and-roles).
+  operator-facing overview of `keycloak-config`. (Its
+  [Quay OIDC SSO and roles](../README.md#quay-oidc-sso-and-roles) section still
+  describes the prior Database backend; the HOL-1293 cleanup phase (HOL-1298)
+  brings it in line with the OIDC backend.)
 - [`docs/placeholders.md`](placeholders.md) — the resolved *Keycloak realm
   reconciliation* and *Quay OIDC login* entries.
 - [`AGENTS.md`](../../AGENTS.md) — the Guard Rails: CUE Component Rendering,

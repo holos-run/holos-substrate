@@ -195,8 +195,9 @@ kubectl -n quay create secret generic quay-resource-controller \
 | Key | `token` |
 | Value | the OAuth-Application token from step 3 |
 
-The token is non-expiring (a Quay OAuth-Application token), so this is a
-generate-once credential: if it leaks, delete the Application's token in the
+The token is long-lived (a Quay OAuth-Application token; its lifetime is not
+operator-configurable), so treat this as a generate-once credential: if it
+leaks, delete the Application's token in the
 Quay UI, regenerate (steps 3–5), and replace the Secret. When the Quay Resource
 Controller ships it will reconcile this credential in-cluster and this manual
 procedure is retired.
