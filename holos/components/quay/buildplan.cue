@@ -189,21 +189,35 @@ let REDIS_METADATA = {
 //     endpoint the admin-bootstrap Job (HOL-1276) uses to create the admin user.
 //   - SETUP_COMPLETE skips the interactive setup flow.
 //
-// OIDC / Keycloak SSO (HOL-1219, Phase 2 of HOL-1217):
-//   - AUTHENTICATION_TYPE OIDC + KEYCLOAK_LOGIN_CONFIG point Quay at the
-//     holos realm's confidential "quay" client (HOL-1218, in
-//     components/keycloak/realm-config), which authenticates with a client
-//     secret and does NOT use PKCE (see the PKCE field note below).  OIDC_SERVER
-//     is the realm issuer URL with a REQUIRED trailing slash — Quay's config
-//     validator normalises the issuer to TrimSuffix(issuer,"/")+"/", so the
-//     slash must be present here to match Keycloak's issuer exactly.
+// Database backend + federated Keycloak SSO (HOL-1280, refining HOL-1219 /
+// Phase 2 of HOL-1217):
+//   - AUTHENTICATION_TYPE Database keeps Quay's own database as the identity
+//     store while KEYCLOAK_LOGIN_CONFIG layers Keycloak SSO on top as a
+//     *federated login provider* — it does NOT replace the backend.  This is
+//     the key distinction from AUTHENTICATION_TYPE OIDC, which makes the OIDC
+//     provider the sole identity store: under OIDC the local "admin" user and
+//     the /api/v1/user/initialize + /api/v1/superuser/* APIs are unavailable,
+//     so the quay-admin-bootstrap Job (HOL-1276) cannot mint the superuser
+//     OAuth token.  Database auth restores those endpoints, and the very same
+//     KEYCLOAK_LOGIN_CONFIG block still drives "Holos SSO" login (Quay treats
+//     a <PREFIX>_LOGIN_CONFIG block as a federated SSO provider regardless of
+//     the backend) — so SSO and the headless superuser bootstrap coexist.
+//   - KEYCLOAK_LOGIN_CONFIG points Quay at the holos realm's confidential
+//     "quay" client (HOL-1218, in components/keycloak/realm-config), which
+//     authenticates with a client secret and does NOT use PKCE (see the PKCE
+//     field note below).  OIDC_SERVER is the realm issuer URL with a REQUIRED
+//     trailing slash — Quay's config validator normalises the issuer to
+//     TrimSuffix(issuer,"/")+"/", so the slash must be present here to match
+//     Keycloak's issuer exactly.
 //   - CLIENT_SECRET is the __OIDC_CLIENT_SECRET__ placeholder; the
 //     initContainer substitutes it from the shared quay-oidc Secret (the
 //     client_secret key) that Phase 1's bootstrap Job provisioned into BOTH
 //     the keycloak and quay namespaces — so this phase only consumes it and
 //     no secret value is ever committed.
 //   - FEATURE_DIRECT_LOGIN false removes the local username/password form so
-//     Keycloak SSO ("Holos SSO") is the only login path; FEATURE_USER_CREATION
+//     Keycloak SSO ("Holos SSO") is the only interactive login path even though
+//     the backend is Database (the local "admin" superuser stays reachable for
+//     the API/bootstrap path — see SUPER_USERS below); FEATURE_USER_CREATION
 //     true lets first SSO login auto-provision the user's account namespace
 //     (a Quay user's personal namespace IS their per-user org scope).
 //   - FEATURE_USERNAME_CONFIRMATION false is the key requirement from the
@@ -219,12 +233,18 @@ let REDIS_METADATA = {
 //     pkce.code.challenge.method either) removes that failure mode.  This is the
 //     documented exception to the platform's PKCE default — see the
 //     Quay↔Keycloak OIDC runbook (HOL-1256 docs phase / HOL-1233).
-//   - FEATURE_TEAM_SYNCING true keeps Quay teams in sync with the Keycloak
-//     groups claim (TEAM_RESYNC_STALE_TIME cadence); that claim carries both
-//     Keycloak group membership and the quay client roles (platform-admin,
-//     project-admin) folded in by the Phase 1 protocol mappers.  Team sync only
-//     populates Quay teams from the groups claim — it does NOT grant Quay
-//     superuser; superuser comes solely from SUPER_USERS below.
+//   - FEATURE_TEAM_SYNCING is false (and TEAM_RESYNC_STALE_TIME is dropped):
+//     team sync from the OIDC groups claim REQUIRES a federated auth backend
+//     that owns sync_user_groups.  Under AUTHENTICATION_TYPE Database the active
+//     handler is DatabaseUsers, which has no sync_user_groups method (only
+//     OIDCUsers/LDAPUsers do).  Quay's OAuth login path calls
+//     sync_oidc_groups() on every SSO callback when FEATURE_TEAM_SYNCING is
+//     true with a groups claim present, so leaving it on would AttributeError →
+//     500 on every "Holos SSO" login (Quay v3.17.3 oauth/login_utils.py
+//     sync_oidc_groups → auth_system.sync_user_groups; data/users/database.py
+//     DatabaseUsers).  Federated group→team sync therefore returns only if a
+//     future phase moves to a federated backend; for now superuser comes solely
+//     from SUPER_USERS below, and Quay teams are managed directly.
 //   - SUPER_USERS keeps the local "admin" entry the admin-bootstrap Job
 //     (HOL-1276) seeds — it stays reachable because Quay always
 //     permits superuser local login even with FEATURE_DIRECT_LOGIN false.  The
@@ -257,9 +277,8 @@ let CONFIG_YAML = """
 	FEATURE_USER_CREATION: true
 	FEATURE_DIRECT_LOGIN: false
 	FEATURE_USERNAME_CONFIRMATION: false
-	FEATURE_TEAM_SYNCING: true
-	TEAM_RESYNC_STALE_TIME: 30m
-	AUTHENTICATION_TYPE: OIDC
+	FEATURE_TEAM_SYNCING: false
+	AUTHENTICATION_TYPE: Database
 	KEYCLOAK_LOGIN_CONFIG:
 	  OIDC_SERVER: \(OIDC_SERVER)
 	  CLIENT_ID: \(OIDC_CLIENT_ID)

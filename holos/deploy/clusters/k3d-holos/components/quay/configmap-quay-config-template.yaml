@@ -24,9 +24,8 @@ data:
     FEATURE_USER_CREATION: true
     FEATURE_DIRECT_LOGIN: false
     FEATURE_USERNAME_CONFIRMATION: false
-    FEATURE_TEAM_SYNCING: true
-    TEAM_RESYNC_STALE_TIME: 30m
-    AUTHENTICATION_TYPE: OIDC
+    FEATURE_TEAM_SYNCING: false
+    AUTHENTICATION_TYPE: Database
     KEYCLOAK_LOGIN_CONFIG:
       OIDC_SERVER: https://auth.holos.localhost/realms/holos/
       CLIENT_ID: quay
