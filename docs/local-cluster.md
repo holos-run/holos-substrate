@@ -183,20 +183,26 @@ for the database contract, see
 ## Verify Quay
 
 `scripts/apply` brings the Quay registry up at
-`https://quay.holos.localhost`, but a fresh registry has no users.
-Bootstrap it once:
+`https://quay.holos.localhost` and, because Quay runs under Database auth
+(`AUTHENTICATION_TYPE: Database` — see [ADR-15](adr/ADR-15.md)), its
+`quay-admin-bootstrap` Job seeds the local `admin` superuser by calling the
+one-shot `/api/v1/user/initialize` endpoint and writes the non-expiring
+superuser OAuth token to the `quay-initial-admin` Secret (key `token`);
+`wait_quay` gates the apply on that Secret. The org/robot/team scaffolding is a
+separate, idempotent step:
 
 ```bash
 scripts/quay-init
 ```
 
 The script is idempotent — a second run exits 0 without changing state.
-It creates the initial `admin` user, the `holos` organization, and the
-`holos+robot` robot account (a member of a `creators` team, so pushes
-auto-create repositories under `holos/`), and stores the generated
-credentials in Secrets in the `quay` namespace — nothing secret is
-committed to this repository, mirroring the Keycloak
-`keycloak-initial-admin` pattern:
+It **reuses** the `admin` superuser token from the `quay-initial-admin` Secret
+(it no longer creates the `admin` user — `quay-admin-bootstrap` did that during
+`scripts/apply`) to create the `holos` organization and the `holos+robot` robot
+account (a member of a `creators` team, so pushes auto-create repositories under
+`holos/`), and stores the generated robot credentials in Secrets in the `quay`
+namespace — nothing secret is committed to this repository, mirroring the
+Keycloak `keycloak-initial-admin` pattern:
 
 ```bash
 kubectl -n quay get secret quay-initial-admin -o json \
@@ -268,8 +274,9 @@ authenticated by its client secret without PKCE). The design is in
      Quay organization UI; the claim is still emitted, so automatic syncing
      returns once it can be re-enabled on a federated backend.
 
-`scripts/quay-init` and SSO coexist: the init script bootstraps the local
-`admin` superuser, the `holos` org, and the `holos+robot` pull account
+`scripts/quay-init` and SSO coexist: the `quay-admin-bootstrap` Job (during
+`scripts/apply`) seeds the local `admin` superuser, and `scripts/quay-init`
+reuses its token to scaffold the `holos` org and the `holos+robot` pull account
 (local-database identities used by the push verification above and CI), while
 realm users authenticate through SSO. The local form is hidden
 (`FEATURE_DIRECT_LOGIN: false`); `admin` remains a break-glass superuser via

@@ -197,14 +197,17 @@ The realm carries two **`quay` client roles**, defined in
 - `project-admin` — per-project administrative access in Quay.
 
 These roles are **identity labels that flow into the `groups` claim** (via the
-client-role mapper below) for an operator to bind to a Quay team — they do
-**not** by themselves confer any privilege. In particular, the
-`platform-admin` role does **not** make a user a Quay superuser: superuser
-status comes solely from `SUPER_USERS` (see below). What a role grants is
-whatever the bound Quay team is given in the Quay organization (e.g. an
-`admin`-permission team for the org). Treat the role names as a convention for
-who *should* hold which access, realized through team bindings and
-`SUPER_USERS`, not as Quay-enforced permissions on their own.
+client-role mapper below) — they do **not** by themselves confer any privilege.
+In particular, the `platform-admin` role does **not** make a user a Quay
+superuser: superuser status comes solely from `SUPER_USERS` (see below). What a
+role grants is whatever Quay team an operator places the user on in the Quay
+organization (e.g. an `admin`-permission team for the org). While
+`FEATURE_TEAM_SYNCING: false` (Revision 3) a superuser manages that team
+membership directly; the claim is still emitted so automatic group/role-name →
+team binding returns when team syncing is re-enabled on a federated backend.
+Treat the role names as a convention for who *should* hold which access,
+realized through Quay team membership and `SUPER_USERS`, not as Quay-enforced
+permissions on their own.
 
 Per-project roles follow the same client-role convention: add a client role
 on the `quay` client named for the project, and grant it to the users who

@@ -164,8 +164,8 @@ Quay-team synchronization needs a federated user handler with a
 Quay would `AttributeError` → HTTP 500 on every "Holos SSO" callback if team
 syncing were left on (Quay v3.17.3 `oauth/login_utils.py` `sync_oidc_groups`).
 The `groups` claim is still emitted, so re-enabling team syncing on a future
-federated backend needs no realm change — but for now a superuser binds Quay
-teams directly.
+federated backend needs no realm change — but for now a superuser manages Quay
+team membership directly.
 
 ### Verify the superuser token
 
@@ -300,8 +300,11 @@ requires a live cluster, a reachable `quay.holos.localhost` (local CA + DNS per
 3. **Promote the user to superuser** (optional, to verify the `SUPER_USERS`
    path). Add the user's `preferred_username` to `SUPER_USERS` in
    [holos/components/quay/buildplan.cue](../../holos/components/quay/buildplan.cue),
-   run `scripts/render`, commit the regenerated `holos/deploy/` tree, and
-   `scripts/apply`. After Quay restarts, the user has superuser access: the
+   regenerate the deploy tree (`cd holos && holos render platform`), commit the
+   `.cue` change together with the regenerated `holos/deploy/` tree, then run
+   `scripts/render` to confirm the tree is diff-clean (it fails on uncommitted
+   `holos/` changes, so commit first) and `scripts/apply`. After Quay restarts,
+   the user has superuser access: the
    Super User Admin Panel appears in the Quay UI, and their token answers the
    superuser API (the same `GET /api/v1/superuser/users/` → 200 check as
    [Verify the superuser token](#verify-the-superuser-token), using a token
