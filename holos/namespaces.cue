@@ -213,7 +213,7 @@ namespaces: {
 	"kargo-echo": {
 		_ambient: false
 		metadata: {
-			labels: "kargo.akuity.io/project":              "true"
+			labels: "kargo.akuity.io/project":             "true"
 			annotations: "kargo.akuity.io/keep-namespace": "true"
 		}
 	}
@@ -240,8 +240,11 @@ namespaces: {
 	"my-project": {
 		_ambient: true
 		metadata: {
-			labels: "kargo.akuity.io/project":              "true"
+			labels: "kargo.akuity.io/project":             "true"
 			annotations: "kargo.akuity.io/keep-namespace": "true"
 		}
 	}
+
+	// Namespace for the Quay Resource Controller.
+	"quay-resource-controller": _ambient: true
 }
