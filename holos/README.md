@@ -367,51 +367,47 @@ waits on exactly the `Job` just applied — and trails `wait_keycloak` (the
 realm shell must exist first). It sits between `keycloak` and `quay` in the
 apply order above.
 
-### Quay bootstrap and credentials
+### Quay credentials and data-plane provisioning
 
-Quay has no operator to bootstrap users the way the Keycloak operator does.
-The superuser credential is seeded automatically during `scripts/apply`: the
-`quay` component's `quay-admin-bootstrap` Job calls Quay's one-shot
-`/api/v1/user/initialize` endpoint (the upstream-recommended way to create a
-first user headlessly in Kubernetes) and stores the returned superuser OAuth
-token in the **`quay-initial-admin`** Secret (`quay` namespace) — never
-committed to this repository. That token is the credential declarative
-automation Jobs (e.g. the `my-project-quay-bootstrap` Job) authenticate to
-Quay's REST API with; see the *Quay Superuser Bootstrap Credential* guard rail
-in [`CLAUDE.md`](../CLAUDE.md). `wait_quay` gates on the Job and the Secret, so
-the credential is present before any downstream component runs (HOL-1276).
+Quay runs `AUTHENTICATION_TYPE: OIDC` with the Keycloak `holos` realm as the
+**sole identity store** (ADR-15 Revision 4, HOL-1293): there is no local `admin`
+user, and the headless `/api/v1/user/initialize` bootstrap endpoint is
+unavailable. The two Quay superusers are Keycloak realm users listed in
+`SUPER_USERS` (by `preferred_username`) — the service account
+**`svc-quay-resource-controller`** (the future Quay Resource Controller's machine
+identity, distinguished by its `svc-` prefix) and the human **`quay-admin`** —
+both seeded by the keycloak phase (HOL-1294) with passwords generated once at
+runtime into Secrets of the same name in the `keycloak` namespace (key
+`password`), never committed.
 
-`scripts/quay-init` then provisions the registry-level scaffolding — the
-`holos` organization and the `holos+robot` robot account (stored in
-`quay-robot-pull`) — **reusing** the `quay-initial-admin` token rather than
-re-creating it. Run it once after `scripts/apply`; it is idempotent. See the
-[Verify Quay](../docs/local-cluster.md#verify-quay) section of the local
-cluster guide for the bootstrap and the `docker push` verification flow.
-
-The bootstrapped `admin` is a break-glass local superuser; **normal users
-sign in through Keycloak SSO** (below), not through a registry-local password.
+In-cluster Quay data-plane provisioning — the `holos`/project organizations,
+repositories, robot accounts, and `repo_push` webhooks — is **deferred to a
+future Quay Resource Controller** (HOL-1293). The removed Database-backend
+bootstrap (the `quay-admin-bootstrap` Job, the `quay-initial-admin` superuser
+token, and the `scripts/quay-init`/`scripts/quay-reset` helpers) no longer
+exists. Until the controller ships, an operator mints the controller's
+OAuth-Application credential by hand; see the
+[Quay Resource Controller credentials runbook](../docs/runbooks/quay-resource-controller-credentials.md).
 
 ### Quay OIDC SSO and roles
 
-Quay runs `AUTHENTICATION_TYPE: Database` — its own database is the identity
-store — with the Keycloak `holos` realm layered on as a **federated login
-provider** (ADR-15 Revision 3, HOL-1281): users log in with the **Holos SSO**
-button through the Authorization Code flow, authenticated by the confidential
-client's secret (no PKCE — HOL-1257). Database auth (not OIDC-backend) keeps the
-local `admin` user and the `/api/v1/user/initialize` + `/api/v1/superuser/*`
-APIs the headless superuser bootstrap needs. The full design — the Database
-backend, why no PKCE, the confidential client, the username-from-token
-behavior, and the roles model — is in [ADR-15](../docs/adr/ADR-15.md), and the
-operational companion (wiring, secret rotation, and the `code exchange: 400`
-troubleshooting) is the
+Quay runs `AUTHENTICATION_TYPE: OIDC` — the Keycloak `holos` realm is the
+**sole identity store** (ADR-15 Revision 4, HOL-1293): users log in with the
+**Holos SSO** button through the Authorization Code flow with PKCE (`S256`),
+authenticated by the confidential client's secret. There is no local `admin`
+user and no `/api/v1/user/initialize` bootstrap endpoint under OIDC. The full
+design — the OIDC backend, PKCE, the confidential client, the
+username-from-token behavior, and the roles model — is in
+[ADR-15](../docs/adr/ADR-15.md), and the operational companion (wiring, secret
+rotation, and the `code exchange: 400` troubleshooting) is the
 [Quay↔Keycloak OIDC runbook](../docs/runbooks/quay-keycloak-oidc.md). The
 essentials:
 
 - **Login flow.** Quay's `KEYCLOAK_LOGIN_CONFIG`
   ([components/quay/buildplan.cue](components/quay/buildplan.cue)) points at
   the realm's confidential `quay` client, authenticated by its client secret
-  without PKCE (HOL-1257 dropped `USE_PKCE`/`PKCE_METHOD`), reconciled in
-  `keycloak-config` above. The local username/password form is removed
+  with PKCE (`USE_PKCE`/`PKCE_METHOD: S256`, re-enabled in HOL-1293), reconciled
+  in `keycloak-config` above. The local username/password form is removed
   (`FEATURE_DIRECT_LOGIN: false`).
 - **Username and namespace.** The username is taken verbatim from the ID
   token's `preferred_username` claim with no prompt to confirm or edit it
@@ -424,26 +420,20 @@ essentials:
   into the `groups` claim alongside Keycloak group memberships. The `quay`
   client also emits the `platform-owner` **realm role** into that same claim
   (the realm-role mapper added in HOL-1245, mirroring the `argocd` client), so
-  the privileged platform-owner role would be recognizable to Quay's team sync
-  the same way group names are once that sync is re-enabled (see below). They
-  are identity labels, not privileges in
+  the privileged platform-owner role is recognizable to Quay's team sync the
+  same way group names are. They are identity labels, not privileges in
   themselves: a Quay **superuser** manages the Quay team's membership directly,
   and the team's permissions are what grant access. Automatic group/role-name →
-  team syncing is **disabled** under the Database auth backend
-  (`FEATURE_TEAM_SYNCING: false` — the Database user handler cannot sync OIDC
-  groups; see [ADR-15](../docs/adr/ADR-15.md) Revision 3); the `groups` claim is
-  still emitted, so it returns automatically once team syncing can be re-enabled
-  on a federated backend. The full declarative-client pattern and the role model
-  are in [docs/keycloak-clients.md](docs/keycloak-clients.md).
+  team syncing is **enabled** under the OIDC backend (`FEATURE_TEAM_SYNCING: true`
+  with `TEAM_RESYNC_STALE_TIME: 30m` — the OIDC user handler syncs the `groups`
+  claim into Quay teams; re-enabled in HOL-1293). The full declarative-client
+  pattern and the role model are in
+  [docs/keycloak-clients.md](docs/keycloak-clients.md).
 - **Superusers.** Superuser status comes solely from `SUPER_USERS` in the
   config (by `preferred_username`), not from the `groups` claim and not from
-  the `platform-admin` role; the local `admin` bootstrap account is kept there
-  as break-glass.
-
-`scripts/quay-init` and SSO coexist: the `quay-admin-bootstrap` Job (during
-`scripts/apply`) seeds the local `admin` superuser, and `scripts/quay-init`
-reuses its token to scaffold the `holos` org and the `holos+robot` pull
-account, while realm users sign in through SSO.
+  the `platform-admin` role. The two superusers are the Keycloak realm users
+  `svc-quay-resource-controller` (service account) and `quay-admin` (human);
+  there is no local `admin` account under the OIDC backend.
 
 ### Quay verification
 
@@ -463,8 +453,12 @@ kubectl -n quay run quay-echo --image=mendhak/http-https-echo:37 --port=8080 \
 kubectl -n quay expose pod quay-echo --port=8080
 kubectl -n quay wait pod/quay-echo --for=condition=Ready --timeout=120s
 
-# The Quay API takes the admin OAuth token (basic auth is not accepted).
-TOKEN=$(kubectl -n quay get secret quay-initial-admin -o jsonpath='{.data.token}' | base64 -d)
+# The Quay API takes a superuser OAuth token (basic auth is not accepted).
+# Under the OIDC backend there is no headless quay-initial-admin token; mint a
+# superuser OAuth-Application token by hand per the Quay Resource Controller
+# credentials runbook (../docs/runbooks/quay-resource-controller-credentials.md)
+# and export it as TOKEN before running this block.
+TOKEN=<superuser OAuth-Application token>  # see the credentials runbook above
 UUID=$(curl -fsS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -X POST https://quay.holos.localhost/api/v1/repository/holos/sample/notification/ \
   -d '{"event": "repo_push", "method": "webhook",

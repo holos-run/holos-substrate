@@ -60,9 +60,11 @@ kubectl -n argocd patch application <name> --type merge \
 
 The repo-server discovers registry credentials from a Secret in the
 `argocd` namespace labeled `argocd.argoproj.io/secret-type: repository`.
-The verified shape for the in-cluster Quay (credentials from the
-`quay-robot-pull` Secret provisioned by `scripts/quay-init` — see the
-[Quay bootstrap](../README.md#quay-bootstrap-and-credentials) contract):
+The verified shape for the in-cluster Quay (credentials from the Quay
+pull-robot credential Secret — its provisioning is deferred to a future Quay
+Resource Controller, HOL-1293; see the
+[Quay credentials and data-plane provisioning](../README.md#quay-credentials-and-data-plane-provisioning)
+contract):
 
 ```yaml
 apiVersion: v1
@@ -153,7 +155,7 @@ subscriber, ADR-11, was retired in HOL-1241.)
 ## What stays imperative
 
 The repository Secret and any test `Application` are created imperatively
-(like the `scripts/quay-init` bootstrap Secrets): the OCI artifact is
+(the repo's runtime-secret posture): the OCI artifact is
 pushed imperatively, so a committed `Application` would leave a fresh
 bootstrap perpetually Degraded until someone pushes the artifact. The
 ServiceEntry is the only committed piece — it depends on nothing

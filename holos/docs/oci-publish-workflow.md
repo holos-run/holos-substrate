@@ -118,9 +118,9 @@ design — the destination push credential is never sent to the source registry
 (which may be a different, untrusted registry):
 
 - **Destination** (the manifests artifact repo) needs **push** scope. For the
-  in-cluster Quay this is the same robot account `scripts/quay-init` provisions;
-  see the
-  [repository credential Secret shape and Quay bootstrap](argocd-application-source.md#repository-credential-secret)
+  in-cluster Quay this is the Quay pull-robot credential (its provisioning is
+  deferred to a future Quay Resource Controller, HOL-1293); see the
+  [repository credential Secret shape](argocd-application-source.md#repository-credential-secret)
   in argocd-application-source.md (the cluster-side credential Argo CD's
   repo-server uses to *pull* the same artifact).
 - **Source** (the app image repo) needs **pull** scope, used only to resolve the
@@ -288,8 +288,8 @@ uncommitted** credential Secrets are required (the repo's runtime-secret posture
 — neither is rendered into the deploy tree):
 
 1. **Argo CD's repo-server** PULLs the artifact using a repository credential
-   Secret in the `argocd` namespace (the `holos+robot` pull credential
-   `scripts/quay-init` provisions) — see the
+   Secret in the `argocd` namespace (the `holos+robot` pull credential; its
+   provisioning is deferred to a future Quay Resource Controller, HOL-1293) — see the
    [repository credential Secret](argocd-application-source.md#repository-credential-secret)
    shape.
 2. **Kargo's controller** LISTs tags for the Warehouse using a separate
