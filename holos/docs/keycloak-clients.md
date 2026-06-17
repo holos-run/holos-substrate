@@ -164,9 +164,12 @@ The realm-role and client-role mappers set `id.token.claim`,
   `platform-owner`/`platform-editor`/`platform-viewer` realm roles and group
   names through one claim.
 - The `quay` client carries **all three** (plus a `preferred_username` property
-  mapper), so Quay's team sync keys on group memberships, the `quay`
-  client-role names, and — as of HOL-1245 — the `platform-owner` realm role,
-  uniformly.
+  mapper), so the single `groups` claim Quay receives carries group
+  memberships, the `quay` client-role names, and — as of HOL-1245 — the
+  `platform-owner` realm role, uniformly. (Automatic team syncing from this
+  claim is currently **disabled** — `FEATURE_TEAM_SYNCING: false` under Quay's
+  Database auth backend, ADR-15 Revision 3 — but the claim is emitted so it is
+  ready when a federated backend can consume it.)
 
 ## The role model
 
@@ -193,8 +196,9 @@ convention: add a `quay` client role named for the project and grant it.
 As of HOL-1245 the `quay` client also emits the `platform-owner` realm role into
 the `groups` claim, mirroring the `argocd` client. Granting a user the
 `platform-owner` realm role surfaces `platform-owner` in their `groups` claim,
-so Quay team sync and any future relying party key on it the same way they key
-on group names.
+so Quay (once team syncing is re-enabled on a federated backend — it is
+`FEATURE_TEAM_SYNCING: false` today under Database auth) and any future relying
+party key on it the same way they key on group names.
 
 ### The Quay-superuser limitation (not automatic)
 
@@ -262,7 +266,7 @@ copy from.
    secret alone. The `quay` client in
    [`realm-config/buildplan.cue`](../components/keycloak/realm-config/buildplan.cue)
    therefore carries **no** `pkce.*` attribute. (Historical note: the earlier
-   *Quay OIDC PKCE Implementation (HOL-1233)* guard rail in
+   *Quay auth* guard rail (HOL-1233) in
    [`AGENTS.md`](../../AGENTS.md) kept PKCE *optional* via the default
    `pkce.force` behavior; HOL-1257 supersedes that with full removal.) The
    operational details and `code exchange: 400` troubleshooting live in the
@@ -294,5 +298,5 @@ copy from.
 - [`docs/placeholders.md`](placeholders.md) — the resolved *Keycloak realm
   reconciliation* and *Quay OIDC login* entries.
 - [`AGENTS.md`](../../AGENTS.md) — the Guard Rails: CUE Component Rendering,
-  the Quay OIDC PKCE note (HOL-1233, disabled by HOL-1257), Keycloak
-  Configuration as Code, and OIDC Client Secrets.
+  the Quay auth note (Database backend + federated SSO, HOL-1281; PKCE disabled,
+  HOL-1233/HOL-1257), Keycloak Configuration as Code, and OIDC Client Secrets.

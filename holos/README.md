@@ -393,10 +393,14 @@ sign in through Keycloak SSO** (below), not through a registry-local password.
 
 ### Quay OIDC SSO and roles
 
-Quay is a Single Sign-On relying party of the Keycloak `holos` realm: users
-log in with the **Holos SSO** button through the Authorization Code flow,
-authenticated by the confidential client's secret (no PKCE — HOL-1257). The
-full design — why no PKCE, the confidential client, the username-from-token
+Quay runs `AUTHENTICATION_TYPE: Database` — its own database is the identity
+store — with the Keycloak `holos` realm layered on as a **federated login
+provider** (ADR-15 Revision 3, HOL-1281): users log in with the **Holos SSO**
+button through the Authorization Code flow, authenticated by the confidential
+client's secret (no PKCE — HOL-1257). Database auth (not OIDC-backend) keeps the
+local `admin` user and the `/api/v1/user/initialize` + `/api/v1/superuser/*`
+APIs the headless superuser bootstrap needs. The full design — the Database
+backend, why no PKCE, the confidential client, the username-from-token
 behavior, and the roles model — is in [ADR-15](../docs/adr/ADR-15.md), and the
 operational companion (wiring, secret rotation, and the `code exchange: 400`
 troubleshooting) is the
@@ -422,13 +426,14 @@ essentials:
   (the realm-role mapper added in HOL-1245, mirroring the `argocd` client), so
   the privileged platform-owner role is recognizable to Quay's team sync the
   same way group names are. They are identity labels, not privileges in
-  themselves: a Quay **superuser** binds a Quay team to the group/role name
-  (team-sync setup is superuser-only here —
-  `FEATURE_NONSUPERUSER_TEAM_SYNCING_SETUP` is off), and the team's
-  permissions are what grant access. `FEATURE_TEAM_SYNCING: true` then keeps
-  membership in sync, re-syncing on the 30-minute `TEAM_RESYNC_STALE_TIME`
-  cadence. The full declarative-client pattern and the role model are in
-  [docs/keycloak-clients.md](docs/keycloak-clients.md).
+  themselves: a Quay **superuser** manages the Quay team's membership directly,
+  and the team's permissions are what grant access. Automatic group/role-name →
+  team syncing is **disabled** under the Database auth backend
+  (`FEATURE_TEAM_SYNCING: false` — the Database user handler cannot sync OIDC
+  groups; see [ADR-15](../docs/adr/ADR-15.md) Revision 3); the `groups` claim is
+  still emitted, so it returns automatically once team syncing can be re-enabled
+  on a federated backend. The full declarative-client pattern and the role model
+  are in [docs/keycloak-clients.md](docs/keycloak-clients.md).
 - **Superusers.** Superuser status comes solely from `SUPER_USERS` in the
   config (by `preferred_username`), not from the `groups` claim and not from
   the `platform-admin` role; the local `admin` bootstrap account is kept there

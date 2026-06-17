@@ -260,13 +260,13 @@ authenticated by its client secret without PKCE). The design is in
    - **Namespace matches the token.** The user's personal namespace equals
      their `preferred_username` claim — repositories live under
      `quay.holos.localhost/<preferred_username>/...`.
-   - **Roles → teams.** A user granted a `quay` client role (or bound Keycloak
-     group) gains the matching Quay team membership after the next team
-     re-sync (`TEAM_RESYNC_STALE_TIME`, 30 minutes), once a Quay **superuser**
-     has bound the team to that group/role name in the Quay organization UI.
-     Team-sync setup is a superuser action here — this platform leaves
-     `FEATURE_NONSUPERUSER_TEAM_SYNCING_SETUP` off — so use the `admin`
-     superuser (or another `SUPER_USERS` member) to configure it.
+   - **Roles → teams.** The `groups` claim carries a user's `quay` client roles
+     and bound Keycloak groups, but **automatic** group→team syncing is disabled
+     under Quay's Database auth backend (`FEATURE_TEAM_SYNCING: false`; see
+     [ADR-15](adr/ADR-15.md) Revision 3 — the Database user handler cannot sync
+     OIDC groups). A Quay **superuser** manages team membership directly in the
+     Quay organization UI; the claim is still emitted, so automatic syncing
+     returns once it can be re-enabled on a federated backend.
 
 `scripts/quay-init` and SSO coexist: the init script bootstraps the local
 `admin` superuser, the `holos` org, and the `holos+robot` pull account

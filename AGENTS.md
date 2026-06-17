@@ -58,12 +58,14 @@ components have been removed. Git history preserves them.
 
 ### Known Issues & Workarounds
 
-#### Quay OIDC PKCE — disabled (HOL-1233, resolved by HOL-1257)
-- **Issue:** Quay's OIDC client does not fully implement PKCE — it fails to send the code_verifier during token exchange, producing "code_verifier_missing" / `Got non-2XX response for code exchange: 400` SSO failures.
-- **Resolution (HOL-1257):** PKCE is **disabled** for the `quay` client on both ends. The Keycloak `quay` client carries **no** `pkce.code.challenge.method` attribute (Keycloak treats a client that sets it as *requiring* PKCE), and Quay's `KEYCLOAK_LOGIN_CONFIG` no longer sets `USE_PKCE`/`PKCE_METHOD`. Quay authenticates as a plain confidential client with its client secret — Red Hat's recommended baseline integration.
-- **History:** An earlier workaround kept PKCE *optional* (advertising `pkce.code.challenge.method: "S256"` while relying on Keycloak's default `pkce.force: "false"`). HOL-1257 superseded that by removing the attribute entirely, which is the current state.
-- **Status:** Resolved. If a future Quay release fully implements PKCE, consider re-enabling it by restoring the `pkce.code.challenge.method: "S256"` attribute on the client and `USE_PKCE`/`PKCE_METHOD` in Quay's config.
-- **Related:** `holos/components/keycloak/realm-config/buildplan.cue` (the `quay` client — no `attributes`), `holos/components/quay/buildplan.cue` (the `KEYCLOAK_LOGIN_CONFIG` block), `docs/adr/ADR-15.md` (Revision 2), `holos/docs/keycloak-clients.md` (the PKCE guardrail checklist), and `docs/runbooks/quay-keycloak-oidc.md` (the operational runbook, including the no-PKCE exception and the `code exchange: 400` troubleshooting).
+#### Quay auth: Database backend + federated Keycloak SSO, PKCE disabled (HOL-1233/HOL-1257/HOL-1281)
+- **Model (HOL-1281, ADR-15 Revision 3):** Quay runs `AUTHENTICATION_TYPE: Database` — its own database is the identity store — with the Keycloak `holos` realm layered on as a **federated login provider** via `KEYCLOAK_LOGIN_CONFIG` ("Holos SSO"). This is layered, **not** a backend swap: Quay is **not** `AUTHENTICATION_TYPE: OIDC` (which would make the OIDC provider the sole store and disable the local `admin` user plus the `/api/v1/user/initialize` and `/api/v1/superuser/*` APIs the headless bootstrap needs). Never reintroduce `AUTHENTICATION_TYPE: OIDC`.
+- **`FEATURE_TEAM_SYNCING: false`:** under Database auth the active user handler (`DatabaseUsers`) has no `sync_user_groups`, so enabling team syncing crashes ("AttributeError" → HTTP 500) every SSO login. It must stay `false` while the backend is Database; the `groups` claim is still emitted, so re-enabling it on a future federated backend needs no realm change.
+- **PKCE disabled (HOL-1233, resolved by HOL-1257):** Quay's OIDC client does not fully implement PKCE — it fails to send the code_verifier during token exchange, producing "code_verifier_missing" / `Got non-2XX response for code exchange: 400` SSO failures. PKCE is **disabled** for the `quay` client on both ends: the Keycloak `quay` client carries **no** `pkce.code.challenge.method` attribute (Keycloak treats a client that sets it as *requiring* PKCE), and Quay's `KEYCLOAK_LOGIN_CONFIG` no longer sets `USE_PKCE`/`PKCE_METHOD`. Quay authenticates as a plain confidential client with its client secret — Red Hat's recommended baseline integration. The backend change (Database vs OIDC) does not touch this — PKCE stays off.
+- **History:** An earlier workaround kept PKCE *optional* (advertising `pkce.code.challenge.method: "S256"` while relying on Keycloak's default `pkce.force: "false"`). HOL-1257 superseded that by removing the attribute entirely. HOL-1281 then switched the backend from OIDC to Database (the no-PKCE exception is retained).
+- **Status:** Resolved. If a future Quay release fully implements PKCE, consider re-enabling it by restoring the `pkce.code.challenge.method: "S256"` attribute on the client and `USE_PKCE`/`PKCE_METHOD` in Quay's config — independent of the Database-backend decision.
+- **One-time reset:** Adopting Database auth on a cluster that previously ran the OIDC-only config may require the deliberate, destructive `scripts/quay-reset` (HOL-1283) to wipe the Quay DB so the one-shot `/api/v1/user/initialize` re-opens and the superuser token can be minted. `scripts/apply` never wipes the DB; the reset is a separate operation.
+- **Related:** `holos/components/keycloak/realm-config/buildplan.cue` (the `quay` client — no `attributes`), `holos/components/quay/buildplan.cue` (`AUTHENTICATION_TYPE: Database`, `FEATURE_TEAM_SYNCING: false`, the `KEYCLOAK_LOGIN_CONFIG` block), `scripts/quay-reset` (the one-time DB reset), `docs/adr/ADR-15.md` (Revision 3), `holos/docs/keycloak-clients.md` (the PKCE guardrail checklist), and `docs/runbooks/quay-keycloak-oidc.md` (the operational runbook, including the Database-backend model, the reset procedure, the no-PKCE exception, and the `code exchange: 400` troubleshooting).
 
 ### Keycloak Configuration as Code
 - **Pattern:** The holos realm (users, groups, clients, roles, protocol mappers) is fully declarative, reconciled on every `scripts/apply` via a keycloak-config-cli Job.
@@ -89,15 +91,17 @@ components have been removed. Git history preserves them.
 
 ### Adding a Keycloak OIDC (PKCE) Client
 - **Pattern:** The realm's OIDC clients (argocd, quay) are declared in `realm-config/buildplan.cue` and reconciled by the `keycloak-config` keycloak-config-cli Job. The conventional declarative-client pattern — public vs confidential decision, the `S256` attribute, the confidential secret-bootstrap Job, `IMPORT_VARSUBSTITUTION_ENABLED`, the three mappers that feed the shared `groups` claim, the role model, and the render-then-commit workflow — is documented as a guardrail checklist.
-- **Before adding another PKCE client:** Read `holos/docs/keycloak-clients.md` and follow its guardrail checklist rather than rediscovering the pattern. Relax or skip requiring PKCE only for a client with a demonstrated implementation gap — the `quay` client is the documented exception (HOL-1257 disabled PKCE for it entirely; see the *Quay OIDC PKCE* note above, the runbook `docs/runbooks/quay-keycloak-oidc.md`, and `docs/adr/ADR-15.md`). The public `argocd` and `kargo` clients keep `pkce.code.challenge.method: "S256"`.
+- **Before adding another PKCE client:** Read `holos/docs/keycloak-clients.md` and follow its guardrail checklist rather than rediscovering the pattern. Relax or skip requiring PKCE only for a client with a demonstrated implementation gap — the `quay` client is the documented exception (HOL-1257 disabled PKCE for it entirely; see the *Quay auth* note above, the runbook `docs/runbooks/quay-keycloak-oidc.md`, and `docs/adr/ADR-15.md`). Note the `quay` client is a confidential **federated login provider** layered on Quay's Database auth backend (ADR-15 Revision 3, HOL-1281), not Quay's identity backend — the OIDC client pattern here is about the login flow, not the auth store. The public `argocd` and `kargo` clients keep `pkce.code.challenge.method: "S256"`.
 - **Reference:** `holos/docs/keycloak-clients.md`, `docs/runbooks/quay-keycloak-oidc.md`
 
 ### Quay Superuser Bootstrap Credential (`quay-initial-admin`) — HOL-1276
 - **Rule:** Declarative automation Jobs that need superuser access to Quay's REST API (creating orgs, repos, robots, webhooks — e.g. the `my-project-quay-bootstrap` Job) MUST authenticate with the **`token`** key of the **`quay-initial-admin`** Secret in the **`quay`** namespace. Do not invent a new admin credential, embed a password, or assume a human ran a manual step.
 - **What it is:** A non-expiring superuser **OAuth token** for Quay's local `admin` user (also a member of `SUPER_USERS`). It is the minimal, upstream-recommended way to seed a first superuser headlessly in Kubernetes — Quay has no operator for this, so the `quay` component's **`quay-admin-bootstrap`** Job calls the one-shot `/api/v1/user/initialize` endpoint (enabled by `FEATURE_USER_INITIALIZE`) and stores the returned token. There is no robot/service account with superuser scope in Quay; the initialize-token IS the idiomatic machine credential.
+- **Why Database auth is required (HOL-1281):** `/api/v1/user/initialize` and `/api/v1/superuser/*` are only available because Quay runs `AUTHENTICATION_TYPE: Database` with Keycloak SSO layered on as a *federated login provider* (ADR-15 Revision 3). `AUTHENTICATION_TYPE: OIDC` would make the OIDC provider the sole identity store and disable the local `admin` user **and** those APIs, so the bootstrap Job could never mint this token. The Database backend is therefore a hard prerequisite for this credential — do not switch Quay to OIDC-backend auth.
 - **Created automatically by `scripts/apply`:** The `quay-admin-bootstrap` Job runs after Quay is serving and creates the Secret; `wait_quay` gates on the Job and the Secret, and `pre_quay` pre-applies the Job's ServiceAccount/RBAC and deletes the prior Job before every apply so a failed run is always re-attempted. The credential is therefore present before any downstream component runs — this is what fixed `secrets "quay-initial-admin" not found`. (`scripts/quay-init` still bootstraps the org/robot/team and **reuses** this same Secret; it no longer needs to be the creator.)
 - **Generate-once:** The initialize endpoint is one-shot, so the Secret is never rotated — every bootstrap path checks-then-skips if it already exists (the *Generate-once guarantee* under *Keycloak Configuration as Code* above). When **consuming** it, grant least-privilege RBAC: `get` scoped to the `quay-initial-admin` resourceName only. The Job never echoes the token to its log (pod logs bypass Secret RBAC); a write failure fails with registry-reset guidance instead.
-- **Reference:** `holos/components/quay/buildplan.cue` (the `ADMIN_BOOTSTRAP_*` resources and `ADMIN_BOOTSTRAP_SCRIPT`), `scripts/apply` (`pre_quay`, `wait_quay`), `scripts/quay-init`.
+- **Re-opening initialize after the fact:** Because initialize is one-shot, a registry that already has any user (e.g. one that ran the earlier OIDC-only config) keeps it closed and the Job can never mint the token. The deliberate, destructive **`scripts/quay-reset`** (HOL-1283) wipes the Quay DB so initialize re-opens; the next `scripts/apply` re-runs the bootstrap against the now-virgin DB. `scripts/apply` itself never wipes the DB — the reset is a separate operation.
+- **Reference:** `holos/components/quay/buildplan.cue` (the `ADMIN_BOOTSTRAP_*` resources and `ADMIN_BOOTSTRAP_SCRIPT`, plus `AUTHENTICATION_TYPE: Database`), `scripts/apply` (`pre_quay`, `wait_quay`), `scripts/quay-init`, `scripts/quay-reset` (re-open initialize on a used registry), `docs/runbooks/quay-keycloak-oidc.md` (the Database-backend model and the superuser-token verification).
 
 ## Documentation index
 
@@ -149,12 +153,16 @@ components have been removed. Git history preserves them.
   groups-claim role mapping, issuer-cert trust via the local-ca cabundle, and
   the verification/maintenance runbook.
 - [docs/runbooks/quay-keycloak-oidc.md](docs/runbooks/quay-keycloak-oidc.md) —
-  operational runbook for the Quay↔Keycloak OIDC SSO integration: how the
-  confidential `quay` client and the `quay-oidc` secret bootstrap are wired, the
-  documented **no-PKCE exception** (Quay is the one relying party without PKCE,
-  unlike public `argocd`/`kargo`), grant/rotate/reconcile operations, and
-  troubleshooting the `code exchange: 400` login failure. Companion to
-  [ADR-15](docs/adr/ADR-15.md).
+  operational runbook for the Quay↔Keycloak OIDC SSO integration: the
+  **Database backend + federated Keycloak SSO** model (`AUTHENTICATION_TYPE:
+  Database`, not OIDC-backend — HOL-1281), how the confidential `quay` client
+  and the `quay-oidc` secret bootstrap are wired, the `quay-initial-admin`
+  superuser-token verification (`GET /api/v1/superuser/users/` → 200), the
+  one-time `scripts/quay-reset` procedure, the "Holos SSO" human-login +
+  `SUPER_USERS` promotion path, the documented **no-PKCE exception** (Quay is
+  the one relying party without PKCE, unlike public `argocd`/`kargo`),
+  grant/rotate/reconcile operations, and troubleshooting the `code exchange:
+  400` login failure. Companion to [ADR-15](docs/adr/ADR-15.md).
 - [holos/docs/oci-publish-workflow.md](holos/docs/oci-publish-workflow.md)
   — the client-side build-and-publish workflow (`scripts/publish` /
   `make publish`): render the platform with an injected app image digest,
