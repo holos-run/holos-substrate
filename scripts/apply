@@ -387,6 +387,19 @@ pre_keycloak_config() {
   # reconcile Job's pod Pending on its secretKeyRefs and wedge wait_keycloak_config.
   # The Job is idempotent (it exits 0 leaving existing Secrets untouched), and the
   # Secrets survive the Job deletion, so the generate-once guarantee holds.
+  #
+  # Pre-apply the bootstrap ServiceAccount + RBAC before deleting the Job:
+  # `kubectl apply -f <dir>` applies a component's files in alphabetical order, so
+  # job-quay-user-password-bootstrap.yaml is created before
+  # serviceaccount-quay-user-password-bootstrap.yaml — on a fresh cluster the
+  # Job's pod would fail admission ("error looking up service account") until the
+  # SA lands.  Pre-applying the identity here closes that race (the pre_quay /
+  # pre_my_project precedent); the main apply then re-applies it idempotently.
+  local pw_dir="${COMPONENTS_DIR}/keycloak-config"
+  kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
+    -f "${pw_dir}/serviceaccount-quay-user-password-bootstrap.yaml" \
+    -f "${pw_dir}/role-quay-user-password-bootstrap.yaml" \
+    -f "${pw_dir}/rolebinding-quay-user-password-bootstrap.yaml"
   kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
     delete job -l app.kubernetes.io/name=quay-user-password-bootstrap \
     --ignore-not-found --cascade=foreground --wait --request-timeout=60s
