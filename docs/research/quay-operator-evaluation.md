@@ -79,8 +79,9 @@ now.** Two findings, one per layer:
 > `Notification` CR supports `event: repo_push` + `method: webhook`, which is
 > precisely Goal 2. **But** the operator *wrapper* does not yet clear Goal 6's
 > "high quality, well maintained, robust" bar: it is a single-maintainer personal
-> project — 2 stars, 0 forks, 14 commits, **no tagged releases**, a CRD API group
-> on a personal domain (`quay.herve4m.github.io`)
+> project — 2 stars, 0 forks, 14 commits, **no GitHub release tags** (though
+> versioned operator and OLM-bundle images *are* published to quay.io, §3), a CRD
+> API group on a personal domain (`quay.herve4m.github.io`)
 > ([repo](https://github.com/herve4m/quay-api-operator)). Its *underlying*
 > automation — the `infra.quay_configuration` Ansible collection, formerly
 > `herve4m.quay`, now governed by [redhat-cop](https://github.com/redhat-cop/quay_configuration)
@@ -262,9 +263,11 @@ custom resources.
   `quay_notification`, etc. modules are the actual REST-API drivers; the operator
   is a thin CRD-to-playbook shim over them.
 - Installed with **plain Kustomize** (`make install` for the CRDs, `make deploy`
-  for the controller) — there is **no `bundle/` directory at the repo root**, so
-  OLM is *optional*, not required (an OLM `make bundle` target exists but is not
-  the default path). This is a meaningful Goal-4 advantage over the §2 operator,
+  for the controller) — there is **no `bundle/` directory checked in at the repo
+  root**, so OLM is *optional*, not required (an OLM `make bundle` target exists
+  and the resulting bundle is published as `quay.io/herve4m/quay-api-operator-bundle`,
+  but plain Kustomize is the default path). This is a meaningful Goal-4 advantage
+  over the §2 operator,
   which expects OLM.
 
 ### The custom resources (the API group `quay.herve4m.github.io/v1alpha1`)
@@ -295,7 +298,7 @@ connection parameters (`host`, `token` or `username`+`password`, `validateCerts`
 
 The `Notification` CRD's schema enumerates `event` values including **`repo_push`**
 and `method` values including **`webhook`**, with a `config.url` (POST target)
-and `config.body` (POST body)
+and `config.template` (the JSON body of the webhook POST)
 ([`config/crd/bases/quay.herve4m.github.io_notifications.yaml`](https://github.com/herve4m/quay-api-operator/blob/0badd68bc75aebb68e0f023bf754806fe85b6223/config/crd/bases/quay.herve4m.github.io_notifications.yaml)).
 A `Notification` like the following is the declarative equivalent of the
 imperative `repo_push` webhook the `my-project` Job POSTs today — exactly Goal 2,
@@ -335,9 +338,13 @@ The **operator wrapper** does **not** meet Goal 6's "high quality, well
 maintained, robust" bar today:
 
 - **Single-maintainer personal project.** 2 stars, 0 forks, 0 open issues/PRs,
-  14 commits total, last commit 2026-04-29, **no tagged releases and no
-  published OLM bundle/registry image** ([repo](https://github.com/herve4m/quay-api-operator)).
-  Consuming it means building/hosting the image yourself.
+  14 commits total, last commit 2026-04-29, and **no GitHub releases, tags, or
+  changelog** ([repo](https://github.com/herve4m/quay-api-operator)). It *does*
+  publish versioned images to quay.io — `quay.io/herve4m/quay-api-operator`
+  (`1.0.0`–`1.3.0`, `latest`) and an OLM bundle
+  `quay.io/herve4m/quay-api-operator-bundle` (`v1.2.0`, `v1.3.0`) — so it is
+  installable without building your own image; but the version history lives only
+  in registry tags, with no release notes or source tags to audit what changed.
 - **CRD API group on a personal domain** (`quay.herve4m.github.io`) — a
   governance smell for a production control-plane dependency (compare the §2
   operator's `quay.redhat.com` group).
@@ -364,8 +371,8 @@ and its CRD API* are the immature, low-bus-factor part.
   the imperative `scripts/quay-init` and `my-project` bootstrap Jobs with
   declarative CRs that are reusable verbatim MVP → production — *if* the operator
   endures. The countervailing risk is real: betting the control plane on a
-  2-star, no-release, single-maintainer project means a forced migration (the
-  operator is abandoned, or its `v1alpha1` API breaks) would itself be the
+  2-star, single-maintainer project with no source releases means a forced
+  migration (the operator is abandoned, or its `v1alpha1` API breaks) would itself be the
   "significant refactor" Goal 3 forbids.
 - **Goal 4 (laptop).** Neutral-to-positive: it does **not** touch how Quay is
   deployed, so the slim local-path-PVC Quay is unaffected. It adds one
@@ -399,7 +406,7 @@ is the shared baseline.
 | **3.** No big refactor to production | ⚠️ Imperative Jobs, reusable but not declarative | ⚠️ Declarative + reusable **iff the operator endures**; abandonment/`v1alpha1` break = forced migration | **Promising but risky** |
 | **4.** Slim, laptop-friendly | ✅ baseline | ✅ Adds one ansible-operator pod, no OLM, does not touch Quay deploy | **Compatible** |
 | **5.** CNPG database | ✅ baseline | ➖ Out of scope (never manages the DB) | **No change** |
-| **6.** Operator quality | n/a | ❌ Wrapper immature: 2★, 0 releases, single maintainer, personal CRD group, `v1alpha1`; ✅ underlying `infra.quay_configuration` collection (redhat-cop) is mature | **Fails Goal 6 as a production dependency today** |
+| **6.** Operator quality | n/a | ❌ Wrapper immature: 2★, single maintainer, no GitHub releases/tags/changelog (only quay.io image tags `1.0.0`–`1.3.0` + OLM bundle), personal CRD group, `v1alpha1`; ✅ underlying `infra.quay_configuration` collection (redhat-cop) is mature | **Fails Goal 6 as a production dependency today** |
 
 ## 5. The decisive finding, restated
 
@@ -441,8 +448,9 @@ dependency — rather than something that has to be built from zero.
    `Repository`/`ProjectRequest` direction: `FirstUser`/`ApiToken` for Goal 1,
    `Organization`/`Repository`/`Robot` for provisioning, and a `Notification` CR
    that does Goal 2's `repo_push`-webhook **as a custom resource**. The blocker is
-   Goal 6: a 2-star, no-release, single-maintainer wrapper on a personal CRD API
-   group is too thin a dependency for a production control plane, and its generic
+   Goal 6: a 2-star, single-maintainer wrapper with no source releases or
+   changelog (only quay.io image tags) on a personal CRD API group is too thin a
+   dependency for a production control plane, and its generic
    per-object CRUD CRDs are a lower-level abstraction than the single-intent
    `ProjectRequest` (one CR → org + repo + robot + webhook + Keycloak group) that
    ADR-2 implies. Concretely:
@@ -476,9 +484,10 @@ dependency — rather than something that has to be built from zero.
      of the hand-authored Quay `Deployment`/Service/PVC/Secret manifests for a
      `QuayRegistry` CR (`postgres` unmanaged → existing CNPG `DB_URI`; reuse
      `quay-secret-keys` and `quay-oidc` via the config bundle).
-   - *Layer 2:* the **`herve4m/quay-api-operator`** graduates — tagged releases, a
-     published image/OLM bundle, a non-personal API group, adoption by
-     redhat-cop or comparable governance, and broader usage. At that point
+   - *Layer 2:* the **`herve4m/quay-api-operator`** graduates — source releases
+     and a changelog (it already publishes versioned images and an OLM bundle), a
+     stable (`v1`) non-personal API group, adoption by redhat-cop or comparable
+     governance, and broader usage. At that point
      adopting it (or backing the holos-paas reconciler with it) becomes a strong
      option that could retire bespoke reconciler code.
 
@@ -505,7 +514,7 @@ Quay Operator — layer 1 (`quay/quay-operator`, `master` / release branches):
 
 `herve4m/quay-api-operator` — layer 2 (pinned to commit `0badd68bc75aebb68e0f023bf754806fe85b6223`):
 
-- [repository root](https://github.com/herve4m/quay-api-operator) — description, maintenance signals (2★, 14 commits, no releases)
+- [repository root](https://github.com/herve4m/quay-api-operator) — description, maintenance signals (2★, 14 commits, no GitHub releases/tags; versioned images + OLM bundle published to `quay.io/herve4m`)
 - [`config/crd/bases/`](https://github.com/herve4m/quay-api-operator/tree/0badd68bc75aebb68e0f023bf754806fe85b6223/config/crd/bases) — the 24 CRD definitions (`organizations`, `repositories`, `robots`, `teams`, `notifications`, `firstusers`, `apitokens`, …)
 - [`config/crd/bases/quay.herve4m.github.io_notifications.yaml`](https://github.com/herve4m/quay-api-operator/blob/0badd68bc75aebb68e0f023bf754806fe85b6223/config/crd/bases/quay.herve4m.github.io_notifications.yaml) — `event` enum incl. `repo_push`, `method` enum incl. `webhook` (Goal 2)
 - [`config/samples/`](https://github.com/herve4m/quay-api-operator/tree/0badd68bc75aebb68e0f023bf754806fe85b6223/config/samples) — sample CRs (`Notification`, `Organization`, `Repository`, `Robot`, `ApiToken`, `FirstUser`) showing the `connSecretRef` / `retSecretRef` model
