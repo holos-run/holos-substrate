@@ -47,6 +47,7 @@ data:
     SUPER_USERS:
       - svc-quay-resource-controller
       - quay-admin
+    FEATURE_SUPERUSERS_FULL_ACCESS: true
     FEATURE_MAILING: false
     REGISTRY_TITLE: Holos Quay (quay)
     REGISTRY_TITLE_SHORT: Holos Quay

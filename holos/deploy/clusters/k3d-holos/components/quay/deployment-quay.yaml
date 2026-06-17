@@ -15,7 +15,7 @@ spec:
   template:
     metadata:
       annotations:
-        app.holos.run/config-hash: 94955d1f
+        app.holos.run/config-hash: 61ea108b
       labels:
         app.kubernetes.io/name: quay
     spec:
