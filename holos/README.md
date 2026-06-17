@@ -424,8 +424,9 @@ essentials:
   into the `groups` claim alongside Keycloak group memberships. The `quay`
   client also emits the `platform-owner` **realm role** into that same claim
   (the realm-role mapper added in HOL-1245, mirroring the `argocd` client), so
-  the privileged platform-owner role is recognizable to Quay's team sync the
-  same way group names are. They are identity labels, not privileges in
+  the privileged platform-owner role would be recognizable to Quay's team sync
+  the same way group names are once that sync is re-enabled (see below). They
+  are identity labels, not privileges in
   themselves: a Quay **superuser** manages the Quay team's membership directly,
   and the team's permissions are what grant access. Automatic group/role-name →
   team syncing is **disabled** under the Database auth backend

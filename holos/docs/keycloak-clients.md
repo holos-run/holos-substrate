@@ -187,9 +187,13 @@ The `quay` client defines two client roles:
 - `project-admin` — per-project administrative access in Quay.
 
 These are **identity labels that flow into the `groups` claim**, not privileges
-in themselves. A Quay superuser binds a Quay team to the group/role name; the
-team's permissions are what grant access. Per-project roles follow the same
-convention: add a `quay` client role named for the project and grant it.
+in themselves. A Quay superuser manages the matching Quay team's membership; the
+team's permissions are what grant access. Automatic group/role-name → team
+binding from the claim is **disabled** under Quay's Database auth backend
+(`FEATURE_TEAM_SYNCING: false`, ADR-15 Revision 3 — the Database user handler
+cannot sync OIDC groups); the claim is still emitted, so it returns once team
+syncing can be re-enabled on a federated backend. Per-project roles follow the
+same convention: add a `quay` client role named for the project and grant it.
 
 ### `platform-owner` into the quay `groups` claim (HOL-1245)
 

@@ -104,7 +104,7 @@ Quay's side is the `KEYCLOAK_LOGIN_CONFIG` block in
 | `SERVICE_NAME` | `Holos SSO` | the label on the Quay login button |
 | `LOGIN_SCOPES` | `openid`, `profile`, `email`, `groups`, `offline_access` | |
 | `PREFERRED_USERNAME_CLAIM_NAME` | `preferred_username` | username, verbatim |
-| `PREFERRED_GROUP_CLAIM_NAME` | `groups` | drives team syncing |
+| `PREFERRED_GROUP_CLAIM_NAME` | `groups` | the group/role-name claim; team syncing from it is **off** (`FEATURE_TEAM_SYNCING: false`) under Database auth |
 
 There is deliberately **no** `USE_PKCE` / `PKCE_METHOD` here (HOL-1257). Quay
 defaults `USE_PKCE` to `false`, so it sends no `code_challenge`.

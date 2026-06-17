@@ -223,9 +223,12 @@ Four protocol mappers on the `quay` client shape the token Quay consumes:
    **folds realm-role names — including `platform-owner` (HOL-1242) — into the
    same `groups` claim**, mirroring the `argocd` client. Granting a user the
    `platform-owner` realm role therefore surfaces `platform-owner` in their
-   `groups` claim, so Quay team sync and any future relying party key on it the
-   same way they key on group names. This only surfaces the role to Quay; it
-   does not confer Quay superuser (see `SUPER_USERS` below).
+   `groups` claim, so once team syncing is re-enabled on a federated backend (it
+   is `FEATURE_TEAM_SYNCING: false` today — see
+   [Identity backend](#identity-backend-database-with-keycloak-as-a-federated-login-provider))
+   Quay and any future relying party key on it the same way they key on group
+   names. This only surfaces the role to Quay; it does not confer Quay superuser
+   (see `SUPER_USERS` below).
 4. A `preferred_username` property mapper writes the username claim.
 
 Quay receives the single `groups` claim
@@ -254,7 +257,9 @@ the break-glass superuser still works with `FEATURE_DIRECT_LOGIN: false`.
   `SUPER_USERS` in `holos/components/quay/buildplan.cue` and re-render/apply.
   This is the only way to confer Quay superuser; the `platform-admin` client
   role does not. Optionally also grant the `quay` `platform-admin` role so the
-  intent is visible in Keycloak and an org-admin team can be bound to it.
+  intent is visible in Keycloak; while `FEATURE_TEAM_SYNCING: false` a superuser
+  realizes that intent by managing the org-admin team's membership directly
+  (automatic team binding returns when team syncing is re-enabled).
 - **Per-project / team access:** grant the user the project's `quay` client
   role (`project-admin` or a per-project role) or add them to the bound
   Keycloak group; a Quay **superuser** manages the matching Quay team's
