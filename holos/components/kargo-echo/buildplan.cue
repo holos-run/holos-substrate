@@ -199,7 +199,8 @@ let STAGE_RESOURCE = kargostage.#Stage & {
 // The repository credential Secrets are created imperatively and are NOT
 // committed (the repo's runtime-secret posture):
 //   - Argo CD's repo-server PULLs the artifact using the argocd-namespace
-//     repository Secret (scripts/quay-init robot account; see
+//     repository Secret (the Quay pull-robot credential — its provisioning is
+//     deferred to a future Quay Resource Controller, HOL-1293; see
 //     argocd-application-source.md#repository-credential-secret).
 //   - Kargo's controller LISTS tags for the Warehouse using a separate
 //     Kargo-format image credential Secret in the kargo-echo Project namespace

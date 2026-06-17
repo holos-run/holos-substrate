@@ -394,7 +394,6 @@ the Quay Deployment so its initContainer re-renders `config.yaml`.
 - [holos/components/keycloak/realm-config/buildplan.cue](../../holos/components/keycloak/realm-config/buildplan.cue)
   — the Keycloak `quay` client, the two superuser realm users, and the secret
   bootstrap Job.
-- [AGENTS.md](../../AGENTS.md) — the platform Guard Rails. The Quay-auth
-  guardrail and the `svc-` service-account naming convention are brought in line
-  with this OIDC-backend model by the HOL-1293 cleanup phase (HOL-1298); until
-  then AGENTS.md still describes the prior Database-backend model.
+- [AGENTS.md](../../AGENTS.md) — the platform Guard Rails, including the
+  OIDC-backend Quay-auth guardrail and the `svc-` service-account naming
+  convention.

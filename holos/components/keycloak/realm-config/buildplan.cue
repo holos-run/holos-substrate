@@ -163,7 +163,7 @@ let QUAY_NAMESPACE = "quay" & #RegisteredNamespace
 // prefix (svc-quay-resource-controller — the future Quay Resource Controller's
 // service identity), clearly distinguishing them from HUMAN users (quay-admin,
 // unprefixed — human administration).  The durable repo-wide statement of this
-// convention is added to AGENTS.md in HOL-1298.  The prefix is part of the
+// convention is in AGENTS.md (Conventions).  The prefix is part of the
 // username and flows through to Quay's superuser match (preferred_username ==
 // username) and the SSO login name, so it MUST NOT change without updating the
 // SUPER_USERS list set in HOL-1293's Quay phase.
