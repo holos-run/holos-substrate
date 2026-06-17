@@ -79,7 +79,9 @@ Quay's API. **No code or CRD Go types are written here — this is the design re
 - [`holos/docs/secret-handling.md`](../../holos/docs/secret-handling.md): the
   runtime-secret guardrail — secret material is created at runtime and never
   committed; bootstrap is generate-once and idempotent. The reconcilers honor this
-  for the robot tokens and webhook secrets they manage.
+  for the **robot-token** Secrets they own (the Argo CD repository pull-credential
+  and the Kargo image-credential Secrets); the Kargo webhook-receiver Secret is
+  not theirs — it stays owned by the `ProjectConfig`.
 
 ## Design
 
@@ -212,8 +214,10 @@ status:
   # The receiver URL the reconciler read from the ProjectConfig status and
   # registered the Quay webhook against (resolved, not render-time input).
   webhookURL: https://kargo.holos.localhost/webhook/quay/<receiver-id>
-  # The Argo CD pull-credential the reconciler provisioned (robot + repo Secret).
+  # The Quay robots the reconciler provisioned: the pull robot backs both
+  # pull-credential Secrets; the push robot backs scripts/publish's write Secret.
   pullRobot: my-project+argocd
+  pushRobot: my-project+publish
   conditions:
     - type: Ready
       status: "True"
@@ -235,8 +239,9 @@ status:
 | `observedGeneration` | last `spec` generation reconciled. |
 | `repository` | the observed `<org>/<repo>` path. |
 | `webhookURL` | the receiver URL read from the ProjectConfig status and registered with Quay. |
-| `pullRobot` | the Quay robot account backing both pull-credential Secrets (the Argo CD repository Secret and the Kargo image-credential Secret). |
-| `conditions[]` | `Ready` (repo/retention/robot + both pull Secrets converged) and `WebhookRegistered` (the receiver URL was published and the Quay webhook registered). |
+| `pullRobot` | the Quay robot backing both pull-credential Secrets (the Argo CD repository Secret and the Kargo image-credential Secret). |
+| `pushRobot` | the Quay robot backing the push-credential Secret `scripts/publish` writes the artifact with. |
+| `conditions[]` | `Ready` (repo/retention/robots + pull and push Secrets converged) and `WebhookRegistered` (the receiver URL was published and the Quay webhook registered). |
 
 ### Out of scope (deliberately)
 
@@ -249,8 +254,9 @@ keeping the schema minimal and goal-driven, per [ADR-18](ADR-18.md):
 - Webhook event types other than `repo_push` (the only event the Kargo loop
   consumes), and multiple webhooks per repository.
 - Org-level quotas, billing, and proxy-cache configuration.
-- Multiple pull/push robots per repository — one Argo CD **pull** robot per repo
-  (plus the push robot the publish workflow uses) is all the loop requires.
+- Multiple robots per repository — one **pull** robot (backing both pull Secrets)
+  and one **push** robot (for `scripts/publish` to write the artifact) per repo is
+  all the loop requires; additional robots are out of scope.
 
 A field beyond what docker-push-to-deploy requires is added by **revising this
 ADR** with a new requirement, not by speculative schema.
@@ -341,6 +347,14 @@ within the claim model above — never error on an org *this CR* already owns):
     creates by hand today). The project namespace the Secret lands in is the
     owning `Organization`/`Repository` CR's namespace (the Kargo Project
     namespace), read from the referenced ProjectConfig.
+- Provision a Quay **push robot** (write scope on the repo) so `scripts/publish`
+  can write the rendered-manifests artifact, and write its token as a
+  create-if-absent **push-credential Secret** in the CR's namespace. This is the
+  reconciled replacement for the **destination push credential** that
+  [oci-publish-workflow.md](../../holos/docs/oci-publish-workflow.md) defers "to a
+  future Quay Resource Controller" — this controller is that controller (ADR-18),
+  so it owns the push robot rather than leaving it deferred. (Distinct from the
+  pull robot above; one pull + one push robot per repo, per *Out of scope*.)
 - Register the `repo_push` **webhook** pointing at the Kargo receiver URL. The
   controller **reads** that URL from the referenced ProjectConfig's
   `status.webhookReceivers[].url` (the value Kargo derives from its own receiver
@@ -360,8 +374,9 @@ above), create-or-adopt for repos/teams, upsert for retention and webhook, and
 **create-if-absent** for the Secret material the controller itself owns — the two
 pull-credential Secrets minted from the one Quay pull-robot token (the Argo CD
 repository Secret in `argocd` and the Kargo image-credential Secret in the project
-namespace). The Kargo *receiver* Secret is owned by the ProjectConfig, not by
-these reconcilers. Status carries `observedGeneration` and
+namespace), plus the push-credential Secret minted from the push-robot token. The
+Kargo *receiver* Secret is owned by the ProjectConfig, not by these reconcilers.
+Status carries `observedGeneration` and
 `conditions` so the desired/observed gap is legible, consistent with the
 platform's generate-once secret posture
 ([secret-handling.md](../../holos/docs/secret-handling.md)).
@@ -378,7 +393,8 @@ document as deferred. Each deferred object becomes a reconciled field:
 | Create the Quay **org** (e.g. `my-project`) | `Organization` (`organizationName`) |
 | Create the **`my-project-config` repo** | `Repository` (`repositoryName`) |
 | Create the Quay **pull robot** + the Argo CD repository pull-credential **Secret** in `argocd` ([argocd-application-source.md](../../holos/docs/argocd-application-source.md)) | `Repository` reconcile (status `pullRobot`) |
-| Create the **Kargo image-credential Secret** (`kargo.akuity.io/cred-type: image`) in the project namespace so the Warehouse can pull the private repo ([oci-publish-workflow.md](../../holos/docs/oci-publish-workflow.md)) | `Repository` reconcile (from the same robot token) |
+| Create the **Kargo image-credential Secret** (`kargo.akuity.io/cred-type: image`) in the project namespace so the Warehouse can pull the private repo ([oci-publish-workflow.md](../../holos/docs/oci-publish-workflow.md)) | `Repository` reconcile (from the same pull-robot token) |
+| Provision the **push robot** + push-credential Secret for `scripts/publish` (the destination push credential [oci-publish-workflow.md](../../holos/docs/oci-publish-workflow.md) defers to the future controller) | `Repository` reconcile (status `pushRobot`) |
 | Register the **`repo_push` webhook** to the Kargo receiver URL ([oci-publish-workflow.md](../../holos/docs/oci-publish-workflow.md)) | `Repository` (`pushWebhook`); reconciler reads the URL from `ProjectConfig.status` |
 | Map **OIDC groups → Quay teams/roles** in the org | `Organization` (`access[]`) |
 
@@ -417,15 +433,18 @@ interim, exactly as [ADR-18](ADR-18.md) anticipates.
    (`super:user`/`org:admin`/`repo:create`, `FEATURE_SUPERUSERS_FULL_ACCESS` for
    adoption), are **idempotent** (create-or-claim for orgs, create-or-adopt for
    repos/teams, upsert), and treat the Secret material the controller owns — the
-   two pull-credential Secrets minted from one Quay robot token (the Argo CD
+   two pull-credential Secrets from one Quay pull-robot token (the Argo CD
    repository Secret in `argocd` and the Kargo image-credential Secret in the
-   project namespace) — as **generate-once / create-if-absent** per
+   project namespace) and the push-credential Secret from the push-robot token —
+   as **generate-once / create-if-absent** per
    [secret-handling.md](../../holos/docs/secret-handling.md). The Kargo *receiver*
    Secret stays owned by the `ProjectConfig`, not by these reconcilers.
-5. These CRDs **replace** the manual `repo_push` webhook + pull-robot + Argo CD
-   repository-Secret + Kargo image-credential-Secret + org/repo provisioning the
-   credentials runbook and the `my-project` scaffold defer; the Kargo receiver
-   (and its receiver Secret) stays in the `my-project` component.
+5. These CRDs **replace** the manual `repo_push` webhook + pull-robot + push-robot
+   + Argo CD repository-Secret + Kargo image-credential-Secret + org/repo
+   provisioning the credentials runbook and the `my-project` scaffold defer (the
+   push credential [oci-publish-workflow.md](../../holos/docs/oci-publish-workflow.md)
+   defers to this controller); the Kargo receiver (and its receiver Secret) stays
+   in the `my-project` component.
 6. This is a **design record only** — no CRD Go types or controller code are
    written in this phase.
 
