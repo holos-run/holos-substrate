@@ -566,7 +566,7 @@ let QUAY_BOOTSTRAP_SCRIPT = """
 	if [ "${st}" = "200" ]; then
 	  echo "Repository ${REPO_PATH} exists; skipping."
 	elif [ "${st}" = "404" ]; then
-	  st="$(http POST /api/v1/repository "$(jq -nc --arg ns "${ORG}" --arg r "${REPO}" '{namespace:$ns,repository:$r,visibility:"private",repo_kind:"image"}')")"
+	  st="$(http POST /api/v1/repository "$(jq -nc --arg ns "${ORG}" --arg r "${REPO}" '{namespace:$ns,repository:$r,visibility:"private",repo_kind:"image",description:"Rendered-manifests OCI artifacts for my-project (HOL-1272)."}')")"
 	  [ "${st}" = "201" ] || { echo "ERROR: create repo ${REPO_PATH} (HTTP ${st})"; cat /tmp/resp; exit 1; }
 	  echo "Created repository ${REPO_PATH}."
 	else
