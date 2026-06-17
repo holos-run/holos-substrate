@@ -16,7 +16,7 @@
 ## Context and Problem Statement
 
 The Quay registry (`quay.holos.localhost`) initially authenticated only
-against its local database, bootstrapped by `scripts/quay-init`. Platform
+against its local database, with no SSO. Platform
 users already have identities in the Keycloak `holos` realm and sign in to
 Argo CD through it ([ADR-3](ADR-3.md)); requiring a second, registry-local
 identity is both poor ergonomics and a second credential store to manage.
