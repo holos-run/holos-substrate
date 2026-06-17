@@ -6,12 +6,14 @@ Operator-facing procedure for minting the OAuth-Application credential the
 store) and the old headless `quay-initial-admin` superuser-token bootstrap is
 gone ([ADR-15](../adr/ADR-15.md) Revision 4, HOL-1293).
 
-Under the OIDC backend Quay has **no local `admin` user** and the
-`/api/v1/user/initialize` + `/api/v1/superuser/*` bootstrap endpoints are
-unavailable, so a token can no longer be minted headlessly. Until a Quay
-Resource Controller exists to reconcile this in-cluster, the data-plane
-credential is created **once, by hand**, by an operator following the steps
-below. This runbook is the authoritative procedure and records the answers to
+Under the OIDC backend Quay has **no local `admin` user** and the headless
+`/api/v1/user/initialize` one-shot bootstrap endpoint is unavailable, so a token
+can no longer be minted **headlessly**. (The `/api/v1/superuser/*` APIs still
+answer an authenticated `SUPER_USERS` member's OAuth token — that is exactly the
+credential this runbook produces, by signing a superuser in interactively and
+generating an OAuth-Application token.) Until a Quay Resource Controller exists
+to reconcile this in-cluster, the data-plane credential is created **once, by
+hand**, by an operator following the steps below. This runbook is the authoritative procedure and records the answers to
 the credential's open design questions (which organization, which scopes, can
 it create new organizations).
 
@@ -28,8 +30,9 @@ machine identity — distinct from the human **`quay-admin`** administrator (no
 prefix). Both are seeded in the Keycloak `holos` realm by the keycloak phase
 (HOL-1294), both hold the `platform-owner` realm role, and both are listed in
 Quay's `SUPER_USERS` (`holos/components/quay/buildplan.cue`), matched by
-`preferred_username == username`. The repo-wide statement of the `svc-` naming
-convention lives in [`AGENTS.md`](../../AGENTS.md).
+`preferred_username == username`. The authoritative repo-wide statement of the
+`svc-` naming convention is added to [`AGENTS.md`](../../AGENTS.md) in the
+HOL-1293 cleanup phase (HOL-1298).
 
 A token Quay generates for an OAuth Application **acts as the user who generated
 it**, so generating it while signed in as `svc-quay-resource-controller` is what
@@ -209,5 +212,6 @@ procedure is retired.
 - [docs/local-cluster.md](../local-cluster.md) — bringing the local cluster up
   and the Quay verification steps (SSO login as `quay-admin` /
   `svc-quay-resource-controller`).
-- [`AGENTS.md`](../../AGENTS.md) — the `svc-` service-account naming convention
-  and the runtime-secret guardrail.
+- [`AGENTS.md`](../../AGENTS.md) — the runtime-secret guardrail (the `svc-`
+  service-account naming convention is added here by the HOL-1293 cleanup phase,
+  HOL-1298).

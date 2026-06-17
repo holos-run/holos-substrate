@@ -68,17 +68,22 @@ are both re-enabled. This ADR documents the resulting behavior.
 **Revision 4 (HOL-1292/HOL-1293) is the current model and supersedes Revision
 3's Database backend.** Quay runs `AUTHENTICATION_TYPE: OIDC`, which makes the
 Keycloak `holos` realm the **sole** identity store: there is no local `admin`
-user, and the `/api/v1/user/initialize` + `/api/v1/superuser/*` bootstrap
-endpoints are unavailable. The `<PREFIX>_LOGIN_CONFIG` block (here
-`KEYCLOAK_LOGIN_CONFIG`) is what selects the OIDC provider Quay authenticates
-against; under OIDC backend that provider also owns every user record.
+user, and the headless **`/api/v1/user/initialize`** one-shot bootstrap endpoint
+(which needs no authentication and only answers against a virgin Database-backed
+registry) is unavailable. The `/api/v1/superuser/*` endpoints still exist and
+answer an authenticated request from a `SUPER_USERS` member's OAuth token — what
+is gone is the *headless* path that minted that first token without an existing
+user. The `<PREFIX>_LOGIN_CONFIG` block (here `KEYCLOAK_LOGIN_CONFIG`) is what
+selects the OIDC provider Quay authenticates against; under OIDC backend that
+provider also owns every user record.
 
 Revision 3 briefly chose Database auth specifically to keep the local `admin`
-user and the initialize/superuser REST APIs available, so a headless
-`quay-admin-bootstrap` Job (HOL-1276) could mint a non-expiring superuser OAuth
-token (the `quay-initial-admin` Secret, key `token`) that imperative automation
-depended on. Revision 4 removes that machinery entirely. Instead of a local
-`admin` and a minted token, **two Keycloak realm users are the superusers**:
+user and the `/api/v1/user/initialize` bootstrap endpoint available, so a
+headless `quay-admin-bootstrap` Job (HOL-1276) could mint a non-expiring
+superuser OAuth token (the `quay-initial-admin` Secret, key `token`) that
+imperative automation depended on. Revision 4 removes that machinery entirely.
+Instead of a local `admin` and a headlessly-minted token, **two Keycloak realm
+users are the superusers**:
 
 - **`svc-quay-resource-controller`** — a **service account** (the `svc-` prefix
   marks it as a non-human machine identity), the future Quay Resource
@@ -312,10 +317,11 @@ committed.
   (`FEATURE_TEAM_SYNCING: true`, `TEAM_RESYNC_STALE_TIME: 30m`, Revision 4 /
   HOL-1293): the OIDC user handler syncs groups, so Quay team membership is
   eventually consistent with the `groups` claim on the 30-minute resync cadence.
-- The OIDC backend disables the local `admin` user and the
-  `/api/v1/user/initialize` + `/api/v1/superuser/*` REST APIs, so the headless
-  `quay-admin-bootstrap` Job and the `quay-initial-admin` superuser token are
-  removed (HOL-1293). In-cluster Quay data-plane provisioning (orgs, repos,
+- The OIDC backend disables the local `admin` user and the headless
+  `/api/v1/user/initialize` bootstrap endpoint (the `/api/v1/superuser/*` APIs
+  still answer an authenticated `SUPER_USERS` member's token; what is gone is the
+  headless mint of that first token), so the `quay-admin-bootstrap` Job and the
+  `quay-initial-admin` superuser token are removed (HOL-1293). In-cluster Quay data-plane provisioning (orgs, repos,
   robots, webhooks) is **deferred to a future Quay Resource Controller**; until
   it ships, an operator mints the controller's OAuth-Application credential by
   hand per the

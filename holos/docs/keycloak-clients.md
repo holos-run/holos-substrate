@@ -298,5 +298,7 @@ copy from.
 - [`docs/placeholders.md`](placeholders.md) — the resolved *Keycloak realm
   reconciliation* and *Quay OIDC login* entries.
 - [`AGENTS.md`](../../AGENTS.md) — the Guard Rails: CUE Component Rendering,
-  the Quay auth note (OIDC backend, HOL-1293), the `svc-` service-account naming
-  convention, Keycloak Configuration as Code, and OIDC Client Secrets.
+  Keycloak Configuration as Code, and OIDC Client Secrets. (The Quay-auth note
+  and the `svc-` service-account naming convention are brought in line with the
+  OIDC-backend model by the HOL-1293 cleanup phase, HOL-1298; until then that
+  block still describes the prior Database backend.)

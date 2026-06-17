@@ -161,8 +161,11 @@ by the `quay-user-password-bootstrap` Job into a Secret of the same name in the
 (generate-once, mirroring `keycloak-initial-admin`).
 
 This replaces the old Database-backend `quay-initial-admin` superuser token: the
-OIDC backend disables the local `admin` user and the `/api/v1/user/initialize` +
-`/api/v1/superuser/*` bootstrap endpoints, so there is no headless token to mint.
+OIDC backend disables the local `admin` user and the headless
+`/api/v1/user/initialize` bootstrap endpoint, so there is no *headless* way to
+mint a first token (the `/api/v1/superuser/*` APIs still answer an authenticated
+`SUPER_USERS` member's OAuth token — see
+[Verify superuser access](#verify-superuser-access)).
 In-cluster Quay data-plane provisioning (orgs, repos, robots, webhooks) is
 **deferred to a future Quay Resource Controller**; until it ships, an operator
 mints the controller's OAuth-Application credential by hand — see the
@@ -391,5 +394,7 @@ the Quay Deployment so its initContainer re-renders `config.yaml`.
 - [holos/components/keycloak/realm-config/buildplan.cue](../../holos/components/keycloak/realm-config/buildplan.cue)
   — the Keycloak `quay` client, the two superuser realm users, and the secret
   bootstrap Job.
-- [AGENTS.md](../../AGENTS.md) — the Quay OIDC-auth guardrail and the `svc-`
-  service-account naming convention.
+- [AGENTS.md](../../AGENTS.md) — the platform Guard Rails. The Quay-auth
+  guardrail and the `svc-` service-account naming convention are brought in line
+  with this OIDC-backend model by the HOL-1293 cleanup phase (HOL-1298); until
+  then AGENTS.md still describes the prior Database-backend model.
