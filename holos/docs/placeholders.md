@@ -91,21 +91,23 @@ purge is deliberately not enabled).
 
 **Resolved.** Quay now signs users in through the Keycloak `holos` realm with
 the Authorization Code flow, using the confidential `quay` client (authenticated
-by its client secret, without PKCE — HOL-1257) reconciled by the
-`keycloak-config` Job. The username is taken from the
-ID token's `preferred_username` claim with no customization, and the `quay`
-client roles (`platform-admin`, `project-admin`) plus Keycloak groups are
-emitted in the shared `groups` claim. Automatic group→Quay-team synchronization
-is **off** (`FEATURE_TEAM_SYNCING: false`, ADR-15 Revision 3): under Quay's
-Database auth backend the user handler cannot sync OIDC groups, so a superuser
-manages Quay team membership directly. The claim is still emitted, so the
-binding returns once team syncing is re-enabled on a federated backend. The
-design is recorded in [ADR-15](../../docs/adr/ADR-15.md); the operator-facing
-overview is in [`holos/README.md`](../README.md#quay-oidc-sso-and-roles) and
-the verification steps are in
-[Verify Quay](../../docs/local-cluster.md#verify-quay). The local `admin`
-superuser remains as a break-glass account via `SUPER_USERS`, and
-`scripts/quay-init` still bootstraps it alongside SSO.
+by its client secret, with PKCE `S256` — ADR-15 Revision 4) reconciled by the
+`keycloak-config` Job. Quay runs `AUTHENTICATION_TYPE: OIDC`, so the realm is the
+sole identity store. The username is taken from the ID token's
+`preferred_username` claim with no customization, and the `quay` client roles
+(`platform-admin`, `project-admin`) plus Keycloak groups are emitted in the
+shared `groups` claim. Automatic group→Quay-team synchronization is **on**
+(`FEATURE_TEAM_SYNCING: true`, `TEAM_RESYNC_STALE_TIME: 30m`, ADR-15 Revision 4):
+under the OIDC backend the user handler syncs OIDC groups, so Quay team
+membership tracks the claim on the 30-minute resync cadence. The design is
+recorded in [ADR-15](../../docs/adr/ADR-15.md) and the verification steps are in
+[Verify Quay](../../docs/local-cluster.md#verify-quay). (The
+[`holos/README.md`](../README.md#quay-oidc-sso-and-roles) Quay overview still
+describes the prior Database backend; it is brought in line with this
+OIDC-backend model by the HOL-1293 cleanup phase, HOL-1298.) There is no local
+`admin` user; the seeded superusers are the two Keycloak realm users
+`svc-quay-resource-controller` (a service account) and `quay-admin` (a human
+administrator) in `SUPER_USERS`.
 
 The bootstrap `KeycloakRealmImport` CR
 ([`components/keycloak/instance/`](../components/keycloak/instance/buildplan.cue))
@@ -126,13 +128,14 @@ username list in `config.yaml`** with no claim-driven superuser sync: there is
 no mechanism for Quay to promote a user to superuser from an OIDC claim.
 
 What exists today: the realm-role→`groups`-claim mapper (HOL-1245) emits
-`platform-owner` into the shared `groups` claim (so it is ready for Quay team
-binding once team syncing is re-enabled on a federated backend), and the
-**manual `SUPER_USERS` bootstrap** is the supported path to grant superuser —
-add the user's `preferred_username` to `SUPER_USERS` in
+`platform-owner` into the shared `groups` claim (which Quay team syncing consumes
+on the `TEAM_RESYNC_STALE_TIME` cadence — `FEATURE_TEAM_SYNCING: true` under the
+OIDC backend, ADR-15 Revision 4 — for team membership, though **not** superuser),
+and the **manual `SUPER_USERS` bootstrap** is the supported path to grant
+superuser — add the user's `preferred_username` to `SUPER_USERS` in
 [`components/quay/buildplan.cue`](../components/quay/buildplan.cue) and
-re-render/apply. The local `admin` account stays in `SUPER_USERS` as a
-break-glass superuser.
+re-render/apply. The seeded superusers are the two Keycloak realm users
+`svc-quay-resource-controller` and `quay-admin` in `SUPER_USERS`.
 
 Why deferred: closing the gap means a claim-driven superuser reconciler (Quay
 exposes no such hook today, so it would be custom automation against Quay's
@@ -154,7 +157,7 @@ pull and run the application images published to Quay — likely k3d
 [HOL-1184](https://linear.app/holos-run/issue/HOL-1184/featquay-in-cluster-image-pulls-from-quayholoslocalhost)
 tracks it; the scope boundary is noted in the
 [Verify Quay](../../docs/local-cluster.md#verify-quay) section of the
-local cluster guide and in `scripts/quay-init`.
+local cluster guide.
 
 ## NATS in-cluster authentication and webhook edge verification — retired
 
