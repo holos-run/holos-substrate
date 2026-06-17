@@ -327,8 +327,9 @@ realm. What it reconciles:
   realm-role mapper (e.g. `platform-owner`), so a single `groups` claim
   carries both group and role membership for Argo CD RBAC to key on.
 - the confidential **`quay` OIDC client** (`publicClient: false`, client-secret
-  auth, **no** PKCE — HOL-1257 dropped it; the `quay.holos.localhost` callback
-  redirect URIs) and its `platform-admin` / `project-admin` **client roles**,
+  auth **with** PKCE — `pkce.code.challenge.method: S256`, re-enabled in HOL-1293;
+  the `quay.holos.localhost` callback redirect URIs) and its `platform-admin` /
+  `project-admin` **client roles**,
   with mappers that write group memberships, the `quay` client-role names, the
   `platform-owner` **realm role** (a realm-role mapper added in HOL-1245,
   mirroring the `argocd` client), and `preferred_username` into the token — the
@@ -337,9 +338,9 @@ realm. What it reconciles:
   `keycloak` and `quay` namespaces and substituted into the import document at
   run time (never committed).
 
-The declarative-client pattern itself — public vs confidential clients (and
-whether PKCE applies; the public `argocd`/`kargo` clients use PKCE S256, the
-confidential `quay` client does not), the secret bootstrap, the three mappers
+The declarative-client pattern itself — public vs confidential clients (all
+use PKCE S256: the public `argocd`/`kargo` clients and the confidential `quay`
+client alike), the secret bootstrap, the three mappers
 that feed the shared `groups` claim, the role model, and the guardrail
 checklist for adding another client — is
 documented in
@@ -609,8 +610,10 @@ the pattern's contract (artifact layout, credential Secret shape, how the
 repo-server reaches Quay, tag-vs-digest guidance). The procedure below
 proves the path end to end with a throwaway artifact and Application;
 re-run it after any change to the argocd or quay components, or to the
-`quay-holos-localhost` ServiceEntry. It assumes the
-[Quay bootstrap](#quay-bootstrap-and-credentials) has run and the
+`quay-holos-localhost` ServiceEntry. It assumes a push-capable robot
+credential and the `holos/sample` org/repo exist (see
+[Quay credentials and data-plane provisioning](#quay-credentials-and-data-plane-provisioning),
+whose provisioning is deferred to a future Quay Resource Controller) and the
 [`oras`](https://oras.land/) CLI is installed. Nothing here is committed:
 the artifact is pushed imperatively, so a committed Application would
 leave a fresh bootstrap perpetually Degraded (see the
@@ -838,28 +841,31 @@ a future self-service `ProjectRequest` (below). Its rendered resources are:
   and its receiver Secret), a `Warehouse` that watches the `my-project-config`
   OCI artifact, and the `project-config` `Stage` whose `argocd-update` step
   patches the Application's source to each discovered Freight digest.
-- the **Quay org / repo / webhook bootstrap** (HOL-1272): a `Job`
-  (`my-project-quay-bootstrap`, run in the `quay` namespace where the admin
-  token lives) that idempotently creates the `my-project` Quay org, the
-  `my-project/my-project-config` repository, a pull robot (writing an Argo CD
-  repository Secret into `argocd`), and a `repo_push` webhook on the repo that
-  POSTs to the my-project Warehouse's Kargo receiver URL — so a push triggers
-  Freight discovery immediately instead of waiting for the Warehouse poll
-  interval. A second `Job` (`my-project-quay-webhook-bootstrap`, in the
-  `my-project` namespace) generates the receiver Secret's shared token.
+- the **Kargo webhook receiver token bootstrap**: a `Job`
+  (`my-project-quay-webhook-bootstrap`, in the `my-project` namespace) that
+  generates the Kargo receiver Secret's shared token. The **Quay-side** data
+  plane this scaffold needs — the `my-project` Quay org, the
+  `my-project/my-project-config` repository, the Argo CD pull-robot/repository
+  Secret in `argocd`, and the `repo_push` webhook **registration** that POSTs to
+  the Warehouse's Kargo receiver URL — is **deferred to a future Quay Resource
+  Controller** (HOL-1293). The earlier `my-project-quay-bootstrap` Job that
+  provisioned it (authenticating with the removed `quay-initial-admin` admin
+  token) no longer exists; only the Kargo-side receiver token Job above remains
+  (it needs no Quay admin token). Until the controller ships, a push will not
+  trigger Freight discovery until the org/repo/webhook are provisioned by hand.
 
 **Where it sits in the apply order.** `scripts/apply` applies `my-project`
 **last** in its `COMPONENTS` array, after `quay`, `argocd`, `kargo-crds`,
 `kargo`, and the `kargo-*-echo` pipeline: the Argo CD and Kargo CRDs and
 controllers must be established before its `argoproj.io`/`kargo.akuity.io`
-custom resources, and the bootstrap Jobs need the Quay admin token (`quay`),
-the Argo CD namespace (`argocd`), and the Kargo receiver URL (`kargo` + its own
-ProjectConfig) to already exist. `pre_my_project` deletes the prior bootstrap
-Jobs so each apply re-runs the idempotent provisioning, and `wait_my_project`
-gates both Jobs' completion plus the Kargo Project's adoption of the
-`my-project` namespace. The Application stays `Unknown`/`Missing` until the
-first `my-project-config` artifact is published — expected scaffolding, since
-the sample app's config artifact is future work.
+custom resources. `pre_my_project` deletes the prior
+`my-project-quay-webhook-bootstrap` Job so each apply re-runs it idempotently
+(and prunes the retired `my-project-quay-bootstrap` Job/RBAC on upgraded
+clusters), and `wait_my_project` gates that token Job's completion plus the
+Kargo Project's adoption of the `my-project` namespace. The Application stays
+`Unknown`/`Missing` until the first `my-project-config` artifact is published
+**and** the Quay org/repo are provisioned (deferred to the future Quay Resource
+Controller) — expected scaffolding.
 
 **Toward self-service `ProjectRequest`.** Everything above is what a future
 self-service `ProjectRequest` API would generate per tenant: a namespace, a

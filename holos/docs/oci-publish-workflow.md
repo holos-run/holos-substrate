@@ -357,20 +357,25 @@ ways that simplify the operator workflow:
   `Warehouse`, and `Stage` all live in the single `my-project` component, and
   the Kargo Project namespace *is* the workload namespace (no separate
   `kargo-project-*` sibling).
-- **Credentials and the webhook are bootstrapped automatically.** The
-  `my-project-quay-bootstrap` Job (HOL-1272) provisions the Quay org, the
-  `my-project/my-project-config` repository, the pull robot, the Argo CD
-  repository Secret in `argocd`, **and** a `repo_push` webhook on the repo. So
-  unlike the echo verification — which has you create the Argo CD repo Secret
-  and the Kargo `image`-credential Secret by hand — `my-project` needs no manual
-  credential Secrets, and a push triggers Freight discovery via the webhook
-  immediately rather than waiting on the Warehouse poll interval.
+- **Quay-side provisioning is deferred to a future Quay Resource Controller
+  (HOL-1293).** The Quay org, the `my-project/my-project-config` repository, the
+  pull robot, the Argo CD repository Secret in `argocd`, and the `repo_push`
+  webhook registration were previously provisioned by an in-component
+  `my-project-quay-bootstrap` Job (HOL-1272) that authenticated with the removed
+  `quay-initial-admin` admin token; that Job no longer exists. Only the
+  Kargo-side `my-project-quay-webhook-bootstrap` Job (the receiver token) still
+  runs — it needs no Quay admin token. Until the controller ships, those Quay
+  objects and the Argo CD repository Secret are provisioned by hand, so a push
+  triggers Freight discovery only after that manual setup.
 
 ### Verify the scaffold, and the end-to-end contract it will satisfy
 
-Prerequisites: the cluster is up and `scripts/apply` has run (so both
-`my-project` bootstrap Jobs completed — `wait_my_project` gates them — leaving
-the Quay org/repo/webhook and the Argo CD repository Secret in place).
+Prerequisites: the cluster is up and `scripts/apply` has run (so the
+`my-project-quay-webhook-bootstrap` receiver-token Job completed —
+`wait_my_project` gates it). The Quay org/repo/webhook and the Argo CD
+repository Secret are **not** created by `scripts/apply` — their provisioning is
+deferred to the future Quay Resource Controller (HOL-1293) and is done by hand
+until then.
 
 > **The publish step is future work — do not run it against the platform
 > render.** `scripts/publish` today packages the **whole-platform** render

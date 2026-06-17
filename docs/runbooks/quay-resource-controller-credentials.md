@@ -31,8 +31,7 @@ prefix). Both are seeded in the Keycloak `holos` realm by the keycloak phase
 (HOL-1294), both hold the `platform-owner` realm role, and both are listed in
 Quay's `SUPER_USERS` (`holos/components/quay/buildplan.cue`), matched by
 `preferred_username == username`. The authoritative repo-wide statement of the
-`svc-` naming convention is added to [`AGENTS.md`](../../AGENTS.md) in the
-HOL-1293 cleanup phase (HOL-1298).
+`svc-` naming convention is in [`AGENTS.md`](../../AGENTS.md) (Conventions).
 
 A token Quay generates for an OAuth Application **acts as the user who generated
 it**, so generating it while signed in as `svc-quay-resource-controller` is what
@@ -213,6 +212,5 @@ procedure is retired.
 - [docs/local-cluster.md](../local-cluster.md) — bringing the local cluster up
   and the Quay verification steps (SSO login as `quay-admin` /
   `svc-quay-resource-controller`).
-- [`AGENTS.md`](../../AGENTS.md) — the runtime-secret guardrail (the `svc-`
-  service-account naming convention is added here by the HOL-1293 cleanup phase,
-  HOL-1298).
+- [`AGENTS.md`](../../AGENTS.md) — the runtime-secret guardrail and the
+  authoritative `svc-` service-account naming convention (Conventions).
