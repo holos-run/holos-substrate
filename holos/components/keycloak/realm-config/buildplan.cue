@@ -120,6 +120,17 @@ let GROUPS_CLAIM = "groups"
 // the same value.
 let QUAY_CLIENT_ID = "https://quay.holos.localhost"
 
+// HOL-1294: the quay client's clientId is changed from "quay" to the public-URL
+// form above.  keycloak-config-cli runs in no-delete mode (see the header), so on
+// a cluster that previously imported the old "quay" client that client is NOT
+// removed by the rename — it would linger, still enabled, with its old no-PKCE
+// config and redirect URIs, as a stale relying party that could still
+// authenticate.  Declare the old clientId explicitly as a managed but DISABLED
+// tombstone so the reconcile converges it to disabled on upgrade.  On a fresh
+// cluster this just creates an inert disabled client; the cost is one tidy
+// disabled entry, and it can be dropped once no cluster carries the old client.
+let QUAY_LEGACY_CLIENT_ID = "quay"
+
 // quay.holos.localhost is the Quay UI/registry hostname (components/quay) and
 // resolves to 127.0.0.1 on the host per docs/local-cluster.md.
 let QUAY_PUBLIC_URL = "https://quay.holos.localhost"
@@ -248,6 +259,16 @@ let REALM_CONFIG = {
 	]
 
 	clients: [{
+		// HOL-1294: retirement tombstone for the renamed quay client (see
+		// QUAY_LEGACY_CLIENT_ID).  enabled: false so a previously-imported "quay"
+		// client cannot keep authenticating after the rename under no-delete
+		// reconciliation.  No secret, mappers, or redirect URIs — a disabled client
+		// needs none, and omitting them narrows what the stale client could ever do.
+		clientId: QUAY_LEGACY_CLIENT_ID
+		name:     "Quay (retired — renamed to the public-URL clientId)"
+		enabled:  false
+		protocol: "openid-connect"
+	}, {
 		clientId:            ARGOCD_CLIENT_ID
 		name:                "Argo CD"
 		enabled:             true
