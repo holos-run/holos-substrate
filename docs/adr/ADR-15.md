@@ -95,10 +95,11 @@ Both are seeded in the realm by the keycloak phase (HOL-1294) with the
 a Kubernetes Secret of the same name in the `keycloak` namespace (key
 `password`), and both are listed in `SUPER_USERS` in
 `holos/components/quay/buildplan.cue`, matched by `preferred_username ==
-username`. Because the initialize/superuser endpoints are gone, **in-cluster
-Quay data-plane provisioning (orgs, repos, robots, webhooks) is deferred to a
-future Quay Resource Controller**; until it exists, an operator mints the
-controller's OAuth-Application credential by hand following the
+username`. Because the headless initialize endpoint is gone (there is no
+unattended path to mint a first token), **in-cluster Quay data-plane
+provisioning (orgs, repos, robots, webhooks) is deferred to a future Quay
+Resource Controller**; until it exists, an operator mints the controller's
+OAuth-Application credential by hand following the
 [Quay Resource Controller credentials runbook](../runbooks/quay-resource-controller-credentials.md).
 
 Two consequences of the OIDC backend:
