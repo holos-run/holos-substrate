@@ -71,7 +71,7 @@ They differ in the usual per-client details (redirect URIs, web origins, roles,
 and which protocol mappers they carry), but the key template distinction is
 **public vs confidential**, which also decides whether a client-secret bootstrap
 is needed. `argocd` and `kargo` are public PKCE clients; `quay` is the
-confidential, no-PKCE client (see below).
+confidential PKCE client (see below). All three use PKCE (`S256`).
 
 ### Public PKCE client (argocd)
 
@@ -88,21 +88,18 @@ directAccessGrantsEnabled: false
 attributes: "pkce.code.challenge.method": "S256"
 ```
 
-### Confidential client, no PKCE (quay)
+### Confidential PKCE client (quay)
 
 Quay's `KEYCLOAK_LOGIN_CONFIG` validator requires a `CLIENT_SECRET`, so the
 `quay` client is **confidential** (`publicClient: false`) and authenticates with
-that secret alone. Unlike `argocd`, it does **not** use PKCE: the client sets no
-`pkce.code.challenge.method` attribute (HOL-1257). This is the documented
-exception to the platform's PKCE-by-default posture — Quay's confidential
-client-secret flow did not reliably round-trip a PKCE `code_verifier`, producing
-`code exchange: 400` SSO failures, so PKCE was removed from both ends (Quay's
-`KEYCLOAK_LOGIN_CONFIG` no longer sets `USE_PKCE`/`PKCE_METHOD` either). See
-[ADR-15](../../docs/adr/ADR-15.md) Revision 2, the operational
-[Quay↔Keycloak OIDC runbook](../../docs/runbooks/quay-keycloak-oidc.md), and the
-HOL-1233 note in [`AGENTS.md`](../../AGENTS.md). The `secret` field holds a
-`$(env:...)`
-placeholder, never a literal value:
+that secret. Like `argocd`, it also uses PKCE (`S256`): the client sets
+`pkce.code.challenge.method: "S256"`, matching Quay's `USE_PKCE: true` /
+`PKCE_METHOD: "S256"` (ADR-15 Revision 4, HOL-1293). PKCE was briefly disabled
+for `quay` (Revision 2, HOL-1257) over a `code exchange: 400` failure but
+re-enabled on both ends in Revision 4 — so `quay` is **no longer** a PKCE
+exception. See [ADR-15](../../docs/adr/ADR-15.md) and the operational
+[Quay↔Keycloak OIDC runbook](../../docs/runbooks/quay-keycloak-oidc.md). The
+`secret` field holds a `$(env:...)` placeholder, never a literal value:
 
 ```cue
 clientId:                  QUAY_CLIENT_ID
@@ -111,8 +108,7 @@ standardFlowEnabled:       true
 serviceAccountsEnabled:    false
 directAccessGrantsEnabled: false
 secret: "$(env:QUAY_OIDC_CLIENT_SECRET)"
-// No pkce.code.challenge.method: Quay authenticates with the client secret
-// alone; setting the attribute would make Keycloak *require* PKCE (HOL-1257).
+attributes: "pkce.code.challenge.method": "S256"
 ```
 
 ### The runtime client-secret bootstrap
@@ -167,9 +163,9 @@ The realm-role and client-role mappers set `id.token.claim`,
   mapper), so the single `groups` claim Quay receives carries group
   memberships, the `quay` client-role names, and — as of HOL-1245 — the
   `platform-owner` realm role, uniformly. (Automatic team syncing from this
-  claim is currently **disabled** — `FEATURE_TEAM_SYNCING: false` under Quay's
-  Database auth backend, ADR-15 Revision 3 — but the claim is emitted so it is
-  ready when a federated backend can consume it.)
+  claim is **enabled** — `FEATURE_TEAM_SYNCING: true` under Quay's OIDC auth
+  backend, ADR-15 Revision 4 — so Quay team membership tracks the claim on the
+  `TEAM_RESYNC_STALE_TIME` cadence.)
 
 ## The role model
 
@@ -187,22 +183,22 @@ The `quay` client defines two client roles:
 - `project-admin` — per-project administrative access in Quay.
 
 These are **identity labels that flow into the `groups` claim**, not privileges
-in themselves. A Quay superuser manages the matching Quay team's membership; the
-team's permissions are what grant access. Automatic group/role-name → team
-binding from the claim is **disabled** under Quay's Database auth backend
-(`FEATURE_TEAM_SYNCING: false`, ADR-15 Revision 3 — the Database user handler
-cannot sync OIDC groups); the claim is still emitted, so it returns once team
-syncing can be re-enabled on a federated backend. Per-project roles follow the
-same convention: add a `quay` client role named for the project and grant it.
+in themselves. The matching Quay team's membership is synced from the claim and
+the team's permissions are what grant access. Automatic group/role-name → team
+binding from the claim is **enabled** under Quay's OIDC auth backend
+(`FEATURE_TEAM_SYNCING: true`, ADR-15 Revision 4 — the OIDC user handler syncs
+groups) on the `TEAM_RESYNC_STALE_TIME` cadence; a superuser performs the
+one-time team→group binding setup. Per-project roles follow the same convention:
+add a `quay` client role named for the project and grant it.
 
 ### `platform-owner` into the quay `groups` claim (HOL-1245)
 
 As of HOL-1245 the `quay` client also emits the `platform-owner` realm role into
 the `groups` claim, mirroring the `argocd` client. Granting a user the
 `platform-owner` realm role surfaces `platform-owner` in their `groups` claim,
-so Quay (once team syncing is re-enabled on a federated backend — it is
-`FEATURE_TEAM_SYNCING: false` today under Database auth) and any future relying
-party key on it the same way they key on group names.
+so Quay (with team syncing on — `FEATURE_TEAM_SYNCING: true` under the OIDC
+backend, ADR-15 Revision 4) and any future relying party key on it the same way
+they key on group names.
 
 ### The Quay-superuser limitation (not automatic)
 
@@ -215,8 +211,10 @@ no mechanism for Quay to promote a user to superuser from an OIDC claim. So
 The supported path today is the **manual `SUPER_USERS` bootstrap**: add the
 user's `preferred_username` to `SUPER_USERS` in
 [`components/quay/buildplan.cue`](../components/quay/buildplan.cue) and
-re-render/apply. The local `admin` account stays in `SUPER_USERS` as a
-break-glass superuser. This keeps the README's
+re-render/apply. Under the OIDC backend there is no local `admin` user; the
+seeded superusers are the two Keycloak realm users `svc-quay-resource-controller`
+(a service account) and `quay-admin` (a human administrator), both in
+`SUPER_USERS` (ADR-15 Revision 4). This keeps the README's
 [Quay OIDC SSO and roles](../README.md#quay-oidc-sso-and-roles) statement
 consistent: superuser status comes solely from `SUPER_USERS`, never from the
 `groups` claim.
@@ -234,12 +232,11 @@ copy from.
    complete steps 4–5.
 2. **PKCE `S256`.** Set
    `attributes: "pkce.code.challenge.method": "S256"` on the client. Use PKCE
-   wherever the flow supports it, as the platform default — both `argocd` and
-   `kargo` (public) carry it. The one documented exception is the confidential
-   `quay` client, which omits PKCE because its OIDC client did not reliably
-   round-trip a `code_verifier` and failed with `code exchange: 400`
-   (HOL-1257); only relax PKCE for a client with a demonstrated implementation
-   gap (see step 7).
+   wherever the flow supports it, as the platform default — all three clients
+   carry it: the public `argocd` and `kargo`, and the confidential `quay`
+   (re-enabled in ADR-15 Revision 4 / HOL-1293). There is **no** standing PKCE
+   exception today; only relax PKCE for a client with a demonstrated
+   implementation gap (see step 7).
 3. **Redirect URIs and web origins.** Set `redirectUris` to the relying party's
    callback URL(s) (host resolves to `127.0.0.1` per
    [`docs/local-cluster.md`](../../docs/local-cluster.md)) and `webOrigins` to
@@ -261,19 +258,15 @@ copy from.
    requires a different claim name.
 7. **No PKCE for clients with an implementation gap.** If the relying party's
    PKCE implementation is incomplete, do not require PKCE for its client. Quay
-   hit this — its confidential OIDC client did not reliably round-trip a
-   `code_verifier`, producing `code exchange: 400` at the token endpoint. The
-   resolution (HOL-1257) was to **drop PKCE entirely** for the `quay` client:
-   omit the `pkce.code.challenge.method` attribute (Keycloak treats a client
-   that sets it as *requiring* PKCE) and remove `USE_PKCE`/`PKCE_METHOD` from
-   Quay's `KEYCLOAK_LOGIN_CONFIG`, leaving Quay to authenticate with its client
-   secret alone. The `quay` client in
-   [`realm-config/buildplan.cue`](../components/keycloak/realm-config/buildplan.cue)
-   therefore carries **no** `pkce.*` attribute. (Historical note: the earlier
-   *Quay auth* guard rail (HOL-1233) in
-   [`AGENTS.md`](../../AGENTS.md) kept PKCE *optional* via the default
-   `pkce.force` behavior; HOL-1257 supersedes that with full removal.) The
-   operational details and `code exchange: 400` troubleshooting live in the
+   hit this once — its confidential OIDC client failed to round-trip a
+   `code_verifier`, producing `code exchange: 400` at the token endpoint, so
+   HOL-1257 (Revision 2) dropped PKCE for the `quay` client. That was later
+   **resolved**: HOL-1293 (ADR-15 Revision 4) re-enabled PKCE (`S256`) on both
+   ends — the `quay` client now carries `pkce.code.challenge.method: "S256"` and
+   Quay sets `USE_PKCE: true` / `PKCE_METHOD: "S256"` — matching the production
+   reference configuration. So there is **no** standing no-PKCE client today.
+   When PKCE *is* mismatched (set on only one end) the same `code exchange: 400`
+   appears as a verification signal; the troubleshooting lives in the
    [Quay↔Keycloak OIDC runbook](../../docs/runbooks/quay-keycloak-oidc.md). Only
    relax or skip requiring PKCE for a client with a demonstrated implementation
    gap.
@@ -288,11 +281,14 @@ copy from.
 ## References
 
 - [ADR-15 — Quay↔Keycloak OIDC SSO](../../docs/adr/ADR-15.md) — the
-  decision record for the Quay SSO integration (Revision 2 dropped PKCE for the
-  `quay` client).
+  decision record for the Quay SSO integration (Revision 4: OIDC backend, PKCE
+  re-enabled for the `quay` client, two Keycloak-backed superusers).
 - [Quay↔Keycloak OIDC runbook](../../docs/runbooks/quay-keycloak-oidc.md) — the
-  operational companion: wiring, the no-PKCE exception, secret rotation, and the
-  `code exchange: 400` troubleshooting.
+  operational companion: wiring, the two superuser realm users, secret rotation,
+  and the `code exchange: 400` PKCE-verification note.
+- [Quay Resource Controller credentials runbook](../../docs/runbooks/quay-resource-controller-credentials.md)
+  — the manual procedure for minting the future controller's OAuth-Application
+  credential.
 - [`components/keycloak/realm-config/buildplan.cue`](../components/keycloak/realm-config/buildplan.cue)
   — the authoritative source: the keycloak-config-cli Job, the `argocd` and
   `quay` clients, the three mapper types, and the `quay-oidc` bootstrap.
@@ -302,5 +298,5 @@ copy from.
 - [`docs/placeholders.md`](placeholders.md) — the resolved *Keycloak realm
   reconciliation* and *Quay OIDC login* entries.
 - [`AGENTS.md`](../../AGENTS.md) — the Guard Rails: CUE Component Rendering,
-  the Quay auth note (Database backend + federated SSO, HOL-1281; PKCE disabled,
-  HOL-1233/HOL-1257), Keycloak Configuration as Code, and OIDC Client Secrets.
+  the Quay auth note (OIDC backend, HOL-1293), the `svc-` service-account naming
+  convention, Keycloak Configuration as Code, and OIDC Client Secrets.

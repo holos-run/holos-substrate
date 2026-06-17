@@ -2,37 +2,40 @@
 
 Operational runbook for the Quay registry's Single Sign-On integration with the
 Keycloak `holos` realm. Written for SREs and on-call operators: how the
-integration is wired, why Quay is the platform's one **no-PKCE** OIDC relying
-party, the day-to-day operations (granting access, rotating the secret, forcing
-a reconcile), and how to triage the
+integration is wired, the two Keycloak-backed superuser realm users, the
+day-to-day operations (granting access, rotating the secret, forcing a
+reconcile), and how to triage the
 `Got non-2XX response for code exchange: 400` login failure.
 
 The binding **decision record** is
 [ADR-15 — Quay↔Keycloak OIDC SSO](../adr/ADR-15.md); this runbook is its
 operational companion and does not restate the full rationale. The declarative
 Keycloak client pattern and the PKCE guardrail checklist live in
-[holos/docs/keycloak-clients.md](../../holos/docs/keycloak-clients.md).
+[holos/docs/keycloak-clients.md](../../holos/docs/keycloak-clients.md). The
+manual procedure for minting the future Quay Resource Controller's
+OAuth-Application credential is the
+[Quay Resource Controller credentials runbook](quay-resource-controller-credentials.md).
 
 ## Overview
 
-Quay (`quay.holos.localhost`) runs `AUTHENTICATION_TYPE: Database` — its own
-database is the identity store — with the Keycloak `holos` realm layered on as
-a **federated login provider** (ADR-15 Revision 3, HOL-1281). Users sign in
-with the "Holos SSO" button through the OAuth 2.0 Authorization Code flow; Quay
-authenticates to the token endpoint as a **confidential client** with a client
-secret. Database auth (rather than `AUTHENTICATION_TYPE: OIDC`) is deliberate:
-it keeps the local `admin` user and the `/api/v1/user/initialize` +
-`/api/v1/superuser/*` REST APIs available, so the headless
-`quay-admin-bootstrap` Job can mint the `quay-initial-admin` superuser token —
-see [The Database backend and the superuser token](#the-database-backend-and-the-superuser-token).
+Quay (`quay.holos.localhost`) runs `AUTHENTICATION_TYPE: OIDC` — the Keycloak
+`holos` realm is the **sole** identity store (ADR-15 Revision 4, HOL-1293).
+There is no local `admin` user; every Quay identity is a realm user. Users sign
+in with the "Holos SSO" button through the OAuth 2.0 Authorization Code flow;
+Quay authenticates to the token endpoint as a **confidential client** with a
+client secret **and PKCE (S256)**.
 
 Usernames come from the ID token's `preferred_username` claim, and Keycloak
 groups, client roles, and the `platform-owner` realm role are folded into a
 single `groups` claim Quay receives on each login. Automatic group→team
-synchronization is **off** (`FEATURE_TEAM_SYNCING: false`): the Database user
-handler cannot sync OIDC groups, so a superuser manages Quay teams directly.
-Quay superuser status is **not** claim-driven — it comes solely from the static
-`SUPER_USERS` config list.
+synchronization is **on** (`FEATURE_TEAM_SYNCING: true`,
+`TEAM_RESYNC_STALE_TIME: 30m`): under the OIDC backend the active user handler
+syncs groups, so Quay team membership is eventually consistent with the claim on
+the 30-minute resync cadence. Quay superuser status is **not** claim-driven — it
+comes solely from the static `SUPER_USERS` config list, which names two Keycloak
+realm users: the service account `svc-quay-resource-controller` and the human
+`quay-admin` — see
+[The two superuser realm users](#the-two-superuser-realm-users).
 
 The integration has three moving parts, all reconciled declaratively on every
 `scripts/apply`:
@@ -44,9 +47,9 @@ The integration has three moving parts, all reconciled declaratively on every
 - Quay's `KEYCLOAK_LOGIN_CONFIG` — rendered into Quay's `config.yaml` with the
   secret substituted at runtime.
 
-For the full behavioral contract (the Database backend + federated SSO model,
-username derivation, namespace scoping, the role/group model, and why team
-syncing is disabled), read [ADR-15](../adr/ADR-15.md).
+For the full behavioral contract (the OIDC backend model, username derivation,
+namespace scoping, the role/group model, and team syncing), read
+[ADR-15](../adr/ADR-15.md).
 
 ## How it's wired
 
@@ -65,10 +68,9 @@ The `quay` client is defined in
   used.
 - `secret: "$(env:QUAY_OIDC_CLIENT_SECRET)"` — substituted at reconcile time
   from the bootstrap secret (see below), never a committed value.
-- **No `attributes."pkce.code.challenge.method"`** — Keycloak treats a client
-  that sets this attribute as *requiring* PKCE. Omitting it keeps PKCE optional
-  so the confidential client-secret flow succeeds. See
-  [The no-PKCE exception](#the-no-pkce-exception).
+- `attributes."pkce.code.challenge.method": "S256"` — PKCE is required on the
+  code exchange, matching Quay's `USE_PKCE: true` / `PKCE_METHOD: "S256"`. See
+  [PKCE on the `quay` client](#pkce-on-the-quay-client).
 - `redirectUris: ["https://quay.holos.localhost/*"]` — the wildcard covers
   Quay's callback (see [Redirect-URI convention](#redirect-uri-convention)).
 
@@ -94,7 +96,7 @@ authenticate with the same secret.
 
 Quay's side is the `KEYCLOAK_LOGIN_CONFIG` block in
 [holos/components/quay/buildplan.cue](../../holos/components/quay/buildplan.cue)
-(`CONFIG_YAML`). The operationally relevant keys:
+(`CONFIG`). The operationally relevant keys:
 
 | Key | Value | Notes |
 |-----|-------|-------|
@@ -104,10 +106,8 @@ Quay's side is the `KEYCLOAK_LOGIN_CONFIG` block in
 | `SERVICE_NAME` | `Holos SSO` | the label on the Quay login button |
 | `LOGIN_SCOPES` | `openid`, `profile`, `email`, `groups`, `offline_access` | |
 | `PREFERRED_USERNAME_CLAIM_NAME` | `preferred_username` | username, verbatim |
-| `PREFERRED_GROUP_CLAIM_NAME` | `groups` | the group/role-name claim; team syncing from it is **off** (`FEATURE_TEAM_SYNCING: false`) under Database auth |
-
-There is deliberately **no** `USE_PKCE` / `PKCE_METHOD` here (HOL-1257). Quay
-defaults `USE_PKCE` to `false`, so it sends no `code_challenge`.
+| `PREFERRED_GROUP_CLAIM_NAME` | `groups` | the group/role-name claim; team syncing from it is **on** (`FEATURE_TEAM_SYNCING: true`) |
+| `USE_PKCE` / `PKCE_METHOD` | `true` / `S256` | PKCE on the code exchange, matching the client's `pkce.code.challenge.method` |
 
 ### Issuer trailing-slash requirement
 
@@ -139,121 +139,102 @@ edits (which the Job will revert). The `keycloak-config` component sits between
 to use it — see
 [holos/docs/keycloak-clients.md](../../holos/docs/keycloak-clients.md).
 
-## The Database backend and the superuser token
+## The two superuser realm users
 
-Quay runs `AUTHENTICATION_TYPE: Database` (in
-[holos/components/quay/buildplan.cue](../../holos/components/quay/buildplan.cue)'s
-`CONFIG_YAML`), **not** `AUTHENTICATION_TYPE: OIDC`. The Keycloak
-`KEYCLOAK_LOGIN_CONFIG` block layers "Holos SSO" on top as a federated login
-provider — Quay treats any `<PREFIX>_LOGIN_CONFIG` block as an SSO provider
-regardless of the backend — so SSO login and the local identity store coexist.
+Under `AUTHENTICATION_TYPE: OIDC` the Keycloak realm is the sole identity store,
+so there is no local `admin` user. The Quay superusers are two **Keycloak realm
+users**, listed in `SUPER_USERS` in
+[holos/components/quay/buildplan.cue](../../holos/components/quay/buildplan.cue)
+by their `preferred_username` (matched `preferred_username == username`):
 
-This matters operationally because `AUTHENTICATION_TYPE: OIDC` would make the
-OIDC provider the **sole** identity store and disable the local `admin` user
-along with the `/api/v1/user/initialize` and `/api/v1/superuser/*` REST APIs.
-Those endpoints are exactly what the headless `quay-admin-bootstrap` Job
-(HOL-1276) calls to mint the **`quay-initial-admin`** superuser OAuth token (the
-Secret's `token` key, in the `quay` namespace) — the credential every
-declarative automation Job (org/repo/robot/webhook bootstrap) authenticates
-with. Database auth keeps those APIs available, so the headless bootstrap and
-human SSO login work together.
+| User | Kind | Realm role | Password Secret (namespace `keycloak`) | Key |
+|------|------|------------|----------------------------------------|-----|
+| `svc-quay-resource-controller` | service account (`svc-` prefix) | `platform-owner` | `svc-quay-resource-controller` | `password` |
+| `quay-admin` | human administrator | `platform-owner` | `quay-admin` | `password` |
 
-`FEATURE_TEAM_SYNCING` is **false** under this backend. OIDC `groups`-claim →
-Quay-team synchronization needs a federated user handler with a
-`sync_user_groups` method; the Database handler (`DatabaseUsers`) has none, so
-Quay would `AttributeError` → HTTP 500 on every "Holos SSO" callback if team
-syncing were left on (Quay v3.17.3 `oauth/login_utils.py` `sync_oidc_groups`).
-The `groups` claim is still emitted, so re-enabling team syncing on a future
-federated backend needs no realm change — but for now a superuser manages Quay
-team membership directly.
+The `svc-` prefix marks `svc-quay-resource-controller` as a non-human **service
+account** — the future Quay Resource Controller's machine identity — distinct
+from the human `quay-admin` administrator. Both are seeded in the realm by the
+keycloak phase (HOL-1294); each user's password is generated **once at runtime**
+by the `quay-user-password-bootstrap` Job into a Secret of the same name in the
+`keycloak` namespace, under the `password` key. Nothing secret is committed
+(generate-once, mirroring `keycloak-initial-admin`).
 
-### Verify the superuser token
+This replaces the old Database-backend `quay-initial-admin` superuser token: the
+OIDC backend disables the local `admin` user and the `/api/v1/user/initialize` +
+`/api/v1/superuser/*` bootstrap endpoints, so there is no headless token to mint.
+In-cluster Quay data-plane provisioning (orgs, repos, robots, webhooks) is
+**deferred to a future Quay Resource Controller**; until it ships, an operator
+mints the controller's OAuth-Application credential by hand — see the
+[Quay Resource Controller credentials runbook](quay-resource-controller-credentials.md).
 
-The `quay-admin-bootstrap` Job mints the token during `scripts/apply`
-(`wait_quay` gates on the Job and the Secret). Confirm the minted token reaches
-the superuser API — expect **HTTP 200**:
+### Retrieve a superuser password
+
+Retrieve a generated password with `kubectl ... -o jsonpath` and base64-decode:
 
 ```bash
-TOKEN="$(kubectl -n quay get secret quay-initial-admin \
-  -o jsonpath='{.data.token}' | base64 -d)"
+# The service account:
+kubectl -n keycloak get secret svc-quay-resource-controller \
+  -o jsonpath='{.data.password}' | base64 -d; echo
+
+# The human administrator:
+kubectl -n keycloak get secret quay-admin \
+  -o jsonpath='{.data.password}' | base64 -d; echo
+```
+
+Sign in to Quay through **"Holos SSO"** with the username (the Secret name) and
+the retrieved password.
+
+### Verify superuser access
+
+Sign in to `https://quay.holos.localhost/` as `quay-admin` (or
+`svc-quay-resource-controller`) via "Holos SSO". A superuser sees the **Super
+User Admin Panel** in the Quay UI. To verify over the API, generate a token for
+the user (an OAuth Application token with `super:user` scope — see the
+[credentials runbook](quay-resource-controller-credentials.md)) and confirm the
+superuser endpoint answers — expect **HTTP 200**:
+
+```bash
+TOKEN='<a token generated for a SUPER_USERS member>'
 curl -sS -o /dev/null -w '%{http_code}\n' \
   -H "Authorization: Bearer ${TOKEN}" \
   https://quay.holos.localhost/api/v1/superuser/users/
 # => 200
 ```
 
-A `401`/`403` means the token is missing superuser scope (the registry was not
-reset/re-initialized cleanly — see the reset procedure below); a connection
-error means Quay is not serving or the local CA/DNS is not trusted (see
-[docs/local-cluster.md](../local-cluster.md)).
+A `401`/`403` means the token's user is not in `SUPER_USERS` or the token lacks
+`super:user` scope; a connection error means Quay is not serving or the local
+CA/DNS is not trusted (see [docs/local-cluster.md](../local-cluster.md)).
 
-The bootstrap is **idempotent**: with `quay-initial-admin` already present the
-Job no-ops (it logs that the Secret already exists and leaves it untouched), so
-re-running `scripts/apply` does not error or rotate the token.
+## PKCE on the `quay` client
 
-### One-time reset: re-opening initialize
+The platform standard is **PKCE for OIDC clients** (`S256`), and the `quay`
+client follows it: it carries `attributes."pkce.code.challenge.method": "S256"`,
+matching Quay's `USE_PKCE: true` / `PKCE_METHOD: "S256"`. The public `argocd` and
+`kargo` clients carry the same attribute — `quay` is **no longer** an exception
+(ADR-15 Revision 4, HOL-1293).
 
-`/api/v1/user/initialize` only answers against a **virgin** registry — the
-moment any user exists in Quay's database it closes permanently. A cluster that
-previously ran under the broken OIDC-only config may already hold
-SSO-provisioned users, which keeps initialize closed and prevents
-`quay-admin-bootstrap` from ever writing the `quay-initial-admin` Secret — even
-after the backend is switched to Database. When the superuser-token check above
-cannot reach 200 because the token was never minted, run the deliberate,
-**destructive** one-time reset (HOL-1283):
+Both ends must agree on PKCE. Quay sends a `code_challenge`; Keycloak (which
+treats a client that sets `pkce.code.challenge.method` as *requiring* PKCE)
+verifies the matching `code_verifier` at the token endpoint. If PKCE is set on
+only one end — e.g. the client attribute is dropped but Quay still sends a
+challenge, or vice versa — the token exchange fails with
+`Got non-2XX response for code exchange: 400`. Keep both ends in sync:
 
-```bash
-scripts/quay-reset
-```
-
-`scripts/quay-reset` is a separate operation — `scripts/apply` never wipes the
-database on its own. It targets the local `k3d-holos` cluster (override with
-`KUBE_CONTEXT`), prints a destructive-data warning with a 5-second abort window,
-then: scales the Quay Deployment to zero, deletes the CNPG `quay-db` Cluster and
-its PVCs (so the next apply re-runs `initdb` against empty storage — a virgin
-database), deletes the registry blob-storage PVC (`quay-datastorage`), and
-finally deletes the stale `quay-initial-admin` Secret so the bootstrap re-mints
-the token rather than skipping on its reuse guard. **It destroys all Quay
-registry data** — every organization, repository, robot, image, and user. Every
-step is idempotent and safe to re-run.
-
-Bring Quay back up and re-mint the token, then re-verify with the superuser-API
-check above:
-
-```bash
-scripts/apply
-```
-
-See the script's `--help` (`scripts/quay-reset --help`) for the full step
-rationale and the inline verification commands.
-
-## The no-PKCE exception
-
-The platform standard is **PKCE for OIDC clients**: the public `argocd` and
-`kargo` clients are both public PKCE (`S256`) clients. **Quay is the documented
-exception** — the one relying party that does **not** use PKCE.
-
-Why: Quay's confidential client-secret token exchange did not reliably
-round-trip a matching PKCE `code_verifier` at the token endpoint. With PKCE
-required on the Keycloak `quay` client, Quay sent a `code_challenge` but the
-missing/mismatched `code_verifier` produced
-`Got non-2XX response for code exchange: 400`, blocking SSO login entirely.
-Red Hat's recommended baseline Quay↔Keycloak integration is a plain
-**confidential client authenticated by a client secret** with PKCE optional, so
-PKCE was removed from **both** ends together (HOL-1257) — the only
-mutually-consistent state:
-
-- Quay (`holos/components/quay/buildplan.cue`): no `USE_PKCE`/`PKCE_METHOD`.
+- Quay (`holos/components/quay/buildplan.cue`): `USE_PKCE: true`,
+  `PKCE_METHOD: "S256"` in `KEYCLOAK_LOGIN_CONFIG`.
 - The Keycloak `quay` client
-  (`holos/components/keycloak/realm-config/buildplan.cue`): no
-  `attributes."pkce.code.challenge.method"`.
+  (`holos/components/keycloak/realm-config/buildplan.cue`):
+  `attributes."pkce.code.challenge.method": "S256"`.
 
-This exception is recorded as a guardrail-checklist item in
-[holos/docs/keycloak-clients.md](../../holos/docs/keycloak-clients.md) and as
-the HOL-1233 note in [AGENTS.md](../../AGENTS.md). **Do not re-enable PKCE on
-the `quay` client** without a demonstrated Quay-side fix; doing so reintroduces
-the `code exchange: 400` failure. The `argocd` and `kargo` clients keep their
-PKCE attribute — only `quay` omits it.
+> **History.** PKCE was briefly **disabled** for the `quay` client (Revision 2,
+> HOL-1257) after Quay's confidential client-secret exchange failed to
+> round-trip a matching `code_verifier`, producing `code exchange: 400`.
+> Revision 4 (HOL-1293) re-enabled it on both ends, matching the production
+> reference configuration; the `code exchange: 400` symptom is now a PKCE
+> **verification** signal (see
+> [troubleshooting](#troubleshooting-got-non-2xx-response-for-code-exchange-400)),
+> not a reason to disable PKCE.
 
 ## Operations
 
@@ -270,23 +251,22 @@ for the authoritative procedure. In brief:
   `platform-admin` client role does not.
 - **Per-project / team access:** grant the user the project's `quay` client
   role (`project-admin` or a per-project role), or add them to the bound
-  Keycloak group; then a Quay **superuser** manages the matching Quay team's
-  membership directly in the organization UI. Automatic group/role-name → team
-  binding is **not** active while `FEATURE_TEAM_SYNCING: false` (ADR-15 Revision
-  3); the `groups` claim is still emitted, so it returns automatically once team
-  syncing can be re-enabled on a federated backend.
+  Keycloak group; Quay binds the matching team's membership from the `groups`
+  claim automatically (`FEATURE_TEAM_SYNCING: true`) on the 30-minute
+  `TEAM_RESYNC_STALE_TIME` cadence. A superuser performs the one-time setup of
+  the team→group binding in the Quay organization UI.
 
 ### Verify "Holos SSO" login and superuser access
 
-This is the manual verification of the HOL-1281 acceptance criteria — that
-"Holos SSO login works and a `SUPER_USERS` member has superuser access." It
-requires a live cluster, a reachable `quay.holos.localhost` (local CA + DNS per
+This is the manual verification that "Holos SSO login works and a `SUPER_USERS`
+member has superuser access." It requires a live cluster, a reachable
+`quay.holos.localhost` (local CA + DNS per
 [docs/local-cluster.md](../local-cluster.md)), and a realm user to sign in as.
 
-1. **Seed a realm user** (if the realm has none yet). The `holos` realm seeds no
-   users by default, so there is no `preferred_username` to grant SSO access to
-   until one exists. Create a user in the realm (via the declarative realm
-   config or the Keycloak admin console) and note its `preferred_username`.
+1. **Use a seeded superuser** (or seed your own realm user). The keycloak phase
+   seeds `svc-quay-resource-controller` and `quay-admin`; retrieve a password
+   per [Retrieve a superuser password](#retrieve-a-superuser-password). To test
+   a non-superuser, create another realm user and note its `preferred_username`.
 
 2. **Log in through "Holos SSO".** Open `https://quay.holos.localhost`, click the
    **Holos SSO** button (the `SERVICE_NAME` from `KEYCLOAK_LOGIN_CONFIG`),
@@ -297,23 +277,19 @@ requires a live cluster, a reachable `quay.holos.localhost` (local CA + DNS per
    `Got non-2XX response for code exchange: 400`, see
    [the troubleshooting section](#troubleshooting-got-non-2xx-response-for-code-exchange-400).
 
-3. **Promote the user to superuser** (optional, to verify the `SUPER_USERS`
-   path). Add the user's `preferred_username` to `SUPER_USERS` in
+3. **Confirm superuser access.** Signed in as `quay-admin` or
+   `svc-quay-resource-controller`, the **Super User Admin Panel** appears in the
+   Quay UI, and a token issued to that user answers the superuser API (the
+   `GET /api/v1/superuser/users/` → 200 check in
+   [Verify superuser access](#verify-superuser-access)). Superuser status comes
+   **solely** from `SUPER_USERS`, never from the `groups` claim or the
+   `platform-admin` client role. To grant another realm user superuser, add its
+   `preferred_username` to `SUPER_USERS` in
    [holos/components/quay/buildplan.cue](../../holos/components/quay/buildplan.cue),
    regenerate the deploy tree (`cd holos && holos render platform`), commit the
-   `.cue` change together with the regenerated `holos/deploy/` tree, then run
-   `scripts/render` to confirm the tree is diff-clean (it fails on uncommitted
-   `holos/` changes, so commit first) and `scripts/apply`. After Quay restarts,
-   the user has superuser access: the
-   Super User Admin Panel appears in the Quay UI, and their token answers the
-   superuser API (the same `GET /api/v1/superuser/users/` → 200 check as
-   [Verify the superuser token](#verify-the-superuser-token), using a token
-   issued to that user). Superuser status comes **solely** from `SUPER_USERS`,
-   never from the `groups` claim or the `platform-admin` client role.
-
-The bootstrap local `admin` (in `SUPER_USERS` by default) is the break-glass
-superuser and the automation credential; promoting a realm user is how a
-human platform admin gains superuser access through SSO.
+   `.cue` change with the regenerated `holos/deploy/` tree, then run
+   `scripts/render` (it fails on uncommitted `holos/` changes, so commit first)
+   and `scripts/apply`.
 
 ### Inspect or rotate the `quay-oidc` secret
 
@@ -389,7 +365,7 @@ typically see and the remediation:
 
 | # | Root cause | Keycloak signal | Remediation |
 |---|-----------|-----------------|-------------|
-| 1 | **PKCE required but no verifier** — the `quay` client has `pkce.code.challenge.method` set again, or Quay's `USE_PKCE` was re-added on only one end | `invalid_grant` / `code_verifier_missing` | Confirm **neither** end uses PKCE: no `pkce.code.challenge.method` on the `quay` client, no `USE_PKCE`/`PKCE_METHOD` in `KEYCLOAK_LOGIN_CONFIG`. See [The no-PKCE exception](#the-no-pkce-exception). Remove PKCE from both ends, re-render, re-apply. |
+| 1 | **PKCE mismatch — only one end has it** — the `quay` client's `pkce.code.challenge.method` was dropped while Quay still sends a challenge, or Quay's `USE_PKCE` was removed while the client still requires PKCE | `invalid_grant` / `code_verifier_missing` | Confirm **both** ends use PKCE `S256`: `pkce.code.challenge.method: "S256"` on the `quay` client **and** `USE_PKCE: true` / `PKCE_METHOD: "S256"` in `KEYCLOAK_LOGIN_CONFIG`. See [PKCE on the `quay` client](#pkce-on-the-quay-client). Re-set on both ends, re-render, re-apply. |
 | 2 | **Client secret mismatch / empty** — the `quay-oidc` Secret differs between namespaces, or wasn't substituted | `invalid_client` | Compare the secret in both namespaces (see [Inspect or rotate](#inspect-or-rotate-the-quay-oidc-secret)). If they differ, rotate so both match; then restart the Quay Deployment. |
 | 3 | **Public/confidential mismatch** — the `quay` client flipped to `publicClient: true`, or Quay stopped sending the secret | `invalid_client` | Confirm `publicClient: false` on the Keycloak client and `CLIENT_SECRET` present in Quay's config. Re-render/apply. |
 | 4 | **Redirect-URI mismatch** — the callback URL isn't covered by `redirectUris` | `invalid_grant` (redirect_uri) | Confirm the Keycloak client's `redirectUris` wildcard `https://quay.holos.localhost/*` covers `https://quay.holos.localhost/oauth2/keycloak/callback`. See [Redirect-URI convention](#redirect-uri-convention). |
@@ -405,13 +381,15 @@ the Quay Deployment so its initContainer re-renders `config.yaml`.
 ## See also
 
 - [ADR-15 — Quay↔Keycloak OIDC SSO](../adr/ADR-15.md) — the decision record.
+- [Quay Resource Controller credentials runbook](quay-resource-controller-credentials.md)
+  — the manual procedure for minting the future controller's OAuth-Application
+  credential while data-plane provisioning is deferred.
 - [holos/docs/keycloak-clients.md](../../holos/docs/keycloak-clients.md) — the
   declarative client pattern and PKCE guardrail checklist.
 - [holos/components/quay/buildplan.cue](../../holos/components/quay/buildplan.cue)
-  — Quay's `KEYCLOAK_LOGIN_CONFIG`.
+  — Quay's `KEYCLOAK_LOGIN_CONFIG` and `SUPER_USERS`.
 - [holos/components/keycloak/realm-config/buildplan.cue](../../holos/components/keycloak/realm-config/buildplan.cue)
-  — the Keycloak `quay` client and the secret bootstrap Job.
-- [scripts/quay-reset](../../scripts/quay-reset) — the one-time, destructive DB
-  reset that re-opens `/api/v1/user/initialize` (HOL-1283).
-- [AGENTS.md](../../AGENTS.md) — the Quay Database-auth and no-PKCE guardrail
-  notes.
+  — the Keycloak `quay` client, the two superuser realm users, and the secret
+  bootstrap Job.
+- [AGENTS.md](../../AGENTS.md) — the Quay OIDC-auth guardrail and the `svc-`
+  service-account naming convention.

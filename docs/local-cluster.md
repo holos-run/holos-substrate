@@ -182,55 +182,83 @@ for the database contract, see
 
 ## Verify Quay
 
-`scripts/apply` brings the Quay registry up at
-`https://quay.holos.localhost` and, because Quay runs under Database auth
-(`AUTHENTICATION_TYPE: Database` — see [ADR-15](adr/ADR-15.md)), its
-`quay-admin-bootstrap` Job seeds the local `admin` superuser by calling the
-one-shot `/api/v1/user/initialize` endpoint and writes the non-expiring
-superuser OAuth token to the `quay-initial-admin` Secret (key `token`);
-`wait_quay` gates the apply on that Secret. The org/robot/team scaffolding is a
-separate, idempotent step:
+`scripts/apply` brings the Quay registry up at `https://quay.holos.localhost`.
+Quay runs `AUTHENTICATION_TYPE: OIDC` (see [ADR-15](adr/ADR-15.md)), so the
+Keycloak `holos` realm is the **sole** identity store: there is no local `admin`
+user, and every Quay login is "Holos SSO". The seeded superusers are two
+Keycloak realm users in `SUPER_USERS` — **`svc-quay-resource-controller`** (a
+service account, the future Quay Resource Controller's identity) and
+**`quay-admin`** (a human administrator). Their passwords are generated once at
+runtime by the keycloak phase (HOL-1294) into Secrets in the **`keycloak`**
+namespace, one per user, under the `password` key — nothing secret is committed,
+mirroring the Keycloak `keycloak-initial-admin` pattern.
+
+Retrieve a password and base64-decode it:
 
 ```bash
-scripts/quay-init
+# Human administrator:
+kubectl -n keycloak get secret quay-admin \
+  -o jsonpath='{.data.password}' | base64 -d; echo
+
+# Service account (the future Quay Resource Controller's identity):
+kubectl -n keycloak get secret svc-quay-resource-controller \
+  -o jsonpath='{.data.password}' | base64 -d; echo
 ```
 
-The script is idempotent — a second run exits 0 without changing state.
-It **reuses** the `admin` superuser token from the `quay-initial-admin` Secret
-(it no longer creates the `admin` user — `quay-admin-bootstrap` did that during
-`scripts/apply`) to create the `holos` organization and the `holos+robot` robot
-account (a member of a `creators` team, so pushes auto-create repositories under
-`holos/`), and stores the generated robot credentials in Secrets in the `quay`
-namespace — nothing secret is committed to this repository, mirroring the
-Keycloak `keycloak-initial-admin` pattern:
+In-cluster Quay org/repo/robot/webhook provisioning is **deferred to a future
+Quay Resource Controller** (the old `scripts/quay-init` org/robot bootstrap and
+the `quay-initial-admin` token were removed with the Database backend, HOL-1293).
+Until the controller ships, an operator mints its OAuth-Application credential by
+hand — see the
+[Quay Resource Controller credentials runbook](runbooks/quay-resource-controller-credentials.md).
 
-```bash
-kubectl -n quay get secret quay-initial-admin -o json \
-  | jq '.data | map_values(@base64d)'      # admin UI login + API token
-kubectl -n quay get secret quay-robot-pull  # dockerconfigjson for pull consumers
-```
+**Verify "Holos SSO" login and superuser access.** Sign in to Quay through the
+Keycloak realm with the Authorization Code flow (the confidential `quay` client
+the `keycloak-config` Job provisions, authenticated by its client secret **with
+PKCE `S256`**). The design is in [ADR-15](adr/ADR-15.md); verify it end to end:
 
-Verify the registry with a push from the host. Log in as the robot —
-the one-liner extracts the robot token from the pull Secret:
+1. Open Quay and start SSO login:
 
-```bash
-kubectl -n quay get secret quay-robot-pull -o jsonpath='{.data.\.dockerconfigjson}' \
-  | base64 -d | jq -r '.auths["quay.holos.localhost"].auth' | base64 -d | cut -d: -f2- \
-  | docker login quay.holos.localhost -u 'holos+robot' --password-stdin
-```
+   ```bash
+   open https://quay.holos.localhost/
+   ```
 
-Then push — the repository does not exist yet; the robot's `creators`
-team membership auto-creates it:
+   Click **Sign in with Holos SSO** and authenticate as `quay-admin` (or
+   `svc-quay-resource-controller`) with the password retrieved above. The local
+   username/password form is hidden (`FEATURE_DIRECT_LOGIN: false`), so SSO is
+   the only login path. To exercise the roles model, assign a non-superuser
+   realm user the `quay` client role `platform-admin` or `project-admin` under
+   **Users → (user) → Role mapping → Assign role → Filter by clients → `quay`**
+   in the Keycloak admin console (`https://auth.holos.localhost/admin/`).
+2. Confirm the SSO behavior:
+   - **No username prompt.** Quay does not ask the user to choose or confirm a
+     username (`FEATURE_USERNAME_CONFIRMATION: false`); login completes
+     straight to the dashboard.
+   - **Namespace matches the token.** The user's personal namespace equals
+     their `preferred_username` claim — repositories live under
+     `quay.holos.localhost/<preferred_username>/...`.
+   - **Superuser.** Signed in as `quay-admin` or `svc-quay-resource-controller`,
+     the **Super User Admin Panel** appears (both are in `SUPER_USERS`).
+     Superuser status comes solely from `SUPER_USERS`, never from the `groups`
+     claim or the `platform-admin` client role.
+   - **Roles → teams.** The `groups` claim carries a user's `quay` client roles
+     and bound Keycloak groups, and **automatic** group→team syncing is enabled
+     under the OIDC backend (`FEATURE_TEAM_SYNCING: true`,
+     `TEAM_RESYNC_STALE_TIME: 30m`; see [ADR-15](adr/ADR-15.md) Revision 4), so
+     Quay team membership tracks the claim on the 30-minute resync cadence.
+
+**Verify a push from the host** once an org and a push credential exist. Until
+the Quay Resource Controller provisions them, create the org and a robot (or use
+a superuser's personal namespace) through the Quay UI as `quay-admin`, then log
+in with `docker` and push:
 
 ```bash
 docker pull busybox
-docker tag busybox quay.holos.localhost/holos/sample:test
-docker push quay.holos.localhost/holos/sample:test
+docker tag busybox quay.holos.localhost/<namespace>/sample:test
+docker push quay.holos.localhost/<namespace>/sample:test
 ```
 
-Confirm the pushed tag in the Quay UI: log in at
-`https://quay.holos.localhost` with the `quay-initial-admin` credentials
-and find `holos/sample` under the `holos` organization (repositories
+Confirm the pushed tag in the Quay UI under that namespace (repositories
 auto-created by push are private).
 
 > **Docker trust note:** on the MVP target — OrbStack on Apple silicon
@@ -241,55 +269,12 @@ auto-created by push are private).
 > `~/.docker/certs.d/quay.holos.localhost/ca.crt`
 > (`mkcert -CAROOT` prints the directory containing `rootCA.pem`).
 
-**Verify Keycloak SSO login.** Beyond the local `admin` account, real users
-sign in to Quay through the Keycloak `holos` realm with the Authorization Code
-flow (the confidential `quay` client the `keycloak-config` Job provisions,
-authenticated by its client secret without PKCE). The design is in
-[ADR-15](adr/ADR-15.md); verify it end to end:
-
-1. Create a realm user (or reuse the one from
-   [Verify Argo CD](#verify-argo-cd)) in the Keycloak admin console at
-   `https://auth.holos.localhost/admin/`. To exercise the roles model, assign
-   the `quay` client role `platform-admin` or `project-admin` under
-   **Users → (user) → Role mapping → Assign role → Filter by clients → `quay`**.
-2. Open Quay and start SSO login:
-
-   ```bash
-   open https://quay.holos.localhost/
-   ```
-
-   Click **Sign in with Holos SSO** and authenticate as the realm user.
-3. Confirm the SSO behavior:
-   - **No username prompt.** Quay does not ask the user to choose or confirm a
-     username (`FEATURE_USERNAME_CONFIRMATION: false`); login completes
-     straight to the dashboard.
-   - **Namespace matches the token.** The user's personal namespace equals
-     their `preferred_username` claim — repositories live under
-     `quay.holos.localhost/<preferred_username>/...`.
-   - **Roles → teams.** The `groups` claim carries a user's `quay` client roles
-     and bound Keycloak groups, but **automatic** group→team syncing is disabled
-     under Quay's Database auth backend (`FEATURE_TEAM_SYNCING: false`; see
-     [ADR-15](adr/ADR-15.md) Revision 3 — the Database user handler cannot sync
-     OIDC groups). A Quay **superuser** manages team membership directly in the
-     Quay organization UI; the claim is still emitted, so automatic syncing
-     returns once it can be re-enabled on a federated backend.
-
-`scripts/quay-init` and SSO coexist: the `quay-admin-bootstrap` Job (during
-`scripts/apply`) seeds the local `admin` superuser, and `scripts/quay-init`
-reuses its token to scaffold the `holos` org and the `holos+robot` pull account
-(local-database identities used by the push verification above and CI), while
-realm users authenticate through SSO. The local form is hidden
-(`FEATURE_DIRECT_LOGIN: false`); `admin` remains a break-glass superuser via
-`SUPER_USERS`.
-
 In-cluster pulls of `quay.holos.localhost/...` images by the k3d nodes'
 containerd are out of scope here — node-level DNS and CA trust for the
 registry hostname is a separate concern, tracked by
 [HOL-1184](https://linear.app/holos-run/issue/HOL-1184/featquay-in-cluster-image-pulls-from-quayholoslocalhost)
 and stubbed in
 [placeholders.md](../holos/docs/placeholders.md#node-level-registry-trust-for-in-cluster-pulls).
-`scripts/quay-init` only provisions the credentials and the
-`quay-robot-pull` pull Secret.
 
 ## Verify Argo CD
 

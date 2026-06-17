@@ -12,6 +12,7 @@
 | 1        | 2026-06-13 | @jeffmccune | Initial design                                                       |
 | 2        | 2026-06-15 | @jeffmccune | HOL-1257: drop PKCE — Quay is a plain confidential client (see below) |
 | 3        | 2026-06-16 | @jeffmccune | HOL-1281: run `AUTHENTICATION_TYPE: Database` with Keycloak as a federated login provider (layered, not a backend swap); `FEATURE_TEAM_SYNCING: false`; no-PKCE exception retained |
+| 4        | 2026-06-17 | @jeffmccune | HOL-1292/HOL-1293: revert to `AUTHENTICATION_TYPE: OIDC` as the sole identity store; PKCE (S256) re-enabled; team syncing re-enabled; superusers are the Keycloak-backed `svc-quay-resource-controller` + `quay-admin`; the `quay-initial-admin` bootstrap is removed; Quay data-plane provisioning deferred to a future Quay Resource Controller |
 
 ## Context and Problem Statement
 
@@ -27,12 +28,18 @@ map into Quay teams and superusers.
 
 The integration shipped in two phases: Phase 1 (HOL-1218) added the Keycloak
 `quay` client, its roles, and protocol mappers to the realm; Phase 2
-(HOL-1219) pointed Quay at that client. **Revision 3 (HOL-1281)** then refined
-*how* Quay consumes that client: Quay keeps its own database as the identity
-store (`AUTHENTICATION_TYPE: Database`) and treats Keycloak as a *federated
-login provider* layered on top, rather than making the OIDC provider Quay's sole
-identity backend — so the headless superuser bootstrap and human SSO login
-coexist. This ADR documents the resulting behavior.
+(HOL-1219) pointed Quay at that client. The backend choice then changed twice:
+Revision 3 (HOL-1281) briefly ran `AUTHENTICATION_TYPE: Database` with Keycloak
+layered on as a federated login provider, to keep a headless superuser-token
+bootstrap working. **Revision 4 (HOL-1292/HOL-1293) reverses that and is the
+current model:** Quay runs `AUTHENTICATION_TYPE: OIDC` with the Keycloak `holos`
+realm as the **sole** identity store. Two Keycloak realm users —
+`svc-quay-resource-controller` (a service account) and `quay-admin` (a human
+administrator), both Keycloak-backed and both listed in `SUPER_USERS` — replace
+the local `admin` user; the `quay-initial-admin` headless bootstrap is removed,
+and in-cluster Quay data-plane provisioning (orgs, repos, robots, webhooks) is
+**deferred to a future Quay Resource Controller**. PKCE (S256) and team syncing
+are both re-enabled. This ADR documents the resulting behavior.
 
 ## References
 
@@ -48,89 +55,81 @@ coexist. This ADR documents the resulting behavior.
   the exact Quay config keys.
 - [Quay↔Keycloak OIDC runbook](../runbooks/quay-keycloak-oidc.md): the
   operational companion to this decision record — how the integration is wired,
-  the no-PKCE exception, secret rotation, and the `code exchange: 400`
-  troubleshooting.
+  the two superuser realm users, secret rotation, and the `code exchange: 400`
+  PKCE-verification note.
+- [Quay Resource Controller credentials runbook](../runbooks/quay-resource-controller-credentials.md):
+  the manual procedure for minting the future Quay Resource Controller's
+  OAuth-Application credential while Quay data-plane provisioning is deferred.
 
 ## Design
 
-### Identity backend: Database, with Keycloak as a *federated login provider*
+### Identity backend: OIDC — the Keycloak realm is the sole identity store
 
-**Revision 3 (HOL-1281) supersedes the original "OIDC backend" framing.** Quay
-runs `AUTHENTICATION_TYPE: Database` — its own Postgres database remains the
-identity store — while `KEYCLOAK_LOGIN_CONFIG` layers Keycloak "Holos SSO" on
-top as a **federated login provider**. This is a *layered* arrangement, not a
-backend swap: the same `KEYCLOAK_LOGIN_CONFIG` block still drives the
-interactive "Holos SSO" login (Quay treats any `<PREFIX>_LOGIN_CONFIG` block as
-a federated SSO provider regardless of `AUTHENTICATION_TYPE`), but the local
-database — not the OIDC provider — owns user records.
+**Revision 4 (HOL-1292/HOL-1293) is the current model and supersedes Revision
+3's Database backend.** Quay runs `AUTHENTICATION_TYPE: OIDC`, which makes the
+Keycloak `holos` realm the **sole** identity store: there is no local `admin`
+user, and the `/api/v1/user/initialize` + `/api/v1/superuser/*` bootstrap
+endpoints are unavailable. The `<PREFIX>_LOGIN_CONFIG` block (here
+`KEYCLOAK_LOGIN_CONFIG`) is what selects the OIDC provider Quay authenticates
+against; under OIDC backend that provider also owns every user record.
 
-The original design used `AUTHENTICATION_TYPE: OIDC`, which makes the OIDC
-provider the **sole** identity store. Under that mode Quay disables the local
-`admin` user and the `/api/v1/user/initialize` + `/api/v1/superuser/*` REST
-APIs, so the headless `quay-admin-bootstrap` Job (HOL-1276) could never mint the
-superuser OAuth token that downstream automation depends on (the
-`quay-initial-admin` Secret, key `token`). Database auth restores those
-endpoints while keeping SSO, so the human SSO login and the headless superuser
-bootstrap coexist — the rationale for this revision.
+Revision 3 briefly chose Database auth specifically to keep the local `admin`
+user and the initialize/superuser REST APIs available, so a headless
+`quay-admin-bootstrap` Job (HOL-1276) could mint a non-expiring superuser OAuth
+token (the `quay-initial-admin` Secret, key `token`) that imperative automation
+depended on. Revision 4 removes that machinery entirely. Instead of a local
+`admin` and a minted token, **two Keycloak realm users are the superusers**:
 
-Two consequences of choosing Database auth over OIDC:
+- **`svc-quay-resource-controller`** — a **service account** (the `svc-` prefix
+  marks it as a non-human machine identity), the future Quay Resource
+  Controller's identity.
+- **`quay-admin`** — a **human** administrator (no prefix).
 
-- **`FEATURE_TEAM_SYNCING: false`** (and `TEAM_RESYNC_STALE_TIME` is dropped).
-  OIDC `groups`-claim → Quay-team synchronization requires a federated auth
-  backend whose user handler implements `sync_user_groups`. Under
-  `AUTHENTICATION_TYPE: Database` the active handler is `DatabaseUsers`, which
-  has no such method (only `OIDCUsers`/`LDAPUsers` do). Quay's OAuth login path
-  calls `sync_oidc_groups()` on every SSO callback when team syncing is on with
-  a `groups` claim present, so leaving it enabled would `AttributeError` → HTTP
-  500 on every "Holos SSO" login (Quay v3.17.3 `oauth/login_utils.py` →
-  `auth_system.sync_user_groups`). Automatic group→team sync therefore returns
-  only if a future phase moves to a federated backend; for now superuser comes
-  solely from `SUPER_USERS` and Quay teams are managed directly. The `groups`
-  claim is still emitted (the mappers below are unchanged) so the data is ready
-  when team syncing can be re-enabled.
-- **The no-PKCE exception (Revision 2, HOL-1257) is retained unchanged.** The
-  backend change does not touch the login flow — Quay still authenticates to the
-  token endpoint as a plain confidential client with its client secret, and
-  neither end sets PKCE.
+Both are seeded in the realm by the keycloak phase (HOL-1294) with the
+`platform-owner` realm role, each with a password generated once at runtime into
+a Kubernetes Secret of the same name in the `keycloak` namespace (key
+`password`), and both are listed in `SUPER_USERS` in
+`holos/components/quay/buildplan.cue`, matched by `preferred_username ==
+username`. Because the initialize/superuser endpoints are gone, **in-cluster
+Quay data-plane provisioning (orgs, repos, robots, webhooks) is deferred to a
+future Quay Resource Controller**; until it exists, an operator mints the
+controller's OAuth-Application credential by hand following the
+[Quay Resource Controller credentials runbook](../runbooks/quay-resource-controller-credentials.md).
 
-A one-time **reset** may be required to adopt this model on a cluster that
-already ran under the broken OIDC-only config: `/api/v1/user/initialize` only
-answers against a *virgin* registry, so a database that already holds
-SSO-provisioned users keeps it closed and prevents the bootstrap Job from ever
-minting the token. The deliberate, separate `scripts/quay-reset` helper
-(HOL-1283) wipes the Quay database so initialize re-opens; the next
-`scripts/apply` re-runs the bootstrap against the now-virgin DB. See the
-[runbook](../runbooks/quay-keycloak-oidc.md#one-time-reset-re-opening-initialize)
-for the procedure and when it is needed.
+Two consequences of the OIDC backend:
 
-### Login flow: Authorization Code, confidential client (no PKCE)
+- **`FEATURE_TEAM_SYNCING: true`** (with `TEAM_RESYNC_STALE_TIME: 30m`).
+  OIDC `groups`-claim → Quay-team synchronization requires an auth backend whose
+  user handler implements `sync_user_groups`. Under `AUTHENTICATION_TYPE: OIDC`
+  the active handler owns that method, so the SSO callback's
+  `sync_oidc_groups()` succeeds rather than `AttributeError`-ing — the failure
+  mode that forced team syncing off under the Database backend (Revision 3).
+  Team membership is therefore eventually consistent on the 30-minute resync
+  cadence from the `groups` claim.
+- **PKCE (S256) is re-enabled** on both ends — see the login-flow section below.
+
+### Login flow: Authorization Code, confidential client with PKCE (S256)
 
 Quay logs users in through the Keycloak `holos` realm using the OAuth 2.0
-Authorization Code flow, authenticated by the client secret. PKCE is **not**
-used for this client — neither end sets it:
+Authorization Code flow, authenticated by the client secret **and** PKCE
+(`S256`). Both ends set it:
 
 - Quay (`holos/components/quay/buildplan.cue`,
-  `KEYCLOAK_LOGIN_CONFIG`): no `USE_PKCE`/`PKCE_METHOD` (Quay defaults
-  `USE_PKCE` to `false`, so it sends no `code_challenge`).
+  `KEYCLOAK_LOGIN_CONFIG`): `USE_PKCE: true`, `PKCE_METHOD: "S256"`.
 - The Keycloak `quay` client
-  (`holos/components/keycloak/realm-config/buildplan.cue`): no
-  `attributes."pkce.code.challenge.method"` (Keycloak treats a client that
-  sets it as *requiring* PKCE).
+  (`holos/components/keycloak/realm-config/buildplan.cue`):
+  `attributes."pkce.code.challenge.method": "S256"`.
 
-**Revision 2 (HOL-1257) supersedes the original decision to use PKCE.** The
-initial design enabled PKCE (S256) on both ends for consistency with the
-public `argocd` client. In practice Quay's confidential OIDC client did not
-reliably round-trip a matching PKCE `code_verifier` at the token endpoint:
-Quay sent a `code_challenge` while the Keycloak client *required* PKCE, and a
-missing/mismatched `code_verifier` produced `Got non-2XX response for code
-exchange: 400`, blocking SSO login entirely. Removing PKCE from **both** ends
-together — the only mutually-consistent state — restores login. Quay then
-authenticates purely as a plain confidential client with its client secret,
-which is Red Hat's recommended baseline Quay↔Keycloak OIDC integration. This
-is the documented exception to the platform's "use PKCE wherever the flow
-supports it" default ([keycloak-clients.md](../../holos/docs/keycloak-clients.md),
-and the related HOL-1233 note in `AGENTS.md`); the public `argocd` and `kargo`
-clients keep PKCE.
+**Revision 4 (HOL-1292/HOL-1293) re-enables PKCE, reversing the Revision 2 /
+HOL-1257 no-PKCE exception.** Revision 2 had removed PKCE from both ends after
+Quay's confidential client-secret token exchange failed to round-trip a matching
+`code_verifier`, producing `Got non-2XX response for code exchange: 400`. Re-set
+on both ends together — matching the production reference configuration — PKCE
+now succeeds, so the `quay` client is no longer an exception: it carries the same
+`S256` attribute as the public `argocd` and `kargo` clients. The `code exchange:
+400` symptom remains a useful **PKCE-verification** signal (both ends must agree
+on PKCE) rather than the rationale for disabling it — see the
+[runbook](../runbooks/quay-keycloak-oidc.md#troubleshooting-got-non-2xx-response-for-code-exchange-400).
 
 ### Confidential client authenticated by a client secret
 
@@ -138,8 +137,8 @@ Unlike the public `argocd` client, the `quay` client is **confidential**
 (`publicClient: false`, `standardFlowEnabled: true`,
 `serviceAccountsEnabled: false`, `directAccessGrantsEnabled: false`). Quay's
 `KEYCLOAK_LOGIN_CONFIG` validator requires a `CLIENT_SECRET`, so Quay cannot
-run as a public client; the client secret alone authenticates the application
-(PKCE is not layered on — see the login-flow section above).
+run as a public client; the client secret authenticates the application, with
+PKCE (`S256`) layered on the code exchange — see the login-flow section above.
 
 The shared client secret is the `quay-oidc` Secret (key `client_secret`)
 provisioned once by HOL-1218's bootstrap Job into **both** the `keycloak` and
@@ -200,14 +199,13 @@ These roles are **identity labels that flow into the `groups` claim** (via the
 client-role mapper below) — they do **not** by themselves confer any privilege.
 In particular, the `platform-admin` role does **not** make a user a Quay
 superuser: superuser status comes solely from `SUPER_USERS` (see below). What a
-role grants is whatever Quay team an operator places the user on in the Quay
-organization (e.g. an `admin`-permission team for the org). While
-`FEATURE_TEAM_SYNCING: false` (Revision 3) a superuser manages that team
-membership directly; the claim is still emitted so automatic group/role-name →
-team binding returns when team syncing is re-enabled on a federated backend.
-Treat the role names as a convention for who *should* hold which access,
-realized through Quay team membership and `SUPER_USERS`, not as Quay-enforced
-permissions on their own.
+role grants is whatever Quay team an operator binds the role/group name to in
+the Quay organization (e.g. an `admin`-permission team for the org). With
+`FEATURE_TEAM_SYNCING: true` (Revision 4) Quay keeps that team membership
+eventually consistent with the `groups` claim on the 30-minute
+`TEAM_RESYNC_STALE_TIME` cadence. Treat the role names as a convention for who
+*should* hold which access, realized through Quay team membership and
+`SUPER_USERS`, not as Quay-enforced permissions on their own.
 
 Per-project roles follow the same client-role convention: add a client role
 on the `quay` client named for the project, and grant it to the users who
@@ -226,9 +224,8 @@ Four protocol mappers on the `quay` client shape the token Quay consumes:
    **folds realm-role names — including `platform-owner` (HOL-1242) — into the
    same `groups` claim**, mirroring the `argocd` client. Granting a user the
    `platform-owner` realm role therefore surfaces `platform-owner` in their
-   `groups` claim, so once team syncing is re-enabled on a federated backend (it
-   is `FEATURE_TEAM_SYNCING: false` today — see
-   [Identity backend](#identity-backend-database-with-keycloak-as-a-federated-login-provider))
+   `groups` claim, so with team syncing on (`FEATURE_TEAM_SYNCING: true`, see
+   [Identity backend](#identity-backend-oidc--the-keycloak-realm-is-the-sole-identity-store))
    Quay and any future relying party key on it the same way they key on group
    names. This only surfaces the role to Quay; it does not confer Quay superuser
    (see `SUPER_USERS` below).
@@ -236,26 +233,30 @@ Four protocol mappers on the `quay` client shape the token Quay consumes:
 
 Quay receives the single `groups` claim
 (`PREFERRED_GROUP_CLAIM_NAME: groups`) on every SSO login. Automatic
-group→team synchronization is **disabled** in this revision
-(`FEATURE_TEAM_SYNCING: false`, Revision 3 / HOL-1281): under
-`AUTHENTICATION_TYPE: Database` the active user handler (`DatabaseUsers`) cannot
-sync groups, so enabling it would 500 every "Holos SSO" login — see
-[Identity backend](#identity-backend-database-with-keycloak-as-a-federated-login-provider)
-above. The claim is still emitted so the data is ready when a future federated
-backend can consume it; for now Quay teams are managed directly by a superuser,
-and superuser status comes solely from `SUPER_USERS` (below). Automatic
-group/role-name → team binding (a superuser action, since this platform leaves
-`FEATURE_NONSUPERUSER_TEAM_SYNCING_SETUP` off) returns only when team syncing is
-re-enabled on a federated backend.
+group→team synchronization is **enabled** in this revision
+(`FEATURE_TEAM_SYNCING: true`, `TEAM_RESYNC_STALE_TIME: 30m`, Revision 4 /
+HOL-1293): under `AUTHENTICATION_TYPE: OIDC` the active user handler owns
+`sync_user_groups`, so the SSO callback's `sync_oidc_groups()` succeeds — see
+[Identity backend](#identity-backend-oidc--the-keycloak-realm-is-the-sole-identity-store)
+above. Team membership is eventually consistent on the 30-minute resync cadence;
+superuser status is separate and comes solely from `SUPER_USERS` (below).
 
 **Superusers** are not derived from the `groups` claim: Quay superuser status
-comes solely from `SUPER_USERS` in the config. Bootstrap platform admins are
-listed there by their `preferred_username` claim value. The shipped config
-keeps the local `admin` entry that the `quay-admin-bootstrap` Job (HOL-1276)
-seeds via `/api/v1/user/initialize` during `scripts/apply` — available because
-of Database auth — so the break-glass superuser still works with
-`FEATURE_DIRECT_LOGIN: false`. (`scripts/quay-init` reuses that account's token
-for org/robot scaffolding; it does not create the `admin` user.)
+comes solely from `SUPER_USERS` in the config. Under the OIDC backend there is
+no local `admin` user, so the superusers are two **Keycloak realm users** listed
+in `SUPER_USERS` by their `preferred_username`:
+**`svc-quay-resource-controller`** (a service account — the `svc-` prefix marks
+it as a non-human machine identity, the future Quay Resource Controller's
+identity) and **`quay-admin`** (a human administrator). Both are seeded with the
+`platform-owner` realm role by the keycloak phase (HOL-1294), each with a
+password generated once at runtime into a Secret of the same name in the
+`keycloak` namespace (key `password`). The old `quay-initial-admin` headless
+bootstrap (HOL-1276) is removed — the OIDC backend disables the
+`/api/v1/user/initialize` endpoint it relied on. Because that endpoint is gone,
+in-cluster Quay data-plane provisioning (orgs, repos, robots, webhooks) is
+**deferred to a future Quay Resource Controller**; an operator mints its
+OAuth-Application credential by hand per the
+[Quay Resource Controller credentials runbook](../runbooks/quay-resource-controller-credentials.md).
 
 ### How an operator grants access
 
@@ -263,61 +264,62 @@ for org/robot scaffolding; it does not create the `admin` user.)
   `SUPER_USERS` in `holos/components/quay/buildplan.cue` and re-render/apply.
   This is the only way to confer Quay superuser; the `platform-admin` client
   role does not. Optionally also grant the `quay` `platform-admin` role so the
-  intent is visible in Keycloak; while `FEATURE_TEAM_SYNCING: false` a superuser
-  realizes that intent by managing the org-admin team's membership directly
-  (automatic team binding returns when team syncing is re-enabled).
+  intent is visible in Keycloak; with `FEATURE_TEAM_SYNCING: true` the matching
+  Quay team's membership tracks the `groups` claim automatically on the resync
+  cadence.
 - **Per-project / team access:** grant the user the project's `quay` client
   role (`project-admin` or a per-project role) or add them to the bound
-  Keycloak group; a Quay **superuser** manages the matching Quay team's
-  membership directly in the organization UI. Automatic group/role-name → team
-  binding is not active while `FEATURE_TEAM_SYNCING: false` (Revision 3); the
-  `groups` claim is still emitted, so it returns automatically once team syncing
-  can be re-enabled on a federated backend.
+  Keycloak group; Quay binds the matching team's membership from the `groups`
+  claim automatically (`FEATURE_TEAM_SYNCING: true`, Revision 4) on the
+  30-minute `TEAM_RESYNC_STALE_TIME` cadence. A superuser performs the one-time
+  setup of the team→group binding in the organization UI.
 
 ## Decision
 
-Quay runs `AUTHENTICATION_TYPE: Database` — its own database is the identity
-store — with the Keycloak `holos` realm layered on as a **federated login
-provider** (Revision 3, HOL-1281): the "Holos SSO" button logs users in through
-the realm via the Authorization Code flow, while Database auth keeps the local
-`admin` user and the `/api/v1/user/initialize` + `/api/v1/superuser/*` APIs that
-the headless superuser bootstrap (HOL-1276) needs. Quay authenticates to the
-token endpoint as a **plain confidential OIDC client with a client secret,
-without PKCE** (Revision 2, HOL-1257).
-Usernames come from the ID token's `preferred_username` claim with no user
-customization, and the personal namespace is scoped to that username. Keycloak
-client roles, realm roles, and groups are folded into a single `groups` claim
-that Quay receives on each login; automatic group→team syncing is **off**
-(`FEATURE_TEAM_SYNCING: false`) because the Database user handler cannot sync
-groups, so Quay teams are managed directly and superuser status comes solely
-from `SUPER_USERS`. The client, roles, mappers, and secret are reconciled
-declaratively by the `keycloak-config` Job; nothing secret is committed.
+Quay runs `AUTHENTICATION_TYPE: OIDC` — the Keycloak `holos` realm is the
+**sole** identity store (Revision 4, HOL-1292/HOL-1293): the "Holos SSO" button
+logs users in through the realm via the Authorization Code flow, and there is no
+local `admin` user. Quay authenticates to the token endpoint as a **confidential
+OIDC client with a client secret and PKCE (S256)** (Revision 4 re-enables PKCE,
+reversing Revision 2 / HOL-1257). Usernames come from the ID token's
+`preferred_username` claim with no user customization, and the personal
+namespace is scoped to that username. Keycloak client roles, realm roles, and
+groups are folded into a single `groups` claim that Quay receives on each login;
+automatic group→team syncing is **on** (`FEATURE_TEAM_SYNCING: true`,
+`TEAM_RESYNC_STALE_TIME: 30m`) because the OIDC user handler can sync groups.
+Superuser status is separate and comes solely from `SUPER_USERS`, which lists
+two Keycloak realm users: the service account `svc-quay-resource-controller` and
+the human `quay-admin` (both `platform-owner`, passwords generated at runtime
+into Secrets in the `keycloak` namespace). The `quay-initial-admin` headless
+bootstrap is removed, and in-cluster Quay data-plane provisioning is deferred to
+a future Quay Resource Controller. The client, roles, mappers, and secret are
+reconciled declaratively by the `keycloak-config` Job; nothing secret is
+committed.
 
 ## Consequences
 
-- Quay no longer requires a registry-local password for normal users; SSO is
-  the only interactive login (`FEATURE_DIRECT_LOGIN: false`). The local
-  `admin` superuser is retained in `SUPER_USERS` as a break-glass account and
-  for `scripts/quay-init`.
-- PKCE is deliberately **not** used for the `quay` client (Revision 2,
-  HOL-1257): Quay's confidential client-secret flow did not reliably round-trip
-  a PKCE `code_verifier`, producing `code exchange: 400` SSO failures, so PKCE
-  was removed from both ends. This is the documented exception to the platform's
-  PKCE-by-default posture; the public `argocd` and `kargo` clients keep PKCE.
-- Automatic group→team synchronization is **disabled** in this revision
-  (`FEATURE_TEAM_SYNCING: false`, Revision 3 / HOL-1281): the Database user
-  handler cannot sync OIDC groups, so a superuser manages Quay team membership
-  directly. The `groups` claim is still emitted, so re-enabling team syncing on
-  a future federated backend needs no realm change. The previous behavior —
-  eventually-consistent membership on the 30-minute `TEAM_RESYNC_STALE_TIME`
-  cadence — does not apply while team syncing is off.
-- Database auth keeps the local `admin` superuser and the
-  `/api/v1/user/initialize` + `/api/v1/superuser/*` REST APIs available, so the
-  headless `quay-admin-bootstrap` Job (HOL-1276) can mint the `quay-initial-admin`
-  superuser token. `AUTHENTICATION_TYPE: OIDC` would disable both. Adopting this
-  model on a cluster that previously ran the OIDC-only config may require the
-  one-time `scripts/quay-reset` (HOL-1283) to re-open the one-shot initialize
-  endpoint — see the [runbook](../runbooks/quay-keycloak-oidc.md#one-time-reset-re-opening-initialize).
+- Quay has **no** registry-local identities; SSO is the only interactive login
+  (`FEATURE_DIRECT_LOGIN: false`) and the Keycloak realm is the sole identity
+  store. The two superusers are the Keycloak realm users
+  `svc-quay-resource-controller` and `quay-admin` in `SUPER_USERS`.
+- PKCE (`S256`) is used for the `quay` client (Revision 4, HOL-1293), re-enabled
+  on both ends after Revision 2 / HOL-1257 had disabled it over a
+  `code exchange: 400` failure. The `quay` client is no longer the PKCE
+  exception — it carries the same `S256` attribute as the public `argocd` and
+  `kargo` clients. The `code exchange: 400` symptom is now a PKCE-verification
+  signal (both ends must agree on PKCE), not a reason to disable it.
+- Automatic group→team synchronization is **enabled** in this revision
+  (`FEATURE_TEAM_SYNCING: true`, `TEAM_RESYNC_STALE_TIME: 30m`, Revision 4 /
+  HOL-1293): the OIDC user handler syncs groups, so Quay team membership is
+  eventually consistent with the `groups` claim on the 30-minute resync cadence.
+- The OIDC backend disables the local `admin` user and the
+  `/api/v1/user/initialize` + `/api/v1/superuser/*` REST APIs, so the headless
+  `quay-admin-bootstrap` Job and the `quay-initial-admin` superuser token are
+  removed (HOL-1293). In-cluster Quay data-plane provisioning (orgs, repos,
+  robots, webhooks) is **deferred to a future Quay Resource Controller**; until
+  it ships, an operator mints the controller's OAuth-Application credential by
+  hand per the
+  [Quay Resource Controller credentials runbook](../runbooks/quay-resource-controller-credentials.md).
 - The `quay-oidc` client secret must exist identically in both the `keycloak`
   and `quay` namespaces; the bootstrap Job enforces this and fails loudly on a
   mismatch.
