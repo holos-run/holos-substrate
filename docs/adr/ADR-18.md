@@ -6,6 +6,7 @@
 | Author   | @jeffmccune             |
 | Status   | `Proposed`              |
 | Tags     | controller, api, gitops |
+| Updates  | ADR-12, ADR-15          |
 
 | Revision | Date       | Author      | Info           |
 | -------- | ---------- | ----------- | -------------- |
@@ -26,7 +27,7 @@ imperative procedures: an operator signs in and clicks through a UI, or runs a
 documented one-off bootstrap. The clearest example is the Quay data plane, whose
 provisioning is currently **deferred to a "future Quay Resource Controller"** and
 performed by hand against a manually-minted superuser credential
-([ADR-15](ADR-15.md) Revision 4;
+([ADR-15](ADR-15.md) Revisions 4–5;
 [Quay Resource Controller credentials runbook](../runbooks/quay-resource-controller-credentials.md)).
 
 Two questions follow. First, **what supplies the missing Kubernetes-native
@@ -44,12 +45,23 @@ and that the later, more detailed ADRs build on.
   installs) is the primary API, and capabilities are expressed as custom
   resources reconciled by controllers — not imperative tools. This ADR applies
   that principle to the gaps the upstream operators leave open.
-- [ADR-15 — Quay↔Keycloak OIDC SSO](ADR-15.md), Revision 4: records the manual
-  stop-gap this controller replaces. Under the OIDC backend the Keycloak realm
-  is Quay's sole identity store, there is no local `admin`, and in-cluster Quay
-  data-plane provisioning (orgs, repos, robots, webhooks) is **deferred to a
-  future Quay Resource Controller**. That controller is the controller this ADR
-  names.
+- [ADR-12 — Repository Layout for Multiple Go Services](ADR-12.md): establishes
+  the kubebuilder multi-group layout (`api/<group>/<version>`) "multi-group from
+  day one," with `paas.holos.run` first and `registry.holos.run` named as the
+  illustrative registry-related group. This ADR **refines** that registry
+  example: the first **controller** API group is the concrete `quay.holos.run`
+  (Quay organizations and repositories), which is the registry data plane ADR-12
+  sketched generically. The `<group>.holos.run` convention is unchanged.
+- [ADR-15 — Quay↔Keycloak OIDC SSO](ADR-15.md), Revisions 4 and 5: records the
+  manual stop-gap this controller replaces. Revision 4 (HOL-1293) establishes the
+  OIDC backend — the Keycloak realm is Quay's sole identity store, there is no
+  local `admin`, and in-cluster Quay data-plane provisioning (orgs, repos, robots,
+  webhooks) is **deferred to a future Quay Resource Controller**. Revision 5
+  (HOL-1299) is the current revision and materially shapes that controller's
+  credential model: it enables `FEATURE_SUPERUSERS_FULL_ACCESS` so the controller
+  can **adopt** orgs it did not create, and clarifies the user/org/OAuth-Application
+  distinction and the manual `platform-automation` org bootstrap. The controller
+  this ADR names is that "future Quay Resource Controller."
 - [ADR-16 — Kargo-Driven Promotion with a Client-Side CLI Build-and-Publish
   (ORAS) Workflow](ADR-16.md): the deployment half of the developer experience —
   Holos renders the platform, the rendered manifests are packaged as an OCI
@@ -81,16 +93,27 @@ closes are:
   operator deploys and manages Quay itself but offers no CRD for these
   tenant-facing objects.
 - **Keycloak data plane** — clients, roles, and groups. The upstream Keycloak
-  operator and the declarative `keycloak-config-cli` reconciliation manage realm
-  configuration, but the platform needs these modeled as Kubernetes resources so
-  a project's identity wiring is provisioned the same KRM-native way as the rest.
+  operator and the declarative `keycloak-config-cli` reconciliation manage the
+  **platform's own** realm configuration today
+  ([holos/components/keycloak/realm-config/buildplan.cue](../../holos/components/keycloak/realm-config/buildplan.cue));
+  what is missing is a KRM-native API for the **per-project, tenant-facing**
+  identity wiring the PaaS provisions on a project's behalf. The exact ownership
+  boundary between the controller's Keycloak group and the existing
+  `keycloak-config-cli` Job — so the two reconcilers never fight over the same
+  realm objects — is a question **ADR-20 must resolve**; this ADR only records
+  that the gap exists and is the controller's to close. (Until ADR-20 settles
+  that boundary, `keycloak-config-cli` remains the sole owner of realm clients,
+  roles, and groups, per the platform's Keycloak guardrails.)
 
 The controller follows the platform's **`<group>.holos.run` API-group
-convention**: each gap area is a versioned API group under the `holos.run`
-domain. The **first group is `quay.holos.run`** (the Quay organization and
-repository resources, specified in ADR-19); the Keycloak group follows in a later
-phase (ADR-20). One controller hosts these groups' reconcilers; the API groups
-grow independently as gaps are closed.
+convention** established in [ADR-12](ADR-12.md) (the kubebuilder multi-group
+`api/<group>/<version>` layout): each gap area is a versioned API group under the
+`holos.run` domain. The **first controller group is `quay.holos.run`** (the Quay
+organization and repository resources, specified in ADR-19) — the concrete
+registry data plane ADR-12 named generically as `registry.holos.run`; this ADR
+refines that example to the controller's actual first group. The Keycloak group
+follows in a later phase (ADR-20). One controller hosts these groups'
+reconcilers; the API groups grow independently as gaps are closed.
 
 Naming the controller and its first API group here — without specifying the CRD
 schemas — is deliberate. The schemas are detailed design that belongs in the
@@ -134,21 +157,23 @@ tools**. The Holos Controller is the reconciler; the `holos.run` API groups are
 the CRDs. Where the platform today documents a human-run procedure to fill a gap,
 the KRM-native answer is a custom resource the controller reconciles.
 
-The clearest worked example is Quay. [ADR-15](ADR-15.md) Revision 4 and the
+The clearest worked example is Quay. [ADR-15](ADR-15.md) Revisions 4–5 and the
 [Quay Resource Controller credentials runbook](../runbooks/quay-resource-controller-credentials.md)
 record a deliberate manual stop-gap: because Quay runs `AUTHENTICATION_TYPE: OIDC`
 with the Keycloak realm as the sole identity store, there is no headless way to
 mint the first superuser token, so an operator signs in as the
 `svc-quay-resource-controller` realm user, creates an OAuth Application in the
-`platform-automation` org, and provisions orgs/repos/robots/webhooks by hand. The
-runbook names the credential's consumer the **"future Quay Resource
-Controller"** — and **that controller is the Holos Controller defined here**. The
-`quay.holos.run` API group (ADR-19) replaces the hand-run provisioning with
-reconciled resources; the manually-minted OAuth-Application credential becomes the
-controller's service-account credential. This ADR **supersedes the manual
-stop-gap as the intended end state**: ADR-15 Revision 4 and the runbook remain the
-record of how the gap is filled until the controller ships, and the controller is
-what closes it.
+`platform-automation` org, and provisions orgs/repos/robots/webhooks by hand.
+Revision 5's `FEATURE_SUPERUSERS_FULL_ACCESS` is what lets that credential
+**adopt** and reconcile orgs the controller did not itself create — a property
+the controller's reconcilers depend on. The runbook names the credential's
+consumer the **"future Quay Resource Controller"** — and **that controller is the
+Holos Controller defined here**. The `quay.holos.run` API group (ADR-19) replaces
+the hand-run provisioning with reconciled resources; the manually-minted
+OAuth-Application credential becomes the controller's service-account credential.
+This ADR **supersedes the manual stop-gap as the intended end state**: ADR-15
+Revisions 4–5 and the runbook remain the record of how the gap is filled until the
+controller ships, and the controller is what closes it.
 
 ## Decision
 
@@ -166,7 +191,7 @@ what closes it.
    them (via the [ADR-16](ADR-16.md) pipeline), and the controller's CRDs —
    referenced by those rendered manifests — are reconciled in-cluster.
 4. **This controller is the "future Quay Resource Controller"** referenced by
-   [ADR-15](ADR-15.md) Revision 4 and the
+   [ADR-15](ADR-15.md) Revisions 4–5 and the
    [Quay Resource Controller credentials runbook](../runbooks/quay-resource-controller-credentials.md).
    It **supersedes that manual stop-gap** as the intended end state: the runbook's
    by-hand provisioning becomes reconciled `quay.holos.run` resources, and the
@@ -186,10 +211,11 @@ what closes it.
   cluster resources and acts against Quay and Keycloak, so it needs a
   service account with RBAC scoped to the `holos.run` API groups it owns, plus
   the external credentials to call Quay/Keycloak (for Quay, the superuser
-  OAuth-Application credential the runbook currently mints by hand — see ADR-15
-  Revision 4). The specific permission sets are detailed in the per-group ADRs.
+  OAuth-Application credential the runbook currently mints by hand, carrying the
+  Revision-5 `FEATURE_SUPERUSERS_FULL_ACCESS` reach — see ADR-15 Revisions 4–5).
+  The specific permission sets are detailed in the per-group ADRs.
 - **The manual stop-gap is retired once the controller ships.** Until then,
-  [ADR-15](ADR-15.md) Revision 4 and the
+  [ADR-15](ADR-15.md) Revisions 4–5 and the
   [credentials runbook](../runbooks/quay-resource-controller-credentials.md)
   remain the operative procedure; afterward, the by-hand steps are replaced by
   reconciled resources, and the runbook becomes the historical record of the
