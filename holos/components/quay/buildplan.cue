@@ -212,6 +212,11 @@ let REDIS_METADATA = {
 //     keycloak phase (HOL-1294): svc-quay-resource-controller (the future Quay
 //     Resource Controller's service identity) and quay-admin (human
 //     administration).  Superuser is keyed on preferred_username == username.
+//   - FEATURE_SUPERUSERS_FULL_ACCESS true (HOL-1299) extends those superusers'
+//     reach to orgs they neither own nor are members of, so the future Quay
+//     Resource Controller can adopt and reconcile orgs created by other
+//     identities — not only the ones it created itself.  See its inline comment
+//     at the field and docs/runbooks/quay-resource-controller-credentials.md.
 let CONFIG = {
 	SERVER_HOSTNAME:          HOSTNAME
 	PREFERRED_URL_SCHEME:     "https"
@@ -267,7 +272,28 @@ let CONFIG = {
 		"svc-quay-resource-controller",
 		"quay-admin",
 	]
-	FEATURE_MAILING: false
+	// FEATURE_SUPERUSERS_FULL_ACCESS grants the SUPER_USERS above read/write/
+	// delete on namespaces and organizations they neither own nor hold an
+	// explicit role on (HOL-1299).  Without it a superuser's super:user scope
+	// only reaches the /api/v1/superuser/* panel endpoints: the
+	// svc-quay-resource-controller token can still create orgs (org creation is
+	// a normal user ability) and administer the orgs it creates as their owner,
+	// but it gets 403 trying to PUT a repo, robot, or notification inside an org
+	// it did not create and is not a member of.  The future Quay Resource
+	// Controller must reconcile orgs created by other identities (e.g. a human
+	// who pre-created one, or another automation), so it needs instance-wide
+	// admin — turning this on is what makes the controller robust against orgs
+	// it did not create itself.  It applies to SUPER_USERS members only, but to
+	// ALL of their superuser sessions: both an OAuth token carrying the
+	// super:user scope (the controller) AND an authenticated web session via the
+	// UI (Quay grants superuser permission for super:user OR the internal
+	// direct_user_login scope).  So the human quay-admin, signed in through
+	// "Holos SSO", also gains instance-wide read/write/delete across every org —
+	// an acceptable widening of an existing platform administrator's reach, and
+	// not configurable per-user.  It does not widen access for non-superusers.
+	// See docs/runbooks/quay-resource-controller-credentials.md and ADR-15.
+	FEATURE_SUPERUSERS_FULL_ACCESS: true
+	FEATURE_MAILING:                false
 	// Cosmetic keys carried over from the production example (HOL-1292).
 	REGISTRY_TITLE:         "Holos Quay (quay)"
 	REGISTRY_TITLE_SHORT:   "Holos Quay"

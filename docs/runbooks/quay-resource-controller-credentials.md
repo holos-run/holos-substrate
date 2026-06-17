@@ -37,6 +37,81 @@ A token Quay generates for an OAuth Application **acts as the user who generated
 it**, so generating it while signed in as `svc-quay-resource-controller` is what
 makes the resulting credential the controller's machine identity — not a human's.
 
+## Users vs. organizations: where the credential lives, and what it can touch
+
+Three Quay concepts are easy to conflate; keeping them distinct removes the
+confusion around "whose token is this and what can it reach."
+
+- A **user** is an identity that signs in (here, the two Keycloak realm users
+  `svc-quay-resource-controller` and `quay-admin`). A user also owns a **personal
+  namespace** named for the username.
+- An **organization** is a shared namespace that owns repositories, teams,
+  robots, and webhooks. Organizations — **not users** — are the only place an
+  **OAuth Application** can be created: the Applications tab exists on an org's
+  settings, never on a user's personal namespace. **This is why an OAuth
+  Application (and therefore the controller's credential) cannot be created
+  directly "for" `svc-quay-resource-controller` as a user** — it must be created
+  inside an org the user can administer.
+- An **OAuth Application token** is the credential. It is **not** scoped to the
+  organization that hosts the Application. The host org is merely *where the
+  credential record lives*; it is **not a permission boundary**. The token acts
+  as the **user who generated it** (`svc-quay-resource-controller`), bounded by
+  that user's rights on each target namespace and by the token's selected
+  scopes — never by which org happens to host it.
+
+So the `platform-automation` org created below is just the home for the
+credential record. What the resulting token can actually do is governed by Quay
+RBAC: an action succeeds only if `svc-quay-resource-controller` holds the proper
+role on the target namespace (or is a full-access superuser — see below), even
+when the token carries a broad scope like `repo:admin`. That splits into two
+cases that matter for the future reconciler:
+
+1. **Orgs the controller creates** (the clean GitOps path; e.g. `my-project`).
+   The token calls `POST /api/v1/organization/`, and the creating user —
+   `svc-quay-resource-controller` — automatically becomes the org's owner/admin.
+   From then on it administers that org's repos, teams, robots, and webhooks
+   through the normal endpoints because it **owns the namespace**. No extra
+   configuration is required, and this matches declarative reconcile-from-scratch
+   exactly.
+2. **Orgs the controller did *not* create** (adopting a pre-existing org someone
+   else owns). By default a superuser has **no** access to another user's
+   organization: the token's `super:user` scope only reaches the
+   `/api/v1/superuser/*` panel endpoints, so a `PUT` on a repo, robot, or
+   notification inside an org the controller is not a member of returns **403**.
+   Bridging this gap is a **config** flag, not an application or scope change:
+   **`FEATURE_SUPERUSERS_FULL_ACCESS`** grants `SUPER_USERS` read/write/delete on
+   namespaces and orgs they do not own. With it enabled (HOL-1299, see below),
+   plus the `super:user` scope on the token and the identity in `SUPER_USERS`,
+   the controller can administer **every** org on the instance through the same
+   normal endpoints.
+
+### `FEATURE_SUPERUSERS_FULL_ACCESS` is enabled (HOL-1299)
+
+`holos/components/quay/buildplan.cue` sets **`FEATURE_SUPERUSERS_FULL_ACCESS:
+true`** so the controller is robust against orgs it did not create itself. A
+reconciler that is the system of record must be able to take over and converge
+*any* org — including one a human pre-created or another automation made — not
+only orgs it happened to create. Without the flag the controller would 403 on
+those namespaces and silently fail to reconcile them, which is exactly the
+fragility this enables us to avoid.
+
+The flag applies to `SUPER_USERS` members only, but to **all** of their
+superuser sessions: Quay grants superuser permission for the `super:user` OAuth
+scope **or** the internal `direct_user_login` scope used by authenticated web
+sessions. So full access is **not** limited to the controller's OAuth token —
+the human `quay-admin`, signed in through "Holos SSO", also gains instance-wide
+read/write/delete across every org. This is not configurable per-user (the flag
+is instance-wide and covers every `SUPER_USERS` member) and it does not widen
+access for ordinary, non-`SUPER_USERS` users; treat `quay-admin`'s UI reach as an
+acceptable extension of an existing platform administrator. Confirm the flag is
+live on the running instance by checking the rendered config:
+
+```bash
+kubectl -n quay get configmap quay-config-template \
+  -o jsonpath='{.data.config\.yaml}' | grep FEATURE_SUPERUSERS_FULL_ACCESS
+# => FEATURE_SUPERUSERS_FULL_ACCESS: true
+```
+
 ## Retrieve the generated passwords (replaces `quay-initial-admin`)
 
 Both realm users' passwords are generated **once at runtime** by the
@@ -85,31 +160,39 @@ username/password form is disabled (`FEATURE_DIRECT_LOGIN: false`), so SSO is th
 only login path. First login auto-provisions the user's personal namespace at
 `quay.holos.localhost/svc-quay-resource-controller/...`.
 
-### 2. Create (or choose) the organization that owns the Application
+### 2. Create the `platform-automation` organization (step by step)
 
-**Recommendation: create a dedicated organization, `holos-controller`, owned by
-`svc-quay-resource-controller`, and create the OAuth Application under it.**
+The credential record must live in an organization the service account owns (a
+user's personal namespace has no Applications tab — see *Users vs.
+organizations* above). Create a dedicated org named **`platform-automation`**,
+owned by `svc-quay-resource-controller`. Keeping the Application in its own org
+isolates the controller's credential lifecycle from any human-facing org and
+makes the token's blast radius and rotation easy to reason about — it is the
+only Application in `platform-automation`. The org name is **not** a permission
+boundary (the token acts as the user, not the org); it is simply where the
+credential record lives.
 
-Why a dedicated org rather than the service account's personal namespace or a
-shared `holos` org:
+Perform these steps in the Quay UI while still signed in as
+`svc-quay-resource-controller` from step 1:
 
-- A Quay OAuth Application **must** be created under an **Organization**
-  (Applications tab) — a user's personal namespace has no Applications tab, so
-  the personal namespace alone cannot host the Application.
-- Keeping the Application in an org the service account owns isolates the
-  controller's credential lifecycle from any human-facing org, and makes the
-  token's blast radius (and rotation) easy to reason about: it is the only
-  Application in `holos-controller`.
-- As a superuser, `svc-quay-resource-controller` can create the org from the
-  Quay UI (**+ → New Organization**, name `holos-controller`).
+1. Click the **+** menu in the top navigation bar → **New Organization**.
+2. In **Organization Name**, enter exactly `platform-automation`.
+3. Enter an **Organization Email** that is distinct from the service account's
+   own email, e.g. `svc-quay-resource-controller+platform-automation@holos.localhost`
+   (Quay requires every namespace to have a unique email).
+4. Click **Create Organization**. Because you are signed in as
+   `svc-quay-resource-controller`, that user becomes the org's owner/admin —
+   this is what makes the OAuth Application (and its token) belong to the service
+   account rather than a human.
 
-If a platform org already exists and you prefer to consolidate, the Application
-may instead be created under it — the scope/ownership reasoning below is
-unchanged because the **token's abilities derive from the user, not the org**.
+> Org creation is a normal user ability and a superuser is always permitted, so
+> no extra configuration is needed for this step. (Org creation is restricted
+> only if `FEATURE_SUPERUSERS_ORG_CREATION_ONLY` or `FEATURE_RESTRICTED_USERS`
+> is set, and even then a superuser may always create — neither is set here.)
 
 ### 3. Create the OAuth Application and generate a token
 
-1. Open the `holos-controller` org → **Applications** tab → **Create New
+1. Open the `platform-automation` org → **Applications** tab → **Create New
    Application**; name it e.g. `quay-resource-controller`.
 2. Open the Application → **Generate Token**.
 3. Select the scopes (see the next section) and generate. **Copy the token
@@ -126,7 +209,7 @@ the selected scopes.
 
 | Scope | Grants | Why the controller needs it |
 |-------|--------|-----------------------------|
-| `super:user` | the `/api/v1/superuser/*` API (the caller must also be in `SUPER_USERS`) | superuser-level provisioning across orgs; the broadest data-plane reach |
+| `super:user` | the `/api/v1/superuser/*` API (the caller must also be in `SUPER_USERS`) | superuser-level provisioning across orgs; the broadest data-plane reach. With `FEATURE_SUPERUSERS_FULL_ACCESS: true` (enabled, see above) this scope also reaches the **normal** org/repo/robot/webhook endpoints inside orgs the controller does not own — adopting orgs created by other identities |
 | `org:admin` | administer organizations the user can administer (teams, robots, members, webhooks) | manage org/team/robot/webhook objects the controller provisions |
 | `repo:create` | create repositories | auto-create repositories under provisioned orgs |
 
@@ -138,7 +221,7 @@ ability as long as it can authenticate as the user; `super:user`/`org:admin`
 then cover administering the orgs it creates. There is no separate
 `org:create` scope to add.
 
-### 5. Verify org-creation with an API smoke test
+### 5. Verify org-creation and full-access with an API smoke test
 
 Confirm the token can create an organization end to end. Replace `$TOKEN` with
 the generated token:
@@ -165,6 +248,20 @@ curl -sS -o /dev/null -w '%{http_code}\n' -X DELETE \
   -H "Authorization: Bearer ${TOKEN}" \
   https://quay.holos.localhost/api/v1/organization/smoke-test-org
 # => 204
+```
+
+To verify **`FEATURE_SUPERUSERS_FULL_ACCESS`** specifically — the ability to
+administer an org the controller does *not* own — the throwaway-org test above is
+insufficient (the controller owns the org it just created). Instead, have a
+*different* user create an org (or pick a human-owned one) and confirm the
+controller token can read it through the **normal** (non-`superuser`) endpoint:
+
+```bash
+# Against an org svc-quay-resource-controller neither owns nor is a member of:
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer ${TOKEN}" \
+  https://quay.holos.localhost/api/v1/organization/<other-owners-org>
+# => 200 with FEATURE_SUPERUSERS_FULL_ACCESS: true; 403 without it
 ```
 
 A `201` from the create call confirms the token can create additional
