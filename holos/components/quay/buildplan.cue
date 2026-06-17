@@ -189,21 +189,35 @@ let REDIS_METADATA = {
 //     endpoint the admin-bootstrap Job (HOL-1276) uses to create the admin user.
 //   - SETUP_COMPLETE skips the interactive setup flow.
 //
-// OIDC / Keycloak SSO (HOL-1219, Phase 2 of HOL-1217):
-//   - AUTHENTICATION_TYPE OIDC + KEYCLOAK_LOGIN_CONFIG point Quay at the
-//     holos realm's confidential "quay" client (HOL-1218, in
-//     components/keycloak/realm-config), which authenticates with a client
-//     secret and does NOT use PKCE (see the PKCE field note below).  OIDC_SERVER
-//     is the realm issuer URL with a REQUIRED trailing slash — Quay's config
-//     validator normalises the issuer to TrimSuffix(issuer,"/")+"/", so the
-//     slash must be present here to match Keycloak's issuer exactly.
+// Database backend + federated Keycloak SSO (HOL-1280, refining HOL-1219 /
+// Phase 2 of HOL-1217):
+//   - AUTHENTICATION_TYPE Database keeps Quay's own database as the identity
+//     store while KEYCLOAK_LOGIN_CONFIG layers Keycloak SSO on top as a
+//     *federated login provider* — it does NOT replace the backend.  This is
+//     the key distinction from AUTHENTICATION_TYPE OIDC, which makes the OIDC
+//     provider the sole identity store: under OIDC the local "admin" user and
+//     the /api/v1/user/initialize + /api/v1/superuser/* APIs are unavailable,
+//     so the quay-admin-bootstrap Job (HOL-1276) cannot mint the superuser
+//     OAuth token.  Database auth restores those endpoints, and the very same
+//     KEYCLOAK_LOGIN_CONFIG block still drives "Holos SSO" login (Quay treats
+//     a <PREFIX>_LOGIN_CONFIG block as a federated SSO provider regardless of
+//     the backend) — so SSO and the headless superuser bootstrap coexist.
+//   - KEYCLOAK_LOGIN_CONFIG points Quay at the holos realm's confidential
+//     "quay" client (HOL-1218, in components/keycloak/realm-config), which
+//     authenticates with a client secret and does NOT use PKCE (see the PKCE
+//     field note below).  OIDC_SERVER is the realm issuer URL with a REQUIRED
+//     trailing slash — Quay's config validator normalises the issuer to
+//     TrimSuffix(issuer,"/")+"/", so the slash must be present here to match
+//     Keycloak's issuer exactly.
 //   - CLIENT_SECRET is the __OIDC_CLIENT_SECRET__ placeholder; the
 //     initContainer substitutes it from the shared quay-oidc Secret (the
 //     client_secret key) that Phase 1's bootstrap Job provisioned into BOTH
 //     the keycloak and quay namespaces — so this phase only consumes it and
 //     no secret value is ever committed.
 //   - FEATURE_DIRECT_LOGIN false removes the local username/password form so
-//     Keycloak SSO ("Holos SSO") is the only login path; FEATURE_USER_CREATION
+//     Keycloak SSO ("Holos SSO") is the only interactive login path even though
+//     the backend is Database (the local "admin" superuser stays reachable for
+//     the API/bootstrap path — see SUPER_USERS below); FEATURE_USER_CREATION
 //     true lets first SSO login auto-provision the user's account namespace
 //     (a Quay user's personal namespace IS their per-user org scope).
 //   - FEATURE_USERNAME_CONFIRMATION false is the key requirement from the
@@ -259,7 +273,7 @@ let CONFIG_YAML = """
 	FEATURE_USERNAME_CONFIRMATION: false
 	FEATURE_TEAM_SYNCING: true
 	TEAM_RESYNC_STALE_TIME: 30m
-	AUTHENTICATION_TYPE: OIDC
+	AUTHENTICATION_TYPE: Database
 	KEYCLOAK_LOGIN_CONFIG:
 	  OIDC_SERVER: \(OIDC_SERVER)
 	  CLIENT_ID: \(OIDC_CLIENT_ID)
