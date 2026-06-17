@@ -95,10 +95,16 @@ only orgs it happened to create. Without the flag the controller would 403 on
 those namespaces and silently fail to reconcile them, which is exactly the
 fragility this enables us to avoid.
 
-The flag is effective only for an identity that is **both** listed in
-`SUPER_USERS` **and** presenting a token that carries the `super:user` scope, so
-it does not widen access for ordinary users. Confirm it is live on the running
-instance by checking the rendered config:
+The flag applies to `SUPER_USERS` members only, but to **all** of their
+superuser sessions: Quay grants superuser permission for the `super:user` OAuth
+scope **or** the internal `direct_user_login` scope used by authenticated web
+sessions. So full access is **not** limited to the controller's OAuth token —
+the human `quay-admin`, signed in through "Holos SSO", also gains instance-wide
+read/write/delete across every org. This is not configurable per-user (the flag
+is instance-wide and covers every `SUPER_USERS` member) and it does not widen
+access for ordinary, non-`SUPER_USERS` users; treat `quay-admin`'s UI reach as an
+acceptable extension of an existing platform administrator. Confirm the flag is
+live on the running instance by checking the rendered config:
 
 ```bash
 kubectl -n quay get configmap quay-config-template \

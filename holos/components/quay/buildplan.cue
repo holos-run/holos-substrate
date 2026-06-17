@@ -283,9 +283,15 @@ let CONFIG = {
 	// Controller must reconcile orgs created by other identities (e.g. a human
 	// who pre-created one, or another automation), so it needs instance-wide
 	// admin — turning this on is what makes the controller robust against orgs
-	// it did not create itself.  Effective only for identities also listed in
-	// SUPER_USERS and only on a token that carries the super:user scope.  See
-	// docs/runbooks/quay-resource-controller-credentials.md and ADR-15.
+	// it did not create itself.  It applies to SUPER_USERS members only, but to
+	// ALL of their superuser sessions: both an OAuth token carrying the
+	// super:user scope (the controller) AND an authenticated web session via the
+	// UI (Quay grants superuser permission for super:user OR the internal
+	// direct_user_login scope).  So the human quay-admin, signed in through
+	// "Holos SSO", also gains instance-wide read/write/delete across every org —
+	// an acceptable widening of an existing platform administrator's reach, and
+	// not configurable per-user.  It does not widen access for non-superusers.
+	// See docs/runbooks/quay-resource-controller-credentials.md and ADR-15.
 	FEATURE_SUPERUSERS_FULL_ACCESS: true
 	FEATURE_MAILING:                false
 	// Cosmetic keys carried over from the production example (HOL-1292).

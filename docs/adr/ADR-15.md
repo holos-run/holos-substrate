@@ -298,9 +298,15 @@ two cases:
   **`FEATURE_SUPERUSERS_FULL_ACCESS: true`** (HOL-1299, set in
   `holos/components/quay/buildplan.cue`) grants `SUPER_USERS` read/write/delete on
   namespaces and orgs they do not own, so the controller can **adopt** and
-  reconcile any org on the instance through the normal endpoints. The flag is
-  effective only for an identity that is both in `SUPER_USERS` and presenting a
-  `super:user`-scoped token, so it does not widen access for ordinary users.
+  reconcile any org on the instance through the normal endpoints. The flag
+  applies to `SUPER_USERS` members only, but to **all** of their superuser
+  sessions: Quay grants superuser permission for the `super:user` OAuth scope
+  **or** the internal `direct_user_login` scope used by authenticated web
+  sessions, so the human `quay-admin` signed in through the UI also gains
+  instance-wide read/write/delete across every org — not only the controller's
+  OAuth token. It is not configurable per-user and does not widen access for
+  ordinary (non-`SUPER_USERS`) users; including `quay-admin` is an acceptable
+  widening of an existing platform administrator's reach.
 
 This is enabled deliberately: a reconciler that is the system of record must
 converge *any* org — including one a human pre-created or another automation made
@@ -373,9 +379,12 @@ committed.
 - **`FEATURE_SUPERUSERS_FULL_ACCESS: true`** (HOL-1299) extends the `SUPER_USERS`
   identities' reach to orgs they neither own nor are members of, so the future
   Quay Resource Controller can adopt and reconcile orgs created by other
-  identities rather than `403`-ing on them. It is effective only for a
-  `SUPER_USERS` identity presenting a `super:user`-scoped token, so it does not
-  widen access for ordinary users. The credential itself lives as an OAuth
+  identities rather than `403`-ing on them. It applies to `SUPER_USERS` members
+  only, but to all of their superuser sessions — both a `super:user`-scoped OAuth
+  token and an authenticated web/UI session (`direct_user_login`) — so the human
+  `quay-admin` also gains instance-wide full access through the UI; it is not
+  configurable per-user and does not widen access for non-`SUPER_USERS` users.
+  The credential itself lives as an OAuth
   Application in a dedicated `platform-automation` org owned by
   `svc-quay-resource-controller` — the host org is where the credential record
   lives, not a permission boundary.
