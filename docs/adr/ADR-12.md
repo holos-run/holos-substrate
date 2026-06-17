@@ -13,6 +13,7 @@
 | 2        | 2026-06-11 | @jeffmccune | Add `holos/deploy/` and `holos/docs/` to the layout tree |
 | 3        | 2026-06-14 | @jeffmccune | Note the NATS webhook receiver/subscriber/deployer were retired (HOL-1241, [ADR-16](ADR-16.md)); the single-module/single-binary layout decision stands |
 | 4        | 2026-06-14 | @jeffmccune | The CLI is built with Fisk, not Cobra ([ADR-17](ADR-17.md)); the command tree lives in `internal/cli` |
+| 5        | 2026-06-17 | @jeffmccune | The first concrete controller API group is `quay.holos.run` ([ADR-18](ADR-18.md)), refining the `registry.holos.run` illustration below; the multi-group `<group>.holos.run` convention is unchanged |
 
 > **Note (rev 3):** The NATS webhook receiver, subscriber, and deployer named
 > below as motivating services were retired in HOL-1241 — deployment moved to
@@ -151,7 +152,9 @@ The load-bearing choices:
   rendered manifests pin exactly one image reference.
 - **`api/<group>/<version>` in the root module.** Multi-group from day one
   (`paas.holos.run` first; additional groups such as `registry.holos.run`
-  get sibling directories). API packages import only
+  get sibling directories — the first concrete controller group is
+  `quay.holos.run`, the registry data plane, per [ADR-18](ADR-18.md)). API
+  packages import only
   `k8s.io/api`/`apimachinery`, keeping the tree extractable into its own
   module later without import-path churn beyond the module prefix.
 - **Everything else under `internal/`.** Following Crossplane and Russ Cox's
