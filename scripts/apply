@@ -804,32 +804,34 @@ wait_kargo_echo() {
     get application.argoproj.io/echo --request-timeout=10s >/dev/null
 }
 
-# my-project: delete the prior bootstrap Jobs before the apply.  Their names are
+# my-project: delete the prior bootstrap Job before the apply.  Its name is
 # constant (no config hash), so a completed Job is never re-run by a server-side
-# apply of the unchanged spec; recreating them on every apply re-runs the
-# idempotent generate/provision (each exits 0 leaving existing state untouched)
+# apply of the unchanged spec; recreating it on every apply re-runs the
+# idempotent token generation (it exits 0 leaving an existing Secret untouched)
 # and lets wait_my_project gate a genuinely fresh run.  --cascade=foreground
-# --wait reaps the old Jobs' pods first so the new Jobs are the only ones
+# --wait reaps the old Job's pods first so the new Job is the only one
 # wait_my_project can match.  Mirrors pre_keycloak_config.
 #
-# Two Jobs, two namespaces:
+# One Job:
 #   - my-project-quay-webhook-bootstrap (my-project ns) generates the Kargo
 #     webhook receiver Secret's token (HOL-1270).
-#   - my-project-quay-bootstrap (quay ns, HOL-1272) provisions the Quay org,
-#     repo, pull robot, the Argo CD repository Secret, and the repo_push webhook.
-#     It runs in the quay namespace because the admin OAuth token lives there.
+#
+# The Quay-side provisioning Job (my-project-quay-bootstrap, quay ns) that
+# previously ran here was removed in HOL-1296 along with the retired
+# quay-initial-admin admin token it authenticated with; Quay org/repo/robot/
+# webhook provisioning is deferred to a future Quay Resource Controller (HOL-1293).
 #
 # It also pre-applies the component's ServiceAccounts and their RBAC (Roles +
 # RoleBindings) ahead of the main component apply (HOL-1275).  The main apply is
 # `kubectl apply -f <dir>/`, which processes the rendered files in filename order
-# — and `job-my-project-quay-bootstrap.yaml` sorts before
-# `serviceaccount-my-project-quay-bootstrap.yaml`, so the Job is created before
-# its ServiceAccount exists.  The Job controller then immediately tries to create
-# a pod and fails with `error looking up service account
-# quay/my-project-quay-bootstrap: serviceaccount "my-project-quay-bootstrap" not
-# found`.  Applying the ServiceAccounts and RBAC here first guarantees they exist
-# before the Job is created, so that race never happens.  Server-side apply is
-# convergent, so the main apply re-applying these same objects is a no-op.
+# — and `job-my-project-quay-webhook-bootstrap.yaml` sorts before
+# `serviceaccount-my-project-quay-webhook-bootstrap.yaml`, so the Job is created
+# before its ServiceAccount exists.  The Job controller then immediately tries to
+# create a pod and fails with `error looking up service account ...:
+# serviceaccount "my-project-quay-webhook-bootstrap" not found`.  Applying the
+# ServiceAccounts and RBAC here first guarantees they exist before the Job is
+# created, so that race never happens.  Server-side apply is convergent, so the
+# main apply re-applying these same objects is a no-op.
 pre_my_project() {
   # Pre-apply ServiceAccounts + RBAC before the Jobs (see comment above).  The
   # shell expands each glob to the matching rendered files; the `[[ -e ]]` guard
@@ -848,19 +850,16 @@ pre_my_project() {
   kubectl --context "${KUBE_CONTEXT}" --namespace my-project \
     delete job -l app.kubernetes.io/name=my-project-quay-webhook-bootstrap \
     --ignore-not-found --cascade=foreground --wait --request-timeout=60s
-  kubectl --context "${KUBE_CONTEXT}" --namespace quay \
-    delete job -l app.kubernetes.io/name=my-project-quay-bootstrap \
-    --ignore-not-found --cascade=foreground --wait --request-timeout=60s
 }
 
-# my-project: gate the webhook-token bootstrap Job's completion, the Kargo
-# Project's adoption of the my-project namespace, and the Quay-provisioning Job's
-# completion (HOL-1272).
+# my-project: gate the webhook-token bootstrap Job's completion and the Kargo
+# Project's adoption of the my-project namespace.
 #
 # The bootstrap Job generates the my-project-quay-webhook receiver Secret's token
-# once; phase 4's Quay bootstrap reads that token to register the webhook, so a
+# once; the future Quay Resource Controller will read that token to register the
+# webhook with Quay (that Quay-side registration is deferred — HOL-1296), so a
 # Failed bootstrap must surface here by name rather than as a missing-Secret error
-# two phases later.  pre_my_project recreates the Job on every apply, so it is
+# later.  pre_my_project recreates the Job on every apply, so it is
 # present; polled (not `kubectl wait --for=condition=Complete`) so a Failed Job
 # fails the gate on the next poll instead of blocking the full timeout, and
 # --ignore-not-found tolerates a TTL-GC'd Job (the Secret it created survives).
@@ -878,9 +877,9 @@ pre_my_project() {
 # created survives the Job, so a missing Job is success), and 1 when it reports
 # Failed=True, times out, or cannot be queried repeatedly.  Polled rather than
 # `kubectl wait --for=condition=Complete` so a Failed Job fails the gate on the
-# next poll instead of blocking the full timeout.  Both my-project bootstrap Jobs
-# share this shape (the webhook-token Job in my-project, the Quay-provisioning Job
-# in quay), so the poll lives here once.
+# next poll instead of blocking the full timeout.  The my-project webhook-token
+# Job uses this shape (a single gate now that the Quay-provisioning Job is gone —
+# HOL-1296), so the poll lives here once.
 gate_job() {
   local namespace="$1" job="job/$2"
   local job_state lookup_failures=0
@@ -915,8 +914,9 @@ gate_job() {
 
 wait_my_project() {
   # The webhook-token Job (my-project ns) generates the receiver Secret's token;
-  # phase 4's Quay Job reads it, so surface a Failed bootstrap here by name rather
-  # than as a missing-Secret error two phases later.
+  # the future Quay Resource Controller will read it (Quay-side webhook
+  # registration is deferred — HOL-1296), so surface a Failed bootstrap here by
+  # name rather than as a missing-Secret error later.
   gate_job my-project my-project-quay-webhook-bootstrap || return 1
 
   local project="project.kargo.akuity.io/my-project" state proj_lookup_failures=0
@@ -950,13 +950,11 @@ wait_my_project() {
     sleep 5
   done
 
-  # The Quay-provisioning Job (quay ns, HOL-1272) runs last: it depends on the
-  # Project being Ready (so the namespaced ProjectConfig reconciles and Kargo
-  # populates status.webhookReceivers[].url, which the Job reads to register the
-  # webhook) and on the webhook-token Secret existing.  Gate its completion so a
-  # failed Quay provisioning (missing org/repo/robot/webhook, or an unpopulated
-  # receiver URL) surfaces here rather than as a silently broken delivery loop.
-  gate_job quay my-project-quay-bootstrap || return 1
+  # Quay-side provisioning (org, repo, robot, repository pull-credential Secret,
+  # and the repo_push webhook registration) is DEFERRED to a future Quay Resource
+  # Controller (HOL-1293).  The my-project-quay-bootstrap Job that previously ran
+  # here — and the gate on its completion — were removed in HOL-1296 along with
+  # the retired quay-initial-admin admin token it depended on.
 }
 
 if ! command -v kubectl >/dev/null 2>&1; then
