@@ -107,15 +107,18 @@ let GROUPS_CLAIM = "groups"
 
 // The Quay OIDC client (HOL-1218; Quay's OIDC login is wired in HOL-1219).
 // Unlike Argo CD this is a *confidential* client: Quay holds a client secret
-// and uses the Authorization Code flow authenticated by that secret.  PKCE is
-// deliberately NOT required for this client (no pkce.code.challenge.method
-// attribute) — Quay's confidential client-secret flow did not round-trip a
-// matching PKCE code_verifier, causing a "code exchange: 400" SSO failure, so
-// PKCE was dropped on both ends (HOL-1257).  The secret is generated once by the
-// QUAY_OIDC bootstrap Job below and substituted into the realm import at run
-// time by keycloak-config-cli's $(env:...) expansion, so no secret is ever
-// committed.
-let QUAY_CLIENT_ID = "quay"
+// and uses the Authorization Code flow authenticated by that secret, now WITH
+// PKCE (S256) re-enabled to match the production example (HOL-1294).  The secret
+// is generated once by the QUAY_OIDC bootstrap Job below and substituted into the
+// realm import at run time by keycloak-config-cli's $(env:...) expansion, so no
+// secret is ever committed.
+//
+// The clientId is the Quay public URL (https://quay.holos.localhost), matching
+// the production example's QUAY_CLIENT_ID.  The three protocol mappers and the
+// client-role declarations key off this same QUAY_CLIENT_ID let, so the value is
+// changed in exactly one place.  Quay's HOL-1293 OIDC phase sets its CLIENT_ID to
+// the same value.
+let QUAY_CLIENT_ID = "https://quay.holos.localhost"
 
 // quay.holos.localhost is the Quay UI/registry hostname (components/quay) and
 // resolves to 127.0.0.1 on the host per docs/local-cluster.md.
@@ -137,6 +140,38 @@ let QUAY_OIDC_SECRET_KEY = "client_secret"
 // this literal and the registry entry into a render failure rather than an
 // apply-time NotFound.
 let QUAY_NAMESPACE = "quay" & #RegisteredNamespace
+
+// HOL-1294: the two holos-realm users that become Quay's superusers when Quay
+// switches to OIDC-backend auth (HOL-1293's Quay phase).  Keycloak is the
+// identity source; each user's password is generated once at runtime by the
+// PASSWORD_BOOTSTRAP Job below and published as a Secret in the keycloak
+// namespace (never committed, never rotated), then substituted into the realm
+// import via keycloak-config-cli's $(env:...) expansion.
+//
+// Naming convention: realm users that represent SERVICE accounts carry an "svc-"
+// prefix (svc-quay-resource-controller — the future Quay Resource Controller's
+// service identity), clearly distinguishing them from HUMAN users (quay-admin,
+// unprefixed — human administration).  The durable repo-wide statement of this
+// convention is added to AGENTS.md in HOL-1298.  The prefix is part of the
+// username and flows through to Quay's superuser match (preferred_username ==
+// username) and the SSO login name, so it MUST NOT change without updating the
+// SUPER_USERS list set in HOL-1293's Quay phase.
+//
+// Each user object pairs a Secret name (the generated password lives there under
+// PASSWORD_SECRET_KEY) with the env var keycloak-config-cli reads it from.
+let SVC_QUAY_RC_USERNAME = "svc-quay-resource-controller"
+let QUAY_ADMIN_USERNAME = "quay-admin"
+
+// The data key both password Secrets carry.
+let PASSWORD_SECRET_KEY = "password"
+
+// Each generated password Secret is named after the user it belongs to (in the
+// keycloak namespace), and the keycloak-config Job reads it through the matching
+// env var below — wired exactly like QUAY_OIDC_CLIENT_SECRET.
+let SVC_QUAY_RC_PASSWORD_SECRET = SVC_QUAY_RC_USERNAME
+let QUAY_ADMIN_PASSWORD_SECRET = QUAY_ADMIN_USERNAME
+let SVC_QUAY_RC_PASSWORD_ENV = "SVC_QUAY_RESOURCE_CONTROLLER_PASSWORD"
+let QUAY_ADMIN_PASSWORD_ENV = "QUAY_ADMIN_PASSWORD"
 
 // REALM_CONFIG is the keycloak-config-cli import document, marshalled to JSON
 // in the ConfigMap below.  Authored in CUE so it stays reviewable and validated
@@ -177,6 +212,40 @@ let REALM_CONFIG = {
 	// every realm user is automatically bound to it on creation.
 	groups: [{name: "authenticated"}]
 	defaultGroups: ["/authenticated"]
+
+	// HOL-1294: the two realm users that become Quay's superusers under
+	// OIDC-backend auth (HOL-1293).  Keycloak is the identity source; each carries
+	// the platform-owner realm role so the groups claim surfaces it for team-sync
+	// visibility (Quay *superuser* itself still comes from the static SUPER_USERS
+	// list set in HOL-1293's Quay phase, matched by preferred_username ==
+	// username).  Passwords are generated once at runtime (PASSWORD_BOOTSTRAP Job
+	// below) and substituted from env at import time, so none is committed.
+	//
+	// Naming convention (see the SVC_QUAY_RC_USERNAME let above): "svc-" marks a
+	// SERVICE account (svc-quay-resource-controller — the future Quay Resource
+	// Controller's machine identity); the unprefixed quay-admin is a HUMAN
+	// administrator.
+	users: [
+		{
+			// Service identity for the future Quay Resource Controller (machine,
+			// not a human) — hence the "svc-" prefix.
+			username:      SVC_QUAY_RC_USERNAME
+			enabled:       true
+			email:         "\(SVC_QUAY_RC_USERNAME)@holos.localhost"
+			emailVerified: true
+			credentials: [{type: "password", value: "$(env:\(SVC_QUAY_RC_PASSWORD_ENV))", temporary: false}]
+			realmRoles: ["platform-owner"]
+		},
+		{
+			// Human administrator (unprefixed username) for Quay administration.
+			username:      QUAY_ADMIN_USERNAME
+			enabled:       true
+			email:         "\(QUAY_ADMIN_USERNAME)@holos.localhost"
+			emailVerified: true
+			credentials: [{type: "password", value: "$(env:\(QUAY_ADMIN_PASSWORD_ENV))", temporary: false}]
+			realmRoles: ["platform-owner"]
+		},
+	]
 
 	clients: [{
 		clientId:            ARGOCD_CLIENT_ID
@@ -234,8 +303,8 @@ let REALM_CONFIG = {
 	}, {
 		// HOL-1218: the Quay OIDC client.  Modeled on the argocd client above
 		// but confidential — Quay sends a client secret — and using the
-		// Authorization Code flow authenticated by that secret, without PKCE
-		// (HOL-1257; see the no-pkce.code.challenge.method note below).
+		// Authorization Code flow authenticated by that secret, with PKCE (S256)
+		// re-enabled (HOL-1294; see the pkce.code.challenge.method attribute below).
 		//
 		// HOL-1245: the realm-role mapper below also emits the platform-owner
 		// realm role into the groups claim (mirroring the argocd client), so
@@ -259,16 +328,14 @@ let REALM_CONFIG = {
 		// is committed.  The bootstrap Job generates it once and never rotates
 		// it, so the value here stays stable across reconciles.
 		secret: "$(env:QUAY_OIDC_CLIENT_SECRET)"
-		// No pkce.code.challenge.method attribute: Keycloak treats a client that
-		// sets it as *requiring* PKCE, but Quay authenticates as a plain
-		// confidential client with the client secret above and does not reliably
-		// send a matching code_verifier — which produced the "code exchange: 400"
-		// SSO failure (HOL-1257).  Omitting the attribute stops Keycloak from
-		// requiring PKCE, so the confidential client-secret flow succeeds (Quay
-		// also omits USE_PKCE/PKCE_METHOD and sends no code_challenge).  The argocd
-		// and kargo public clients DO keep pkce.code.challenge.method — only quay
-		// drops it.  See docs/runbooks/quay-keycloak-oidc.md for the no-PKCE
-		// exception.
+		// HOL-1294: PKCE (S256) re-enabled to match the production example
+		// (USE_PKCE: true / PKCE_METHOD: S256) and the argocd/kargo public clients
+		// above.  Quay's HOL-1293 OIDC phase sends a matching code_verifier, so the
+		// confidential client-secret + PKCE flow succeeds.  (Keycloak treats a client
+		// carrying this attribute as *requiring* PKCE; the earlier HOL-1257 workaround
+		// dropped it because Quay's old config did not round-trip the code_verifier,
+		// producing the "code exchange: 400" SSO failure — now resolved.)
+		attributes: "pkce.code.challenge.method": "S256"
 		redirectUris: ["\(QUAY_PUBLIC_URL)/*"]
 		webOrigins: [QUAY_PUBLIC_URL]
 		protocolMappers: [
@@ -530,6 +597,29 @@ let CONFIG_JOB = {
 							valueFrom: secretKeyRef: {
 								name: QUAY_OIDC_SECRET
 								key:  QUAY_OIDC_SECRET_KEY
+							}
+						},
+						// HOL-1294: the generated passwords for the two Quay
+						// superuser realm users.  keycloak-config-cli substitutes
+						// $(env:...) into the users' credentials at import time.  The
+						// PASSWORD_BOOTSTRAP Job below generates each Secret once and
+						// never rotates it, so the passwords stay stable across
+						// reconciles.  Like QUAY_OIDC_CLIENT_SECRET, the secretKeyRef
+						// holds the Job's pod pending until the bootstrap Job has
+						// created the Secret — the same level-triggered convergence —
+						// so no explicit ordering between the Jobs is needed.
+						{
+							name: SVC_QUAY_RC_PASSWORD_ENV
+							valueFrom: secretKeyRef: {
+								name: SVC_QUAY_RC_PASSWORD_SECRET
+								key:  PASSWORD_SECRET_KEY
+							}
+						},
+						{
+							name: QUAY_ADMIN_PASSWORD_ENV
+							valueFrom: secretKeyRef: {
+								name: QUAY_ADMIN_PASSWORD_SECRET
+								key:  PASSWORD_SECRET_KEY
 							}
 						},
 						// Tolerate the apply-script gate polling before the
@@ -859,6 +949,173 @@ let QUAY_OIDC_BOOTSTRAP_JOB = {
 	}
 }
 
+// PASSWORD_BOOTSTRAP is the generate-once bootstrap for the two Quay-superuser
+// realm-user passwords (HOL-1294), modeled on QUAY_OIDC_BOOTSTRAP above.  It runs
+// in the keycloak namespace and writes one Secret per user
+// (svc-quay-resource-controller, quay-admin), each carrying the generated
+// password under PASSWORD_SECRET_KEY.  keycloak-config-cli reads each via the
+// SVC_QUAY_RC_PASSWORD_ENV / QUAY_ADMIN_PASSWORD_ENV env vars on CONFIG_JOB and
+// substitutes it into the realm import at run time, so no password is committed.
+//
+// Generate-once discipline: the script creates each Secret only if it does not
+// already exist, and never overwrites, so the passwords are stable across
+// re-applies and are never rotated (the QUAY_OIDC_BOOTSTRAP precedent).
+let PASSWORD_BOOTSTRAP = "quay-user-password-bootstrap"
+
+// Own app.kubernetes.io/name (NOT the keycloak-config Job's NAME) so the
+// pre_keycloak_config delete and wait_keycloak_config gate never touch this Job.
+// pre_keycloak_config issues a SEPARATE delete selecting this label so the Job
+// re-runs on every apply (its name is constant), re-running a previously Failed
+// bootstrap and letting the gate observe its outcome.
+let PASSWORD_BOOTSTRAP_METADATA = {
+	name:      PASSWORD_BOOTSTRAP
+	namespace: NAMESPACE
+	labels: "app.kubernetes.io/name": PASSWORD_BOOTSTRAP
+}
+
+// The two password Secrets the Job manages, paired with the username whose
+// password each holds.  Iterated by the create-if-absent script below and used
+// to scope the Role's get grant to exactly these names.
+let PASSWORD_SECRETS = [SVC_QUAY_RC_PASSWORD_SECRET, QUAY_ADMIN_PASSWORD_SECRET]
+
+// The create-if-absent bootstrap script.  Each user's password must be stable
+// across restarts (it is set on the Keycloak user and is the Quay SSO login
+// credential) and MUST NOT be committed: the script generates a fresh 48-char
+// alphanumeric value for each Secret only if absent, never overwriting.  The
+// value is alphanumeric (base64 with +/=/newlines stripped) so it is safe in the
+// realm JSON.  The length check guards against an improbable pipeline failure
+// under set -eu (no pipefail in busybox sh) silently creating an empty Secret —
+// which create-if-absent would otherwise make permanent.  Each Secret is piped
+// as a manifest on stdin so the password never appears in the container's argv
+// (/proc-visible).
+let PASSWORD_BOOTSTRAP_SCRIPT = """
+	set -eu
+	random_secret() {
+	  head -c 256 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c 1-48
+	}
+	for name in \(SVC_QUAY_RC_PASSWORD_SECRET) \(QUAY_ADMIN_PASSWORD_SECRET); do
+	  if kubectl -n \(NAMESPACE) get secret "$name" >/dev/null 2>&1; then
+	    echo "Secret $name already exists in \(NAMESPACE); leaving it untouched."
+	    continue
+	  fi
+	  PASSWORD="$(random_secret)"
+	  [ "${#PASSWORD}" -eq 48 ]
+	  kubectl -n \(NAMESPACE) create -f - <<EOF
+	apiVersion: v1
+	kind: Secret
+	metadata:
+	  name: $name
+	  namespace: \(NAMESPACE)
+	stringData:
+	  \(PASSWORD_SECRET_KEY): "${PASSWORD}"
+	EOF
+	  echo "Secret $name created in \(NAMESPACE)."
+	done
+	"""
+
+let PASSWORD_BOOTSTRAP_SERVICE_ACCOUNT = {
+	apiVersion: "v1"
+	kind:       "ServiceAccount"
+	metadata:   PASSWORD_BOOTSTRAP_METADATA
+}
+
+// Role granting the Job get on exactly the two password Secrets and namespace-wide
+// create on secrets (the API server does not evaluate resourceNames for create).
+// Both Secrets live in the keycloak namespace, so a single Role/RoleBinding pair
+// suffices (unlike the cross-namespace QUAY_OIDC bootstrap).
+let PASSWORD_BOOTSTRAP_ROLE = {
+	apiVersion: "rbac.authorization.k8s.io/v1"
+	kind:       "Role"
+	metadata:   PASSWORD_BOOTSTRAP_METADATA
+	rules: [
+		{
+			apiGroups: [""]
+			resources: ["secrets"]
+			verbs: ["get"]
+			resourceNames: PASSWORD_SECRETS
+		},
+		{
+			apiGroups: [""]
+			resources: ["secrets"]
+			verbs: ["create"]
+		},
+	]
+}
+
+let PASSWORD_BOOTSTRAP_ROLE_BINDING = {
+	apiVersion: "rbac.authorization.k8s.io/v1"
+	kind:       "RoleBinding"
+	metadata:   PASSWORD_BOOTSTRAP_METADATA
+	roleRef: {
+		apiGroup: "rbac.authorization.k8s.io"
+		kind:     "Role"
+		name:     PASSWORD_BOOTSTRAP
+	}
+	subjects: [{
+		kind:      "ServiceAccount"
+		name:      PASSWORD_BOOTSTRAP
+		namespace: NAMESPACE
+	}]
+}
+
+// Deleted and recreated on every apply by pre_keycloak_config (its own label), so
+// it always re-runs; idempotent (exits 0 leaving existing Secrets untouched), and
+// the Secrets survive the Job deletion, so the generate-once guarantee holds
+// across re-runs — the QUAY_OIDC_BOOTSTRAP_JOB precedent.
+let PASSWORD_BOOTSTRAP_JOB = {
+	apiVersion: "batch/v1"
+	kind:       "Job"
+	metadata:   PASSWORD_BOOTSTRAP_METADATA
+	spec: {
+		backoffLimit:            3
+		ttlSecondsAfterFinished: 86400
+		template: {
+			metadata: labels: PASSWORD_BOOTSTRAP_METADATA.labels
+			spec: {
+				serviceAccountName: PASSWORD_BOOTSTRAP
+				restartPolicy:      "Never"
+				securityContext: {
+					runAsNonRoot: true
+					runAsUser:    65534
+					runAsGroup:   65534
+					seccompProfile: type: "RuntimeDefault"
+				}
+				containers: [{
+					name:  "bootstrap"
+					image: KUBECTL_IMAGE
+					command: ["/bin/sh", "-c", PASSWORD_BOOTSTRAP_SCRIPT]
+					// kubectl writes its discovery cache under $HOME; point it at
+					// the writable emptyDir since the root filesystem is read-only.
+					env: [{
+						name:  "HOME"
+						value: "/tmp"
+					}]
+					resources: {
+						requests: {
+							cpu:    "10m"
+							memory: "32Mi"
+						}
+						limits: memory: "64Mi"
+					}
+					securityContext: {
+						allowPrivilegeEscalation: false
+						capabilities: drop: ["ALL"]
+						readOnlyRootFilesystem: true
+					}
+					volumeMounts: [{
+						name:      "tmp"
+						mountPath: "/tmp"
+					}]
+				}]
+				volumes: [{
+					name: "tmp"
+					emptyDir: {}
+				}]
+			}
+		}
+	}
+}
+
 userDefinedBuildPlan: {
 	metadata: name: NAME
 	spec: artifacts: manifests: {
@@ -877,19 +1134,27 @@ userDefinedBuildPlan: {
 					Job: {
 						(CONFIG_JOB.metadata.name):              CONFIG_JOB
 						(QUAY_OIDC_BOOTSTRAP_JOB.metadata.name): QUAY_OIDC_BOOTSTRAP_JOB
+						// HOL-1294: the realm-user password bootstrap.
+						(PASSWORD_BOOTSTRAP_JOB.metadata.name): PASSWORD_BOOTSTRAP_JOB
 					}
-					ServiceAccount: (QUAY_OIDC_BOOTSTRAP_SERVICE_ACCOUNT.metadata.name): QUAY_OIDC_BOOTSTRAP_SERVICE_ACCOUNT
-					// One Role/RoleBinding per namespace the bootstrap Job
-					// writes the quay-oidc Secret into (keycloak and quay).
-					// Keyed by namespace so the two same-named objects do not
-					// collide in this map.
+					ServiceAccount: {
+						(QUAY_OIDC_BOOTSTRAP_SERVICE_ACCOUNT.metadata.name): QUAY_OIDC_BOOTSTRAP_SERVICE_ACCOUNT
+						(PASSWORD_BOOTSTRAP_SERVICE_ACCOUNT.metadata.name):  PASSWORD_BOOTSTRAP_SERVICE_ACCOUNT
+					}
+					// The QUAY_OIDC bootstrap needs one Role/RoleBinding per
+					// namespace it writes the quay-oidc Secret into (keycloak and
+					// quay); the password bootstrap writes only in keycloak, so it
+					// adds a single same-namespace pair.  Keyed by a distinct name
+					// so the entries do not collide in this map.
 					Role: {
-						(NAMESPACE):      QUAY_OIDC_BOOTSTRAP_ROLE_KEYCLOAK
-						(QUAY_NAMESPACE): QUAY_OIDC_BOOTSTRAP_ROLE_QUAY
+						(NAMESPACE):          QUAY_OIDC_BOOTSTRAP_ROLE_KEYCLOAK
+						(QUAY_NAMESPACE):     QUAY_OIDC_BOOTSTRAP_ROLE_QUAY
+						(PASSWORD_BOOTSTRAP): PASSWORD_BOOTSTRAP_ROLE
 					}
 					RoleBinding: {
-						(NAMESPACE):      QUAY_OIDC_BOOTSTRAP_ROLE_BINDING_KEYCLOAK
-						(QUAY_NAMESPACE): QUAY_OIDC_BOOTSTRAP_ROLE_BINDING_QUAY
+						(NAMESPACE):          QUAY_OIDC_BOOTSTRAP_ROLE_BINDING_KEYCLOAK
+						(QUAY_NAMESPACE):     QUAY_OIDC_BOOTSTRAP_ROLE_BINDING_QUAY
+						(PASSWORD_BOOTSTRAP): PASSWORD_BOOTSTRAP_ROLE_BINDING
 					}
 				}
 			}]

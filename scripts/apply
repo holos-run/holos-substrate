@@ -380,6 +380,16 @@ pre_keycloak_config() {
   kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
     delete job -l app.kubernetes.io/name=quay-oidc-bootstrap \
     --ignore-not-found --cascade=foreground --wait --request-timeout=60s
+  # Also delete the realm-user password bootstrap Job (HOL-1294) for the same
+  # reason: its name is constant (no config hash), so a prior Complete OR Failed
+  # Job is never re-run by apply.  A Failed bootstrap that never created the
+  # svc-quay-resource-controller / quay-admin password Secrets would leave the
+  # reconcile Job's pod Pending on its secretKeyRefs and wedge wait_keycloak_config.
+  # The Job is idempotent (it exits 0 leaving existing Secrets untouched), and the
+  # Secrets survive the Job deletion, so the generate-once guarantee holds.
+  kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
+    delete job -l app.kubernetes.io/name=quay-user-password-bootstrap \
+    --ignore-not-found --cascade=foreground --wait --request-timeout=60s
 }
 
 # keycloak-config: the realm-reconciliation smoke check.  The keycloak-config-cli
@@ -532,6 +542,61 @@ wait_keycloak_config() {
       if ((SECONDS >= secret_deadline)); then
         echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for the quay-oidc Secret in namespace ${ns}; inspect the bootstrap Job with:" >&2
         echo "       kubectl --context ${KUBE_CONTEXT} --namespace keycloak describe job/quay-oidc-bootstrap" >&2
+        return 1
+      fi
+      sleep 5
+    done
+  done
+
+  # The realm-user password bootstrap Job (job-quay-user-password-bootstrap.yaml,
+  # HOL-1294) generates the svc-quay-resource-controller and quay-admin passwords
+  # once and writes them as Secrets in the keycloak namespace.  The reconcile Job
+  # reads them via secretKeyRef, so a bootstrap that never created a Secret would
+  # leave the reconcile pod Pending.  Gate the bootstrap Job's own outcome — it is
+  # recreated on every apply by pre_keycloak_config — and tolerate a GC'd Job
+  # (ttlSecondsAfterFinished) by falling through to the Secret check below.
+  local pw_state pw_lookup_failures=0
+  local pw_deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+  while true; do
+    if pw_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
+      get job/quay-user-password-bootstrap --ignore-not-found --request-timeout=10s \
+      -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
+      pw_lookup_failures=0
+      if [[ -z "${pw_state}" ]] || grep -q '^Complete=True$' <<<"${pw_state}"; then
+        break
+      fi
+      if grep -q '^Failed=True$' <<<"${pw_state}"; then
+        echo "ERROR: job/quay-user-password-bootstrap failed; inspect it with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} --namespace keycloak describe job/quay-user-password-bootstrap" >&2
+        return 1
+      fi
+    else
+      pw_lookup_failures=$((pw_lookup_failures + 1))
+      if ((pw_lookup_failures >= 3)); then
+        echo "ERROR: cannot query job/quay-user-password-bootstrap: ${pw_lookup_failures} consecutive lookup failures." >&2
+        return 1
+      fi
+    fi
+    if ((SECONDS >= pw_deadline)); then
+      echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for job/quay-user-password-bootstrap to complete." >&2
+      return 1
+    fi
+    sleep 5
+  done
+
+  # Defense in depth: verify both password Secrets exist in the keycloak namespace
+  # even when the bootstrap Job has been GC'd.
+  local pw_secret
+  for pw_secret in svc-quay-resource-controller quay-admin; do
+    local pw_secret_deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+    while true; do
+      if kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
+        get secret "${pw_secret}" --request-timeout=10s >/dev/null 2>&1; then
+        break
+      fi
+      if ((SECONDS >= pw_secret_deadline)); then
+        echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for the ${pw_secret} password Secret in namespace keycloak; inspect the bootstrap Job with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} --namespace keycloak describe job/quay-user-password-bootstrap" >&2
         return 1
       fi
       sleep 5
