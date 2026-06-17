@@ -319,9 +319,13 @@ within the claim model above — never error on an org *this CR* already owns):
   Keycloak group (the team→group binding) so `FEATURE_TEAM_SYNCING` keeps
   membership eventually consistent from the `groups` claim (ADR-15).
 - Set the org's ad-hoc-repo-creation toggle from `allowRepositoryCreation`.
-- For each inline `repositories[]` entry, the same repository provisioning the
-  Repository reconciler performs (subject to the single-owner rule above — an
-  inline entry and a standalone `Repository` must not target the same repo).
+- For each inline `repositories[]` entry, **only** create-or-adopt the Quay repo
+  at the entry's `visibility` — the minimal `name`+`visibility` form, nothing
+  more. Inline entries deliberately do **not** carry retention, a `repo_push`
+  webhook, or pull/push credentials; a repo that needs any of those is declared as
+  a standalone `Repository` CR (which owns the full reconcile in *Repository
+  reconcile* below). The single-owner rule applies: an inline entry and a
+  standalone `Repository` must not target the same repo.
 
 **Repository reconcile** maps `spec` to:
 
