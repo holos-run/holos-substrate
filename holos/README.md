@@ -464,7 +464,7 @@ kubectl -n quay wait pod/quay-echo --for=condition=Ready --timeout=120s
 # superuser OAuth-Application token by hand per the Quay Resource Controller
 # credentials runbook (../docs/runbooks/quay-resource-controller-credentials.md)
 # and export it as TOKEN before running this block.
-TOKEN=<superuser OAuth-Application token>  # see the credentials runbook above
+: "${TOKEN:?export a superuser OAuth-Application token as TOKEN first (see the runbook above)}"
 UUID=$(curl -fsS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -X POST https://quay.holos.localhost/api/v1/repository/holos/sample/notification/ \
   -d '{"event": "repo_push", "method": "webhook",
