@@ -400,8 +400,10 @@ document as deferred. Each deferred object becomes a reconciled field:
 
 The Kargo-side webhook **receiver** (the `ProjectConfig` `webhookReceivers` block
 and its receiver-token Job) stays where it is in the `my-project` component — it
-needs no Quay credential. Only the Quay-**side** registration of that receiver URL
-(plus the org, repo, robot, and pull Secret) moves to these CRDs. Once the
+needs no Quay credential. Everything else moves to these CRDs: the org, the repo,
+the pull and push robots, the Argo CD repository Secret, the Kargo
+image-credential Secret, the push-credential Secret, and the Quay-**side**
+registration of the receiver URL — exactly the rows in the table above. Once the
 controller ships, the runbook's by-hand steps become the historical record of the
 interim, exactly as [ADR-18](ADR-18.md) anticipates.
 
@@ -424,8 +426,8 @@ interim, exactly as [ADR-18](ADR-18.md) anticipates.
    (b); and a `pushWebhook` that names a Kargo `ProjectConfig` receiver (c) — the
    reconciler reads the receiver URL from `ProjectConfig.status` and registers a
    `repo_push` webhook against it. Status carries `observedGeneration`, observed
-   repo path, the provisioned `pullRobot`, the resolved `webhookURL`, and
-   `Ready`/`WebhookRegistered` conditions. Fields beyond the
+   repo path, the provisioned `pullRobot` and `pushRobot`, the resolved
+   `webhookURL`, and `Ready`/`WebhookRegistered` conditions. Fields beyond the
    docker-push-to-deploy goal are **out of scope** (see above).
 4. The reconcilers call the **Quay REST API** using the superuser
    OAuth-Application token from [ADR-15](ADR-15.md) Rev 4–5 / the
