@@ -108,6 +108,9 @@ spec:
   organizationName: my-project
   # Quay requires every namespace to have a unique email.
   email: my-project@holos.localhost
+  # Opt-in to adopting a pre-existing, externally-created (unmarked) org. Default
+  # false: an unmarked org is a Conflict, never silently seized (see claim model).
+  adopt: false
 
   # (b) Access via OIDC group membership: which Keycloak group (as it appears in
   # the `groups` claim — ADR-15) is bound to which Quay team, at which role.
@@ -153,6 +156,7 @@ status:
 | --- | --- |
 | `organizationName` | (a) the Quay org to create or adopt; defaults to `metadata.name`. |
 | `email` | unique namespace email Quay requires. |
+| `adopt` | opt-in (default `false`) to take ownership of a pre-existing unmarked org; without it an unmarked org is a `Conflict`. |
 | `access[]` | (b) OIDC group → Quay team + role bindings; the reconciler creates teams and team→group bindings, `FEATURE_TEAM_SYNCING` (ADR-15) syncs membership. |
 | `allowRepositoryCreation` | (c) the Quay org-level toggle for ad-hoc repo creation via the UI/first-push; does not affect the declarative paths in (d). |
 | `repositories[]` | (d) inline repositories to create within the org; a given repo is declared inline OR by a standalone `Repository`, never both. |
@@ -231,8 +235,8 @@ status:
 | `observedGeneration` | last `spec` generation reconciled. |
 | `repository` | the observed `<org>/<repo>` path. |
 | `webhookURL` | the receiver URL read from the ProjectConfig status and registered with Quay. |
-| `pullRobot` | the robot account backing the Argo CD pull-credential Secret. |
-| `conditions[]` | `Ready` (repo/retention/robot/pull Secret converged) and `WebhookRegistered` (the receiver URL was published and the Quay webhook registered). |
+| `pullRobot` | the Quay robot account backing both pull-credential Secrets (the Argo CD repository Secret and the Kargo image-credential Secret). |
+| `conditions[]` | `Ready` (repo/retention/robot + both pull Secrets converged) and `WebhookRegistered` (the receiver URL was published and the Quay webhook registered). |
 
 ### Out of scope (deliberately)
 
@@ -280,22 +284,30 @@ The reconciler therefore enforces a **claim**:
   the claiming CR's identity (namespace/name) — e.g. a reserved metadata field on
   the org, or a dedicated controller-managed record. (The exact mechanism is an
   implementation detail; the *requirement* is a durable owner record.)
-- On reconcile, the controller **creates** the org when it does not exist
-  (becoming the owner), and **adopts** an existing org only when its ownership
-  marker is absent or already names this CR. An org owned by a *different* CR is a
-  **conflict**: the reconciler refuses to write, sets a `Ready=False`
-  `reason: Conflict` condition, and emits an event — it never overwrites.
-- Importing a pre-existing, externally-created org is therefore an **explicit**
-  act (the operator stamps the marker, or sets an `adopt: true`-style opt-in on
-  the CR), not the default. This bounds `FEATURE_SUPERUSERS_FULL_ACCESS` blast
-  radius to orgs the platform actually owns.
+- On reconcile, the controller acts on exactly three cases:
+  - **Org does not exist** → **create** it and stamp this CR's ownership marker
+    (the clean GitOps path; the creating user owns it).
+  - **Org exists and its marker names *this* CR** → reconcile it normally
+    (the steady-state path).
+  - **Org exists with *no* marker, or a marker naming a *different* CR** →
+    **conflict**: the reconciler refuses to write, sets `Ready=False`
+    `reason: Conflict`, and emits an event. A marker-absent org is treated as a
+    conflict, **not** auto-adopted — an externally-created org is never silently
+    seized just because the credential *can* write to it.
+- Adopting a pre-existing, externally-created org (marker absent) is therefore an
+  **explicit, opt-in** act: the CR must set `adopt: true` (and only then does the
+  controller stamp its marker and take ownership). Default reconciliation never
+  adopts an unmarked org. This bounds the `FEATURE_SUPERUSERS_FULL_ACCESS` blast
+  radius to orgs the platform created or was explicitly told to adopt.
 
 **Organization reconcile** then maps `spec` to these Quay calls (idempotently,
 within the claim model above — never error on an org *this CR* already owns):
 
-- `POST /api/v1/organization/` to create `organizationName` when absent; adopt it
-  only when the claim check passes (`FEATURE_SUPERUSERS_FULL_ACCESS` makes the
-  write possible, the ownership marker makes it *safe*).
+- `POST /api/v1/organization/` to create `organizationName` when absent (stamping
+  the ownership marker); reconcile an existing org only when its marker names this
+  CR, or when the org is unmarked **and** `spec.adopt: true` was set
+  (`FEATURE_SUPERUSERS_FULL_ACCESS` makes the write possible, the ownership marker
+  + explicit opt-in make it *safe*). Otherwise → `Conflict`.
 - For each `access[]` entry: create the Quay **team** (`PUT
   /api/v1/organization/<org>/team/<team>`) at its `role`, and bind it to the
   Keycloak group (the team→group binding) so `FEATURE_TEAM_SYNCING` keeps
@@ -310,14 +322,25 @@ within the claim model above — never error on an org *this CR* already owns):
 - `POST /api/v1/repository` (or adopt) to create `<org>/<repositoryName>` at
   `visibility`.
 - Apply the `retention` auto-prune policy to the repository.
-- Provision the Argo CD **pull robot** and write the repository pull-credential
-  **Secret** in the `argocd` namespace — the `holos+robot`-shaped Secret
-  ([argocd-application-source.md](../../holos/docs/argocd-application-source.md):
-  `username`, robot `password`, `insecure: "true"`) so Argo CD's repo-server can
-  pull the OCI artifact. The robot token is **generated once** and the Secret is
-  created if absent and left untouched thereafter, per
-  [secret-handling.md](../../holos/docs/secret-handling.md) — a rotation would
-  break in-flight pulls.
+- Provision the Quay **pull robot** once, then write **two** credential Secrets
+  from that one robot token (both create-if-absent, per
+  [secret-handling.md](../../holos/docs/secret-handling.md) — rotation would break
+  in-flight pulls and Warehouse discovery):
+  - the **Argo CD repository Secret** in the `argocd` namespace — the
+    `holos+robot`-shaped Secret
+    ([argocd-application-source.md](../../holos/docs/argocd-application-source.md):
+    `username`, robot `password`, `insecure: "true"`) so Argo CD's repo-server can
+    pull the OCI artifact, **and**
+  - the **Kargo image-credential Secret** in the project (Warehouse) namespace —
+    a Secret labeled `kargo.akuity.io/cred-type: image` with `repoURL`/`username`/
+    `password`, so the Kargo `Warehouse` controller can authenticate to the
+    private Quay repo and discover Freight. Without it, Warehouse discovery
+    `401`s and **no Freight is created**
+    ([oci-publish-workflow.md](../../holos/docs/oci-publish-workflow.md) — the
+    `kargo.akuity.io/cred-type: image` Secret the `my-project` verification
+    creates by hand today). The project namespace the Secret lands in is the
+    owning `Organization`/`Repository` CR's namespace (the Kargo Project
+    namespace), read from the referenced ProjectConfig.
 - Register the `repo_push` **webhook** pointing at the Kargo receiver URL. The
   controller **reads** that URL from the referenced ProjectConfig's
   `status.webhookReceivers[].url` (the value Kargo derives from its own receiver
@@ -334,9 +357,11 @@ within the claim model above — never error on an org *this CR* already owns):
 **Idempotency and generate-once.** Reconciles converge to the declared state
 without duplicating objects: create-or-claim for orgs (per the ownership model
 above), create-or-adopt for repos/teams, upsert for retention and webhook, and
-**create-if-absent** for the Secret material the controller itself owns (the Argo
-CD pull-robot token Secret). The Kargo receiver Secret is owned by the
-ProjectConfig, not by these reconcilers. Status carries `observedGeneration` and
+**create-if-absent** for the Secret material the controller itself owns — the two
+pull-credential Secrets minted from the one Quay pull-robot token (the Argo CD
+repository Secret in `argocd` and the Kargo image-credential Secret in the project
+namespace). The Kargo *receiver* Secret is owned by the ProjectConfig, not by
+these reconcilers. Status carries `observedGeneration` and
 `conditions` so the desired/observed gap is legible, consistent with the
 platform's generate-once secret posture
 ([secret-handling.md](../../holos/docs/secret-handling.md)).
@@ -352,7 +377,8 @@ document as deferred. Each deferred object becomes a reconciled field:
 | --- | --- |
 | Create the Quay **org** (e.g. `my-project`) | `Organization` (`organizationName`) |
 | Create the **`my-project-config` repo** | `Repository` (`repositoryName`) |
-| Create the Argo CD **pull robot** + the repository pull-credential **Secret** in `argocd` ([argocd-application-source.md](../../holos/docs/argocd-application-source.md)) | `Repository` reconcile (status `pullRobot`) |
+| Create the Quay **pull robot** + the Argo CD repository pull-credential **Secret** in `argocd` ([argocd-application-source.md](../../holos/docs/argocd-application-source.md)) | `Repository` reconcile (status `pullRobot`) |
+| Create the **Kargo image-credential Secret** (`kargo.akuity.io/cred-type: image`) in the project namespace so the Warehouse can pull the private repo ([oci-publish-workflow.md](../../holos/docs/oci-publish-workflow.md)) | `Repository` reconcile (from the same robot token) |
 | Register the **`repo_push` webhook** to the Kargo receiver URL ([oci-publish-workflow.md](../../holos/docs/oci-publish-workflow.md)) | `Repository` (`pushWebhook`); reconciler reads the URL from `ProjectConfig.status` |
 | Map **OIDC groups → Quay teams/roles** in the org | `Organization` (`access[]`) |
 
@@ -368,13 +394,15 @@ interim, exactly as [ADR-18](ADR-18.md) anticipates.
 1. The **`quay.holos.run`** API group gains two namespaced CRDs reconciled by the
    Holos Controller ([ADR-18](ADR-18.md)): **Organization** and **Repository**,
    scoped to the in-cluster Quay registry.
-2. **Organization** carries: the org name/email (a); OIDC group → Quay team/role
-   `access[]` bindings (b); an `allowRepositoryCreation` toggle (c); and inline
-   `repositories[]` (d) — with a `status` of `observedGeneration`, observed org
-   name, and `Ready`/`Synced` conditions. Because Quay orgs are a global
-   namespace, the reconciler enforces an **ownership/claim model**: it creates or
-   adopts an org only when no other CR owns it, and surfaces a `Conflict` rather
-   than overwriting a foreign org.
+2. **Organization** carries: the org name/email and an `adopt` opt-in (a); OIDC
+   group → Quay team/role `access[]` bindings (b); an `allowRepositoryCreation`
+   toggle (c); and inline `repositories[]` (d) — with a `status` of
+   `observedGeneration`, observed org name, and `Ready`/`Synced` conditions.
+   Because Quay orgs are a global namespace, the reconciler enforces an
+   **ownership/claim model**: it creates and stamps an org it owns, reconciles one
+   whose marker names this CR, and treats an unmarked or foreign-owned org as a
+   `Conflict` — adopting an unmarked org only when the CR sets `adopt: true`. It
+   never silently seizes a foreign org.
 3. **Repository** carries: an `organizationRef` (resolved to the owning
    Organization's `spec.organizationName`) and repository name (a); `retention`
    (b); and a `pushWebhook` that names a Kargo `ProjectConfig` receiver (c) — the
@@ -388,14 +416,16 @@ interim, exactly as [ADR-18](ADR-18.md) anticipates.
    [credentials runbook](../runbooks/quay-resource-controller-credentials.md)
    (`super:user`/`org:admin`/`repo:create`, `FEATURE_SUPERUSERS_FULL_ACCESS` for
    adoption), are **idempotent** (create-or-claim for orgs, create-or-adopt for
-   repos/teams, upsert), and treat the Secret material the controller owns (the
-   Argo CD pull-robot Secret) as **generate-once / create-if-absent** per
-   [secret-handling.md](../../holos/docs/secret-handling.md). The Kargo receiver
+   repos/teams, upsert), and treat the Secret material the controller owns — the
+   two pull-credential Secrets minted from one Quay robot token (the Argo CD
+   repository Secret in `argocd` and the Kargo image-credential Secret in the
+   project namespace) — as **generate-once / create-if-absent** per
+   [secret-handling.md](../../holos/docs/secret-handling.md). The Kargo *receiver*
    Secret stays owned by the `ProjectConfig`, not by these reconcilers.
 5. These CRDs **replace** the manual `repo_push` webhook + pull-robot + Argo CD
-   repository-Secret + org/repo provisioning the credentials runbook and the
-   `my-project` scaffold defer; the Kargo receiver (and its receiver Secret) stays
-   in the `my-project` component.
+   repository-Secret + Kargo image-credential-Secret + org/repo provisioning the
+   credentials runbook and the `my-project` scaffold defer; the Kargo receiver
+   (and its receiver Secret) stays in the `my-project` component.
 6. This is a **design record only** — no CRD Go types or controller code are
    written in this phase.
 
@@ -415,14 +445,17 @@ interim, exactly as [ADR-18](ADR-18.md) anticipates.
   a foreign org. The credential's scope and lifetime are a security-sensitive
   dependency carried over from ADR-15; the controller reads it from the `quay`
   namespace Secret and never commits it.
-- **The Argo CD pull-robot token is generated at runtime; the webhook carries no
-  copied secret.** The Repository reconciler creates the Argo CD pull-credential
-  Secret following the generate-once guardrail
+- **One pull-robot token feeds two runtime Secrets; the webhook carries no copied
+  secret.** From a single Quay pull-robot token the Repository reconciler creates
+  *both* the Argo CD repository Secret (in `argocd`, so the repo-server can pull)
+  *and* the Kargo image-credential Secret (`kargo.akuity.io/cred-type: image`, in
+  the project namespace, so the Warehouse can discover Freight on the private
+  repo) — both following the generate-once guardrail
   ([secret-handling.md](../../holos/docs/secret-handling.md)); rotation is a
-  deliberate, separate operation because in-flight pulls depend on stability. The
-  `repo_push` webhook is registered against the hard-to-guess Kargo receiver URL
-  (read from `ProjectConfig.status`) — the receiver Secret stays owned by the
-  ProjectConfig and is never copied into Quay.
+  deliberate, separate operation because in-flight pulls and Warehouse discovery
+  depend on stability. The `repo_push` webhook is registered against the
+  hard-to-guess Kargo receiver URL (read from `ProjectConfig.status`) — the
+  receiver Secret stays owned by the ProjectConfig and is never copied into Quay.
 - **Minimal schema is a maintenance choice.** Keeping spec/status to the
   docker-push-to-deploy surface keeps the first CRDs reviewable and avoids
   modeling Quay features the platform does not use; the cost is that genuinely new
