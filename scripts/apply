@@ -820,6 +820,9 @@ wait_kargo_echo() {
 # previously ran here was removed in HOL-1296 along with the retired
 # quay-initial-admin admin token it authenticated with; Quay org/repo/robot/
 # webhook provisioning is deferred to a future Quay Resource Controller (HOL-1293).
+# pre_my_project now also prunes those retired objects (and the dead
+# quay-initial-admin Secret) by label on upgraded clusters, since a plain apply
+# never deletes resources whose manifests were removed.
 #
 # It also pre-applies the component's ServiceAccounts and their RBAC (Roles +
 # RoleBindings) ahead of the main component apply (HOL-1275).  The main apply is
@@ -850,6 +853,31 @@ pre_my_project() {
   kubectl --context "${KUBE_CONTEXT}" --namespace my-project \
     delete job -l app.kubernetes.io/name=my-project-quay-webhook-bootstrap \
     --ignore-not-found --cascade=foreground --wait --request-timeout=60s
+
+  # One-time migration cleanup (HOL-1296).  The my-project-quay-bootstrap Job and
+  # its three-namespace RBAC, and the quay-admin-bootstrap Job + quay-initial-admin
+  # Secret they depended on, were removed when Quay moved to OIDC-backend auth.
+  # A plain `kubectl apply -f <dir>/` never prunes resources whose manifests were
+  # deleted, so a cluster that ran an earlier revision would otherwise keep these
+  # retired objects (inert cross-namespace RBAC, a now-unminted superuser Secret)
+  # indefinitely.  Delete them by label so an upgraded cluster converges to the new
+  # state; --ignore-not-found makes this a no-op on a fresh cluster or a second run.
+  local stale_label="app.kubernetes.io/name=my-project-quay-bootstrap"
+  kubectl --context "${KUBE_CONTEXT}" --namespace quay \
+    delete job,serviceaccount,role,rolebinding -l "${stale_label}" \
+    --ignore-not-found --cascade=foreground --wait --request-timeout=60s
+  kubectl --context "${KUBE_CONTEXT}" --namespace my-project \
+    delete role,rolebinding -l "${stale_label}" \
+    --ignore-not-found --request-timeout=60s
+  kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
+    delete role,rolebinding -l "${stale_label}" \
+    --ignore-not-found --request-timeout=60s
+  # The retired headless superuser Secret (HOL-1295 deferred its prune to here):
+  # OIDC-backend auth can no longer mint it, so it is dead material on an upgraded
+  # cluster.  Removing it keeps the no-quay-initial-admin invariant true at runtime.
+  kubectl --context "${KUBE_CONTEXT}" --namespace quay \
+    delete secret quay-initial-admin \
+    --ignore-not-found --request-timeout=60s
 }
 
 # my-project: gate the webhook-token bootstrap Job's completion and the Kargo
