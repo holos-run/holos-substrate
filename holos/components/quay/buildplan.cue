@@ -233,12 +233,18 @@ let REDIS_METADATA = {
 //     pkce.code.challenge.method either) removes that failure mode.  This is the
 //     documented exception to the platform's PKCE default — see the
 //     Quay↔Keycloak OIDC runbook (HOL-1256 docs phase / HOL-1233).
-//   - FEATURE_TEAM_SYNCING true keeps Quay teams in sync with the Keycloak
-//     groups claim (TEAM_RESYNC_STALE_TIME cadence); that claim carries both
-//     Keycloak group membership and the quay client roles (platform-admin,
-//     project-admin) folded in by the Phase 1 protocol mappers.  Team sync only
-//     populates Quay teams from the groups claim — it does NOT grant Quay
-//     superuser; superuser comes solely from SUPER_USERS below.
+//   - FEATURE_TEAM_SYNCING is false (and TEAM_RESYNC_STALE_TIME is dropped):
+//     team sync from the OIDC groups claim REQUIRES a federated auth backend
+//     that owns sync_user_groups.  Under AUTHENTICATION_TYPE Database the active
+//     handler is DatabaseUsers, which has no sync_user_groups method (only
+//     OIDCUsers/LDAPUsers do).  Quay's OAuth login path calls
+//     sync_oidc_groups() on every SSO callback when FEATURE_TEAM_SYNCING is
+//     true with a groups claim present, so leaving it on would AttributeError →
+//     500 on every "Holos SSO" login (Quay v3.17.3 oauth/login_utils.py
+//     sync_oidc_groups → auth_system.sync_user_groups; data/users/database.py
+//     DatabaseUsers).  Federated group→team sync therefore returns only if a
+//     future phase moves to a federated backend; for now superuser comes solely
+//     from SUPER_USERS below, and Quay teams are managed directly.
 //   - SUPER_USERS keeps the local "admin" entry the admin-bootstrap Job
 //     (HOL-1276) seeds — it stays reachable because Quay always
 //     permits superuser local login even with FEATURE_DIRECT_LOGIN false.  The
@@ -271,8 +277,7 @@ let CONFIG_YAML = """
 	FEATURE_USER_CREATION: true
 	FEATURE_DIRECT_LOGIN: false
 	FEATURE_USERNAME_CONFIRMATION: false
-	FEATURE_TEAM_SYNCING: true
-	TEAM_RESYNC_STALE_TIME: 30m
+	FEATURE_TEAM_SYNCING: false
 	AUTHENTICATION_TYPE: Database
 	KEYCLOAK_LOGIN_CONFIG:
 	  OIDC_SERVER: \(OIDC_SERVER)
