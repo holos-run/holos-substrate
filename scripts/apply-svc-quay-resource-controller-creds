@@ -38,10 +38,10 @@ INSTRUCTIONS:
 
 EOF
 
-read -p "Press ENTER when you have the Access Token ready..."
+read -r -p "Press ENTER when you have the Access Token ready..."
 
 echo ""
-read -sp "Paste the Access Token: " TOKEN
+read -r -sp "Paste the Access Token: " TOKEN
 echo ""
 
 if [ -z "$TOKEN" ]; then

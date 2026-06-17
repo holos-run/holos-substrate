@@ -46,6 +46,7 @@ to the template above.
 | [ADR-15](ADR-15.md) | registry, oidc, security | Quay↔Keycloak OIDC SSO: `AUTHENTICATION_TYPE: OIDC` sole identity store (Revision 4, HOL-1293), confidential client with client-secret auth + PKCE `S256`, username from the ID token, roles/groups via the `groups` claim into Quay teams |
 | [ADR-16](ADR-16.md) | pipeline, kargo, oci, oras, kustomize, argocd, mvp | Kargo-driven promotion with a client-side CLI build-and-publish (ORAS) workflow; Kustomize OCI artifact, not Helm; supersedes the NATS pipeline (ADR-6, ADR-13) |
 | [ADR-17](ADR-17.md) | cli, conventions, agents, build | Fisk (not Cobra) for the holos-paas CLI: LLM-friendly help and JSON-schema introspection for AI coding agents; the `deploy` subcommand fronts the ADR-16 publish workflow |
+| [ADR-18](ADR-18.md) | controller, api, gitops | **Proposed** — The Holos Controller (namespace `holos-controller`) reconciles CRDs filling the Quay/Keycloak data-plane gaps the upstream operators leave open (first group `quay.holos.run`); delivery is the GitOps rendered-manifest pattern; refines ADR-12's API-group example; the intended end state that supersedes the ADR-15 (Rev 4–5) manual Quay Resource Controller stop-gap, which stays operative until the controller ships |
 
 ## Status values
 
