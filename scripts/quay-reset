@@ -22,14 +22,18 @@
 # WHAT IT DOES (every step is idempotent / safe to re-run)
 #   1. Scales the Quay Deployment to zero so nothing holds the database open or
 #      serves the stale admin user during the wipe.
-#   2. Deletes the quay-initial-admin Secret so the one-shot initialize token
-#      is re-minted (a stale Secret pointing at a wiped DB would otherwise make
-#      every bootstrap path skip itself — see scripts/quay-init's guard).
-#   3. Deletes the CNPG `quay-db` Cluster.  CNPG removes its managed PVCs with
+#   2. Deletes the CNPG `quay-db` Cluster.  CNPG removes its managed PVCs with
 #      it, so the next `scripts/apply` re-creates the Cluster and re-runs its
 #      initdb against empty storage — a virgin `quay` database.
-#   4. Deletes the registry blob-storage PVC (quay-datastorage) so no orphaned
+#   3. Deletes the registry blob-storage PVC (quay-datastorage) so no orphaned
 #      blobs survive into the empty database.  scripts/apply re-creates it.
+#   4. Deletes the quay-initial-admin Secret LAST, only after the wipes above
+#      succeed, so the one-shot initialize token is re-minted (a stale Secret
+#      pointing at a wiped DB would otherwise make every bootstrap path skip
+#      itself — see scripts/quay-init's guard).  Doing this last matters:
+#      `set -e` aborts the script if any wipe fails, leaving the existing token
+#      intact against the still-populated registry rather than orphaning a
+#      running registry with no recoverable superuser credential.
 #
 #   It deliberately leaves the quay-secret-keys Secret (DATABASE_SECRET_KEY /
 #   SECRET_KEY) in place: those are registry crypto keys, independent of the
@@ -152,15 +156,6 @@ kubectl --context "${KUBE_CONTEXT}" --namespace "${NAMESPACE}" \
   scale deployment "${QUAY_DEPLOYMENT}" --replicas=0 \
   --request-timeout="${REQUEST_TIMEOUT}" 2>/dev/null || true
 
-echo "==> deleting the ${ADMIN_SECRET} Secret (forces a fresh initialize token)"
-# Must precede the DB wipe conceptually but is order-independent in practice:
-# leaving it would make quay-admin-bootstrap and scripts/quay-init both take
-# their reuse path and skip re-initializing against the virgin DB, and the
-# stale token would be rejected by the empty registry.
-kubectl --context "${KUBE_CONTEXT}" --namespace "${NAMESPACE}" \
-  delete secret "${ADMIN_SECRET}" \
-  --ignore-not-found --request-timeout="${REQUEST_TIMEOUT}"
-
 echo "==> deleting the CNPG Cluster ${DB_CLUSTER} (and its managed PVCs)"
 # Deleting the Cluster cascades to its instance pods and the PVCs CNPG manages
 # for it, so the next scripts/apply re-creates the Cluster and re-runs initdb
@@ -190,6 +185,20 @@ kubectl --context "${KUBE_CONTEXT}" --namespace "${NAMESPACE}" \
   delete pvc "${DATASTORAGE_PVC}" \
   --ignore-not-found --wait --timeout="${DELETE_TIMEOUT}" \
   --request-timeout="${REQUEST_TIMEOUT}"
+
+echo "==> deleting the ${ADMIN_SECRET} Secret (forces a fresh initialize token)"
+# Deleted LAST, only after every wipe above succeeded.  `set -e` aborts this
+# script the moment a wipe fails, so a partial reset (e.g. the CNPG Cluster
+# delete times out) leaves the registry populated AND its superuser token in
+# the ${ADMIN_SECRET} Secret intact — the registry is still usable, and a
+# re-run completes the reset.  Deleting the Secret first would instead orphan a
+# still-running registry whose one-shot initialize endpoint is closed but whose
+# only recoverable superuser credential is gone, wedging the cluster.  Removing
+# the Secret here forces quay-admin-bootstrap (and scripts/quay-init) off their
+# reuse path so a fresh token is minted against the now-virgin DB.
+kubectl --context "${KUBE_CONTEXT}" --namespace "${NAMESPACE}" \
+  delete secret "${ADMIN_SECRET}" \
+  --ignore-not-found --request-timeout="${REQUEST_TIMEOUT}"
 
 cat <<DONE
 
