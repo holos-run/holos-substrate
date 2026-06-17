@@ -118,11 +118,12 @@ design — the destination push credential is never sent to the source registry
 (which may be a different, untrusted registry):
 
 - **Destination** (the manifests artifact repo) needs **push** scope. For the
-  in-cluster Quay this is the Quay pull-robot credential (its provisioning is
-  deferred to a future Quay Resource Controller, HOL-1293); see the
+  in-cluster Quay this is a push-capable Quay robot credential (its provisioning,
+  with write access to the manifests repo, is deferred to a future Quay Resource
+  Controller, HOL-1293); see the
   [repository credential Secret shape](argocd-application-source.md#repository-credential-secret)
-  in argocd-application-source.md (the cluster-side credential Argo CD's
-  repo-server uses to *pull* the same artifact).
+  in argocd-application-source.md (Argo CD's repo-server uses a *pull*-scoped
+  credential to fetch the same artifact).
 - **Source** (the app image repo) needs **pull** scope, used only to resolve the
   app image tag → digest.
 

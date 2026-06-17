@@ -438,9 +438,14 @@ essentials:
 ### Quay verification
 
 Two checks prove the registry behaviors the platform depends on; re-run them
-after any Quay change. Both assume the bootstrap above has run: the
-registry is initialized and `holos/sample` exists from the
-[Verify Quay](../docs/local-cluster.md#verify-quay) push.
+after any Quay change. Both assume the registry is reachable and the
+`holos/sample` org/repo exists. Because Quay data-plane provisioning is
+**deferred to a future Quay Resource Controller** (above), create that org/repo
+by hand first — sign in via "Holos SSO" as `svc-quay-resource-controller` or
+`quay-admin` and push to `holos/sample` per
+[Verify Quay](../docs/local-cluster.md#verify-quay), using a superuser
+OAuth-Application token minted per the
+[Quay Resource Controller credentials runbook](../docs/runbooks/quay-resource-controller-credentials.md).
 
 **Push webhook.** A `repo_push` webhook notification fires on image push.
 Verify it against a temporary in-cluster echo endpoint (the
