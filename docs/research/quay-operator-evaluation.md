@@ -341,8 +341,8 @@ maintained, robust" bar today:
   14 commits total, last commit 2026-04-29, and **no GitHub releases, tags, or
   changelog** ([repo](https://github.com/herve4m/quay-api-operator)). It *does*
   publish versioned images to quay.io — `quay.io/herve4m/quay-api-operator`
-  (`1.0.0`–`1.3.0`, `latest`) and an OLM bundle
-  `quay.io/herve4m/quay-api-operator-bundle` (`v1.2.0`, `v1.3.0`) — so it is
+  (multiple tags up to `1.3.0`, plus `latest`) and an OLM bundle
+  `quay.io/herve4m/quay-api-operator-bundle` (tags up to `v1.3.0`) — so it is
   installable without building your own image; but the version history lives only
   in registry tags, with no release notes or source tags to audit what changed.
 - **CRD API group on a personal domain** (`quay.herve4m.github.io`) — a
@@ -406,7 +406,7 @@ is the shared baseline.
 | **3.** No big refactor to production | ⚠️ Imperative Jobs, reusable but not declarative | ⚠️ Declarative + reusable **iff the operator endures**; abandonment/`v1alpha1` break = forced migration | **Promising but risky** |
 | **4.** Slim, laptop-friendly | ✅ baseline | ✅ Adds one ansible-operator pod, no OLM, does not touch Quay deploy | **Compatible** |
 | **5.** CNPG database | ✅ baseline | ➖ Out of scope (never manages the DB) | **No change** |
-| **6.** Operator quality | n/a | ❌ Wrapper immature: 2★, single maintainer, no GitHub releases/tags/changelog (only quay.io image tags `1.0.0`–`1.3.0` + OLM bundle), personal CRD group, `v1alpha1`; ✅ underlying `infra.quay_configuration` collection (redhat-cop) is mature | **Fails Goal 6 as a production dependency today** |
+| **6.** Operator quality | n/a | ❌ Wrapper immature: 2★, single maintainer, no GitHub releases/tags/changelog (only quay.io image tags, up to `1.3.0`, + OLM bundle), personal CRD group, `v1alpha1`; ✅ underlying `infra.quay_configuration` collection (redhat-cop) is mature | **Fails Goal 6 as a production dependency today** |
 
 ## 5. The decisive finding, restated
 
