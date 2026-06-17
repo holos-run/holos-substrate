@@ -423,13 +423,15 @@ essentials:
   (the realm-role mapper added in HOL-1245, mirroring the `argocd` client), so
   the privileged platform-owner role is recognizable to Quay's team sync the
   same way group names are. They are identity labels, not privileges in
-  themselves: a Quay **superuser** manages the Quay team's membership directly,
-  and the team's permissions are what grant access. Automatic group/role-name →
-  team syncing is **enabled** under the OIDC backend (`FEATURE_TEAM_SYNCING: true`
-  with `TEAM_RESYNC_STALE_TIME: 30m` — the OIDC user handler syncs the `groups`
-  claim into Quay teams; re-enabled in HOL-1293). The full declarative-client
-  pattern and the role model are in
-  [docs/keycloak-clients.md](docs/keycloak-clients.md).
+  themselves: automatic group/role-name → team syncing is **enabled** under the
+  OIDC backend (`FEATURE_TEAM_SYNCING: true` with `TEAM_RESYNC_STALE_TIME: 30m` —
+  the OIDC user handler syncs the `groups` claim into Quay teams on the
+  30-minute cadence; re-enabled in HOL-1293), so **team membership tracks the
+  claim** and must not be edited directly in Quay (sync would overwrite it). A
+  Quay **superuser** does the one-time wiring — binding a team to a group/role
+  name and setting that team's repository permissions — and the team's
+  permissions are what grant access. The full declarative-client pattern and the
+  role model are in [docs/keycloak-clients.md](docs/keycloak-clients.md).
 - **Superusers.** Superuser status comes solely from `SUPER_USERS` in the
   config (by `preferred_username`), not from the `groups` claim and not from
   the `platform-admin` role. The two superusers are the Keycloak realm users
