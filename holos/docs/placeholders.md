@@ -128,8 +128,8 @@ no mechanism for Quay to promote a user to superuser from an OIDC claim.
 What exists today: the realm-role→`groups`-claim mapper (HOL-1245) emits
 `platform-owner` into the shared `groups` claim (so it is ready for Quay team
 binding once team syncing is re-enabled on a federated backend), and the
-**manual `SUPER_USERS` bootstrap** is the supported path to grant superuser — add the
-user's `preferred_username` to `SUPER_USERS` in
+**manual `SUPER_USERS` bootstrap** is the supported path to grant superuser —
+add the user's `preferred_username` to `SUPER_USERS` in
 [`components/quay/buildplan.cue`](../components/quay/buildplan.cue) and
 re-render/apply. The local `admin` account stays in `SUPER_USERS` as a
 break-glass superuser.
