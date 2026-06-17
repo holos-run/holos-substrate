@@ -101,6 +101,17 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
+# Reject any other argument before reaching the destructive path: this command
+# takes no flags or operands beyond -h/--help (configuration is via the
+# KUBE_CONTEXT / DELETE_TIMEOUT environment variables), so a stray or mistyped
+# argument — e.g. a hoped-for `--dry-run` — must fail loudly rather than be
+# silently ignored and proceed to wipe the registry.
+if [[ $# -gt 0 ]]; then
+  echo "ERROR: unexpected argument '$1'. This command takes no arguments (only -h/--help)." >&2
+  echo "       Configure it via the KUBE_CONTEXT and DELETE_TIMEOUT environment variables." >&2
+  exit 2
+fi
+
 if ! command -v kubectl >/dev/null 2>&1; then
   echo "ERROR: 'kubectl' not found on PATH." >&2
   exit 1
@@ -147,14 +158,33 @@ cat >&2 <<WARNING
 WARNING
 sleep 5
 
-echo "==> scaling Quay Deployment to zero (releasing DB connections)"
-# --ignore-not-found keeps the reset idempotent: a partially-applied or
-# already-reset cluster may not have the Deployment yet.  The scale is best
-# effort — deleting the CNPG Cluster below severs the DB regardless — so a
-# missing Deployment is not fatal.
-kubectl --context "${KUBE_CONTEXT}" --namespace "${NAMESPACE}" \
-  scale deployment "${QUAY_DEPLOYMENT}" --replicas=0 \
-  --request-timeout="${REQUEST_TIMEOUT}" 2>/dev/null || true
+echo "==> scaling Quay Deployment to zero and waiting for its pods to stop"
+# Quay pods hold the blob-storage PVC mounted and keep DB connections open, so
+# they must actually stop before the wipe — otherwise a still-running pod can
+# block PVC deletion (it stays Terminating while the volume is in use) and the
+# script could delete the database, then time out on the PVC, leaving a
+# half-wiped registry.  The Deployment may legitimately be absent on a
+# partially-applied or already-reset cluster, so distinguish "absent" (fine,
+# nothing to scale) from a real scale failure (surface it and abort) rather
+# than swallowing both with `|| true`.
+if kubectl --context "${KUBE_CONTEXT}" --namespace "${NAMESPACE}" \
+  get deployment "${QUAY_DEPLOYMENT}" -o name \
+  --request-timeout="${REQUEST_TIMEOUT}" >/dev/null 2>&1; then
+  kubectl --context "${KUBE_CONTEXT}" --namespace "${NAMESPACE}" \
+    scale deployment "${QUAY_DEPLOYMENT}" --replicas=0 \
+    --request-timeout="${REQUEST_TIMEOUT}"
+  # rollout status returns once the scaled-to-zero Deployment observes 0
+  # replicas; the explicit pod wait then blocks until the terminating pods are
+  # actually gone (and have released the PVC).  --ignore-not-found makes the
+  # pod wait a no-op when no pods remain.
+  kubectl --context "${KUBE_CONTEXT}" --namespace "${NAMESPACE}" \
+    rollout status deployment "${QUAY_DEPLOYMENT}" --timeout="${DELETE_TIMEOUT}"
+  kubectl --context "${KUBE_CONTEXT}" --namespace "${NAMESPACE}" \
+    wait --for=delete pod -l "app.kubernetes.io/name=${QUAY_DEPLOYMENT}" \
+    --timeout="${DELETE_TIMEOUT}" 2>/dev/null || true
+else
+  echo "    Deployment ${QUAY_DEPLOYMENT} not found; nothing to scale down."
+fi
 
 echo "==> deleting the CNPG Cluster ${DB_CLUSTER} (and its managed PVCs)"
 # Deleting the Cluster cascades to its instance pods and the PVCs CNPG manages
