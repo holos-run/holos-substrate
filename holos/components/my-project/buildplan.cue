@@ -156,7 +156,7 @@ let APPLICATION_RESOURCE = {
 	metadata: {
 		name:      NAME
 		namespace: ArgoCDNamespace
-		labels: "app.kubernetes.io/name": NAME
+		labels: "app.kubernetes.io/name":                NAME
 		annotations: "kargo.akuity.io/authorized-stage": "\(NAMESPACE):\(STAGE)"
 	}
 	spec: {
@@ -1074,14 +1074,14 @@ userDefinedBuildPlan: {
 					// three same-named Roles would collide into one sliced file).  The
 					// ServiceAccount and Job keep the bare QUAY_BOOTSTRAP name (one
 					// each, no collision).
-					ServiceAccount: (QUAY_BOOTSTRAP):              QUAY_BOOTSTRAP_SERVICE_ACCOUNT
-					Job: (QUAY_BOOTSTRAP):                         QUAY_BOOTSTRAP_JOB
-					Role: (QUAY_BOOTSTRAP_ROLE_QUAY.metadata.name):                    QUAY_BOOTSTRAP_ROLE_QUAY
-					RoleBinding: (QUAY_BOOTSTRAP_ROLE_BINDING_QUAY.metadata.name):      QUAY_BOOTSTRAP_ROLE_BINDING_QUAY
-					Role: (QUAY_BOOTSTRAP_ROLE_PROJECT.metadata.name):                 QUAY_BOOTSTRAP_ROLE_PROJECT
-					RoleBinding: (QUAY_BOOTSTRAP_ROLE_BINDING_PROJECT.metadata.name):   QUAY_BOOTSTRAP_ROLE_BINDING_PROJECT
-					Role: (QUAY_BOOTSTRAP_ROLE_ARGOCD.metadata.name):                  QUAY_BOOTSTRAP_ROLE_ARGOCD
-					RoleBinding: (QUAY_BOOTSTRAP_ROLE_BINDING_ARGOCD.metadata.name):    QUAY_BOOTSTRAP_ROLE_BINDING_ARGOCD
+					ServiceAccount: (QUAY_BOOTSTRAP):                                 QUAY_BOOTSTRAP_SERVICE_ACCOUNT
+					Job: (QUAY_BOOTSTRAP):                                            QUAY_BOOTSTRAP_JOB
+					Role: (QUAY_BOOTSTRAP_ROLE_QUAY.metadata.name):                   QUAY_BOOTSTRAP_ROLE_QUAY
+					RoleBinding: (QUAY_BOOTSTRAP_ROLE_BINDING_QUAY.metadata.name):    QUAY_BOOTSTRAP_ROLE_BINDING_QUAY
+					Role: (QUAY_BOOTSTRAP_ROLE_PROJECT.metadata.name):                QUAY_BOOTSTRAP_ROLE_PROJECT
+					RoleBinding: (QUAY_BOOTSTRAP_ROLE_BINDING_PROJECT.metadata.name): QUAY_BOOTSTRAP_ROLE_BINDING_PROJECT
+					Role: (QUAY_BOOTSTRAP_ROLE_ARGOCD.metadata.name):                 QUAY_BOOTSTRAP_ROLE_ARGOCD
+					RoleBinding: (QUAY_BOOTSTRAP_ROLE_BINDING_ARGOCD.metadata.name):  QUAY_BOOTSTRAP_ROLE_BINDING_ARGOCD
 				}
 			}]
 			transformers: [

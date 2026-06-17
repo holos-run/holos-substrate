@@ -294,13 +294,13 @@ let REALM_CONFIG = {
 					// Fold the quay client roles (platform-admin, project-admin)
 					// into the same groups claim, so Quay's team sync picks up
 					// both group membership and client-role grants uniformly.
-					"claim.name":                          GROUPS_CLAIM
+					"claim.name":                           GROUPS_CLAIM
 					"usermodel.clientRoleMapping.clientId": QUAY_CLIENT_ID
-					"jsonType.label":                      "String"
-					"multivalued":                         "true"
-					"id.token.claim":                      "true"
-					"access.token.claim":                  "true"
-					"userinfo.token.claim":                "true"
+					"jsonType.label":                       "String"
+					"multivalued":                          "true"
+					"id.token.claim":                       "true"
+					"access.token.claim":                   "true"
+					"userinfo.token.claim":                 "true"
 				}
 			},
 			{
@@ -731,6 +731,7 @@ let QUAY_OIDC_BOOTSTRAP_ROLE = {
 	apiVersion: "rbac.authorization.k8s.io/v1"
 	kind:       "Role"
 	#namespace: string
+
 	// Name carries the target namespace so the two Roles (one per namespace the
 	// Job writes into) render to distinct one-file-per-resource artifacts under
 	// the default kubectl-slice <kind>-<name> template — they would otherwise
@@ -759,6 +760,7 @@ let QUAY_OIDC_BOOTSTRAP_ROLE_BINDING = {
 	apiVersion: "rbac.authorization.k8s.io/v1"
 	kind:       "RoleBinding"
 	#namespace: string
+
 	// Name carries the target namespace for the same one-file-per-resource
 	// reason as the Role above; roleRef binds the same-namespace Role, which
 	// shares the suffix.
@@ -821,8 +823,8 @@ let QUAY_OIDC_BOOTSTRAP_JOB = {
 					seccompProfile: type: "RuntimeDefault"
 				}
 				containers: [{
-					name:    "bootstrap"
-					image:   KUBECTL_IMAGE
+					name:  "bootstrap"
+					image: KUBECTL_IMAGE
 					command: ["/bin/sh", "-c", QUAY_OIDC_BOOTSTRAP_SCRIPT]
 					// kubectl writes its discovery cache under $HOME; point it
 					// at the writable emptyDir since the root filesystem is

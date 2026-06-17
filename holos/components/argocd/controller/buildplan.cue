@@ -301,7 +301,7 @@ userDefinedBuildPlan: {
 						// pinned explicitly so a chart-default change can
 						// never silently grow the footprint).
 						"redis-ha": enabled: false
-						redis: pdb: enabled:  false
+						redis: pdb: enabled: false
 						controller: {
 							replicas: 1
 							pdb: enabled: false

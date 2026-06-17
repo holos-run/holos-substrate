@@ -24,7 +24,7 @@ data:
     FEATURE_USER_CREATION: true
     FEATURE_DIRECT_LOGIN: false
     FEATURE_USERNAME_CONFIRMATION: false
-    FEATURE_TEAM_SYNCING: false
+    FEATURE_TEAM_SYNCING: true
     AUTHENTICATION_TYPE: Database
     KEYCLOAK_LOGIN_CONFIG:
       OIDC_SERVER: https://auth.holos.localhost/realms/holos/
@@ -42,6 +42,8 @@ data:
       PREFERRED_GROUP_CLAIM_NAME: groups
     SUPER_USERS:
       - admin
+      - jeff
+      - platform-owner
     FEATURE_MAILING: false
 kind: ConfigMap
 metadata:

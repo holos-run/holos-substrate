@@ -209,7 +209,7 @@ let APP_RESOURCE = application.#Application & {
 	metadata: {
 		name:      APP
 		namespace: ArgoCDNamespace
-		labels: "app.kubernetes.io/name": APP
+		labels: "app.kubernetes.io/name":                APP
 		annotations: "kargo.akuity.io/authorized-stage": "\(PROJECT):\(STAGE)"
 	}
 	spec: {

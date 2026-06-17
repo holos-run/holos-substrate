@@ -151,6 +151,7 @@ let BOOTSTRAP = "quay-secret-keys-bootstrap"
 let ADMIN_SECRET = "quay-initial-admin"
 let ADMIN_BOOTSTRAP = "quay-admin-bootstrap"
 let ADMIN_USER = "admin"
+
 // Matches the ADMIN_EMAIL in scripts/quay-init so both bootstrap paths agree
 // on the admin identity (the domain is the bare local domain, not the quay
 // subdomain in HOSTNAME).
@@ -277,7 +278,7 @@ let CONFIG_YAML = """
 	FEATURE_USER_CREATION: true
 	FEATURE_DIRECT_LOGIN: false
 	FEATURE_USERNAME_CONFIRMATION: false
-	FEATURE_TEAM_SYNCING: false
+	FEATURE_TEAM_SYNCING: true
 	AUTHENTICATION_TYPE: Database
 	KEYCLOAK_LOGIN_CONFIG:
 	  OIDC_SERVER: \(OIDC_SERVER)
@@ -295,6 +296,8 @@ let CONFIG_YAML = """
 	  PREFERRED_GROUP_CLAIM_NAME: groups
 	SUPER_USERS:
 	  - admin
+	  - jeff
+	  - platform-owner
 	FEATURE_MAILING: false
 	"""
 
@@ -394,7 +397,7 @@ let CONFIG_TEMPLATE_CM = {
 // stays diff-clean) and changes only when the config content does.  8 hex chars
 // (32 bits) is ample for a change-detection annotation.
 let CONFIG_HASH = strings.SliceRunes(hex.Encode(sha256.Sum256(
-	CONFIG_TEMPLATE_CM.data["config.yaml"])), 0, 8)
+CONFIG_TEMPLATE_CM.data["config.yaml"])), 0, 8)
 
 // The bootstrap resources carry their own app.kubernetes.io/name — NOT the
 // Quay Deployment's — because the quay Service selects on that label: a
