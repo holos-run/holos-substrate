@@ -440,9 +440,10 @@ essentials:
   the `platform-admin` role; the local `admin` bootstrap account is kept there
   as break-glass.
 
-`scripts/quay-init` and SSO coexist: the init script still bootstraps the
-local `admin`/`holos` org and the `holos+robot` pull account, while realm
-users sign in through SSO.
+`scripts/quay-init` and SSO coexist: the `quay-admin-bootstrap` Job (during
+`scripts/apply`) seeds the local `admin` superuser, and `scripts/quay-init`
+reuses its token to scaffold the `holos` org and the `holos+robot` pull
+account, while realm users sign in through SSO.
 
 ### Quay verification
 

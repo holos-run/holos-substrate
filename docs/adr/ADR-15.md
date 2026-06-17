@@ -251,8 +251,11 @@ re-enabled on a federated backend.
 **Superusers** are not derived from the `groups` claim: Quay superuser status
 comes solely from `SUPER_USERS` in the config. Bootstrap platform admins are
 listed there by their `preferred_username` claim value. The shipped config
-keeps the local `admin` entry that `scripts/quay-init` (HOL-1177) creates, so
-the break-glass superuser still works with `FEATURE_DIRECT_LOGIN: false`.
+keeps the local `admin` entry that the `quay-admin-bootstrap` Job (HOL-1276)
+seeds via `/api/v1/user/initialize` during `scripts/apply` — available because
+of Database auth — so the break-glass superuser still works with
+`FEATURE_DIRECT_LOGIN: false`. (`scripts/quay-init` reuses that account's token
+for org/robot scaffolding; it does not create the `admin` user.)
 
 ### How an operator grants access
 
