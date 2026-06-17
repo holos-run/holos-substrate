@@ -422,6 +422,66 @@ pre_keycloak_config() {
 # polling it while the server is still settling after wait_keycloak is safe: it
 # converges once the admin API responds.
 wait_keycloak_config() {
+  # The realm-user password bootstrap Job (job-quay-user-password-bootstrap.yaml,
+  # HOL-1294) generates the svc-quay-resource-controller and quay-admin passwords
+  # once and writes them as Secrets in the keycloak namespace.  The reconcile Job
+  # below mounts them via REQUIRED secretKeyRefs, so a bootstrap that never created
+  # a Secret leaves the reconcile pod stuck Pending — which would otherwise surface
+  # only as a generic reconcile-Job timeout.  Gate the bootstrap FIRST so a genuine
+  # bootstrap failure (or missing Secret) is reported by name before the reconcile
+  # wait can mask it.  The Job is recreated on every apply by pre_keycloak_config; a
+  # GC'd Job (ttlSecondsAfterFinished) is tolerated and falls through to the Secret
+  # check.  Polled rather than `kubectl wait` so a Failed Job fails on the next poll
+  # instead of blocking the full timeout (the quay-oidc bootstrap-gate shape).
+  local pw_state pw_lookup_failures=0
+  local pw_deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+  while true; do
+    if pw_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
+      get job/quay-user-password-bootstrap --ignore-not-found --request-timeout=10s \
+      -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
+      pw_lookup_failures=0
+      if [[ -z "${pw_state}" ]] || grep -q '^Complete=True$' <<<"${pw_state}"; then
+        break
+      fi
+      if grep -q '^Failed=True$' <<<"${pw_state}"; then
+        echo "ERROR: job/quay-user-password-bootstrap failed; inspect it with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} --namespace keycloak describe job/quay-user-password-bootstrap" >&2
+        return 1
+      fi
+    else
+      pw_lookup_failures=$((pw_lookup_failures + 1))
+      if ((pw_lookup_failures >= 3)); then
+        echo "ERROR: cannot query job/quay-user-password-bootstrap: ${pw_lookup_failures} consecutive lookup failures." >&2
+        return 1
+      fi
+    fi
+    if ((SECONDS >= pw_deadline)); then
+      echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for job/quay-user-password-bootstrap to complete." >&2
+      return 1
+    fi
+    sleep 5
+  done
+
+  # Defense in depth: verify both password Secrets exist in the keycloak namespace
+  # even when the bootstrap Job has been GC'd.  These are the actual reconcile-Job
+  # dependency, so confirm them before waiting on the reconcile Job.
+  local pw_secret
+  for pw_secret in svc-quay-resource-controller quay-admin; do
+    local pw_secret_deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+    while true; do
+      if kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
+        get secret "${pw_secret}" --request-timeout=10s >/dev/null 2>&1; then
+        break
+      fi
+      if ((SECONDS >= pw_secret_deadline)); then
+        echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for the ${pw_secret} password Secret in namespace keycloak; inspect the bootstrap Job with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} --namespace keycloak describe job/quay-user-password-bootstrap" >&2
+        return 1
+      fi
+      sleep 5
+    done
+  done
+
   local job_state lookup_failures=0
   # Resolve the rendered Job's name from the committed manifest the apply just
   # used, so the gate waits on exactly that Job (its name carries the config
@@ -548,60 +608,6 @@ wait_keycloak_config() {
     done
   done
 
-  # The realm-user password bootstrap Job (job-quay-user-password-bootstrap.yaml,
-  # HOL-1294) generates the svc-quay-resource-controller and quay-admin passwords
-  # once and writes them as Secrets in the keycloak namespace.  The reconcile Job
-  # reads them via secretKeyRef, so a bootstrap that never created a Secret would
-  # leave the reconcile pod Pending.  Gate the bootstrap Job's own outcome — it is
-  # recreated on every apply by pre_keycloak_config — and tolerate a GC'd Job
-  # (ttlSecondsAfterFinished) by falling through to the Secret check below.
-  local pw_state pw_lookup_failures=0
-  local pw_deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
-  while true; do
-    if pw_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
-      get job/quay-user-password-bootstrap --ignore-not-found --request-timeout=10s \
-      -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
-      pw_lookup_failures=0
-      if [[ -z "${pw_state}" ]] || grep -q '^Complete=True$' <<<"${pw_state}"; then
-        break
-      fi
-      if grep -q '^Failed=True$' <<<"${pw_state}"; then
-        echo "ERROR: job/quay-user-password-bootstrap failed; inspect it with:" >&2
-        echo "       kubectl --context ${KUBE_CONTEXT} --namespace keycloak describe job/quay-user-password-bootstrap" >&2
-        return 1
-      fi
-    else
-      pw_lookup_failures=$((pw_lookup_failures + 1))
-      if ((pw_lookup_failures >= 3)); then
-        echo "ERROR: cannot query job/quay-user-password-bootstrap: ${pw_lookup_failures} consecutive lookup failures." >&2
-        return 1
-      fi
-    fi
-    if ((SECONDS >= pw_deadline)); then
-      echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for job/quay-user-password-bootstrap to complete." >&2
-      return 1
-    fi
-    sleep 5
-  done
-
-  # Defense in depth: verify both password Secrets exist in the keycloak namespace
-  # even when the bootstrap Job has been GC'd.
-  local pw_secret
-  for pw_secret in svc-quay-resource-controller quay-admin; do
-    local pw_secret_deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
-    while true; do
-      if kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
-        get secret "${pw_secret}" --request-timeout=10s >/dev/null 2>&1; then
-        break
-      fi
-      if ((SECONDS >= pw_secret_deadline)); then
-        echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for the ${pw_secret} password Secret in namespace keycloak; inspect the bootstrap Job with:" >&2
-        echo "       kubectl --context ${KUBE_CONTEXT} --namespace keycloak describe job/quay-user-password-bootstrap" >&2
-        return 1
-      fi
-      sleep 5
-    done
-  done
 }
 
 # quay: force a fresh admin-bootstrap Job on every apply.  Its name is

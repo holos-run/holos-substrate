@@ -320,7 +320,7 @@ let REALM_CONFIG = {
 		standardFlowEnabled: true
 		// Confidential client, but the additional confidential-only flows are
 		// off: Quay uses only the browser Authorization Code flow, authenticated
-		// by the client secret (no PKCE — see the attributes note below).
+		// by the client secret plus PKCE (S256 — see the attributes note below).
 		serviceAccountsEnabled:    false
 		directAccessGrantsEnabled: false
 		// keycloak-config-cli substitutes the generated secret at run time from
