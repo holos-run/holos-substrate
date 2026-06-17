@@ -13,6 +13,7 @@
 | 2        | 2026-06-15 | @jeffmccune | HOL-1257: drop PKCE — Quay is a plain confidential client (see below) |
 | 3        | 2026-06-16 | @jeffmccune | HOL-1281: run `AUTHENTICATION_TYPE: Database` with Keycloak as a federated login provider (layered, not a backend swap); `FEATURE_TEAM_SYNCING: false`; no-PKCE exception retained |
 | 4        | 2026-06-17 | @jeffmccune | HOL-1292/HOL-1293: revert to `AUTHENTICATION_TYPE: OIDC` as the sole identity store; PKCE (S256) re-enabled; team syncing re-enabled; superusers are the Keycloak-backed `svc-quay-resource-controller` + `quay-admin`; the `quay-initial-admin` bootstrap is removed; Quay data-plane provisioning deferred to a future Quay Resource Controller |
+| 5        | 2026-06-17 | @jeffmccune | HOL-1299: enable `FEATURE_SUPERUSERS_FULL_ACCESS` so the future Quay Resource Controller can adopt orgs it did not create; clarify the user/org/OAuth-Application distinction and the manual `platform-automation` org bootstrap |
 
 ## Context and Problem Statement
 
@@ -264,6 +265,48 @@ in-cluster Quay data-plane provisioning (orgs, repos, robots, webhooks) is
 OAuth-Application credential by hand per the
 [Quay Resource Controller credentials runbook](../runbooks/quay-resource-controller-credentials.md).
 
+### Data-plane provisioning: the controller credential and `FEATURE_SUPERUSERS_FULL_ACCESS`
+
+In-cluster data-plane provisioning (orgs, repos, robots, webhooks) is deferred to
+a future Quay Resource Controller. Until it ships, an operator mints the
+controller's credential by hand per the
+[Quay Resource Controller credentials runbook](../runbooks/quay-resource-controller-credentials.md).
+Three Quay concepts must stay distinct to understand that credential (HOL-1299):
+
+- A **user** signs in (`svc-quay-resource-controller`, `quay-admin`) and owns a
+  personal namespace named for the username.
+- An **organization** is a shared namespace owning repos/teams/robots/webhooks.
+  Organizations — **not users** — are the only place an **OAuth Application** can
+  be created (the Applications tab exists on an org, never on a personal
+  namespace). An OAuth Application/token therefore **cannot** be created directly
+  "for" a user; it is created inside an org the user administers.
+- An **OAuth Application token** acts as the **user who generated it**, bounded
+  by that user's rights on each target namespace and the token's scopes — **not**
+  by the org that hosts the Application. The host org is where the credential
+  record lives; it is **not a permission boundary**.
+
+The credential is minted while signed in as `svc-quay-resource-controller`, in a
+dedicated **`platform-automation`** org that user owns. Its abilities split into
+two cases:
+
+- **Orgs the controller creates** (e.g. `my-project`): the creating user becomes
+  owner/admin automatically and administers them through the normal endpoints —
+  no extra configuration. This is the clean reconcile-from-scratch path.
+- **Orgs the controller did not create**: by default a superuser has no access to
+  another user's org — `super:user` reaches only the `/api/v1/superuser/*` panel
+  endpoints, so a write inside a non-owned org returns `403`.
+  **`FEATURE_SUPERUSERS_FULL_ACCESS: true`** (HOL-1299, set in
+  `holos/components/quay/buildplan.cue`) grants `SUPER_USERS` read/write/delete on
+  namespaces and orgs they do not own, so the controller can **adopt** and
+  reconcile any org on the instance through the normal endpoints. The flag is
+  effective only for an identity that is both in `SUPER_USERS` and presenting a
+  `super:user`-scoped token, so it does not widen access for ordinary users.
+
+This is enabled deliberately: a reconciler that is the system of record must
+converge *any* org — including one a human pre-created or another automation made
+— not only orgs it created itself; without the flag it would `403` on those
+namespaces and silently fail to reconcile them.
+
 ### How an operator grants access
 
 - **Platform Admin (superuser):** add the user's `preferred_username` to
@@ -327,6 +370,15 @@ committed.
   it ships, an operator mints the controller's OAuth-Application credential by
   hand per the
   [Quay Resource Controller credentials runbook](../runbooks/quay-resource-controller-credentials.md).
+- **`FEATURE_SUPERUSERS_FULL_ACCESS: true`** (HOL-1299) extends the `SUPER_USERS`
+  identities' reach to orgs they neither own nor are members of, so the future
+  Quay Resource Controller can adopt and reconcile orgs created by other
+  identities rather than `403`-ing on them. It is effective only for a
+  `SUPER_USERS` identity presenting a `super:user`-scoped token, so it does not
+  widen access for ordinary users. The credential itself lives as an OAuth
+  Application in a dedicated `platform-automation` org owned by
+  `svc-quay-resource-controller` — the host org is where the credential record
+  lives, not a permission boundary.
 - The `quay-oidc` client secret must exist identically in both the `keycloak`
   and `quay` namespaces; the bootstrap Job enforces this and fails loudly on a
   mismatch.
