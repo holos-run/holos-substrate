@@ -24,7 +24,7 @@ data:
     FEATURE_USER_CREATION: true
     FEATURE_DIRECT_LOGIN: false
     FEATURE_USERNAME_CONFIRMATION: false
-    FEATURE_TEAM_SYNCING: true
+    FEATURE_TEAM_SYNCING: false
     AUTHENTICATION_TYPE: Database
     KEYCLOAK_LOGIN_CONFIG:
       OIDC_SERVER: https://auth.holos.localhost/realms/holos/
