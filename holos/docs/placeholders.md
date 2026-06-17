@@ -94,8 +94,12 @@ the Authorization Code flow, using the confidential `quay` client (authenticated
 by its client secret, without PKCE — HOL-1257) reconciled by the
 `keycloak-config` Job. The username is taken from the
 ID token's `preferred_username` claim with no customization, and the `quay`
-client roles (`platform-admin`, `project-admin`) plus Keycloak groups flow
-through the `groups` claim into Quay teams via `FEATURE_TEAM_SYNCING`. The
+client roles (`platform-admin`, `project-admin`) plus Keycloak groups are
+emitted in the shared `groups` claim. Automatic group→Quay-team synchronization
+is **off** (`FEATURE_TEAM_SYNCING: false`, ADR-15 Revision 3): under Quay's
+Database auth backend the user handler cannot sync OIDC groups, so a superuser
+manages Quay team membership directly. The claim is still emitted, so the
+binding returns once team syncing is re-enabled on a federated backend. The
 design is recorded in [ADR-15](../../docs/adr/ADR-15.md); the operator-facing
 overview is in [`holos/README.md`](../README.md#quay-oidc-sso-and-roles) and
 the verification steps are in
@@ -116,14 +120,15 @@ automatically make them a Quay **superuser**. As of HOL-1245 the `quay` client
 emits the `platform-owner` realm role into the shared `groups` claim (the
 realm-role mapper, mirroring the `argocd` client), and the
 [Keycloak realm reconciliation](#keycloak-realm-reconciliation) Job keeps that
-mapper converged — but the claim only carries the role *name* for team sync. It
+mapper converged — but the claim only carries the role *name*. It
 confers no superuser status, because Quay's `SUPER_USERS` is a **static
 username list in `config.yaml`** with no claim-driven superuser sync: there is
 no mechanism for Quay to promote a user to superuser from an OIDC claim.
 
-What exists today: the realm-role→`groups`-claim mapper (HOL-1245) makes
-`platform-owner` recognizable to Quay's team sync, and the **manual
-`SUPER_USERS` bootstrap** is the supported path to grant superuser — add the
+What exists today: the realm-role→`groups`-claim mapper (HOL-1245) emits
+`platform-owner` into the shared `groups` claim (so it is ready for Quay team
+binding once team syncing is re-enabled on a federated backend), and the
+**manual `SUPER_USERS` bootstrap** is the supported path to grant superuser — add the
 user's `preferred_username` to `SUPER_USERS` in
 [`components/quay/buildplan.cue`](../components/quay/buildplan.cue) and
 re-render/apply. The local `admin` account stays in `SUPER_USERS` as a
