@@ -118,7 +118,7 @@ parties (Argo CD, Quay, Kargo) that already consume that claim.
 | **OIDC Client** | A project's service needs its own OIDC client (a confidential client with a delivered secret, or a public PKCE client) to authenticate users. Today only the platform's own clients (`argocd`/`quay`/`kargo`) exist, declared centrally. A product engineer needs to declare their service's client as a custom resource and receive the client ID/secret **in their project namespace**, consistent with [secret-handling.md](../../holos/docs/secret-handling.md). |
 | **Client Roles** | The `owner`/`editor`/`viewer` triad scoped to a single client is the primitive RBAC vocabulary for one service. It mirrors how the `quay` client today defines `platform-admin`/`project-admin` client roles ([keycloak-clients.md](../../holos/docs/keycloak-clients.md)); the controller would let a project declare its own service-scoped triad rather than hand-editing the central realm config. |
 | **Realm Roles** | A realm role is the cross-service identity (e.g. "core services developer") that a person carries. Mapping a realm role onto a client role (e.g. realm "core services developer" → client "my-app editor") lets broad organizational roles compose down to per-service access without enumerating every person on every client. The platform already emits the `platform-owner` realm role into the `groups` claim via the realm-role mapper; this generalizes that to project-defined realm roles. |
-| **Group + membership** | Per [ADR-3](ADR-3.md), authorization is group membership a **custodian** approves. The controller would create the project's groups and reconcile membership so that **authenticating against the service's OIDC client auto-assigns the client roles** the group carries — the group is the join point between ADR-3's custodian-approved membership and a service's client roles. This is also the source of the group names [ADR-19](ADR-19.md)'s `Organization.spec.access[]` already binds to Quay teams. |
+| **Group + membership** | Per [ADR-3](ADR-3.md), authorization is group membership a **custodian** approves. The controller would create the project's groups and reconcile membership so that a member **holds** the group's client roles, and **authenticating against the service's OIDC client then carries those already-assigned roles** into that client's token — the group is the join point between ADR-3's custodian-approved membership and a service's client roles (login surfaces the roles, it does not assign them). This is also the source of the group names [ADR-19](ADR-19.md)'s `Organization.spec.access[]` already binds to Quay teams. |
 
 ### OIDC Client (illustrative)
 
@@ -274,16 +274,40 @@ replacement, and the intended division of ownership is:
   config-cli's. The CRDs do **not** redeclare or fight over these.
 - **The controller owns per-project, tenant-facing objects.** A project's own
   OIDC clients, its service-scoped client roles, its project realm roles, and its
-  project groups are reconciled from the CRDs above. config-cli's no-delete
-  posture is what makes coexistence safe: the two reconcilers operate on disjoint
-  sets of realm objects, exactly as the Job today already avoids fighting the
-  `KeycloakRealmImport` CR by importing `realm: "holos"` with no `enabled` or
-  `identity-provider` fields.
+  project groups are reconciled from the CRDs above.
+
+Disjointness must be **enforced**, not assumed. Keycloak realm objects are a
+**single global namespace** (a realm has one set of clients, realm roles, and
+groups), but these CRDs are **Kubernetes-namespaced** and admit arbitrary
+`clientId`/`realmRole`/`groupName` values — so a tenant CR could name `argocd`,
+`authenticated`, or `platform-owner`, or collide with another project's object.
+`keycloak-config-cli`'s no-delete behavior does **not** make that safe on its own:
+no-delete only means the Job leaves objects it does not declare untouched; it does
+nothing to stop a controller-reconciled CR from **overwriting** a platform or
+foreign object. Two mechanisms are therefore **required** before the disjointness
+claim holds (their exact form is an open question below, but the *requirement* is
+fixed here):
+
+- **Reserved platform names.** The platform-owned identifiers
+  (`argocd`/`quay`/`kargo` clients; `platform-owner`/`platform-editor`/
+  `platform-viewer` realm roles; the `authenticated` group; the superuser users)
+  are reserved — a CR targeting one is rejected (`Ready=False reason: Reserved`),
+  never reconciled. This is what actually keeps the controller off config-cli's
+  objects; no-delete is necessary but not sufficient.
+- **An ownership/claim model across tenants**, mirroring [ADR-19](ADR-19.md)'s
+  Organization claim: the controller stamps a durable owner record on each realm
+  object it creates (the claiming CR's namespace/name); on reconcile it acts only
+  on an object it created (or one whose marker names this CR), and treats an
+  unmarked or foreign-owned object as a `Conflict` rather than seizing it. A
+  deterministic project-name prefix on tenant identifiers (e.g.
+  `<project>-<name>`) can reduce collisions, but the claim record — not the
+  prefix — is what makes the boundary safe.
 
 Whether the controller eventually **supersedes** config-cli — folding even the
 platform's own clients into CRDs — or the two coexist permanently is left open
 below. The decision recorded now is only the **disjoint-ownership starting
-boundary**: until this ADR is promoted past `Proposed` and a controller ships,
+boundary plus the reserved-name and claim requirements that enforce it**: until
+this ADR is promoted past `Proposed` and a controller ships,
 **`keycloak-config-cli` remains the sole owner of all realm clients, roles, and
 groups**, exactly as [ADR-18](ADR-18.md) states.
 
@@ -295,17 +319,22 @@ groups**, exactly as [ADR-18](ADR-18.md) states.
    delivered into the project namespace), **Client Roles** (the `owner`/`editor`/
    `viewer` triad scoped to one client), **Realm Roles** (with a realm-role →
    client-role mapping), and **Group creation + membership** (a custodian-managed
-   model, per [ADR-3](ADR-3.md), where authenticating against the client
-   auto-assigns the client roles).
+   model, per [ADR-3](ADR-3.md): a member of a group holds the group's client
+   roles, and authenticating against the owning client then carries those roles —
+   already assigned, not assigned at login — into that client's token via its
+   per-client client-role mapper).
 2. **This group is additive to, and disjoint from, the existing
    `keycloak-config-cli` reconciliation.** config-cli keeps owning the platform's
    own realm (the `argocd`/`quay`/`kargo` clients, the platform realm roles, the
    shared `groups`-claim mappers, the `authenticated` default group, the
-   superuser users); the controller owns per-project objects. config-cli's
-   no-delete managed-import is what makes the coexistence safe. This resolves the
-   *starting* ownership boundary [ADR-18](ADR-18.md) deferred to this ADR; until a
-   controller ships, **config-cli remains the sole owner** of all realm clients,
-   roles, and groups.
+   superuser users); the controller owns per-project objects. Because Keycloak
+   realm objects are a single global namespace while these CRDs are namespaced,
+   disjointness is **enforced** by **reserved platform names** (a CR targeting one
+   is rejected) and an **ownership/claim model** across tenants (mirroring
+   [ADR-19](ADR-19.md)) — config-cli's no-delete posture is necessary but not, on
+   its own, sufficient. This resolves the *starting* ownership boundary
+   [ADR-18](ADR-18.md) deferred to this ADR; until a controller ships,
+   **config-cli remains the sole owner** of all realm clients, roles, and groups.
 3. **These resources are lower priority than the Quay CRDs ([ADR-19](ADR-19.md))
    and need further design.** The schemas above are **illustrative, not final**;
    this ADR fixes the concepts and the ownership boundary, not the field-level
@@ -323,6 +352,15 @@ this ADR advances past `Proposed`:
   platform's own clients into CRDs? What is the migration path and the
   conflict-detection mechanism if both ever target an overlapping object (akin to
   [ADR-19](ADR-19.md)'s org ownership/claim model)?
+- **The reserved-name and ownership/claim mechanism.** The *requirement* is fixed
+  in the Decision (reserved platform names + a per-CR owner record, because realm
+  objects are global while the CRDs are namespaced), but the **mechanism** is
+  open: how is the reserved set expressed and kept in sync with the platform realm
+  config; where does the durable owner marker live for a Keycloak object (a
+  client/role/group has no obvious free-form metadata field like a Quay org); and
+  is a deterministic `<project>-<name>` prefix mandatory or advisory? This mirrors
+  [ADR-19](ADR-19.md)'s Organization claim model, which has the same global-vs-
+  namespaced tension.
 - **Client-secret delivery into project namespaces.** A confidential client's
   secret must reach the project namespace as **runtime-created, never-committed**
   material per [secret-handling.md](../../holos/docs/secret-handling.md). Does the
@@ -358,10 +396,14 @@ this ADR advances past `Proposed`:
   to rely on `keycloak-config-cli` for **all** realm management in the interim;
   nothing changes operationally until this ADR is promoted and a controller ships.
 - **The ownership boundary [ADR-18](ADR-18.md) deferred now has a starting
-  answer.** The disjoint-ownership rule (config-cli owns the platform realm; the
-  controller owns per-project objects) gives ADR-19's `Organization.spec.access[]`
-  a clear future source for its group names and removes the ambiguity ADR-18
-  flagged — without forcing a migration before the design is settled.
+  answer — with enforcement, not just intent.** The disjoint-ownership rule
+  (config-cli owns the platform realm; the controller owns per-project objects) is
+  backed by reserved platform names and a per-CR ownership/claim record, because
+  Keycloak realm objects are global while the CRDs are namespaced — config-cli's
+  no-delete posture alone would not stop a tenant CR from overwriting a platform
+  or foreign object. This gives ADR-19's `Organization.spec.access[]` a clear
+  future source for its group names and removes the ambiguity ADR-18 flagged —
+  without forcing a migration before the design is settled.
 - **New, security-sensitive responsibilities when it ships.** A controller that
   mints OIDC clients and delivers confidential secrets into project namespaces,
   and that reconciles group membership a custodian approves, becomes a
