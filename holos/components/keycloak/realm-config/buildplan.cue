@@ -107,11 +107,11 @@ let GROUPS_CLAIM = "groups"
 
 // The Quay OIDC client (HOL-1218; Quay's OIDC login is wired in HOL-1219).
 // Unlike Argo CD this is a *confidential* client: Quay holds a client secret
-// and uses the Authorization Code flow authenticated by that secret, now WITH
-// PKCE (S256) re-enabled to match the production example (HOL-1294).  The secret
-// is generated once by the QUAY_OIDC bootstrap Job below and substituted into the
-// realm import at run time by keycloak-config-cli's $(env:...) expansion, so no
-// secret is ever committed.
+// and uses the Authorization Code flow authenticated by that secret WITHOUT
+// PKCE (HOL-1317 — Quay 3.17.3 mishandles PKCE state across logout; see the
+// client definition below).  The secret is generated once by the QUAY_OIDC
+// bootstrap Job below and substituted into the realm import at run time by
+// keycloak-config-cli's $(env:...) expansion, so no secret is ever committed.
 //
 // The clientId is the Quay public URL (https://quay.holos.localhost), matching
 // the production example's QUAY_CLIENT_ID.  The three protocol mappers and the
@@ -324,8 +324,9 @@ let REALM_CONFIG = {
 	}, {
 		// HOL-1218: the Quay OIDC client.  Modeled on the argocd client above
 		// but confidential — Quay sends a client secret — and using the
-		// Authorization Code flow authenticated by that secret, with PKCE (S256)
-		// re-enabled (HOL-1294; see the pkce.code.challenge.method attribute below).
+		// Authorization Code flow authenticated by that secret, WITHOUT PKCE
+		// (HOL-1317; the pkce.code.challenge.method attribute is intentionally
+		// absent — see the no-PKCE note below).
 		//
 		// HOL-1245: the realm-role mapper below also emits the platform-owner
 		// realm role into the groups claim (mirroring the argocd client), so
@@ -341,7 +342,7 @@ let REALM_CONFIG = {
 		standardFlowEnabled: true
 		// Confidential client, but the additional confidential-only flows are
 		// off: Quay uses only the browser Authorization Code flow, authenticated
-		// by the client secret plus PKCE (S256 — see the attributes note below).
+		// by the client secret alone (no PKCE — see the no-PKCE note below).
 		serviceAccountsEnabled:    false
 		directAccessGrantsEnabled: false
 		// keycloak-config-cli substitutes the generated secret at run time from
@@ -349,16 +350,29 @@ let REALM_CONFIG = {
 		// is committed.  The bootstrap Job generates it once and never rotates
 		// it, so the value here stays stable across reconciles.
 		secret: "$(env:QUAY_OIDC_CLIENT_SECRET)"
-		// HOL-1294: PKCE (S256) re-enabled to match the production example
-		// (USE_PKCE: true / PKCE_METHOD: S256) and the argocd/kargo public clients
-		// above.  Quay's HOL-1293 OIDC phase sends a matching code_verifier, so the
-		// confidential client-secret + PKCE flow succeeds.  (Keycloak treats a client
-		// carrying this attribute as *requiring* PKCE; the earlier HOL-1257 workaround
-		// dropped it because Quay's old config did not round-trip the code_verifier,
-		// producing the "code exchange: 400" SSO failure — now resolved.)
-		attributes: "pkce.code.challenge.method": "S256"
-		redirectUris: ["\(QUAY_PUBLIC_URL)/*"]
-		webOrigins: [QUAY_PUBLIC_URL]
+		// HOL-1317: PKCE is intentionally NOT required for the quay client —
+		// the pkce.code.challenge.method attribute is deliberately absent (the
+		// argocd/kargo public clients above keep S256; quay does not).  Quay
+		// 3.17.3 does not properly support PKCE: it stores the code_challenge
+		// state in the _csrf_token and never clears it on logout, so a stale
+		// code_verifier is replayed on the next login and Keycloak rejects the
+		// code exchange.  Quay's KEYCLOAK_LOGIN_CONFIG correspondingly sets
+		// USE_PKCE: false (components/quay), so no code_verifier is sent and
+		// Keycloak must not require one.  Do NOT reintroduce
+		// pkce.code.challenge.method here without re-enabling USE_PKCE on the
+		// Quay side and confirming the logout-state bug is fixed.  (This
+		// reverses HOL-1293/HOL-1294, which had re-enabled PKCE.)
+		//
+		// redirectUris / webOrigins are set verbatim from the HOL-1317 client
+		// JSON: the three explicit Quay OAuth callback paths (replacing the
+		// earlier /* wildcard) and an empty web origin (Quay's server-side
+		// Authorization Code flow needs no CORS origin).
+		redirectUris: [
+			"\(QUAY_PUBLIC_URL)/oauth2/keycloak/callback/attach",
+			"\(QUAY_PUBLIC_URL)/oauth2/keycloak/callback/cli",
+			"\(QUAY_PUBLIC_URL)/oauth2/keycloak/callback",
+		]
+		webOrigins: [""]
 		protocolMappers: [
 			{
 				name:           "groups"

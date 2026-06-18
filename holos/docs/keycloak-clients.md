@@ -71,7 +71,8 @@ They differ in the usual per-client details (redirect URIs, web origins, roles,
 and which protocol mappers they carry), but the key template distinction is
 **public vs confidential**, which also decides whether a client-secret bootstrap
 is needed. `argocd` and `kargo` are public PKCE clients; `quay` is the
-confidential PKCE client (see below). All three use PKCE (`S256`).
+confidential client (see below). `argocd` and `kargo` use PKCE (`S256`); `quay`
+does **not** (HOL-1317 — Quay 3.17.3 mishandles PKCE state across logout).
 
 ### Public PKCE client (argocd)
 
@@ -88,18 +89,23 @@ directAccessGrantsEnabled: false
 attributes: "pkce.code.challenge.method": "S256"
 ```
 
-### Confidential PKCE client (quay)
+### Confidential client, no PKCE (quay)
 
 Quay's `KEYCLOAK_LOGIN_CONFIG` validator requires a `CLIENT_SECRET`, so the
 `quay` client is **confidential** (`publicClient: false`) and authenticates with
-that secret. Like `argocd`, it also uses PKCE (`S256`): the client sets
-`pkce.code.challenge.method: "S256"`, matching Quay's `USE_PKCE: true` /
-`PKCE_METHOD: "S256"` (ADR-15 Revision 4, HOL-1293). PKCE was briefly disabled
-for `quay` (Revision 2, HOL-1257) over a `code exchange: 400` failure but
-re-enabled on both ends in Revision 4 — so `quay` is **no longer** a PKCE
+that secret. Unlike `argocd`/`kargo`, the `quay` client does **not** use PKCE: it
+carries **no** `pkce.code.challenge.method` attribute, matching Quay's
+`USE_PKCE: false` (HOL-1317). Quay 3.17.3 mishandles PKCE — it stores the
+`code_challenge` state in the `_csrf_token` cookie and never clears it on logout,
+so a stale `code_verifier` is replayed on the next login and Keycloak rejects the
+exchange with `code exchange: 400`. PKCE was briefly disabled for `quay`
+(Revision 2, HOL-1257), re-enabled in Revision 4 (HOL-1293/HOL-1294), then
+disabled again in HOL-1317 for the logout bug — so `quay` is again the lone PKCE
 exception. See [ADR-15](../../docs/adr/ADR-15.md) and the operational
 [Quay↔Keycloak OIDC runbook](../../docs/runbooks/quay-keycloak-oidc.md). The
-`secret` field holds a `$(env:...)` placeholder, never a literal value:
+`secret` field holds a `$(env:...)` placeholder, never a literal value; the
+`redirectUris` are the three explicit Quay OAuth callback paths (HOL-1317), not a
+`/*` wildcard:
 
 ```cue
 clientId:                  QUAY_CLIENT_ID
@@ -108,7 +114,12 @@ standardFlowEnabled:       true
 serviceAccountsEnabled:    false
 directAccessGrantsEnabled: false
 secret: "$(env:QUAY_OIDC_CLIENT_SECRET)"
-attributes: "pkce.code.challenge.method": "S256"
+// no pkce.code.challenge.method attribute — PKCE not required (HOL-1317)
+redirectUris: [
+	"\(QUAY_PUBLIC_URL)/oauth2/keycloak/callback/attach",
+	"\(QUAY_PUBLIC_URL)/oauth2/keycloak/callback/cli",
+	"\(QUAY_PUBLIC_URL)/oauth2/keycloak/callback",
+]
 ```
 
 ### The runtime client-secret bootstrap
@@ -232,11 +243,11 @@ copy from.
    complete steps 4–5.
 2. **PKCE `S256`.** Set
    `attributes: "pkce.code.challenge.method": "S256"` on the client. Use PKCE
-   wherever the flow supports it, as the platform default — all three clients
-   carry it: the public `argocd` and `kargo`, and the confidential `quay`
-   (re-enabled in ADR-15 Revision 4 / HOL-1293). There is **no** standing PKCE
-   exception today; only relax PKCE for a client with a demonstrated
-   implementation gap (see step 7).
+   wherever the flow supports it, as the platform default — the public `argocd`
+   and `kargo` clients carry it. The confidential `quay` client is the standing
+   exception: it carries **no** PKCE attribute (HOL-1317) because Quay 3.17.3
+   replays a stale `code_verifier` after logout (see step 7). Only relax PKCE for
+   a client with a demonstrated implementation gap like Quay's.
 3. **Redirect URIs and web origins.** Set `redirectUris` to the relying party's
    callback URL(s) (host resolves to `127.0.0.1` per
    [`docs/local-cluster.md`](../../docs/local-cluster.md)) and `webOrigins` to
@@ -257,19 +268,19 @@ copy from.
    Write them all into the shared `groups` claim unless the relying party
    requires a different claim name.
 7. **No PKCE for clients with an implementation gap.** If the relying party's
-   PKCE implementation is incomplete, do not require PKCE for its client. Quay
-   hit this once — its confidential OIDC client failed to round-trip a
-   `code_verifier`, producing `code exchange: 400` at the token endpoint, so
-   HOL-1257 (Revision 2) dropped PKCE for the `quay` client. That was later
-   **resolved**: HOL-1293 (ADR-15 Revision 4) re-enabled PKCE (`S256`) on both
-   ends — the `quay` client now carries `pkce.code.challenge.method: "S256"` and
-   Quay sets `USE_PKCE: true` / `PKCE_METHOD: "S256"` — matching the production
-   reference configuration. So there is **no** standing no-PKCE client today.
-   When PKCE *is* mismatched (set on only one end) the same `code exchange: 400`
-   appears as a verification signal; the troubleshooting lives in the
-   [Quay↔Keycloak OIDC runbook](../../docs/runbooks/quay-keycloak-oidc.md). Only
-   relax or skip requiring PKCE for a client with a demonstrated implementation
-   gap.
+   PKCE implementation is incomplete, do not require PKCE for its client. The
+   `quay` client is the standing example. PKCE was dropped for it (HOL-1257,
+   Revision 2), re-enabled (HOL-1293/HOL-1294, Revision 4), then **dropped again
+   in HOL-1317**: Quay 3.17.3 stores the `code_challenge` state in the
+   `_csrf_token` cookie and never clears it on logout, so a stale `code_verifier`
+   is replayed on the next login and Keycloak rejects the exchange with
+   `Got non-2XX response for code exchange: 400` (login-after-logout fails).
+   Today the `quay` client carries **no** `pkce.code.challenge.method` attribute
+   and Quay sets `USE_PKCE: false` (no `PKCE_METHOD`) — both ends agree no PKCE.
+   Do not re-enable PKCE for `quay` without first confirming the Quay
+   logout-state bug is fixed. Note the same `code exchange: 400` also appears
+   when PKCE is *mismatched* (set on only one end); the troubleshooting lives in
+   the [Quay↔Keycloak OIDC runbook](../../docs/runbooks/quay-keycloak-oidc.md).
 8. **Render then commit.** This is a `holos/components/` change, so follow the
    render contract in [`AGENTS.md`](../../AGENTS.md) and
    [`component-guidelines.md`](component-guidelines.md): commit the `.cue`
@@ -281,8 +292,8 @@ copy from.
 ## References
 
 - [ADR-15 — Quay↔Keycloak OIDC SSO](../../docs/adr/ADR-15.md) — the
-  decision record for the Quay SSO integration (Revision 4: OIDC backend, PKCE
-  re-enabled for the `quay` client, two Keycloak-backed superusers).
+  decision record for the Quay SSO integration (OIDC backend, two Keycloak-backed
+  superusers; PKCE disabled again for the `quay` client per HOL-1317).
 - [Quay↔Keycloak OIDC runbook](../../docs/runbooks/quay-keycloak-oidc.md) — the
   operational companion: wiring, the two superuser realm users, secret rotation,
   and the `code exchange: 400` PKCE-verification note.

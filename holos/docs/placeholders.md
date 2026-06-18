@@ -91,7 +91,7 @@ purge is deliberately not enabled).
 
 **Resolved.** Quay now signs users in through the Keycloak `holos` realm with
 the Authorization Code flow, using the confidential `quay` client (authenticated
-by its client secret, with PKCE `S256` — ADR-15 Revision 4) reconciled by the
+by its client secret, with **no** PKCE — ADR-15 Revision 7 / HOL-1317) reconciled by the
 `keycloak-config` Job. Quay runs `AUTHENTICATION_TYPE: OIDC`, so the realm is the
 sole identity store. The username is taken from the ID token's
 `preferred_username` claim with no customization, and the `quay` client roles
