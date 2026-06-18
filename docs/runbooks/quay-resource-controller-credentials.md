@@ -18,14 +18,17 @@ the credential's open design questions (which organization, which scopes, can
 it create new organizations).
 
 > **This manual procedure is the interim step.** The "future Quay Resource
-> Controller" referenced here is now designed as the **Holos Controller**
-> ([ADR-18](../adr/ADR-18.md)), whose `quay.holos.run` Organization and
-> Repository CRDs ([ADR-19](../adr/ADR-19.md)) will reconcile the
-> org/repo/robot/webhook provisioning — and eventually this very credential —
-> in-cluster, retiring the hand procedure below. The Holos Project and
-> Application components ([ADR-21](../adr/ADR-21.md)) are what emit those CRDs
-> per project/app. Until the controller ships, this runbook remains operative:
-> the credential it produces is exactly what the controller will consume.
+> Controller" referenced here has a **proposed** design (`Status: Proposed`, not
+> yet implemented): the **Holos Controller** ([ADR-18](../adr/ADR-18.md)), whose
+> `quay.holos.run` Organization and Repository CRDs ([ADR-19](../adr/ADR-19.md))
+> will reconcile the **org/repo/robot/webhook** provisioning in-cluster, retiring
+> the data-plane parts of the hand procedure below. The proposed Holos Project
+> and Application components ([ADR-21](../adr/ADR-21.md)) are what would emit those
+> CRDs per project/app. Note the credential this runbook produces is **not** one
+> of those CRDs: ADR-19 has the controller *read* this OAuth-Application token
+> from the `quay`-namespace Secret (it never commits it), so this bootstrap
+> credential is the controller's input, not something the CRDs reconcile away.
+> Until the controller ships, this runbook remains operative.
 
 The binding decision record is
 [ADR-15 — Quay↔Keycloak OIDC SSO](../adr/ADR-15.md); the controller and CRDs that
@@ -319,8 +322,8 @@ in-cluster and this manual procedure is retired.
   provisioning deferred to a future Quay Resource Controller).
 - [ADR-18 — The Holos Controller and the GitOps Rendered-Manifest Delivery
   Model](../adr/ADR-18.md) — the controller that will automate the provisioning
-  this runbook performs by hand (the design of record for the "future Quay
-  Resource Controller").
+  this runbook performs by hand (the proposed design for the "future Quay
+  Resource Controller", `Status: Proposed`).
 - [ADR-19 — Quay API Group (`quay.holos.run`): Organization and Repository
   CRDs](../adr/ADR-19.md) — the CRDs the controller reconciles to provision
   orgs/repos/robots/webhooks in-cluster.
