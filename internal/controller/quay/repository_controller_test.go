@@ -215,7 +215,7 @@ func TestRepositoryThreadsCABundleToClientFactory(t *testing.T) {
 		t.Fatalf("creating credential secret: %v", err)
 	}
 	makeReadyOrg(ctx, t, ns, "acme")
-	caBundle := []byte("-----BEGIN CERTIFICATE-----\nMIIB...test...\n-----END CERTIFICATE-----\n")
+	caBundle := validTestCABundle(t)
 	key := makeRepo(ctx, t, ns, "acme", "web", repoOpts{caBundle: caBundle})
 
 	fake := newFakeRepoClient()
@@ -227,6 +227,34 @@ func TestRepositoryThreadsCABundleToClientFactory(t *testing.T) {
 
 	if string(fake.gotCABundle) != string(caBundle) {
 		t.Errorf("RepoClientFactory received caBundle %q, want the spec's %q", fake.gotCABundle, caBundle)
+	}
+}
+
+func TestRepositoryInvalidCABundleFailsWithoutQuayCall(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	key := makeRepo(ctx, t, ns, "acme", "web", repoOpts{caBundle: []byte("not a pem block")})
+
+	fake := newFakeRepoClient()
+	r, _ := newRepoReconciler(fake, ns)
+
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err == nil {
+		t.Fatal("expected reconcile to fail for an invalid caBundle")
+	}
+
+	if len(fake.calls) != 0 {
+		t.Errorf("expected no Quay calls for an invalid caBundle, calls were %v", fake.calls)
+	}
+	got := getRepo(ctx, t, key)
+	if s := repoConditionStatus(got, ConditionReady); s != metav1.ConditionFalse {
+		t.Errorf("Ready = %q, want False for an invalid caBundle", s)
+	}
+	if reason := repoConditionReason(got, ConditionReady); reason != ReasonQuayError {
+		t.Errorf("Ready reason = %q, want %q", reason, ReasonQuayError)
 	}
 }
 

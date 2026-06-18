@@ -85,6 +85,21 @@ func NewClient(baseURL, token string, httpClient *http.Client) *Client {
 	}
 }
 
+// ValidateCABundle reports whether a non-empty caBundle contains at least one
+// parseable x509 certificate, so a caller (e.g. a reconciler) can reject an
+// invalid spec.caBundle up front rather than discovering it only when building a
+// client. An empty bundle is valid (it means "use system trust unchanged"). The
+// error message mirrors the one NewClientWithCABundle would return.
+func ValidateCABundle(caBundle []byte) error {
+	if len(caBundle) == 0 {
+		return nil
+	}
+	if !x509.NewCertPool().AppendCertsFromPEM(caBundle) {
+		return fmt.Errorf("quay: no valid certificates found in caBundle")
+	}
+	return nil
+}
+
 // NewClientWithCABundle returns a Client that, in addition to the system trust
 // store, trusts the x509 CA certificates in the PEM-encoded caBundle when
 // establishing TLS to the Quay API. It is the constructor the holos-controller
@@ -108,11 +123,14 @@ func NewClientWithCABundle(baseURL, token string, caBundle []byte) (*Client, err
 
 // httpClientForCABundle builds the *http.Client NewClientWithCABundle uses. When
 // caBundle is empty it returns nil so the caller falls back to NewClient's
-// default (system trust, default transport). Otherwise it constructs a client
-// with a custom transport whose RootCAs is the system pool — falling back to an
-// empty pool when x509.SystemCertPool errors or returns nil (e.g. on a scratch
-// image) — with caBundle appended via AppendCertsFromPEM. A non-empty bundle
-// that yields no certificates is an error rather than a silent no-op.
+// default (system trust, default transport). Otherwise it clones
+// http.DefaultTransport and overrides only TLSClientConfig.RootCAs, so the
+// resulting client keeps Go's default transport behavior — HTTP_PROXY/NO_PROXY
+// honoring, connection pooling, dial/TLS handshake timeouts, HTTP/2 — and merely
+// trusts the extra roots. The RootCAs pool is the system pool (falling back to
+// an empty pool when x509.SystemCertPool errors or returns nil, e.g. on a
+// scratch image) with caBundle appended via AppendCertsFromPEM. A non-empty
+// bundle that yields no certificates is an error rather than a silent no-op.
 func httpClientForCABundle(caBundle []byte) (*http.Client, error) {
 	if len(caBundle) == 0 {
 		return nil, nil
@@ -124,7 +142,14 @@ func httpClientForCABundle(caBundle []byte) (*http.Client, error) {
 	if !pool.AppendCertsFromPEM(caBundle) {
 		return nil, fmt.Errorf("quay: no valid certificates found in caBundle")
 	}
-	transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}
+	// Clone the default transport so proxy, pooling, timeout, and HTTP/2
+	// behavior is preserved; only the trust roots change. http.DefaultTransport
+	// is always an *http.Transport.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	}
+	transport.TLSClientConfig.RootCAs = pool
 	return &http.Client{Timeout: defaultTimeout, Transport: transport}, nil
 }
 

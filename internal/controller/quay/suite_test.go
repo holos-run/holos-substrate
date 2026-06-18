@@ -2,9 +2,17 @@ package quay
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -17,6 +25,32 @@ import (
 
 	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
 )
+
+// validTestCABundle generates a real, parseable PEM-encoded x509 certificate so
+// reconciler tests can set a valid spec.caBundle that survives the controller's
+// up-front quay.ValidateCABundle check. (A placeholder string like "MIIB...test"
+// is not a valid certificate and is rejected before any Quay call.)
+func validTestCABundle(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "holos-test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("creating certificate: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
 
 // testEnv holds the shared envtest control plane and clients each test reuses.
 // It is set up once per package run by TestMain and torn down afterward, because

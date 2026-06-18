@@ -151,7 +151,7 @@ func TestReconcileThreadsCABundleToClientFactory(t *testing.T) {
 		t.Fatalf("creating credential secret: %v", err)
 	}
 
-	caBundle := []byte("-----BEGIN CERTIFICATE-----\nMIIB...test...\n-----END CERTIFICATE-----\n")
+	caBundle := validTestCABundle(t)
 	org := &quayv1alpha1.Organization{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "acme"},
 		Spec: quayv1alpha1.OrganizationSpec{
@@ -174,6 +174,47 @@ func TestReconcileThreadsCABundleToClientFactory(t *testing.T) {
 
 	if string(fake.gotCABundle) != string(caBundle) {
 		t.Errorf("ClientFactory received caBundle %q, want the spec's %q", fake.gotCABundle, caBundle)
+	}
+}
+
+func TestReconcileInvalidCABundleFailsWithoutQuayCall(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+
+	org := &quayv1alpha1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "acme"},
+		Spec: quayv1alpha1.OrganizationSpec{
+			Name:     "acme",
+			Email:    "acme@example.test",
+			CABundle: []byte("not a pem block"),
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, org); err != nil {
+		t.Fatalf("creating Organization: %v", err)
+	}
+	key := client.ObjectKeyFromObject(org)
+
+	fake := newFakeOrgClient()
+	r, _ := newReconciler(fake, ns)
+
+	// reconcileUntilStable returns the reconcile error; an invalid caBundle must
+	// fail the reconcile (so it requeues with backoff).
+	if err := reconcileUntilStable(ctx, t, r, key); err == nil {
+		t.Fatal("expected reconcile to fail for an invalid caBundle")
+	}
+
+	if len(fake.calls) != 0 {
+		t.Errorf("expected no Quay calls for an invalid caBundle, calls were %v", fake.calls)
+	}
+	got := getOrg(ctx, t, key)
+	if s := conditionStatus(got, ConditionReady); s != metav1.ConditionFalse {
+		t.Errorf("Ready = %q, want False for an invalid caBundle", s)
+	}
+	if reason := conditionReason(got, ConditionReady); reason != ReasonQuayError {
+		t.Errorf("Ready reason = %q, want %q", reason, ReasonQuayError)
 	}
 }
 

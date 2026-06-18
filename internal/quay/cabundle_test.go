@@ -125,6 +125,44 @@ func TestNewClientWithCABundleInvalidPEM(t *testing.T) {
 	}
 }
 
+func TestValidateCABundle(t *testing.T) {
+	_, caPEM := selfSignedCert(t)
+	if err := ValidateCABundle(nil); err != nil {
+		t.Errorf("empty bundle must be valid, got %v", err)
+	}
+	if err := ValidateCABundle([]byte{}); err != nil {
+		t.Errorf("empty (non-nil) bundle must be valid, got %v", err)
+	}
+	if err := ValidateCABundle(caPEM); err != nil {
+		t.Errorf("a real PEM cert must be valid, got %v", err)
+	}
+	if err := ValidateCABundle([]byte("not a pem block")); err == nil {
+		t.Error("a non-empty bundle with no parseable cert must be invalid")
+	}
+}
+
+// TestNewClientWithCABundlePreservesProxyAwareTransport checks that a CA-bundle
+// client keeps Go's default transport behavior (cloned from
+// http.DefaultTransport) rather than a bare *http.Transport, so proxy/pooling/
+// timeout/HTTP-2 defaults are not silently dropped when a bundle is set.
+func TestNewClientWithCABundlePreservesProxyAwareTransport(t *testing.T) {
+	_, caPEM := selfSignedCert(t)
+	c, err := NewClientWithCABundle("https://quay.example.com", "tok", caPEM)
+	if err != nil {
+		t.Fatalf("NewClientWithCABundle: %v", err)
+	}
+	tr, ok := c.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport is %T, want *http.Transport", c.httpClient.Transport)
+	}
+	if tr.Proxy == nil {
+		t.Error("transport must inherit the default Proxy func (HTTP_PROXY/NO_PROXY honoring), got nil")
+	}
+	if tr.TLSClientConfig == nil || tr.TLSClientConfig.RootCAs == nil {
+		t.Error("transport must set TLSClientConfig.RootCAs to the trust pool")
+	}
+}
+
 func TestHTTPClientForCABundleEmptyIsNil(t *testing.T) {
 	hc, err := httpClientForCABundle(nil)
 	if err != nil {

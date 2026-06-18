@@ -183,6 +183,13 @@ func (r *RepositoryReconciler) reconcileNormal(ctx context.Context, logger logr.
 		return r.handleCredentialError(ctx, repo, err)
 	}
 
+	// Reject an invalid spec.caBundle up front so a malformed bundle surfaces as
+	// a failed reconcile (Ready=False) rather than silently falling back to
+	// system trust and possibly reporting Ready=True for an unhonored spec.
+	if err := quay.ValidateCABundle(repo.Spec.CABundle); err != nil {
+		return r.fail(ctx, repo, err)
+	}
+
 	qc := r.NewClient(cred, repo.Spec.CABundle)
 
 	// Resolve the Quay org name through the Organization CR named by
@@ -567,6 +574,14 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 	cred, err := resolveCredential(ctx, r.APIReader, r.Namespace, repo.Spec.CredentialsSecretRef)
 	if err != nil {
 		return r.handleCredentialError(ctx, repo, err)
+	}
+
+	// A malformed spec.caBundle must not be silently ignored on the delete path
+	// either: fail (requeue) rather than build a system-trust client that does
+	// not honor the spec, keeping the finalizer until the bundle is corrected.
+	if err := quay.ValidateCABundle(repo.Spec.CABundle); err != nil {
+		r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonQuayError, err.Error())
+		return ctrl.Result{}, err
 	}
 
 	qc := r.NewClient(cred, repo.Spec.CABundle)

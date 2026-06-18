@@ -182,6 +182,13 @@ func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger log
 		return r.handleCredentialError(ctx, org, err)
 	}
 
+	// Reject an invalid spec.caBundle up front so a malformed bundle surfaces as
+	// a failed reconcile (Ready=False) rather than silently falling back to
+	// system trust and possibly reporting Ready=True for an unhonored spec.
+	if err := quay.ValidateCABundle(org.Spec.CABundle); err != nil {
+		return r.fail(ctx, org, err)
+	}
+
 	qc := r.NewClient(cred, org.Spec.CABundle)
 
 	// ADR-19 claim model. Quay orgs are a single global namespace and the
@@ -444,6 +451,15 @@ func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *quayv
 		// the CR by dropping the finalizer when cleanup could not run. Surface
 		// the condition and requeue.
 		return r.handleCredentialError(ctx, org, err)
+	}
+
+	// A malformed spec.caBundle must not be silently ignored on the delete path
+	// either: fail (requeue) rather than build a system-trust client that does
+	// not honor the spec, which keeps the finalizer in place until the bundle is
+	// corrected.
+	if err := quay.ValidateCABundle(org.Spec.CABundle); err != nil {
+		r.Recorder.Event(org, corev1.EventTypeWarning, ReasonQuayError, err.Error())
+		return ctrl.Result{}, err
 	}
 
 	qc := r.NewClient(cred, org.Spec.CABundle)
