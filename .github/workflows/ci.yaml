@@ -79,9 +79,19 @@ jobs:
         run: go vet ./...
 
       # Run the race-enabled suite directly rather than via `make test`, whose
-      # fmt/vet prerequisites are already covered by the steps above.
+      # fmt/vet prerequisites are already covered by the steps above. The
+      # envtest-backed controller tests (internal/controller/...) skip here when
+      # KUBEBUILDER_ASSETS is unset and are exercised in the dedicated step below.
       - name: test
         run: go test -race -coverprofile cover.out ./...
+
+      # Exercise the holos-controller reconcilers against an envtest control
+      # plane. `make controller-test` provisions the pinned kube-apiserver/etcd
+      # binaries via setup-envtest and exports KUBEBUILDER_ASSETS, so the
+      # envtest-backed Organization reconcile tests (which the step above skips
+      # without the assets) actually run. This is the job that owns those tests.
+      - name: controller envtest
+        run: make controller-test
 
       # Pinned to the full commit SHA of v8.0.0 for supply-chain hardening.
       - name: golangci-lint
