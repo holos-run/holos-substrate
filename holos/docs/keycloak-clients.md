@@ -94,7 +94,7 @@ attributes: "pkce.code.challenge.method": "S256"
 Quay's `KEYCLOAK_LOGIN_CONFIG` validator requires a `CLIENT_SECRET`, so the
 `quay` client is **confidential** (`publicClient: false`) and authenticates with
 that secret. Unlike `argocd`/`kargo`, the `quay` client does **not** use PKCE: it
-carries **no** `pkce.code.challenge.method` attribute, matching Quay's
+sets `pkce.code.challenge.method` to the empty/"none" method, matching Quay's
 `USE_PKCE: false` (HOL-1317). Quay 3.17.3 mishandles PKCE — it stores the
 `code_challenge` state in the `_csrf_token` cookie and never clears it on logout,
 so a stale `code_verifier` is replayed on the next login and Keycloak rejects the
@@ -114,12 +114,15 @@ standardFlowEnabled:       true
 serviceAccountsEnabled:    false
 directAccessGrantsEnabled: false
 secret: "$(env:QUAY_OIDC_CLIENT_SECRET)"
-// no pkce.code.challenge.method attribute — PKCE not required (HOL-1317)
+// empty method = PKCE not required (HOL-1317); set explicitly (not omitted) so
+// keycloak-config-cli overwrites any prior "S256" rather than merge-keeping it.
+attributes: "pkce.code.challenge.method": ""
 redirectUris: [
 	"\(QUAY_PUBLIC_URL)/oauth2/keycloak/callback/attach",
 	"\(QUAY_PUBLIC_URL)/oauth2/keycloak/callback/cli",
 	"\(QUAY_PUBLIC_URL)/oauth2/keycloak/callback",
 ]
+webOrigins: []
 ```
 
 ### The runtime client-secret bootstrap
@@ -245,9 +248,9 @@ copy from.
    `attributes: "pkce.code.challenge.method": "S256"` on the client. Use PKCE
    wherever the flow supports it, as the platform default — the public `argocd`
    and `kargo` clients carry it. The confidential `quay` client is the standing
-   exception: it carries **no** PKCE attribute (HOL-1317) because Quay 3.17.3
-   replays a stale `code_verifier` after logout (see step 7). Only relax PKCE for
-   a client with a demonstrated implementation gap like Quay's.
+   exception: it sets the attribute to the empty/"none" method (HOL-1317) because
+   Quay 3.17.3 replays a stale `code_verifier` after logout (see step 7). Only
+   relax PKCE for a client with a demonstrated implementation gap like Quay's.
 3. **Redirect URIs and web origins.** Set `redirectUris` to the relying party's
    callback URL(s) (host resolves to `127.0.0.1` per
    [`docs/local-cluster.md`](../../docs/local-cluster.md)) and `webOrigins` to
@@ -275,10 +278,12 @@ copy from.
    `_csrf_token` cookie and never clears it on logout, so a stale `code_verifier`
    is replayed on the next login and Keycloak rejects the exchange with
    `Got non-2XX response for code exchange: 400` (login-after-logout fails).
-   Today the `quay` client carries **no** `pkce.code.challenge.method` attribute
-   and Quay sets `USE_PKCE: false` (no `PKCE_METHOD`) — both ends agree no PKCE.
-   Do not re-enable PKCE for `quay` without first confirming the Quay
-   logout-state bug is fixed. Note the same `code exchange: 400` also appears
+   Today the `quay` client sets `pkce.code.challenge.method` to the empty/"none"
+   method — set explicitly, not omitted, so keycloak-config-cli (which merges
+   client attributes and would not delete an omitted key) overwrites any prior
+   `S256` on a previously-PKCE cluster — and Quay sets `USE_PKCE: false` (no
+   `PKCE_METHOD`), so both ends agree no PKCE. Do not re-enable PKCE for `quay`
+   without first confirming the Quay logout-state bug is fixed. Note the same `code exchange: 400` also appears
    when PKCE is *mismatched* (set on only one end); the troubleshooting lives in
    the [Quay↔Keycloak OIDC runbook](../../docs/runbooks/quay-keycloak-oidc.md).
 8. **Render then commit.** This is a `holos/components/` change, so follow the

@@ -69,8 +69,10 @@ The `quay` client is defined in
   used.
 - `secret: "$(env:QUAY_OIDC_CLIENT_SECRET)"` — substituted at reconcile time
   from the bootstrap secret (see below), never a committed value.
-- **No `pkce.code.challenge.method` attribute** — PKCE is intentionally **not**
-  required on the code exchange (HOL-1317), matching Quay's `USE_PKCE: false`. See
+- **`attributes."pkce.code.challenge.method": ""`** — the empty/"none" method:
+  PKCE is intentionally **not** required on the code exchange (HOL-1317), matching
+  Quay's `USE_PKCE: false`. Set explicitly (not omitted) so keycloak-config-cli
+  overwrites any prior `S256` on a previously-PKCE cluster. See
   [PKCE on the `quay` client](#pkce-on-the-quay-client).
 - `redirectUris` — the three explicit Quay OAuth callback paths under
   `https://quay.holos.localhost/oauth2/keycloak/callback` (`…/callback`,
@@ -111,7 +113,7 @@ Quay's side is the `KEYCLOAK_LOGIN_CONFIG` block in
 | `LOGIN_SCOPES` | `openid`, `profile`, `email`, `groups`, `offline_access` | |
 | `PREFERRED_USERNAME_CLAIM_NAME` | `preferred_username` | username, verbatim |
 | `PREFERRED_GROUP_CLAIM_NAME` | `groups` | the group/role-name claim; team syncing from it is **on** (`FEATURE_TEAM_SYNCING: true`) |
-| `USE_PKCE` | `false` | PKCE disabled (HOL-1317); no `PKCE_METHOD`. Matches the `quay` client carrying no `pkce.code.challenge.method` attribute |
+| `USE_PKCE` | `false` | PKCE disabled (HOL-1317); no `PKCE_METHOD`. Matches the `quay` client's empty `pkce.code.challenge.method` attribute |
 
 ### Issuer trailing-slash requirement
 
@@ -218,10 +220,12 @@ CA/DNS is not trusted (see [docs/local-cluster.md](../local-cluster.md)).
 ## PKCE on the `quay` client
 
 The platform standard is **PKCE for OIDC clients** (`S256`), but the `quay`
-client is the deliberate exception: it carries **no**
-`pkce.code.challenge.method` attribute, matching Quay's `USE_PKCE: false`
-(HOL-1317). The public `argocd` and `kargo` clients keep `S256`; only `quay`
-drops it.
+client is the deliberate exception: it sets `pkce.code.challenge.method` to the
+empty/"none" method, matching Quay's `USE_PKCE: false` (HOL-1317). The public
+`argocd` and `kargo` clients keep `S256`; only `quay` drops it. The empty value is
+set **explicitly** (not omitted): keycloak-config-cli merges client attributes on
+update, so an omitted key would leave a prior `S256` in place on a cluster that
+once had PKCE enabled; the empty value overwrites it on every reconcile.
 
 Quay 3.17.3 mishandles PKCE state: it stores the `code_challenge`/verifier in the
 `_csrf_token` cookie and never clears it on logout, so a stale `code_verifier` is
@@ -235,8 +239,8 @@ Both ends must agree: neither sends nor requires PKCE.
 - Quay (`holos/components/quay/buildplan.cue`): `USE_PKCE: false` (no
   `PKCE_METHOD`) in `KEYCLOAK_LOGIN_CONFIG`.
 - The Keycloak `quay` client
-  (`holos/components/keycloak/realm-config/buildplan.cue`): **no**
-  `pkce.code.challenge.method` attribute.
+  (`holos/components/keycloak/realm-config/buildplan.cue`):
+  `pkce.code.challenge.method` set to the empty/"none" method.
 
 > **History.** PKCE was **disabled** for the `quay` client (Revision 2, HOL-1257)
 > after the confidential client-secret exchange failed to round-trip a
@@ -377,8 +381,8 @@ typically see and the remediation:
 
 | # | Root cause | Keycloak signal | Remediation |
 |---|-----------|-----------------|-------------|
-| 1a | **Stale PKCE state after logout (HOL-1317)** — the original symptom: PKCE was enabled and Quay 3.17.3 replayed a stale `code_verifier` from the `_csrf_token` cookie on the next login | `invalid_grant` | Fixed by disabling PKCE on both ends (HOL-1317). Confirm the `quay` client carries **no** `pkce.code.challenge.method` attribute **and** Quay sets `USE_PKCE: false`. See [PKCE on the `quay` client](#pkce-on-the-quay-client). |
-| 1b | **PKCE mismatch — only one end has it** — the `quay` client's `pkce.code.challenge.method` was re-added while Quay still sets `USE_PKCE: false`, or vice versa | `invalid_grant` / `code_verifier_missing` | Confirm **both** ends agree on *no* PKCE: no `pkce.code.challenge.method` on the `quay` client **and** `USE_PKCE: false` in `KEYCLOAK_LOGIN_CONFIG`. Re-render, re-apply. |
+| 1a | **Stale PKCE state after logout (HOL-1317)** — the original symptom: PKCE was enabled and Quay 3.17.3 replayed a stale `code_verifier` from the `_csrf_token` cookie on the next login | `invalid_grant` | Fixed by disabling PKCE on both ends (HOL-1317). Confirm the `quay` client's `pkce.code.challenge.method` is empty (`""`) **and** Quay sets `USE_PKCE: false`. See [PKCE on the `quay` client](#pkce-on-the-quay-client). |
+| 1b | **PKCE mismatch — only one end has it** — the `quay` client's `pkce.code.challenge.method` was re-set to `S256` while Quay still sets `USE_PKCE: false`, or vice versa | `invalid_grant` / `code_verifier_missing` | Confirm **both** ends agree on *no* PKCE: `pkce.code.challenge.method: ""` on the `quay` client **and** `USE_PKCE: false` in `KEYCLOAK_LOGIN_CONFIG`. Re-render, re-apply. |
 | 2 | **Client secret mismatch / empty** — the `quay-oidc` Secret differs between namespaces, or wasn't substituted | `invalid_client` | Compare the secret in both namespaces (see [Inspect or rotate](#inspect-or-rotate-the-quay-oidc-secret)). If they differ, rotate so both match; then restart the Quay Deployment. |
 | 3 | **Public/confidential mismatch** — the `quay` client flipped to `publicClient: true`, or Quay stopped sending the secret | `invalid_client` | Confirm `publicClient: false` on the Keycloak client and `CLIENT_SECRET` present in Quay's config. Re-render/apply. |
 | 4 | **Redirect-URI mismatch** — the callback URL isn't one of the registered `redirectUris` | `invalid_grant` (redirect_uri) | Confirm the Keycloak client's explicit `redirectUris` include the callback in use — e.g. `https://quay.holos.localhost/oauth2/keycloak/callback` (HOL-1317 registers `…/callback`, `…/callback/attach`, `…/callback/cli`). A new Quay callback service-id needs its exact path added. See [Redirect-URI convention](#redirect-uri-convention). |

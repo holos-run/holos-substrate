@@ -15,7 +15,7 @@
 | 4        | 2026-06-17 | @jeffmccune | HOL-1292/HOL-1293: revert to `AUTHENTICATION_TYPE: OIDC` as the sole identity store; PKCE (S256) re-enabled; team syncing re-enabled; superusers are the Keycloak-backed `svc-quay-resource-controller` + `quay-admin`; the `quay-initial-admin` bootstrap is removed; Quay data-plane provisioning deferred to a future Quay Resource Controller |
 | 5        | 2026-06-17 | @jeffmccune | HOL-1299: enable `FEATURE_SUPERUSERS_FULL_ACCESS` so the future Quay Resource Controller can adopt orgs it did not create; clarify the user/org/OAuth-Application distinction and the manual `platform-automation` org bootstrap |
 | 6        | 2026-06-17 | @jeffmccune | HOL-1306: the "future Quay Resource Controller" referenced throughout is now designed as the **Holos Controller** ([ADR-18](ADR-18.md)) with `quay.holos.run` Organization/Repository CRDs ([ADR-19](ADR-19.md)); add forward cross-links. The Revision 4 OIDC sole-identity-store model is unchanged. The controller is the intended end state for the **org/repo/robot/webhook provisioning**, which the manual runbook performs until it ships; per ADR-18 the controller still *consumes* the superuser OAuth-Application token this runbook mints (its external credential, read from the `quay`-namespace Secret), not one of the CRDs it reconciles. |
-| 7        | 2026-06-18 | @jeffmccune | HOL-1317: **disable PKCE again** for the `quay` client, reversing the Revision 4 re-enablement. Quay 3.17.3 stores the PKCE `code_challenge` state in the `_csrf_token` cookie and never clears it on logout, so a stale `code_verifier` is replayed on the next login and Keycloak rejects the exchange with `code exchange: 400` (login-after-logout fails). The `quay` client now carries **no** `pkce.code.challenge.method` attribute and Quay sets `USE_PKCE: false` (no `PKCE_METHOD`); the client's `redirectUris` become the three explicit `/oauth2/keycloak/callback{,/attach,/cli}` paths (no `/*` wildcard). The OIDC sole-identity-store model is otherwise unchanged. |
+| 7        | 2026-06-18 | @jeffmccune | HOL-1317: **disable PKCE again** for the `quay` client, reversing the Revision 4 re-enablement. Quay 3.17.3 stores the PKCE `code_challenge` state in the `_csrf_token` cookie and never clears it on logout, so a stale `code_verifier` is replayed on the next login and Keycloak rejects the exchange with `code exchange: 400` (login-after-logout fails). The `quay` client now sets `pkce.code.challenge.method` to the empty/"none" method (set explicitly so keycloak-config-cli overwrites any prior `S256` rather than merge-keeping it) and Quay sets `USE_PKCE: false` (no `PKCE_METHOD`); the client's `redirectUris` become the three explicit `/oauth2/keycloak/callback{,/attach,/cli}` paths (no `/*` wildcard). The OIDC sole-identity-store model is otherwise unchanged. |
 
 ## Context and Problem Statement
 
@@ -140,8 +140,10 @@ Neither end uses it:
 - Quay (`holos/components/quay/buildplan.cue`,
   `KEYCLOAK_LOGIN_CONFIG`): `USE_PKCE: false` (no `PKCE_METHOD`).
 - The Keycloak `quay` client
-  (`holos/components/keycloak/realm-config/buildplan.cue`): **no**
-  `pkce.code.challenge.method` attribute.
+  (`holos/components/keycloak/realm-config/buildplan.cue`):
+  `pkce.code.challenge.method` set to the empty/"none" method (set explicitly,
+  not omitted, so keycloak-config-cli's attribute merge overwrites any prior
+  `S256`).
 
 **Revision 7 (HOL-1317) disables PKCE again, reversing the Revision 4 /
 HOL-1293 re-enablement.** PKCE's history for this client is: dropped in
@@ -382,7 +384,7 @@ committed.
   store. The two superusers are the Keycloak realm users
   `svc-quay-resource-controller` and `quay-admin` in `SUPER_USERS`.
 - PKCE is **not** used for the `quay` client (Revision 7, HOL-1317): the client
-  carries no `pkce.code.challenge.method` attribute and Quay sets
+  sets `pkce.code.challenge.method` to the empty/"none" method and Quay sets
   `USE_PKCE: false`. PKCE was dropped (Revision 2 / HOL-1257), re-enabled
   (Revision 4 / HOL-1293), then dropped again here because Quay 3.17.3 replays a
   stale `code_verifier` from the `_csrf_token` cookie after logout, breaking the

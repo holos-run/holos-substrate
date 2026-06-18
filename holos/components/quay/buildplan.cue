@@ -196,7 +196,8 @@ let REDIS_METADATA = {
 //     and no secret value is ever committed.
 //   - USE_PKCE is false: PKCE is intentionally disabled on the token exchange
 //     (HOL-1317), matching the keycloak quay client whose
-//     pkce.code.challenge.method attribute is now absent.  Quay 3.17.3 does not
+//     pkce.code.challenge.method attribute is set to the empty/"none" method.
+//     Quay 3.17.3 does not
 //     properly support PKCE — it stores the code_challenge state in the
 //     _csrf_token cookie and never clears it on logout, so a stale code_verifier
 //     is replayed on the next login and Keycloak rejects the code exchange with

@@ -325,8 +325,8 @@ let REALM_CONFIG = {
 		// HOL-1218: the Quay OIDC client.  Modeled on the argocd client above
 		// but confidential — Quay sends a client secret — and using the
 		// Authorization Code flow authenticated by that secret, WITHOUT PKCE
-		// (HOL-1317; the pkce.code.challenge.method attribute is intentionally
-		// absent — see the no-PKCE note below).
+		// (HOL-1317; pkce.code.challenge.method is set to the empty/"none" method
+		// — see the no-PKCE note below).
 		//
 		// HOL-1245: the realm-role mapper below also emits the platform-owner
 		// realm role into the groups claim (mirroring the argocd client), so
@@ -350,29 +350,35 @@ let REALM_CONFIG = {
 		// is committed.  The bootstrap Job generates it once and never rotates
 		// it, so the value here stays stable across reconciles.
 		secret: "$(env:QUAY_OIDC_CLIENT_SECRET)"
-		// HOL-1317: PKCE is intentionally NOT required for the quay client —
-		// the pkce.code.challenge.method attribute is deliberately absent (the
-		// argocd/kargo public clients above keep S256; quay does not).  Quay
-		// 3.17.3 does not properly support PKCE: it stores the code_challenge
-		// state in the _csrf_token and never clears it on logout, so a stale
-		// code_verifier is replayed on the next login and Keycloak rejects the
-		// code exchange.  Quay's KEYCLOAK_LOGIN_CONFIG correspondingly sets
-		// USE_PKCE: false (components/quay), so no code_verifier is sent and
-		// Keycloak must not require one.  Do NOT reintroduce
-		// pkce.code.challenge.method here without re-enabling USE_PKCE on the
-		// Quay side and confirming the logout-state bug is fixed.  (This
-		// reverses HOL-1293/HOL-1294, which had re-enabled PKCE.)
+		// HOL-1317: PKCE is intentionally NOT required for the quay client.
+		// Quay 3.17.3 does not properly support PKCE: it stores the
+		// code_challenge state in the _csrf_token and never clears it on logout,
+		// so a stale code_verifier is replayed on the next login and Keycloak
+		// rejects the code exchange.  Quay's KEYCLOAK_LOGIN_CONFIG correspondingly
+		// sets USE_PKCE: false (components/quay), so no code_verifier is sent and
+		// Keycloak must not require one.
 		//
-		// redirectUris / webOrigins are set verbatim from the HOL-1317 client
-		// JSON: the three explicit Quay OAuth callback paths (replacing the
-		// earlier /* wildcard) and an empty web origin (Quay's server-side
-		// Authorization Code flow needs no CORS origin).
+		// The attribute is set to the EMPTY method (Keycloak's "none") rather
+		// than omitted: keycloak-config-cli merges client attributes on update,
+		// so a key absent from the import is NOT removed from a client that
+		// previously carried pkce.code.challenge.method: "S256" (HOL-1293/HOL-1294)
+		// — it would linger as S256 and keep PKCE required, re-breaking login.
+		// Setting it to "" overwrites any prior value on every reconcile, so the
+		// no-PKCE state is enforced on a fresh cluster and a previously-PKCE one
+		// alike.  The argocd/kargo public clients above keep S256; only quay
+		// disables it.  Do NOT restore "S256" here without re-enabling USE_PKCE
+		// on the Quay side and confirming the logout-state bug is fixed.
+		attributes: "pkce.code.challenge.method": ""
+		// redirectUris are the three explicit Quay OAuth callback paths from the
+		// HOL-1317 client JSON (replacing the earlier /* wildcard).  webOrigins is
+		// an empty list: Quay's server-side Authorization Code flow needs no CORS
+		// origin, and an empty list avoids persisting a blank-string origin entry.
 		redirectUris: [
 			"\(QUAY_PUBLIC_URL)/oauth2/keycloak/callback/attach",
 			"\(QUAY_PUBLIC_URL)/oauth2/keycloak/callback/cli",
 			"\(QUAY_PUBLIC_URL)/oauth2/keycloak/callback",
 		]
-		webOrigins: [""]
+		webOrigins: []
 		protocolMappers: [
 			{
 				name:           "groups"
