@@ -17,18 +17,21 @@ hand**, by an operator following the steps below. This runbook is the authoritat
 the credential's open design questions (which organization, which scopes, can
 it create new organizations).
 
-> **This manual procedure is the interim step.** The "future Quay Resource
-> Controller" referenced here has a **proposed** design (`Status: Proposed`, not
-> yet implemented): the **Holos Controller** ([ADR-18](../adr/ADR-18.md)), whose
-> `quay.holos.run` Organization and Repository CRDs ([ADR-19](../adr/ADR-19.md))
-> will reconcile the **org/repo/robot/webhook** provisioning in-cluster, retiring
-> the data-plane parts of the hand procedure below. The proposed Holos Project
-> and Application components ([ADR-21](../adr/ADR-21.md)) are what would emit those
-> CRDs per project/app. Note the credential this runbook produces is **not** one
-> of those CRDs: ADR-19 has the controller *read* this OAuth-Application token
-> from the `quay`-namespace Secret (it never commits it), so this bootstrap
-> credential is the controller's input, not something the CRDs reconcile away.
-> Until the controller ships, this runbook remains operative.
+> **This manual procedure mints the controller's credential.** The "future Quay
+> Resource Controller" referenced here has **shipped** as the **Holos Controller**
+> ([ADR-18](../adr/ADR-18.md)), whose `quay.holos.run` Organization and Repository
+> CRDs ([ADR-19](../adr/ADR-19.md), `Status: Implemented`) reconcile the
+> **org/repo/webhook** provisioning in-cluster, retiring the data-plane parts of
+> the hand procedure below. The proposed Holos Project and Application components
+> ([ADR-21](../adr/ADR-21.md)) are what would emit those CRDs per project/app.
+> Note the credential this runbook produces is **not** one of those CRDs: the
+> controller *reads* this OAuth-Application token from the
+> **`holos-controller-quay-creds` Secret in the `holos-controller` namespace**
+> (it never commits it), so this bootstrap credential is the controller's input,
+> not something the CRDs reconcile away. Wiring the controller to it is documented
+> in the [Holos Controller runbook](holos-controller.md); the data-plane
+> provisioning the controller does **not** yet automate (robots and the Argo CD /
+> Kargo pull-credential Secrets) is still performed by hand in the interim.
 
 The binding decision record is
 [ADR-15 — Quay↔Keycloak OIDC SSO](../adr/ADR-15.md); the controller and CRDs that
@@ -287,39 +290,42 @@ user's org-creation ability (the user is not a superuser / not allowed to
 create orgs) or `super:user` was not selected; a `401` means the token is
 invalid or was not copied correctly.
 
-### 6. Store the token as a Kubernetes Secret for the future controller
+### 6. Store the token as a Kubernetes Secret for the controller
 
-Store the verified token in the `quay` namespace under a stable name the future
-Quay Resource Controller will read. Create it imperatively (the value is never
-committed — the runtime-secret guardrail in
+Store the verified token in the **`holos-controller`** namespace under the name
+the Holos Controller reads — **`holos-controller-quay-creds`** — with the keys the
+credential resolver expects (`url`, `token`, optional `username`). Use the
+operator helper, which keeps its historical name but now produces exactly this
+Secret (the value is never committed — the runtime-secret guardrail in
 [`AGENTS.md`](../../AGENTS.md) and
 [`holos/docs/secret-handling.md`](../../holos/docs/secret-handling.md)):
 
 ```bash
-kubectl -n quay create secret generic quay-resource-controller \
-  --from-literal=token="${TOKEN}"
+# Prompts for the token; QUAY_URL defaults to https://quay.holos.localhost:
+scripts/apply-svc-quay-resource-controller-creds
 ```
 
 | Field | Value |
 |-------|-------|
-| Namespace | `quay` |
-| Secret name | `quay-resource-controller` |
-| Key | `token` |
-| Value | the OAuth-Application token from step 3 |
+| Namespace | `holos-controller` |
+| Secret name | `holos-controller-quay-creds` |
+| Keys | `url`, `token`, optional `username` |
+| Value | the Quay API URL and the OAuth-Application token from step 3 |
 
 The token is long-lived (a Quay OAuth-Application token; its lifetime is not
-operator-configurable), so treat this as a generate-once credential: if it
-leaks, delete the Application's token in the
-Quay UI, regenerate (steps 3–5), and replace the Secret. When the Holos
-Controller ([ADR-18](../adr/ADR-18.md)) and its `quay.holos.run` CRDs
-([ADR-19](../adr/ADR-19.md)) ship, the **by-hand org/repo/robot/webhook
-provisioning** this runbook performs is retired — the controller does it through
-the CRDs instead. The controller still **consumes** this superuser
-OAuth-Application token: ADR-18 has it authenticate to Quay with the very
-credential this runbook mints, read from this `quay`-namespace Secret (it is the
-controller's external credential, not one of the CRDs the controller reconciles).
-So this procedure becomes the historical record of how that bootstrap credential
-was first produced, exactly as ADR-18 anticipates.
+operator-configurable), so treat this as a generate-once credential: if it leaks,
+delete the Application's token in the Quay UI, regenerate (steps 3–5), and re-run
+the helper. The Holos Controller ([ADR-18](../adr/ADR-18.md)) and its
+`quay.holos.run` CRDs ([ADR-19](../adr/ADR-19.md)) have **shipped**, so the
+**by-hand org/repo/webhook provisioning** this runbook performs is retired — the
+controller does it through the CRDs instead. The controller still **consumes**
+this superuser OAuth-Application token: it authenticates to Quay with the very
+credential this runbook mints, read from this `holos-controller-quay-creds` Secret
+(it is the controller's external credential, not one of the CRDs the controller
+reconciles — each resource's `credentialsSecretRef` defaults to this Secret). See
+the [Holos Controller runbook](holos-controller.md) for the consumer-side wiring.
+This procedure is the record of how that bootstrap credential was first produced,
+exactly as ADR-18 anticipates.
 
 ## See also
 
@@ -332,7 +338,10 @@ was first produced, exactly as ADR-18 anticipates.
   Resource Controller", `Status: Proposed`).
 - [ADR-19 — Quay API Group (`quay.holos.run`): Organization and Repository
   CRDs](../adr/ADR-19.md) — the CRDs the controller reconciles to provision
-  orgs/repos/robots/webhooks in-cluster.
+  orgs/repos/webhooks in-cluster.
+- [Holos Controller runbook](holos-controller.md) — the consumer side: how the
+  controller reads this token from `holos-controller-quay-creds` in the
+  `holos-controller` namespace, and the AC #3 superuser-token assumption.
 - [Quay↔Keycloak OIDC runbook](quay-keycloak-oidc.md) — the SSO wiring, the two
   superuser realm users, secret rotation, and `code exchange: 400`
   troubleshooting.

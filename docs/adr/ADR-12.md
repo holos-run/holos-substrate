@@ -14,6 +14,7 @@
 | 3        | 2026-06-14 | @jeffmccune | Note the NATS webhook receiver/subscriber/deployer were retired (HOL-1241, [ADR-16](ADR-16.md)); the single-module/single-binary layout decision stands |
 | 4        | 2026-06-14 | @jeffmccune | The CLI is built with Fisk, not Cobra ([ADR-17](ADR-17.md)); the command tree lives in `internal/cli` |
 | 5        | 2026-06-17 | @jeffmccune | The first concrete controller API group is `quay.holos.run` ([ADR-18](ADR-18.md)), refining the `registry.holos.run` illustration below; the multi-group `<group>.holos.run` convention is unchanged |
+| 6        | 2026-06-18 | @jeffmccune | The Holos Controller (HOL-1309..HOL-1313, [ADR-18](ADR-18.md)/[ADR-19](ADR-19.md)) ships as a **second binary and image** (`cmd/holos-controller` + `Dockerfile.controller`) **within the same single module** — a bounded exception to Option A's one-binary/one-image rule for a process with a different lifecycle (controller-runtime manager). Its conventional-kubebuilder `main.go` (stdlib `flag` + zap) is a recorded **carve-out from the Fisk-only CLI guardrail** ([ADR-17](ADR-17.md)), which stays scoped to the user-facing `holos-paas` CLI. The single-module decision and `api/<group>/<version>` layout are unchanged |
 
 > **Note (rev 3):** The NATS webhook receiver, subscriber, and deployer named
 > below as motivating services were retired in HOL-1241 — deployment moved to
@@ -175,6 +176,38 @@ The load-bearing choices:
   `resources.cue`, `schema.cue`, and `tags.cue` live under `holos/` (moved
   from the repository root in commit `f948372`).
 
+### Second binary: the Holos Controller (Revision 6)
+
+Option A's "one binary, one image" choice is the default, not an absolute. The
+**Holos Controller** ([ADR-18](ADR-18.md), [ADR-19](ADR-19.md); shipped in
+HOL-1309..HOL-1313) is a deliberate, bounded exception within the **same single
+module** `github.com/holos-run/holos-paas`:
+
+- **A second binary and image.** `cmd/holos-controller/main.go` builds to its own
+  container image via **`Dockerfile.controller`** (a two-stage cross-compile →
+  distroless build, distinct from `holos-paas`'s `Dockerfile`). The controller is
+  a long-running controller-runtime **manager** with a different operational
+  lifecycle (leader election, CRD/RBAC install, metrics scrape) than the
+  user-facing `holos-paas` CLI, which is why it is its own image rather than a
+  subcommand. Its build/deploy targets live in a separate **`Makefile.controller`**
+  (`controller-build`/`controller-test`/`controller-manifests`/`controller-deploy`,
+  etc.), cleanly isolated from `scripts/apply`, `scripts/render`, and the
+  `holos-paas` targets. The single-module rule is unchanged — both binaries share
+  one `go.mod` and the `api/<group>/<version>` tree.
+- **Conventional-kubebuilder `main.go` is a carve-out from the Fisk guardrail.**
+  [ADR-17](ADR-17.md) requires the user-facing **`holos-paas` CLI** to be built
+  with **Fisk, not Cobra**, for LLM-legible help and introspection. The
+  controller's `main.go` instead uses the conventional kubebuilder shape —
+  stdlib **`flag`** plus controller-runtime **`zap`** flags
+  (`--metrics-bind-address`, `--health-probe-bind-address`, `--leader-elect`,
+  `--metrics-secure`, and the zap logging flags) — because it is a manager
+  process, not an interactive CLI: its "flags" are deployment-time process
+  configuration set once in the Deployment manifest, not a command surface a human
+  or agent explores. This carve-out is **scoped to the controller manager
+  process**; it does not relax the Fisk requirement for the `holos-paas` CLI in
+  `internal/cli`. The controller emits **JSON logs** (zap production config) for
+  Datadog/LGTM ingestion (ADR-18/ADR-19).
+
 ## Decision
 
 Adopt Option A: a single-module monorepo with one multi-service binary and
@@ -190,9 +223,17 @@ one container image, kubebuilder multi-group conventions
   `f948372`); CI and developer invocations of `holos render platform` run
   from that directory. The `holos-controller` repository is archived after
   its scaffold is absorbed.
-- **Coupled releases:** every service ships in one image on one version.
-  Acceptable for the MVP (the deployer updates a single tag); revisit if a
-  component ever needs an independent release cadence.
+- **Coupled releases, with one deliberate split:** the `holos-paas` services
+  ship in one image on one version. The Holos Controller (Revision 6) is the one
+  component promoted to its own binary/image (`Dockerfile.controller`) because its
+  manager lifecycle differs from the CLI's; both still share the single module, so
+  the split is the additive "promote a component to its own image" path this ADR's
+  *A future split stays cheap* consequence anticipated, not a reshape of the tree.
+- **Two CLI styles, by design:** the `holos-paas` CLI is Fisk
+  ([ADR-17](ADR-17.md)); the controller manager's `main.go` is conventional
+  kubebuilder (stdlib `flag` + zap). The carve-out is recorded so the Fisk
+  guardrail is not misread as forbidding the standard controller-runtime entry
+  point — it governs the interactive CLI, not a manager process.
 - **No importable Go API:** external consumers cannot `go get` the CRD types
   until `api/` is extracted into its own module. The layout makes that a
   mechanical change (add `api/go.mod`, prefixed tags) when a consumer
