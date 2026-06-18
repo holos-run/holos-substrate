@@ -44,10 +44,14 @@
 #     the rendered my-project component (Organization, Argo CD AppProject +
 #     Application, Kargo Project/ProjectConfig/Warehouse/Stage, and the
 #     webhook-token bootstrap Job) with server-side apply;
-#   - pre-applies the component's ServiceAccounts + RBAC and deletes the stale
-#     webhook-token Job so a fresh idempotent token-generate runs every time;
-#   - gates the webhook-token bootstrap Job's completion and the Kargo Project's
-#     adoption of the my-project namespace.
+#   - pre-applies the component's ServiceAccounts + RBAC, deletes the stale
+#     webhook-token Job so a fresh idempotent token-generate runs every time,
+#     and prunes the retired my-project-quay-bootstrap Job/RBAC + quay-initial-admin
+#     Secret on upgraded clusters (the cleanup lifted from pre_my_project);
+#   - gates the webhook-token bootstrap Job's completion, the Kargo Project's
+#     adoption of the my-project namespace, and the Organization reaching Ready
+#     (so a missing credential, invalid caBundle, or Quay TLS/Conflict failure
+#     surfaces here rather than as a silently-unreconciled org).
 #
 # Idempotent by construction: server-side apply converges, the bootstrap Job's
 # generate-once guard leaves an existing Secret untouched, and the pre-apply
@@ -149,23 +153,34 @@ fi
 # ---------------------------------------------------------------------------
 # Resolve the local-ca PEM to inject as the Organization's caBundle
 # ---------------------------------------------------------------------------
-# Prefer the operator override, then the mkcert root CA scripts/local-ca seeds
-# the cluster from, then the in-cluster local-ca Secret as a fallback.  The
-# resolved PEM must be a real certificate — an empty value would render the
+# The caBundle must be the trust anchor for the SELECTED cluster's Quay serving
+# certificate, so resolve it from that cluster's own local-ca Secret first — not
+# from whatever mkcert root happens to be installed on the operator's machine,
+# which can differ from the target cluster's CA (e.g. when KUBE_CONTEXT points
+# at another cluster, or after a local-ca rotation).  Order:
+#
+#   1. CA_BUNDLE_PEM override — an explicit operator decision wins.
+#   2. The cert-manager/local-ca Secret in the selected context (ca.crt) — the
+#      authoritative CA for the cluster being applied to.
+#   3. mkcert -CAROOT/rootCA.pem — a fallback for the local-dev case where the
+#      Secret is unreadable but the operator's mkcert root seeded the cluster
+#      (scripts/local-ca), and the two are known to match.
+#
+# The resolved PEM must be a real certificate — an empty value would render the
 # Organization with no caBundle and the controller would fail Quay TLS
 # verification, defeating the point of this helper.
 CA_BUNDLE_PEM="${CA_BUNDLE_PEM:-}"
+if [[ -z "${CA_BUNDLE_PEM}" ]]; then
+  echo "Reading the local-ca Secret from cert-manager in context ${KUBE_CONTEXT} ..." >&2
+  CA_BUNDLE_PEM="$(kubectl --context "${KUBE_CONTEXT}" --namespace cert-manager \
+    get secret local-ca -o jsonpath='{.data.ca\.crt}' 2>/dev/null | base64 -d || true)"
+fi
 if [[ -z "${CA_BUNDLE_PEM}" ]] && command -v mkcert >/dev/null 2>&1; then
   caroot="$(mkcert -CAROOT 2>/dev/null || true)"
   if [[ -n "${caroot}" && -f "${caroot}/rootCA.pem" ]]; then
+    echo "local-ca Secret unreadable; falling back to ${caroot}/rootCA.pem" >&2
     CA_BUNDLE_PEM="$(cat "${caroot}/rootCA.pem")"
-    echo "Read local-ca PEM from ${caroot}/rootCA.pem" >&2
   fi
-fi
-if [[ -z "${CA_BUNDLE_PEM}" ]]; then
-  echo "mkcert root CA not found; reading the local-ca Secret from cert-manager ..." >&2
-  CA_BUNDLE_PEM="$(kubectl --context "${KUBE_CONTEXT}" --namespace cert-manager \
-    get secret local-ca -o jsonpath='{.data.ca\.crt}' 2>/dev/null | base64 -d || true)"
 fi
 if [[ -z "${CA_BUNDLE_PEM}" ]]; then
   echo "ERROR: could not resolve the local-ca PEM." >&2
@@ -251,6 +266,34 @@ fi
 kubectl --context "${KUBE_CONTEXT}" --namespace my-project \
   delete job -l app.kubernetes.io/name=my-project-quay-webhook-bootstrap \
   --ignore-not-found --cascade=foreground --wait --request-timeout=60s
+
+# One-time migration cleanup (HOL-1296, lifted from pre_my_project).  The
+# my-project-quay-bootstrap Job and its three-namespace RBAC, and the
+# quay-admin-bootstrap Job + quay-initial-admin Secret they depended on, were
+# removed when Quay moved to OIDC-backend auth.  A plain `kubectl apply -f
+# <dir>/` never prunes resources whose manifests were deleted, so a cluster that
+# ran an earlier revision would otherwise keep these retired objects (inert
+# cross-namespace RBAC, a now-unminted privileged superuser Secret) indefinitely.
+# This pruning moved here with my-project: now that the master scripts/apply no
+# longer touches my-project, this helper is the only path that converges an
+# upgraded cluster to the new state.  Delete the objects by label;
+# --ignore-not-found makes this a no-op on a fresh cluster or a second run.
+stale_label="app.kubernetes.io/name=my-project-quay-bootstrap"
+kubectl --context "${KUBE_CONTEXT}" --namespace quay \
+  delete job,serviceaccount,role,rolebinding -l "${stale_label}" \
+  --ignore-not-found --cascade=foreground --wait --request-timeout=60s
+kubectl --context "${KUBE_CONTEXT}" --namespace my-project \
+  delete role,rolebinding -l "${stale_label}" \
+  --ignore-not-found --request-timeout=60s
+kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
+  delete role,rolebinding -l "${stale_label}" \
+  --ignore-not-found --request-timeout=60s
+# The retired headless superuser Secret: OIDC-backend auth can no longer mint it,
+# so it is dead material on an upgraded cluster.  Removing it keeps the
+# no-quay-initial-admin invariant true at runtime.
+kubectl --context "${KUBE_CONTEXT}" --namespace quay \
+  delete secret quay-initial-admin \
+  --ignore-not-found --request-timeout=60s
 
 # ---------------------------------------------------------------------------
 # Apply the rendered my-project component
@@ -343,6 +386,54 @@ while true; do
   fi
   if ((SECONDS >= proj_deadline)); then
     echo "ERROR: timed out waiting for ${project} to become Ready." >&2
+    exit 1
+  fi
+  sleep 5
+done
+
+# Gate the Organization's reconciliation by the Holos Controller (ADR-18/ADR-19)
+# so this script does not report success while the org is unreconciled — a
+# missing/bad credential, an invalid caBundle, a Quay-side Conflict, or a TLS
+# failure would otherwise surface only as a silently-not-Ready Organization.
+# The controller sets Ready=True once the org is provisioned in Quay, and a
+# terminal Ready=False with reason Conflict (an org owned by another identity,
+# not opted into adoption) which a retry cannot clear — fail fast on that.  A
+# non-terminal Ready=False (e.g. a transient Quay/TLS error the controller
+# requeues on) keeps polling until the deadline.  Poll rather than `kubectl
+# wait` so a terminal Conflict fails on the next poll instead of blocking the
+# full timeout.
+org="organization.quay.holos.run/my-project"
+org_lookup_failures=0
+org_deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+while true; do
+  if org_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace my-project \
+    get "${org}" --ignore-not-found --request-timeout=10s \
+    -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[?(@.type=="Ready")]}{.status}={.reason}{"\n"}{end}'); then
+    org_lookup_failures=0
+    if [[ -z "${org_state}" ]]; then
+      # The Organization CR is not present yet (the apply just created it and the
+      # cache may lag, or the controller has not observed it); keep polling.
+      :
+    elif grep -q '^True=' <<<"${org_state}"; then
+      break
+    elif grep -q '^False=Conflict$' <<<"${org_state}"; then
+      echo "ERROR: ${org} hit a terminal Conflict — the Quay org 'my-project' is owned by another" >&2
+      echo "       identity and the CR is not opted into adoption (spec.adopt: false); inspect it with:" >&2
+      echo "       kubectl --context ${KUBE_CONTEXT} --namespace my-project describe ${org}" >&2
+      exit 1
+    fi
+  else
+    org_lookup_failures=$((org_lookup_failures + 1))
+    if ((org_lookup_failures >= 3)); then
+      echo "ERROR: repeated failures reading ${org}; aborting the gate." >&2
+      exit 1
+    fi
+  fi
+  if ((SECONDS >= org_deadline)); then
+    echo "ERROR: timed out waiting for ${org} to become Ready; inspect it with:" >&2
+    echo "       kubectl --context ${KUBE_CONTEXT} --namespace my-project describe ${org}" >&2
+    echo "       (a not-Ready org often means the holos-controller-quay-creds Secret is missing" >&2
+    echo "        or the controller cannot reach/trust Quay — see docs/runbooks/holos-controller.md)." >&2
     exit 1
   fi
   sleep 5
