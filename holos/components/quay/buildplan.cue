@@ -76,8 +76,9 @@ let PORT = 8080
 // quay.holos.localhost matches the shared Gateway's *.holos.localhost
 // listener hostname and resolves to 127.0.0.1 on the host per
 // docs/local-cluster.md, and the Keycloak realm's reconciled quay client
-// (managed by the keycloak-config Job) lists https://quay.holos.localhost/*
-// as a redirect URI.
+// (managed by the keycloak-config Job) lists the three explicit
+// https://quay.holos.localhost/oauth2/keycloak/callback{,/attach,/cli} paths
+// as its redirect URIs (HOL-1317).
 // k3d-registry.holos.localhost is deliberately NOT used: that name belongs to
 // the k3d bootstrap registry on port 5000 (scripts/local-k3d).
 let HOSTNAME = "quay.holos.localhost"

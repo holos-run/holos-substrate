@@ -327,8 +327,10 @@ realm. What it reconciles:
   realm-role mapper (e.g. `platform-owner`), so a single `groups` claim
   carries both group and role membership for Argo CD RBAC to key on.
 - the confidential **`quay` OIDC client** (`publicClient: false`, client-secret
-  auth **with** PKCE — `pkce.code.challenge.method: S256`, re-enabled in HOL-1293;
-  the `quay.holos.localhost` callback redirect URIs) and its `platform-admin` /
+  auth **without** PKCE — `pkce.code.challenge.method` is the empty/"none" method,
+  HOL-1317 disabled PKCE because Quay 3.17.3 replays a stale `code_verifier` after
+  logout; the three explicit `quay.holos.localhost/oauth2/keycloak/callback`
+  redirect URIs) and its `platform-admin` /
   `project-admin` **client roles**,
   with mappers that write group memberships, the `quay` client-role names, the
   `platform-owner` **realm role** (a realm-role mapper added in HOL-1245,
@@ -338,9 +340,9 @@ realm. What it reconciles:
   `keycloak` and `quay` namespaces and substituted into the import document at
   run time (never committed).
 
-The declarative-client pattern itself — public vs confidential clients (all
-use PKCE S256: the public `argocd`/`kargo` clients and the confidential `quay`
-client alike), the secret bootstrap, the three mappers
+The declarative-client pattern itself — public vs confidential clients (the
+public `argocd`/`kargo` clients use PKCE S256; the confidential `quay` client is
+the no-PKCE exception, HOL-1317), the secret bootstrap, the three mappers
 that feed the shared `groups` claim, the role model, and the guardrail
 checklist for adding another client — is
 documented in
@@ -394,10 +396,11 @@ OAuth-Application credential by hand; see the
 
 Quay runs `AUTHENTICATION_TYPE: OIDC` — the Keycloak `holos` realm is the
 **sole identity store** (ADR-15 Revision 4, HOL-1293): users log in with the
-**Holos SSO** button through the Authorization Code flow with PKCE (`S256`),
-authenticated by the confidential client's secret. There is no local `admin`
-user and no `/api/v1/user/initialize` bootstrap endpoint under OIDC. The full
-design — the OIDC backend, PKCE, the confidential client, the
+**Holos SSO** button through the Authorization Code flow **without** PKCE
+(disabled in HOL-1317, ADR-15 Revision 7), authenticated by the confidential
+client's secret. There is no local `admin` user and no
+`/api/v1/user/initialize` bootstrap endpoint under OIDC. The full design — the
+OIDC backend, the no-PKCE decision, the confidential client, the
 username-from-token behavior, and the roles model — is in
 [ADR-15](../docs/adr/ADR-15.md), and the operational companion (wiring, secret
 rotation, and the `code exchange: 400` troubleshooting) is the
@@ -407,8 +410,9 @@ essentials:
 - **Login flow.** Quay's `KEYCLOAK_LOGIN_CONFIG`
   ([components/quay/buildplan.cue](components/quay/buildplan.cue)) points at
   the realm's confidential `quay` client, authenticated by its client secret
-  with PKCE (`USE_PKCE`/`PKCE_METHOD: S256`, re-enabled in HOL-1293), reconciled
-  in `keycloak-config` above. The local username/password form is removed
+  without PKCE (`USE_PKCE: false`, no `PKCE_METHOD`; disabled in HOL-1317 to work
+  around Quay 3.17.3's logout-state defect), reconciled in `keycloak-config`
+  above. The local username/password form is removed
   (`FEATURE_DIRECT_LOGIN: false`).
 - **Username and namespace.** The username is taken verbatim from the ID
   token's `preferred_username` claim with no prompt to confirm or edit it

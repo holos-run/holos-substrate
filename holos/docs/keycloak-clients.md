@@ -311,7 +311,7 @@ copy from.
 - [`holos/README.md`](../README.md#keycloak-config-realm-reconciliation) — the
   operator-facing overview of `keycloak-config`, including the
   [Quay OIDC SSO and roles](../README.md#quay-oidc-sso-and-roles) section
-  (OIDC sole identity store, PKCE `S256`, team syncing on).
+  (OIDC sole identity store, no PKCE for `quay` per HOL-1317, team syncing on).
 - [`docs/placeholders.md`](placeholders.md) — the resolved *Keycloak realm
   reconciliation* and *Quay OIDC login* entries.
 - [`AGENTS.md`](../../AGENTS.md) — the Guard Rails: CUE Component Rendering, the
