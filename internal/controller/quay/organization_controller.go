@@ -126,20 +126,7 @@ func (r *OrganizationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger logr.Logger, org *quayv1alpha1.Organization) (ctrl.Result, error) {
 	cred, err := resolveCredential(ctx, r.APIReader, r.Namespace, org.Spec.CredentialsSecretRef)
 	if err != nil {
-		if isMissingCredential(err) {
-			// A missing Secret/key is an expected, recoverable state: set a
-			// False condition, emit a Warning, and requeue with an error so the
-			// reconcile retries when the operator creates the Secret.
-			markNotReady(&org.Status.Conditions, ReasonCredentialsNotFound, err.Error(), org.Generation)
-			r.Recorder.Event(org, corev1.EventTypeWarning, ReasonCredentialsNotFound, err.Error())
-			if statusErr := r.updateStatus(ctx, org); statusErr != nil {
-				return ctrl.Result{}, statusErr
-			}
-			return ctrl.Result{}, err
-		}
-		// A transient API error reading the Secret: requeue with backoff without
-		// stamping a misleading reason.
-		return ctrl.Result{}, err
+		return r.handleCredentialError(ctx, org, err)
 	}
 
 	qc := r.NewClient(cred)
@@ -205,9 +192,14 @@ func (r *OrganizationReconciler) reconcileExistingUnowned(ctx context.Context, l
 	}
 
 	message := fmt.Sprintf("Quay organization %q already exists and was not created by this resource; set spec.adopt to claim it", org.Spec.Name)
-	if changed := setConflict(&org.Status.Conditions, message, org.Generation); changed {
-		r.Recorder.Event(org, corev1.EventTypeWarning, ReasonConflict, message)
+	changed := setConflict(&org.Status.Conditions, message, org.Generation)
+	changed = changed || org.Status.ObservedGeneration != org.Generation
+	if !changed {
+		// Terminal conflict already recorded; do not rewrite identical status
+		// (which would re-enqueue the object and spin a watch-triggered loop).
+		return ctrl.Result{}, nil
 	}
+	r.Recorder.Event(org, corev1.EventTypeWarning, ReasonConflict, message)
 	logger.Info("Organization conflict", "name", org.Spec.Name)
 	if err := r.updateStatus(ctx, org); err != nil {
 		return ctrl.Result{}, err
@@ -257,18 +249,10 @@ func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *quayv
 
 	cred, err := resolveCredential(ctx, r.APIReader, r.Namespace, org.Spec.CredentialsSecretRef)
 	if err != nil {
-		if isMissingCredential(err) {
-			// Without the credential the Quay org cannot be deleted. Surface the
-			// condition and requeue; do not strand the CR by dropping the
-			// finalizer when cleanup could not run.
-			markNotReady(&org.Status.Conditions, ReasonCredentialsNotFound, err.Error(), org.Generation)
-			r.Recorder.Event(org, corev1.EventTypeWarning, ReasonCredentialsNotFound, err.Error())
-			if statusErr := r.updateStatus(ctx, org); statusErr != nil {
-				return ctrl.Result{}, statusErr
-			}
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, err
+		// Without the credential the Quay org cannot be deleted; do not strand
+		// the CR by dropping the finalizer when cleanup could not run. Surface
+		// the condition and requeue.
+		return r.handleCredentialError(ctx, org, err)
 	}
 
 	qc := r.NewClient(cred)
@@ -294,14 +278,37 @@ func (r *OrganizationReconciler) removeFinalizer(ctx context.Context, org *quayv
 	return ctrl.Result{}, nil
 }
 
+// handleCredentialError maps a credential-resolution error to a reconcile
+// result. A missing Secret/key is an expected, recoverable state: it sets a
+// CredentialsNotFound condition (writing status + emitting a Warning only when
+// the condition changed, to avoid churn) and requeues with the error so the
+// reconcile retries once the operator provides the Secret. A transient API error
+// reading the Secret requeues with backoff without stamping a misleading reason.
+func (r *OrganizationReconciler) handleCredentialError(ctx context.Context, org *quayv1alpha1.Organization, err error) (ctrl.Result, error) {
+	if !isMissingCredential(err) {
+		return ctrl.Result{}, err
+	}
+	if changed := markNotReady(&org.Status.Conditions, ReasonCredentialsNotFound, err.Error(), org.Generation); changed {
+		r.Recorder.Event(org, corev1.EventTypeWarning, ReasonCredentialsNotFound, err.Error())
+		if statusErr := r.updateStatus(ctx, org); statusErr != nil {
+			return ctrl.Result{}, statusErr
+		}
+	}
+	return ctrl.Result{}, err
+}
+
 // fail records a Quay error as a False condition + Warning event and returns the
-// error so the request requeues with backoff.
+// error so the request requeues with backoff. The status write and event are
+// emitted only when the condition actually changed, so a persistently failing
+// reconcile does not re-emit identical events on every backoff retry — the
+// returned error already drives the requeue.
 func (r *OrganizationReconciler) fail(ctx context.Context, org *quayv1alpha1.Organization, err error) (ctrl.Result, error) {
-	markNotReady(&org.Status.Conditions, ReasonQuayError, err.Error(), org.Generation)
-	r.Recorder.Event(org, corev1.EventTypeWarning, ReasonQuayError, err.Error())
-	if statusErr := r.updateStatus(ctx, org); statusErr != nil {
-		// Prefer surfacing the original Quay error; log the status failure.
-		log.FromContext(ctx).Error(statusErr, "updating status after Quay error")
+	if changed := markNotReady(&org.Status.Conditions, ReasonQuayError, err.Error(), org.Generation); changed {
+		r.Recorder.Event(org, corev1.EventTypeWarning, ReasonQuayError, err.Error())
+		if statusErr := r.updateStatus(ctx, org); statusErr != nil {
+			// Prefer surfacing the original Quay error; log the status failure.
+			log.FromContext(ctx).Error(statusErr, "updating status after Quay error")
+		}
 	}
 	return ctrl.Result{}, err
 }

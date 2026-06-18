@@ -12,14 +12,13 @@ import (
 // coupling; the only external dependency is the Quay credential in
 // CredentialsSecretRef.
 //
-// Scope note (HOL-1309, the scaffold phase): this spec intentionally implements
-// the minimal field set HOL-1309 prescribes — name, email, displayName,
-// credentialsSecretRef. The richer ADR-19 illustrative schema (adopt, access[]
-// group→team bindings, allowRepositoryCreation, and the explicit
-// organizationName-vs-metadata.name split) is deferred to the reconciler phases
-// (HOL-1311) and the ADR-reconciliation phase (HOL-1314); adding it here would
-// be unused surface ahead of the logic that consumes it. New fields are additive
-// to this type, so deferring them causes no API break.
+// Scope note: this spec carries name, email, displayName, credentialsSecretRef,
+// and adopt (the claim-model opt-in the HOL-1311 reconciler enforces). The
+// remaining ADR-19 illustrative schema (access[] group→team bindings,
+// allowRepositoryCreation, and the explicit organizationName-vs-metadata.name
+// split) is deferred to the ADR-reconciliation phase (HOL-1314); adding it here
+// would be unused surface ahead of the logic that consumes it. New fields are
+// additive to this type, so deferring them causes no API break.
 type OrganizationSpec struct {
 	// Name is the Quay organization name to create or adopt. It is immutable:
 	// once set, the Quay org it binds to does not change. It is required —
