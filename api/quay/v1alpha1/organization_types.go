@@ -12,8 +12,8 @@ import (
 // coupling; the only external dependency is the Quay credential in
 // CredentialsSecretRef.
 //
-// Scope note: this spec carries name, email, displayName, credentialsSecretRef,
-// and adopt (the claim-model opt-in the HOL-1311 reconciler enforces). The
+// Scope note: this spec carries name, email, credentialsSecretRef, and adopt
+// (the claim-model opt-in the HOL-1311 reconciler enforces). The
 // remaining ADR-19 illustrative schema (access[] group→team bindings,
 // allowRepositoryCreation, and the explicit organizationName-vs-metadata.name
 // split) is deferred to the ADR-reconciliation phase (HOL-1314); adding it here
@@ -30,22 +30,11 @@ type OrganizationSpec struct {
 	Name string `json:"name"`
 
 	// Email is the organization contact email. Quay requires every namespace
-	// (user or organization) to have a unique email address.
+	// (user or organization) to have a unique email address. It is mutable and
+	// is reconciled to Quay on drift.
 	//
 	// +kubebuilder:validation:MinLength=1
 	Email string `json:"email"`
-
-	// DisplayName is an optional human-friendly name for the organization.
-	//
-	// Note: Quay 3.17.3 organizations have no display-name (or description)
-	// field, so this value is accepted on the CR but is NOT programmed into Quay
-	// — there is no org endpoint to apply it to. It is retained as forward-looking
-	// API surface for a future Quay release (or an alternate registry) that gains
-	// a display-name field. The contact Email, by contrast, IS mutable and is
-	// reconciled to Quay on drift.
-	//
-	// +optional
-	DisplayName string `json:"displayName,omitempty"`
 
 	// CredentialsSecretRef names the Secret holding the Quay superuser OAuth
 	// Application credential the reconciler authenticates to Quay with. A
