@@ -42,6 +42,11 @@ type fakeRepoClient struct {
 	nextUUID int
 	// calls records every method call, in order, e.g. "GetRepository:acme/web".
 	calls []string
+
+	// gotCABundle records the caBundle the reconciler's RepoClientFactory was
+	// last invoked with, so a test asserts the spec's CABundle is threaded
+	// through to the client factory (HOL-1320).
+	gotCABundle []byte
 }
 
 // newFakeRepoClient returns a fake with no repositories.

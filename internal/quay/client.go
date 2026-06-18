@@ -18,6 +18,8 @@ package quay
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -81,6 +83,74 @@ func NewClient(baseURL, token string, httpClient *http.Client) *Client {
 		token:      token,
 		httpClient: httpClient,
 	}
+}
+
+// ValidateCABundle reports whether a non-empty caBundle contains at least one
+// parseable x509 certificate, so a caller (e.g. a reconciler) can reject an
+// invalid spec.caBundle up front rather than discovering it only when building a
+// client. An empty bundle is valid (it means "use system trust unchanged"). The
+// error message mirrors the one NewClientWithCABundle would return.
+func ValidateCABundle(caBundle []byte) error {
+	if len(caBundle) == 0 {
+		return nil
+	}
+	if !x509.NewCertPool().AppendCertsFromPEM(caBundle) {
+		return fmt.Errorf("quay: no valid certificates found in caBundle")
+	}
+	return nil
+}
+
+// NewClientWithCABundle returns a Client that, in addition to the system trust
+// store, trusts the x509 CA certificates in the PEM-encoded caBundle when
+// establishing TLS to the Quay API. It is the constructor the holos-controller
+// reconcilers use to reach the in-cluster Quay registry, whose serving
+// certificate is signed by the platform's local CA rather than a public root.
+//
+// It builds an *http.Client (with the same finite default timeout NewClient
+// uses for a nil client) whose transport's TLSClientConfig.RootCAs is the
+// system pool with caBundle appended, then delegates to NewClient for base-URL
+// normalization. When caBundle is empty it passes a nil *http.Client so behavior
+// is identical to NewClient(baseURL, token, nil) — system trust only, no custom
+// transport. An error is returned only when caBundle is non-empty but contains
+// no parseable certificate.
+func NewClientWithCABundle(baseURL, token string, caBundle []byte) (*Client, error) {
+	httpClient, err := httpClientForCABundle(caBundle)
+	if err != nil {
+		return nil, err
+	}
+	return NewClient(baseURL, token, httpClient), nil
+}
+
+// httpClientForCABundle builds the *http.Client NewClientWithCABundle uses. When
+// caBundle is empty it returns nil so the caller falls back to NewClient's
+// default (system trust, default transport). Otherwise it clones
+// http.DefaultTransport and overrides only TLSClientConfig.RootCAs, so the
+// resulting client keeps Go's default transport behavior — HTTP_PROXY/NO_PROXY
+// honoring, connection pooling, dial/TLS handshake timeouts, HTTP/2 — and merely
+// trusts the extra roots. The RootCAs pool is the system pool (falling back to
+// an empty pool when x509.SystemCertPool errors or returns nil, e.g. on a
+// scratch image) with caBundle appended via AppendCertsFromPEM. A non-empty
+// bundle that yields no certificates is an error rather than a silent no-op.
+func httpClientForCABundle(caBundle []byte) (*http.Client, error) {
+	if len(caBundle) == 0 {
+		return nil, nil
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(caBundle) {
+		return nil, fmt.Errorf("quay: no valid certificates found in caBundle")
+	}
+	// Clone the default transport so proxy, pooling, timeout, and HTTP/2
+	// behavior is preserved; only the trust roots change. http.DefaultTransport
+	// is always an *http.Transport.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	}
+	transport.TLSClientConfig.RootCAs = pool
+	return &http.Client{Timeout: defaultTimeout, Transport: transport}, nil
 }
 
 // doJSON sends an HTTP request to path (joined to the client's base URL) with an

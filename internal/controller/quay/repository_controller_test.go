@@ -26,7 +26,10 @@ func newRepoReconciler(fake *fakeRepoClient, namespace string) (*RepositoryRecon
 		APIReader: shared.k8sClient,
 		Recorder:  recorder,
 		Namespace: namespace,
-		NewClient: func(cred *quayCredential) RepoClient { return fake },
+		NewClient: func(cred *quayCredential, caBundle []byte) RepoClient {
+			fake.gotCABundle = caBundle
+			return fake
+		},
 	}
 	return r, recorder
 }
@@ -65,6 +68,7 @@ type repoOpts struct {
 	visibility  quayv1alpha1.RepositoryVisibility
 	description string
 	webhook     *quayv1alpha1.RepositoryWebhook
+	caBundle    []byte
 }
 
 // makeRepo creates a Repository CR named repoName in namespace ns owned by org
@@ -83,6 +87,7 @@ func makeRepo(ctx context.Context, t *testing.T, ns, orgRef, repoName string, op
 			Visibility:      vis,
 			Description:     opts.description,
 			Webhook:         opts.webhook,
+			CABundle:        opts.caBundle,
 		},
 	}
 	if err := shared.k8sClient.Create(ctx, repo); err != nil {
@@ -201,6 +206,56 @@ func TestRepositoryCreatesWithInlineWebhook(t *testing.T) {
 		t.Errorf("observedGeneration = %d, want %d", repo.Status.ObservedGeneration, repo.Generation)
 	}
 	assertEvent(t, recorder, ReasonReconciled)
+}
+
+func TestRepositoryThreadsCABundleToClientFactory(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	caBundle := validTestCABundle(t)
+	key := makeRepo(ctx, t, ns, "acme", "web", repoOpts{caBundle: caBundle})
+
+	fake := newFakeRepoClient()
+	r, _ := newRepoReconciler(fake, ns)
+
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if string(fake.gotCABundle) != string(caBundle) {
+		t.Errorf("RepoClientFactory received caBundle %q, want the spec's %q", fake.gotCABundle, caBundle)
+	}
+}
+
+func TestRepositoryInvalidCABundleFailsWithoutQuayCall(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	key := makeRepo(ctx, t, ns, "acme", "web", repoOpts{caBundle: []byte("not a pem block")})
+
+	fake := newFakeRepoClient()
+	r, _ := newRepoReconciler(fake, ns)
+
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err == nil {
+		t.Fatal("expected reconcile to fail for an invalid caBundle")
+	}
+
+	if len(fake.calls) != 0 {
+		t.Errorf("expected no Quay calls for an invalid caBundle, calls were %v", fake.calls)
+	}
+	got := getRepo(ctx, t, key)
+	if s := repoConditionStatus(got, ConditionReady); s != metav1.ConditionFalse {
+		t.Errorf("Ready = %q, want False for an invalid caBundle", s)
+	}
+	if reason := repoConditionReason(got, ConditionReady); reason != ReasonQuayError {
+		t.Errorf("Ready reason = %q, want %q", reason, ReasonQuayError)
+	}
 }
 
 func TestRepositoryCreatesWithSecretRefWebhook(t *testing.T) {

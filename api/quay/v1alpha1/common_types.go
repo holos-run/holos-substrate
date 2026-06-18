@@ -1,5 +1,29 @@
 package v1alpha1
 
+// CABundle convention (shared across all quay.holos.run Kinds).
+//
+// Every Kind in this API group (Organization, Repository) carries a CABundle
+// []byte spec field with JSON tag `caBundle,omitempty`. Its semantics and
+// serialization are standardized here, once, and each spec's field godoc refers
+// back to this block rather than re-describing the format — so the field is
+// generally re-used across Kinds.
+//
+// CABundle is a PEM-encoded set of x509 CA certificates the controller trusts
+// in addition to its system store when establishing TLS to the Quay API. It
+// follows the upstream Kubernetes caBundle convention: one or more PEM blocks
+// concatenated, serialized as a single base64 string in JSON (the Go `[]byte`
+// type marshals to a base64 string, and the generated CRD property is
+// `type: string, format: byte`). An empty CABundle means use the controller
+// pod's system trust store unchanged — the historical behavior — so the field
+// is purely additive.
+//
+// It is the trust anchor for the in-cluster Quay registry, whose serving
+// certificate is signed by the platform's local CA rather than a public root:
+// without it the reconcilers hit `x509: certificate signed by unknown
+// authority`. The bundle is configuration carried on the spec, not a
+// credential — the Quay API token lives in the credential Secret
+// (CredentialsSecretRef), the CA bundle does not.
+
 // DefaultCredentialsSecretName is the suggested and default name of the Secret
 // holding the Quay superuser OAuth Application credential. When a spec's
 // credentialsSecretRef is omitted, the controller resolves a Secret of this
