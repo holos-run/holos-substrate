@@ -177,7 +177,7 @@ components have been removed. Git history preserves them.
   PKCE-verification note. Companion to [ADR-15](docs/adr/ADR-15.md).
 - [docs/runbooks/quay-resource-controller-credentials.md](docs/runbooks/quay-resource-controller-credentials.md)
   — the operator procedure for manually minting the Quay superuser
-  OAuth-Application credential for the future Quay Resource Controller: sign in
+  OAuth-Application credential the shipped Holos Controller consumes: sign in
   via "Holos SSO" as `svc-quay-resource-controller` (password from its Secret),
   create a Quay OAuth Application, generate a scoped token, and store it as a
   Kubernetes Secret. Documents which org the Application is created under, the

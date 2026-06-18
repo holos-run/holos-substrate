@@ -73,8 +73,11 @@ and that the later, more detailed ADRs build on.
   rendered-manifest GitOps model that ADR-16's pipeline operates within, and the
   controller supplies the CRDs those rendered manifests reference.
 - [Quay Resource Controller credentials runbook](../runbooks/quay-resource-controller-credentials.md):
-  the manual OAuth-Application credential procedure that stands in until this
-  controller ships. The controller automates what the runbook does by hand.
+  the manual OAuth-Application credential procedure. The shipped controller
+  automates the **org/repo/webhook** provisioning the runbook performed by hand,
+  but still **consumes** the superuser credential the runbook mints (read from the
+  `holos-controller-quay-creds` Secret in `holos-controller`), so the credential
+  mint itself stays a manual step by design.
 - Forward references (later phases, detailed specifications):
   [**ADR-19**](ADR-19.md) — the Quay API group (`quay.holos.run`) Organization
   and Repository CRDs; [**ADR-20**](ADR-20.md) — the Keycloak API group CRDs
@@ -258,13 +261,15 @@ controller ships, and the controller is what closes it.
   OAuth-Application credential the runbook currently mints by hand, carrying the
   Revision-5 `FEATURE_SUPERUSERS_FULL_ACCESS` reach — see ADR-15 Revisions 4–5).
   The specific permission sets are detailed in the per-group ADRs.
-- **The manual stop-gap is retired once the controller ships.** Until then,
-  [ADR-15](ADR-15.md) Revisions 4–5 and the
-  [credentials runbook](../runbooks/quay-resource-controller-credentials.md)
-  remain the operative procedure; afterward, the by-hand steps are replaced by
-  reconciled resources, and the runbook becomes the historical record of the
-  interim. Operators trade a documented manual procedure for a controller they
-  must keep healthy.
+- **The manual stop-gap is retired now the controller has shipped (Revision 2)** —
+  for the **org/repo/webhook** data plane. [ADR-15](ADR-15.md) Revisions 4–5 and
+  the [credentials runbook](../runbooks/quay-resource-controller-credentials.md)
+  become the historical record for those by-hand steps, which are now reconciled
+  `quay.holos.run` resources ([ADR-19](ADR-19.md)). The runbook stays operative
+  for the parts the controller does **not** automate: minting the superuser
+  credential the controller consumes, and (until later phases) the robots and
+  pull-credential Secrets. Operators trade most of the documented manual procedure
+  for a controller they must keep healthy.
 - **The KRM-native principle is reinforced.** Closing these gaps with CRDs plus a
   reconciler — rather than expanding the set of manual runbooks — keeps the
   platform's capabilities expressible and auditable through the Kubernetes API
