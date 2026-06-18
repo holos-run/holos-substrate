@@ -94,10 +94,15 @@ func (c *Client) DeleteNotification(ctx context.Context, ns, repo, uuid string) 
 }
 
 // DeleteNotificationIfExists deletes the notification and returns nil when it is
-// already absent, so the call is idempotent.
+// already absent, so the call is idempotent for cleanup and finalizer logic.
+//
+// Quay's delete-notification handler does not consistently use 404 for an
+// unknown UUID: when the notification was already removed out of band it can
+// respond 400 InvalidRequest. Both a 404 and that absent-UUID 400 mean the
+// notification is gone, so both are treated as success.
 func (c *Client) DeleteNotificationIfExists(ctx context.Context, ns, repo, uuid string) error {
 	err := c.DeleteNotification(ctx, ns, repo, uuid)
-	if IsNotFound(err) {
+	if IsNotFound(err) || isAbsentNotification(err) {
 		return nil
 	}
 	return err

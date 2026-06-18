@@ -271,6 +271,95 @@ func TestCreateRepositoryConflict(t *testing.T) {
 	}
 }
 
+// muxHandler routes by method+path so a single test can drive a sequence of
+// distinct requests (e.g. a failing create followed by a confirming GET).
+type muxHandler struct {
+	t       *testing.T
+	routes  map[string]func(w http.ResponseWriter, r *http.Request)
+	unknown int
+}
+
+func (m *muxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	key := r.Method + " " + r.URL.Path
+	if fn, ok := m.routes[key]; ok {
+		fn(w, r)
+		return
+	}
+	m.unknown++
+	m.t.Errorf("unexpected request %s", key)
+	w.WriteHeader(http.StatusInternalServerError)
+}
+
+func TestCreateRepositoryIfNotExistsQuay400DuplicateMessage(t *testing.T) {
+	// Quay's repo create can return 400 "Could not create repository" for an
+	// existing repo; isDuplicateMessage maps it to a conflict, so the wrapper
+	// succeeds without any extra GET.
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodPost, wantPath: "/api/v1/repository",
+		status:   http.StatusBadRequest,
+		respBody: `{"error_message":"Could not create repository"}`,
+	}
+	c, _ := newTestClient(t, h)
+
+	// Bare create maps it to a conflict.
+	if err := c.CreateRepository(context.Background(), "acme", "web", VisibilityPrivate, ""); !IsConflict(err) {
+		t.Fatalf("expected IsConflict for Quay duplicate-repo 400, got %v", err)
+	}
+	if err := c.CreateRepositoryIfNotExists(context.Background(), "acme", "web", VisibilityPrivate, ""); err != nil {
+		t.Fatalf("CreateRepositoryIfNotExists should treat duplicate 400 as success, got %v", err)
+	}
+}
+
+func TestCreateRepositoryIfNotExistsConfirmsViaGet(t *testing.T) {
+	// An unrecognized 400 on create, but the repo exists: the GET fallback
+	// confirms existence and the wrapper succeeds.
+	getHit := false
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"POST /api/v1/repository": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error_message":"some opaque error"}`)
+		},
+		"GET /api/v1/repository/acme/web": func(w http.ResponseWriter, _ *http.Request) {
+			getHit = true
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"is_public":false}`)
+		},
+	}}
+	c, _ := newTestClient(t, m)
+
+	if err := c.CreateRepositoryIfNotExists(context.Background(), "acme", "web", VisibilityPrivate, ""); err != nil {
+		t.Fatalf("CreateRepositoryIfNotExists should succeed when GET confirms existence, got %v", err)
+	}
+	if !getHit {
+		t.Error("expected a confirming GET after the failed create")
+	}
+}
+
+func TestCreateRepositoryIfNotExistsSurfacesRealError(t *testing.T) {
+	// Create fails AND the repo does not exist: the original create error must
+	// surface rather than being swallowed.
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"POST /api/v1/repository": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"error_message":"boom"}`)
+		},
+		"GET /api/v1/repository/acme/web": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"error_message":"Not Found"}`)
+		},
+	}}
+	c, _ := newTestClient(t, m)
+
+	err := c.CreateRepositoryIfNotExists(context.Background(), "acme", "web", VisibilityPrivate, "")
+	if err == nil {
+		t.Fatal("expected the original create error to surface")
+	}
+	var ae *APIError
+	if !errors.As(err, &ae) || ae.StatusCode != http.StatusInternalServerError {
+		t.Errorf("expected the 500 create error, got %v", err)
+	}
+}
+
 func TestGetRepository(t *testing.T) {
 	h := &recordingHandler{
 		t: t, wantMethod: http.MethodGet, wantPath: "/api/v1/repository/acme/web",
@@ -406,6 +495,35 @@ func TestDeleteNotificationIfExistsSwallowsNotFound(t *testing.T) {
 
 	if err := c.DeleteNotificationIfExists(context.Background(), "acme", "web", "gone"); err != nil {
 		t.Fatalf("DeleteNotificationIfExists should swallow 404, got %v", err)
+	}
+}
+
+func TestDeleteNotificationIfExistsSwallows400InvalidRequest(t *testing.T) {
+	// Quay can return 400 InvalidRequest (not 404) for an already-removed
+	// notification UUID; the if-exists wrapper must treat it as gone.
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodDelete, wantPath: "/api/v1/repository/acme/web/notification/gone",
+		status:   http.StatusBadRequest,
+		respBody: `{"error":"InvalidRequest","error_message":"Invalid request"}`,
+	}
+	c, _ := newTestClient(t, h)
+
+	if err := c.DeleteNotificationIfExists(context.Background(), "acme", "web", "gone"); err != nil {
+		t.Fatalf("DeleteNotificationIfExists should swallow 400 InvalidRequest, got %v", err)
+	}
+}
+
+func TestDeleteNotificationIfExistsSurfacesOther400(t *testing.T) {
+	// A 400 that is not an absent-UUID signal must still surface.
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodDelete, wantPath: "/api/v1/repository/acme/web/notification/u1",
+		status:   http.StatusBadRequest,
+		respBody: `{"error_message":"some other validation failure"}`,
+	}
+	c, _ := newTestClient(t, h)
+
+	if err := c.DeleteNotificationIfExists(context.Background(), "acme", "web", "u1"); err == nil {
+		t.Fatal("expected an unrelated 400 to surface, got nil")
 	}
 }
 

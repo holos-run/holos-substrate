@@ -49,10 +49,24 @@ func (c *Client) CreateRepository(ctx context.Context, ns, repo, visibility, des
 }
 
 // CreateRepositoryIfNotExists creates the repository and returns nil when it
-// already exists, so the call is idempotent across reconciler re-runs.
+// already exists, so the call is idempotent across reconciler re-runs and
+// create races.
+//
+// Quay signals an existing repository inconsistently: sometimes 409, sometimes
+// a 400 reading "Could not create repository". The first is mapped to a
+// conflict by isDuplicateMessage; for any other non-2xx, the method confirms
+// existence with a GET and treats a present repository as success, so a genuine
+// create failure still surfaces while a benign already-exists does not.
 func (c *Client) CreateRepositoryIfNotExists(ctx context.Context, ns, repo, visibility, description string) error {
 	err := c.CreateRepository(ctx, ns, repo, visibility, description)
-	if IsConflict(err) {
+	if err == nil || IsConflict(err) {
+		return nil
+	}
+	// The create failed for some other reason; if the repository nonetheless
+	// already exists, the failure was a benign duplicate (a Quay 400 we did not
+	// recognize, or a concurrent creator winning the race), so succeed. If the
+	// existence check itself fails, return the original create error.
+	if _, getErr := c.GetRepository(ctx, ns, repo); getErr == nil {
 		return nil
 	}
 	return err

@@ -88,13 +88,37 @@ func mapDuplicateToConflict(err error) error {
 	return err
 }
 
+// isAbsentNotification reports whether err is an *APIError describing a Quay
+// delete-notification response for a UUID that is already gone. Quay does not
+// uniformly return 404 here: an unknown notification UUID can come back as a
+// 400 InvalidRequest. This recognizes that 400 form so DeleteNotificationIfExists
+// stays idempotent. A genuine 404 is handled separately by IsNotFound.
+func isAbsentNotification(err error) bool {
+	var ae *APIError
+	if !errors.As(err, &ae) {
+		return false
+	}
+	if ae.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	hay := strings.ToLower(ae.Message + " " + ae.Body)
+	return strings.Contains(hay, "invalidrequest") ||
+		strings.Contains(hay, "invalid request") ||
+		strings.Contains(hay, "no notification") ||
+		strings.Contains(hay, "notification not found") ||
+		strings.Contains(hay, "could not find notification")
+}
+
 // isDuplicateMessage reports whether a Quay error message or body indicates an
-// already-exists conflict. Quay phrases these as "already exists" or
-// "is already taken"/"is already in use" depending on the endpoint.
+// already-exists conflict. Quay phrases these inconsistently across endpoints:
+// organization creation says "already exists"/"already taken"/"already in use",
+// while repository creation can return a 400 reading "Could not create
+// repository" when the repo already exists. All of these mark a duplicate.
 func isDuplicateMessage(message, body string) bool {
 	hay := strings.ToLower(message + " " + body)
 	return strings.Contains(hay, "already exists") ||
 		strings.Contains(hay, "already taken") ||
 		strings.Contains(hay, "already in use") ||
-		strings.Contains(hay, "already a member")
+		strings.Contains(hay, "already a member") ||
+		strings.Contains(hay, "could not create repository")
 }
