@@ -156,13 +156,20 @@ Namespace:
    [component guidelines](../../holos/docs/component-guidelines.md)
    no-inline-Namespace guardrail); instead a one-line project registration
    **derives a central [`holos/namespaces.cue`](../../holos/namespaces.cue)
-   registry entry** — with **external-secrets** enabled (so the namespace's
-   `ExternalSecret`s resolve) and **ambient mode** enabled (`_ambient: true`, the
-   `istio.io/dataplane-mode: ambient` label) — and the `namespaces` component
+   registry entry** with **ambient mode** enabled (`_ambient: true`, the
+   `istio.io/dataplane-mode: ambient` label), and the `namespaces` component
    renders the actual `Namespace` manifest. The Project component references the
-   registered name and unifies it with `#RegisteredNamespace`. (Generalizing the
-   registry from a rendered collection is itself a design constraint — see
-   *Unifying applications under their project* below.)
+   registered name and unifies it with `#RegisteredNamespace`. The Namespace is
+   also **wired for external-secrets** so the member Applications'
+   `ExternalSecret`s (Application resource 8) resolve — but the registry today
+   models only namespace metadata (`_ambient`, labels, annotations), and the
+   platform ships no external-secrets installation, `SecretStore`/
+   `ClusterSecretStore`, or per-namespace enablement yet. Standing up the
+   external-secrets controller and the store the Project's `ExternalSecret`s
+   target is therefore a **prerequisite the component phase must add** (an open
+   item, not something namespace registration alone provides). Generalizing the
+   registry itself from a rendered collection is a further design constraint — see
+   *Unifying applications under their project* below.
 2. **Kargo `Project`** — the cluster-scoped Kargo `Project` whose name maps to the
    same-named Namespace; that Namespace carries the
    `kargo.akuity.io/project: "true"` adoption label (and the
@@ -190,21 +197,27 @@ Namespace:
    Quay teams/roles, and governing repository creation within it. The Holos
    Controller ([ADR-18](ADR-18.md)) reconciles it.
 7. **`ReferenceGrant`** — in the Istio gateway namespace (`istio-gateways`),
-   granting the Project's Namespace the cross-namespace reference the shared
-   Gateway needs. Today the shared Gateway admits routes from every namespace
-   (`allowedRoutes: namespaces: from: "All"` in
-   [`holos/components/istio-gateway/buildplan.cue`](../../holos/components/istio-gateway/buildplan.cue)),
-   acceptable only while every namespace is platform-managed; the route-attachment
-   policy placeholder ([`holos/docs/placeholders.md`](../../holos/docs/placeholders.md))
-   notes it must tighten to a per-namespace allow-list before tenant namespaces
-   land. Under that tightened policy a `ReferenceGrant` is the Gateway-API
-   mechanism that authorizes a specific tenant Namespace's cross-namespace
-   reference into `istio-gateways` (the same pattern the Gateway's own
-   `certificateRefs` note) — this item records the per-project grant the
-   tightened policy requires, **complementing** the listener's `allowedRoutes`,
-   not replacing it.
-8. **`HTTPRoute`** — the Project's route attaching to the shared Gateway, exposing
-   the Project's services through the platform ingress.
+   authorizing the cross-namespace references the Gateway API **does** gate by
+   `ReferenceGrant`. A clarification on the mechanism, so this ADR records it
+   correctly: **route-to-Gateway attachment is not one of them** — whether an
+   `HTTPRoute` may attach to the shared Gateway is governed by the listener's
+   `allowedRoutes` (today `namespaces: from: "All"` in
+   [`holos/components/istio-gateway/buildplan.cue`](../../holos/components/istio-gateway/buildplan.cue),
+   which the route-attachment placeholder in
+   [`holos/docs/placeholders.md`](../../holos/docs/placeholders.md) flags must
+   tighten to a label/namespace allow-list before tenant namespaces land). What a
+   `ReferenceGrant` *does* authorize is a cross-namespace **object** reference —
+   an `HTTPRoute`'s `backendRefs` pointing at a `Service` in another namespace, or
+   a listener's `certificateRefs` pointing at a `Secret` in another namespace (the
+   case the Gateway's own certificate comment in `istio-gateway/buildplan.cue`
+   calls out). This item is the per-project grant for whichever such
+   cross-namespace reference the Project needs (e.g. a route in the Project
+   Namespace whose backend or TLS Secret lives elsewhere); the **attachment**
+   policy is the listener's `allowedRoutes`, recorded here so the two mechanisms
+   are not conflated.
+8. **`HTTPRoute`** — the Project's route attaching to the shared Gateway (via the
+   listener's `allowedRoutes`), exposing the Project's services through the
+   platform ingress.
 
 ### The Application component: 11 resources per `apps.<name>` entry
 
@@ -234,10 +247,18 @@ receiver URL from `ProjectConfig.status`):
    polling interval as the fallback) ([ADR-16](ADR-16.md)).
 3. **Kargo `Stage` CR** — the promotion target whose `argocd-update` step repoints
    the app's Argo CD `Application` at each promoted `Freight` digest.
-4. **Kargo blue-green progressive-delivery pipeline** — the `Stage`'s
-   promotion-template **configuration** (a behavior expressed on the Kargo
-   resources above, not a separate Kubernetes object) that delivers a new revision
-   via a blue-green progression rather than a hard cutover.
+4. **Kargo blue-green progressive-delivery pipeline** — the **intended**
+   progressive-delivery behavior expressed on the Kargo `Stage`'s
+   promotion-template (configuration, not a separate Kubernetes object). Recording
+   the gap honestly: the `my-project` scaffold's `Stage` runs a single
+   `argocd-update` step, which is a **hard cutover** (Argo CD syncs the new digest
+   into one `Deployment`) — true blue-green needs primitives this resource set does
+   not yet include (an Argo Rollouts `Rollout` with a second "color" workload/
+   `Service` and a traffic-switching step, or an equivalent staged Stage
+   pipeline). This item names the progressive-delivery capability the Application
+   component **should** render and flags those additional primitives as design
+   work, rather than claiming a plain `Deployment` + `argocd-update` already
+   achieves blue-green.
 5. **ArgoCD `Application` CR** — namespaced into `argocd`; the OCI-source
    `Application` Kargo patches (`targetRevision` owned by Kargo, omitted from the
    committed manifest — the "imperative revision, declarative Application" posture
@@ -278,9 +299,21 @@ Project is the security boundary (≈ a Kubernetes Namespace).
   than declaring their own. The Application's Quay `Repository` is created **within
   the Project's Quay `Organization`** (its `organizationRef` resolves to the
   Project's org), so the registry containment mirrors the Kubernetes containment.
-- **How the two collections mix at render time.** Both collections are CUE
-  ancestors of the build plan, so a single `holos render platform` evaluates them
-  together: each `projects.<name>` renders the 8 project-level resources, each
+- **How the two collections mix at render time.** The collections live at the
+  `holos/` root (the same level as [`holos/namespaces.cue`](../../holos/namespaces.cue),
+  which *is* a CUE ancestor of every component instance and is how the existing
+  `#RegisteredNamespace` cross-reference works). Sibling subdirectories like
+  `holos/projects/` and `holos/apps/` are **not** automatically ancestors of a
+  `holos/components/<name>/` build plan, so the design must wire the two
+  collections into the Project and Application components **explicitly** — by
+  defining `projects`/`apps` in a root-level CUE file (an ancestor, like
+  `namespaces.cue`) or by having the components import the collection package.
+  That wiring is the design's responsibility; this ADR records the *intent* (one
+  `holos render platform` evaluates both collections together and resolves their
+  cross-references as ordinary CUE unification), and names the ancestor/import
+  wiring as the mechanism the component phase must establish — it is not free from
+  directory layout alone. Given that wiring: each `projects.<name>` renders the 8
+  project-level resources, each
   `apps.<name>` renders the 11 application-level resources scoped to its project
   (workloads into the project's namespace, the Argo CD `Application` into `argocd`
   with that namespace as its destination), and the cross-references
@@ -368,10 +401,14 @@ GitOps rendered-manifest model and is explicit about the boundary:
 4. **Applications are unified under their Project by GCP-model containment:**
    `apps.<name>.project` binds an app to a Project, the Project is realized as its
    Namespace security boundary (the `my-project` single-namespace shape, where the
-   Kargo Project namespace doubles as the workload namespace), and every app
-   resource renders into that Namespace within the Project's Quay org. The two
-   collections mix at render time as ordinary CUE unification; the Project
-   component **integrates with the central
+   Kargo Project namespace doubles as the workload namespace), and the app's
+   workload resources render into that Namespace within the Project's Quay org
+   (the app's Argo CD `Application` is namespaced into `argocd` with that Namespace
+   as its `destination`, per the scaffold). The two collections mix at render time
+   as ordinary CUE unification **once wired as build-plan ancestors or imported by
+   the components** — a mechanism the component phase must establish, since sibling
+   `holos/` subdirectories are not automatically ancestors of a component build
+   plan. The Project component **integrates with the central
    [`holos/namespaces.cue`](../../holos/namespaces.cue) registry and never emits a
    `Namespace` inline** (the [component guidelines](../../holos/docs/component-guidelines.md)).
 5. **This refines [ADR-1](ADR-1.md):** the `Project` tenant maps onto Kubernetes
