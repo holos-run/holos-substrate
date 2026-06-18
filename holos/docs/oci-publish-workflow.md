@@ -383,11 +383,19 @@ ways that simplify the operator workflow:
 Prerequisites: the cluster is up, `scripts/apply` has run, and
 `scripts/apply-my-project` has been run (so the
 `my-project-quay-webhook-bootstrap` receiver-token Job completed — that script
-gates it, and gates the Organization reaching Ready). The
-`my-project/my-project-config` repository, its `repo_push` webhook, and the Argo
-CD repository Secret are **not** created by either script — they are provisioned
-by hand until the proposed Holos Project/Application components ([ADR-21](../../docs/adr/ADR-21.md))
-emit the Repository CR.
+gates it, and gates the Organization reaching Ready). Two categories are **not**
+created by either script and must be provisioned by hand:
+
+- the `my-project/my-project-config` **repository** and its `repo_push` webhook —
+  reconcilable by a `quay.holos.run` Repository CR, but that CR is **not** emitted
+  by the component yet (the proposed Holos Project/Application components,
+  [ADR-21](../../docs/adr/ADR-21.md), would emit it);
+- the **push robot**, the **Argo CD repository (pull) Secret** in `argocd`, and
+  the **Kargo image-credential Secret** the Warehouse authenticates registry tag
+  discovery with — these are **not** modeled by the `quay.holos.run` CRDs at all
+  (ADR-19 *Out of scope*) and stay manual even after ADR-21. Without the Kargo
+  image credential, Warehouse discovery cannot authenticate and no Freight is
+  created.
 
 > **The publish step is future work — do not run it against the platform
 > render.** `scripts/publish` today packages the **whole-platform** render
