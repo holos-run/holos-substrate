@@ -210,12 +210,21 @@ module** `github.com/holos-run/holos-paas`:
 
 ## Decision
 
-Adopt Option A: a single-module monorepo with one multi-service binary and
-one container image, kubebuilder multi-group conventions
+Adopt Option A: a single-module monorepo with the `holos-paas` services in one
+multi-service binary and one container image, kubebuilder multi-group conventions
 (`api/<group>/<version>`, `internal/controller/<area>`), Holos CUE under
 `holos/`, and CRD codegen emitted into the Holos components. Absorb the
 `holos-run/holos-controller` scaffold into this layout (`api/v1alpha1` →
-`api/paas/v1alpha1`, `cmd/main.go` → the `controller` subcommand).
+`api/paas/v1alpha1`).
+
+**One bounded exception (Revision 6):** the Holos Controller is built as a
+**second binary and image** (`cmd/holos-controller/main.go` +
+`Dockerfile.controller`) **within the same single module** — see *Second binary:
+the Holos Controller* above. The single-module rule and the
+`api/<group>/<version>` layout are unchanged; what differs is that the
+controller-manager process ships as its own image (Option B for this one
+component) rather than a subcommand of `holos-paas`, because its manager
+lifecycle differs from the user-facing CLI's.
 
 ## Consequences
 

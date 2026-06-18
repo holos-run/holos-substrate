@@ -1,7 +1,8 @@
 # Runbook: Quay Resource Controller credentials
 
 Operator-facing procedure for minting the OAuth-Application credential the
-**future Quay Resource Controller** will authenticate with, now that Quay runs
+**Holos Controller** (the shipped Quay Resource Controller,
+[ADR-18](../adr/ADR-18.md)) authenticates with, now that Quay runs
 `AUTHENTICATION_TYPE: OIDC` (the Keycloak `holos` realm is the sole identity
 store) and the old headless `quay-initial-admin` superuser-token bootstrap is
 gone ([ADR-15](../adr/ADR-15.md) Revision 4, HOL-1293).
@@ -11,9 +12,10 @@ Under the OIDC backend Quay has **no local `admin` user** and the headless
 can no longer be minted **headlessly**. (The `/api/v1/superuser/*` APIs still
 answer an authenticated `SUPER_USERS` member's OAuth token — that is exactly the
 credential this runbook produces, by signing a superuser in interactively and
-generating an OAuth-Application token.) Until a Quay Resource Controller exists
-to reconcile this in-cluster, the data-plane credential is created **once, by
-hand**, by an operator following the steps below. This runbook is the authoritative procedure and records the answers to
+generating an OAuth-Application token.) The controller **consumes** this
+credential rather than minting it, so even though the controller has shipped, the
+data-plane credential is still created **once, by hand**, by an operator following
+the steps below. This runbook is the authoritative procedure and records the answers to
 the credential's open design questions (which organization, which scopes, can
 it create new organizations).
 
@@ -333,9 +335,9 @@ exactly as ADR-18 anticipates.
   (Revision 4: OIDC backend, two Keycloak-backed superusers, data-plane
   provisioning deferred to a future Quay Resource Controller).
 - [ADR-18 — The Holos Controller and the GitOps Rendered-Manifest Delivery
-  Model](../adr/ADR-18.md) — the controller that will automate the provisioning
-  this runbook performs by hand (the proposed design for the "future Quay
-  Resource Controller", `Status: Proposed`).
+  Model](../adr/ADR-18.md) — the shipped controller (`Status: Partially
+  Implemented`) that automates the **org/repo/webhook** provisioning this runbook
+  performed by hand; it consumes the credential this runbook mints.
 - [ADR-19 — Quay API Group (`quay.holos.run`): Organization and Repository
   CRDs](../adr/ADR-19.md) — the CRDs the controller reconciles to provision
   orgs/repos/webhooks in-cluster.

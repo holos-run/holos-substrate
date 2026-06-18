@@ -234,9 +234,13 @@ controller ships, and the controller is what closes it.
    by-hand provisioning becomes reconciled `quay.holos.run` resources, and the
    manually-minted OAuth-Application credential becomes the controller's
    service-account credential.
-5. **This is a design record only — no code is written in this phase.** The CRD
-   schemas (ADR-19, ADR-20) and the Project/Application component model (ADR-21)
-   are later phases that build on these decisions.
+5. **The system-design decisions above were the original phase's scope; the
+   controller has since shipped (Revision 2).** This ADR fixed the controller,
+   its namespace, and the API-group convention without specifying CRD schemas.
+   The first group's schemas (ADR-19) are now `Implemented` (the controller
+   shipped across HOL-1309..HOL-1313); the Keycloak group (ADR-20) and the
+   Project/Application component model (ADR-21) remain later phases that build on
+   these decisions.
 
 ## Consequences
 
