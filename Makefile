@@ -60,3 +60,9 @@ docker-build: ## Build the container image for $(PLATFORM) tagged $(IMAGE).
 .PHONY: docker-push
 docker-push: ## Build for $(PLATFORM) and push $(IMAGE) to the registry.
 	docker buildx build --platform $(PLATFORM) -t $(IMAGE) --push .
+
+# The holos-controller service (ADR-18, HOL-1309) lives in this same module and
+# repo but keeps its targets isolated in Makefile.controller — all namespaced
+# controller-* — so they never collide with the holos-paas targets above or
+# touch scripts/apply, scripts/render, or scripts/publish.
+include Makefile.controller
