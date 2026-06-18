@@ -109,16 +109,21 @@ func isAbsentNotification(err error) bool {
 		strings.Contains(hay, "could not find notification")
 }
 
-// isDuplicateMessage reports whether a Quay error message or body indicates an
-// already-exists conflict. Quay phrases these inconsistently across endpoints:
-// organization creation says "already exists"/"already taken"/"already in use",
-// while repository creation can return a 400 reading "Could not create
-// repository" when the repo already exists. All of these mark a duplicate.
+// isDuplicateMessage reports whether a Quay error message or body unambiguously
+// indicates an already-exists conflict. Quay phrases these inconsistently across
+// endpoints: organization and repository creation both say "already
+// exists"/"already taken"/"already in use".
+//
+// It deliberately does NOT match Quay's repository-create "Could not create
+// repository" 400, which is a *generic* create failure (the repo may well be
+// missing), not a reliable duplicate signal. CreateRepositoryIfNotExists proves
+// existence for that ambiguous case with a GET fallback instead of swallowing it
+// here — otherwise a real failure would be silently reported as success and
+// reconciliation would stop retrying while the repo is still absent.
 func isDuplicateMessage(message, body string) bool {
 	hay := strings.ToLower(message + " " + body)
 	return strings.Contains(hay, "already exists") ||
 		strings.Contains(hay, "already taken") ||
 		strings.Contains(hay, "already in use") ||
-		strings.Contains(hay, "already a member") ||
-		strings.Contains(hay, "could not create repository")
+		strings.Contains(hay, "already a member")
 }

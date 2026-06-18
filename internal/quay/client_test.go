@@ -290,10 +290,11 @@ func (m *muxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusInternalServerError)
 }
 
-func TestCreateRepositoryIfNotExistsQuay400DuplicateMessage(t *testing.T) {
-	// Quay's repo create can return 400 "Could not create repository" for an
-	// existing repo; isDuplicateMessage maps it to a conflict, so the wrapper
-	// succeeds without any extra GET.
+func TestCreateRepositoryGenericQuay400IsNotConflict(t *testing.T) {
+	// Quay's "Could not create repository" 400 is a generic create failure, not
+	// a reliable duplicate signal: the bare create must NOT report it as a
+	// conflict (otherwise the if-not-exists wrapper would swallow a real failure
+	// without confirming existence).
 	h := &recordingHandler{
 		t: t, wantMethod: http.MethodPost, wantPath: "/api/v1/repository",
 		status:   http.StatusBadRequest,
@@ -301,12 +302,12 @@ func TestCreateRepositoryIfNotExistsQuay400DuplicateMessage(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	// Bare create maps it to a conflict.
-	if err := c.CreateRepository(context.Background(), "acme", "web", VisibilityPrivate, ""); !IsConflict(err) {
-		t.Fatalf("expected IsConflict for Quay duplicate-repo 400, got %v", err)
+	err := c.CreateRepository(context.Background(), "acme", "web", VisibilityPrivate, "")
+	if err == nil {
+		t.Fatal("expected an error for the 400")
 	}
-	if err := c.CreateRepositoryIfNotExists(context.Background(), "acme", "web", VisibilityPrivate, ""); err != nil {
-		t.Fatalf("CreateRepositoryIfNotExists should treat duplicate 400 as success, got %v", err)
+	if IsConflict(err) {
+		t.Errorf("generic 'Could not create repository' 400 must not be a conflict: %v", err)
 	}
 }
 
