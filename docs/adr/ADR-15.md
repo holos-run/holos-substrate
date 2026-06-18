@@ -14,6 +14,7 @@
 | 3        | 2026-06-16 | @jeffmccune | HOL-1281: run `AUTHENTICATION_TYPE: Database` with Keycloak as a federated login provider (layered, not a backend swap); `FEATURE_TEAM_SYNCING: false`; no-PKCE exception retained |
 | 4        | 2026-06-17 | @jeffmccune | HOL-1292/HOL-1293: revert to `AUTHENTICATION_TYPE: OIDC` as the sole identity store; PKCE (S256) re-enabled; team syncing re-enabled; superusers are the Keycloak-backed `svc-quay-resource-controller` + `quay-admin`; the `quay-initial-admin` bootstrap is removed; Quay data-plane provisioning deferred to a future Quay Resource Controller |
 | 5        | 2026-06-17 | @jeffmccune | HOL-1299: enable `FEATURE_SUPERUSERS_FULL_ACCESS` so the future Quay Resource Controller can adopt orgs it did not create; clarify the user/org/OAuth-Application distinction and the manual `platform-automation` org bootstrap |
+| 6        | 2026-06-17 | @jeffmccune | HOL-1306: the "future Quay Resource Controller" referenced throughout is now designed as the **Holos Controller** ([ADR-18](ADR-18.md)) with `quay.holos.run` Organization/Repository CRDs ([ADR-19](ADR-19.md)); add forward cross-links. The Revision 4 OIDC sole-identity-store model and the interim manual credential bootstrap are unchanged — the controller is the intended end state, the manual runbook stays operative until it ships. |
 
 ## Context and Problem Statement
 
@@ -61,6 +62,15 @@ are both re-enabled. This ADR documents the resulting behavior.
 - [Quay Resource Controller credentials runbook](../runbooks/quay-resource-controller-credentials.md):
   the manual procedure for minting the future Quay Resource Controller's
   OAuth-Application credential while Quay data-plane provisioning is deferred.
+- [ADR-18 — The Holos Controller and the GitOps Rendered-Manifest Delivery
+  Model](ADR-18.md): the "future Quay Resource Controller" this ADR defers to is
+  designed as the **Holos Controller** (`Updates: ADR-15`). It is the intended
+  end state; the manual credential bootstrap above stays operative until it
+  ships.
+- [ADR-19 — Quay API Group (`quay.holos.run`): Organization and Repository
+  CRDs](ADR-19.md): the CRDs the Holos Controller reconciles to automate the
+  org/repo/robot/webhook provisioning currently deferred to the manual runbook
+  (`Updates: ADR-15`).
 
 ## Design
 
@@ -268,8 +278,10 @@ OAuth-Application credential by hand per the
 ### Data-plane provisioning: the controller credential and `FEATURE_SUPERUSERS_FULL_ACCESS`
 
 In-cluster data-plane provisioning (orgs, repos, robots, webhooks) is deferred to
-a future Quay Resource Controller. Until it ships, an operator mints the
-controller's credential by hand per the
+a future Quay Resource Controller — now designed as the **Holos Controller**
+([ADR-18](ADR-18.md)) with the `quay.holos.run` Organization/Repository CRDs
+([ADR-19](ADR-19.md), `Updates: ADR-15`). Until that controller ships, an
+operator mints the controller's credential by hand per the
 [Quay Resource Controller credentials runbook](../runbooks/quay-resource-controller-credentials.md).
 Three Quay concepts must stay distinct to understand that credential (HOL-1299):
 

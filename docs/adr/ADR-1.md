@@ -10,6 +10,7 @@
 | Revision | Date       | Author      | Info           |
 | -------- | ---------- | ----------- | -------------- |
 | 1        | 2026-06-06 | @jeffmccune | Initial design |
+| 2        | 2026-06-17 | @jeffmccune | HOL-1306: record that the deferred Kubernetes mapping of the `Project` tenant is now designed by [ADR-21](ADR-21.md) (the Holos Project component) under the GitOps rendered-manifest delivery model ([ADR-18](ADR-18.md)); add forward cross-links. The original GCP-Project tenant decision is unchanged. |
 
 ## Context and Problem Statement
 
@@ -24,6 +25,11 @@ all defined per tenant. What is the platform's tenant model?
 - [ADR-4 — Multi-Tenancy](ADR-4.md) (the requirement this resource fulfills)
 - [ADR-3 — Authorization via Kubernetes RBAC and Group Membership](ADR-3.md)
 - [ADR-5 — Chargeback, Quotas, and Limits (GCP Model)](ADR-5.md)
+- [ADR-18 — The Holos Controller and the GitOps Rendered-Manifest Delivery
+  Model](ADR-18.md): the delivery model the Project mapping is realized under.
+- [ADR-21 — Holos Project and Application Components](ADR-21.md): refines this
+  ADR (`Updates: ADR-1`) by mapping the `Project` tenant onto Kubernetes (the
+  Namespace-as-security-boundary model) via the Holos Project component.
 - [GCP resource hierarchy](https://cloud.google.com/resource-manager/docs/cloud-platform-resource-hierarchy)
 - [GCP: Creating and managing projects](https://cloud.google.com/resource-manager/docs/creating-managing-projects)
 
@@ -56,7 +62,8 @@ the unit of:
 This ADR establishes that the `Project` resource is the tenant model and that its
 semantics follow the GCP Project. It deliberately **defers the Kubernetes
 implementation design** to follow-up revisions or ADRs, including but not limited
-to:
+to (the namespace-mapping and isolation questions below are now designed by
+[ADR-21](ADR-21.md) under the GitOps rendered-manifest model — see Revision 2):
 
 - whether `Project` is a **cluster-scoped or namespace-scoped** custom resource;
 - the `spec`/`status` schema, including the immutable identifier versus display
