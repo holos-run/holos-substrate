@@ -12,6 +12,7 @@
 | -------- | ---------- | ----------- | -------------- |
 | 1        | 2026-06-17 | @jeffmccune | Initial design |
 | 2        | 2026-06-18 | @jeffmccune | The controller shipped (`holos-controller`, HOL-1309..HOL-1313) with its first API group `quay.holos.run` ([ADR-19](ADR-19.md), now `Implemented`). Record the **AC #7 API-group dependency boundary** (authoritative per HOL-1308 AC #10, refining the GitOps framing below): the `quay.holos.run` **API group / CRs** take **no dependency on Kargo or Argo CD** (only the Quay API + the credential `secretRef`), while the **controller binary may**. Confirm the install namespace remains `holos-controller` (no `quay-resource-controller` namespace anywhere) and that the Organization does not inline repositories (AC #9). Status `Proposed` → `Partially Implemented` (Quay group shipped; Keycloak group ADR-20 still proposed) |
+| 3        | 2026-06-18 | @jeffmccune | Record the controller-wide **CA-bundle convention** (HOL-1319/HOL-1320/HOL-1321): every CRD Kind that talks to a TLS endpoint accepts a standardized `caBundle []byte` spec field (PEM/base64, empty ⇒ pod system trust), threaded into the client's TLS `RootCAs`. The first instance ships on the `quay.holos.run` Organization and Repository ([ADR-19](ADR-19.md) Revision 5) for the in-cluster Quay registry's local-CA serving cert. |
 
 ## Context and Problem Statement
 
@@ -155,6 +156,41 @@ This keeps the API packages extractable into their own module (per
 pipeline. It **refines** the "rendered manifests reference the controller's CRDs,
 Kargo/Argo CD deliver them" framing below: the delivery pipeline operates *around*
 the CRs (rendering and syncing them); the CR **types** stay decoupled from it.
+
+### CA-bundle convention (Revision 3)
+
+The controller reaches the external systems it provisions (the in-cluster Quay
+registry today; Keycloak later) over TLS, and those endpoints are served by the
+platform's **per-cluster mkcert local CA**, not a public root. That CA is not in
+the controller pod's system trust store, so the reconcilers' first calls failed
+with `x509: certificate signed by unknown authority` (HOL-1319). The endpoint's
+trust anchor is **per-cluster configuration**, not something baked into the
+controller image, so each resource that talks to such an endpoint must be able to
+supply it.
+
+Therefore, as a controller-wide convention:
+
+- **Every CRD Kind in the controller's API groups that establishes TLS to an
+  external endpoint accepts a `caBundle` spec field of one standardized shape** —
+  a Go `[]byte` (JSON tag `caBundle,omitempty`, `+optional`) holding PEM-encoded
+  x509 CA certificates, serialized as a single base64 string (CRD property
+  `type: string, format: byte`), following the upstream Kubernetes `caBundle`
+  convention. An **empty/omitted** value means "use the controller pod's system
+  trust store unchanged," so the field is purely additive.
+- **The field is configuration, not a credential.** It rides on the resource
+  spec, distinct from the credential `secretRef`, and the reconciler **threads it
+  into the client's TLS `RootCAs`** (the system pool with the bundle appended) so
+  the controller trusts the endpoint's local CA.
+- **The shape is described once and re-used, not redefined per Kind.** Within an
+  API group the shared semantics/format live in one place (for `quay.holos.run`,
+  `api/quay/v1alpha1/common_types.go`) and each Kind's field refers back to it.
+
+The **first instance** of this convention is the `quay.holos.run` group: both the
+Organization and Repository carry the identical `caBundle` field, threaded into
+the Quay client's TLS trust for the in-cluster registry. The field shape, its
+consumption, and the worked example are specified in [ADR-19](ADR-19.md)
+(Revision 5, *CA bundle*). Future Kinds (e.g. the Keycloak group, ADR-20) follow
+the same convention when they reach a TLS endpoint served by the local CA.
 
 ### Delivery: the GitOps rendered-manifest pattern
 
