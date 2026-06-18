@@ -85,13 +85,55 @@ func assertCommonRequest(t *testing.T, h *recordingHandler, expectBody bool) {
 	}
 }
 
-func TestNewClientTrimsTrailingSlash(t *testing.T) {
-	c := NewClient("https://quay.example.com/", "tok", nil)
-	if c.baseURL != "https://quay.example.com" {
-		t.Errorf("baseURL = %q, want trailing slash trimmed", c.baseURL)
+func TestNewClientNormalizesBaseURL(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"instance root", "https://quay.example.com", "https://quay.example.com"},
+		{"trailing slash", "https://quay.example.com/", "https://quay.example.com"},
+		{"api root", "https://quay.example.com/api/v1", "https://quay.example.com"},
+		{"api root trailing slash", "https://quay.example.com/api/v1/", "https://quay.example.com"},
+		{"subpath instance", "https://host/quay", "https://host/quay"},
 	}
-	if c.httpClient != http.DefaultClient {
-		t.Error("nil http.Client should default to http.DefaultClient")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := NewClient(tc.in, "tok", nil)
+			if c.baseURL != tc.want {
+				t.Errorf("baseURL = %q, want %q", c.baseURL, tc.want)
+			}
+		})
+	}
+}
+
+func TestNewClientNilClientGetsTimeout(t *testing.T) {
+	c := NewClient("https://quay.example.com", "tok", nil)
+	if c.httpClient == http.DefaultClient {
+		t.Error("nil http.Client must not be the timeout-less http.DefaultClient")
+	}
+	if c.httpClient.Timeout != defaultTimeout {
+		t.Errorf("default client Timeout = %v, want %v", c.httpClient.Timeout, defaultTimeout)
+	}
+}
+
+// TestAPIRootBaseURLNoDoubling exercises the end-to-end path: a client built
+// from an /api/v1 base URL must still hit /api/v1/organization/acme, not a
+// doubled prefix.
+func TestAPIRootBaseURLNoDoubling(t *testing.T) {
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodGet, wantPath: "/api/v1/organization/acme",
+		status: http.StatusOK, respBody: `{"name":"acme"}`,
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	c := NewClient(srv.URL+"/api/v1", "test-token", srv.Client())
+
+	if _, err := c.GetOrganization(context.Background(), "acme"); err != nil {
+		t.Fatalf("GetOrganization: %v", err)
+	}
+	if h.gotPath != "/api/v1/organization/acme" {
+		t.Errorf("path = %q, want un-doubled /api/v1/organization/acme", h.gotPath)
 	}
 }
 
@@ -405,20 +447,4 @@ func TestPathEscaping(t *testing.T) {
 	// httptest decodes the path before handing it to the handler, so gotPath is
 	// the decoded form; the assertion above on wantPath confirms round-trip.
 	assertCommonRequest(t, h, false)
-}
-
-// asAPIErr is a thin errors.As wrapper used by tests to extract *APIError.
-func asAPIErr(err error, target **APIError) bool {
-	for err != nil {
-		if ae, ok := err.(*APIError); ok {
-			*target = ae
-			return true
-		}
-		u, ok := err.(interface{ Unwrap() error })
-		if !ok {
-			return false
-		}
-		err = u.Unwrap()
-	}
-	return false
 }

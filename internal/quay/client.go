@@ -23,6 +23,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // Repository visibility values accepted by the Quay API.
@@ -32,6 +33,17 @@ const (
 	// VisibilityPrivate restricts a repository to authorized users.
 	VisibilityPrivate = "private"
 )
+
+// defaultTimeout bounds requests made by the client constructed with a nil
+// *http.Client. A finite timeout keeps a stalled Quay connection from pinning a
+// reconciler worker indefinitely even when a caller forgets to set a context
+// deadline.
+const defaultTimeout = 30 * time.Second
+
+// apiPathPrefix is the Quay REST API root. Every operation path the client
+// builds already starts with it, so a base URL that already ends in it is
+// trimmed in NewClient to avoid a doubled .../api/v1/api/v1/... path.
+const apiPathPrefix = "/api/v1"
 
 // Client is a typed Quay REST API client. Construct it with NewClient. It is
 // safe for concurrent use as long as the underlying *http.Client is.
@@ -46,15 +58,26 @@ type Client struct {
 }
 
 // NewClient returns a Client targeting baseURL, authenticating every request
-// with the given OAuth-Application Bearer token. If httpClient is nil,
-// http.DefaultClient is used. A trailing slash on baseURL is trimmed so request
-// paths join cleanly.
+// with the given OAuth-Application Bearer token.
+//
+// baseURL may be either the Quay instance root (https://host) or the API root
+// (https://host/api/v1) — the conventional value of the credential Secret's url
+// key. NewClient normalizes both to the instance root by trimming a trailing
+// slash and a trailing /api/v1, so the per-operation paths (which all begin
+// /api/v1) never double up into .../api/v1/api/v1/....
+//
+// If httpClient is nil, a client with a finite default timeout is used so a
+// stalled Quay connection cannot pin a reconciler worker indefinitely; callers
+// that need different transport or timeout behavior pass their own.
 func NewClient(baseURL, token string, httpClient *http.Client) *Client {
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = &http.Client{Timeout: defaultTimeout}
 	}
+	base := strings.TrimRight(baseURL, "/")
+	base = strings.TrimSuffix(base, apiPathPrefix)
+	base = strings.TrimRight(base, "/")
 	return &Client{
-		baseURL:    strings.TrimRight(baseURL, "/"),
+		baseURL:    base,
 		token:      token,
 		httpClient: httpClient,
 	}
