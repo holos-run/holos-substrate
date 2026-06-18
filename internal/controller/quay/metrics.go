@@ -45,16 +45,20 @@ const (
 // Quay-API operation label values. One per logical client operation the
 // reconcilers drive, so an operator can see which Quay calls fail.
 const (
-	opGetOrganization    = "get_organization"
-	opCreateOrganization = "create_organization"
-	opDeleteOrganization = "delete_organization"
-	opGetRepository      = "get_repository"
-	opCreateRepository   = "create_repository"
-	opUpdateRepository   = "update_repository"
-	opDeleteRepository   = "delete_repository"
-	opListNotifications  = "list_notifications"
-	opCreateNotification = "create_notification"
-	opDeleteNotification = "delete_notification"
+	opGetOrganization         = "get_organization"
+	opCreateOrganization      = "create_organization"
+	opUpdateOrganization      = "update_organization"
+	opDeleteOrganization      = "delete_organization"
+	opGetOrganizationRobot    = "get_organization_robot"
+	opCreateOrganizationRobot = "create_organization_robot"
+	opDeleteOrganizationRobot = "delete_organization_robot"
+	opGetRepository           = "get_repository"
+	opCreateRepository        = "create_repository"
+	opUpdateRepository        = "update_repository"
+	opDeleteRepository        = "delete_repository"
+	opListNotifications       = "list_notifications"
+	opCreateNotification      = "create_notification"
+	opDeleteNotification      = "delete_notification"
 )
 
 var (

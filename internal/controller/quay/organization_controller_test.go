@@ -432,6 +432,288 @@ func TestReconcileHonorsCredentialSecretRefKey(t *testing.T) {
 	}
 }
 
+func TestReconcileStampsOwnershipMarkerOnCreate(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrg(ctx, t, ns, "marked", "", false)
+
+	fake := newFakeOrgClient()
+	r, _ := newReconciler(fake, ns)
+
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	// The durable server-side marker must be stamped with the CR's UID.
+	org := getOrg(ctx, t, key)
+	desc, ok := fake.markers["marked"]
+	if !ok {
+		t.Fatalf("expected ownership marker robot to be stamped, markers=%v", fake.markers)
+	}
+	if desc != string(org.UID) {
+		t.Errorf("marker description = %q, want CR UID %q", desc, org.UID)
+	}
+	if !org.Status.Created {
+		t.Error("expected status.Created = true after a marked create")
+	}
+}
+
+func TestReconcileAppliesEmailDriftToOwnedOrg(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrg(ctx, t, ns, "drifter", "", false)
+
+	fake := newFakeOrgClient()
+	r, _ := newReconciler(fake, ns)
+
+	// First reconcile creates the org with the spec email and stamps the marker.
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile create: %v", err)
+	}
+	if got := fake.emails["drifter"]; got != "drifter@example.test" {
+		t.Fatalf("created email = %q, want drifter@example.test", got)
+	}
+
+	// Change the spec email; a subsequent reconcile must push the drift to Quay.
+	org := getOrg(ctx, t, key)
+	org.Spec.Email = "changed@example.test"
+	if err := shared.k8sClient.Update(ctx, org); err != nil {
+		t.Fatalf("updating spec email: %v", err)
+	}
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile drift: %v", err)
+	}
+
+	if !fake.callsContain("Update:drifter:changed@example.test") {
+		t.Errorf("expected an UpdateOrganization call for the new email, calls were %v", fake.calls)
+	}
+	if got := fake.emails["drifter"]; got != "changed@example.test" {
+		t.Errorf("Quay email = %q, want changed@example.test after drift", got)
+	}
+
+	// A re-reconcile with no further drift must not call Update again (idempotent).
+	before := len(fake.calls)
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile steady: %v", err)
+	}
+	for _, c := range fake.calls[before:] {
+		if strings.HasPrefix(c, "Update:") {
+			t.Errorf("unexpected UpdateOrganization on a no-drift reconcile: %v", fake.calls[before:])
+		}
+	}
+}
+
+func TestReconcileHealsLostCreatedMarkerWithoutReleasing(t *testing.T) {
+	// HOL-1311 race (a): a successful create whose status write was lost leaves
+	// status.Created true but, if the marker write was also lost, the org carries
+	// no marker. The reconciler must re-stamp the marker and keep ownership, never
+	// mis-classify the org as foreign and release it.
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrg(ctx, t, ns, "healme", "", false)
+
+	// The org exists in Quay with NO marker, and the CR is already recorded as the
+	// creator (simulating the lost status/marker write).
+	fake := newFakeOrgClient("healme")
+	r, _ := newReconciler(fake, ns)
+
+	org := getOrg(ctx, t, key)
+	org.Status.Created = true
+	if err := shared.k8sClient.Status().Update(ctx, org); err != nil {
+		t.Fatalf("seeding status.Created: %v", err)
+	}
+
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	org = getOrg(ctx, t, key)
+	if got := conditionReason(org, ConditionReady); got != ReasonCreated {
+		t.Errorf("Ready reason = %q, want %q (must heal, not conflict/release)", got, ReasonCreated)
+	}
+	if !org.Status.Created {
+		t.Error("status.Created must remain true after healing")
+	}
+	if desc := fake.markers["healme"]; desc != string(org.UID) {
+		t.Errorf("marker = %q, want re-stamped CR UID %q", desc, org.UID)
+	}
+}
+
+func TestReconcileMarkerStampFailureAfterCreatePersistsCreatedAndHeals(t *testing.T) {
+	// Codex round 1: a clean create whose marker stamp then fails must still
+	// persist status.Created=true (so the org is not later mistaken for foreign),
+	// and a subsequent reconcile must re-stamp the marker (heal) rather than
+	// release the org.
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrg(ctx, t, ns, "stampfail", "", false)
+
+	fake := newFakeOrgClient()
+	// The marker stamp fails on this first reconcile (non-conflict Quay error).
+	fake.robotCreateErr = &quay.APIError{StatusCode: http.StatusInternalServerError, Message: "robot boom"}
+	r, _ := newReconciler(fake, ns)
+
+	// Drive the finalizer add and the create; the create succeeds but the marker
+	// stamp errors, so the reconcile requeues with an error.
+	if _, err := reconcile(ctx, r, key); err != nil {
+		t.Fatalf("first reconcile (finalizer): %v", err)
+	}
+	if _, err := reconcile(ctx, r, key); err == nil {
+		t.Fatal("expected the marker-stamp failure to surface as a requeue error")
+	}
+
+	// The org was created and ownership was recorded despite the marker failure.
+	if !fake.orgExists("stampfail") {
+		t.Fatal("expected the org to be created")
+	}
+	if !getOrg(ctx, t, key).Status.Created {
+		t.Error("status.Created must be persisted true even though the marker stamp failed")
+	}
+
+	// Clear the marker fault; the next reconcile must heal (re-stamp), not release.
+	fake.robotCreateErr = nil
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile heal: %v", err)
+	}
+
+	org := getOrg(ctx, t, key)
+	if got := conditionReason(org, ConditionReady); got != ReasonCreated {
+		t.Errorf("Ready reason = %q, want %q after heal", got, ReasonCreated)
+	}
+	if desc := fake.markers["stampfail"]; desc != string(org.UID) {
+		t.Errorf("marker = %q, want re-stamped CR UID %q", desc, org.UID)
+	}
+}
+
+func TestReconcileDeleteSucceedsBeforeMarkerCleanup(t *testing.T) {
+	// Codex round 1: the org must be deleted before the marker, so a failed org
+	// delete leaves the marker intact for the retry to re-verify ownership.
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrg(ctx, t, ns, "ordereddelete", "", false)
+
+	fake := newFakeOrgClient()
+	r, _ := newReconciler(fake, ns)
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile create: %v", err)
+	}
+
+	org := getOrg(ctx, t, key)
+	if err := shared.k8sClient.Delete(ctx, org); err != nil {
+		t.Fatalf("deleting Organization: %v", err)
+	}
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile delete: %v", err)
+	}
+
+	// The recorded call order must place the org delete before the marker delete.
+	var orgIdx, markerIdx = -1, -1
+	for i, c := range fake.calls {
+		if c == "Delete:ordereddelete" && orgIdx == -1 {
+			orgIdx = i
+		}
+		if c == "DeleteRobot:ordereddelete" && markerIdx == -1 {
+			markerIdx = i
+		}
+	}
+	if orgIdx == -1 {
+		t.Fatalf("expected an org delete call, calls were %v", fake.calls)
+	}
+	if markerIdx != -1 && markerIdx < orgIdx {
+		t.Errorf("marker delete (%d) must not precede org delete (%d); calls were %v", markerIdx, orgIdx, fake.calls)
+	}
+	if fake.orgExists("ordereddelete") {
+		t.Error("expected the owned org to be deleted")
+	}
+}
+
+func TestReconcileConflictWhenMarkerHoldsForeignToken(t *testing.T) {
+	// An org marked by a DIFFERENT owner must never be seized — not even on a
+	// create-race conflict path that re-evaluates ownership.
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrg(ctx, t, ns, "owned-elsewhere", "", true) // even adopt: true
+
+	fake := newFakeOrgClient("owned-elsewhere")
+	fake.setMarker("owned-elsewhere", "some-other-cr-uid")
+	r, recorder := newReconciler(fake, ns)
+
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile should not error on a marker conflict: %v", err)
+	}
+
+	org := getOrg(ctx, t, key)
+	if got := conditionReason(org, ConditionReady); got != ReasonConflict {
+		t.Errorf("Ready reason = %q, want %q", got, ReasonConflict)
+	}
+	if org.Status.Created {
+		t.Error("status.Created must stay false on a foreign-marker conflict")
+	}
+	assertEvent(t, recorder, ReasonConflict)
+}
+
+func TestReconcileDeleteReleasesWhenMarkerForeignAfterRecreate(t *testing.T) {
+	// HOL-1311 race (b): this CR created and owns the org (status.Created true),
+	// but in the delete gap another actor recreated the same global org name with
+	// a foreign (or absent) marker. The retried delete must NOT destroy the
+	// recreated org — it releases instead.
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrg(ctx, t, ns, "recreated", "", false)
+
+	fake := newFakeOrgClient()
+	r, _ := newReconciler(fake, ns)
+
+	// Provision: create + marker + status.Created.
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile create: %v", err)
+	}
+
+	// Simulate the foreign recreate: the org still exists but its marker now holds
+	// a foreign token (a different actor recreated it in the delete gap).
+	fake.setMarker("recreated", "foreign-actor-uid")
+
+	org := getOrg(ctx, t, key)
+	if err := shared.k8sClient.Delete(ctx, org); err != nil {
+		t.Fatalf("deleting Organization: %v", err)
+	}
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile delete: %v", err)
+	}
+
+	if fake.callsContain("Delete:recreated") {
+		t.Errorf("must NOT delete an org whose marker is foreign; calls were %v", fake.calls)
+	}
+	if !fake.orgExists("recreated") {
+		t.Error("expected the recreated (foreign) org to survive the delete")
+	}
+	// The CR itself is gone (finalizer released).
+	if err := shared.k8sClient.Get(ctx, key, &quayv1alpha1.Organization{}); !apierrors.IsNotFound(err) {
+		t.Errorf("expected Organization CR to be deleted, get returned %v", err)
+	}
+}
+
 // assertEvent fails the test unless the recorder captured an event whose text
 // contains want. record.FakeRecorder formats events as "<Type> <Reason>
 // <Message>" and delivers them on a buffered channel; this drains what is

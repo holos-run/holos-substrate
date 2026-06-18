@@ -20,18 +20,34 @@ type fakeOrgClient struct {
 	// GetOrganization returns a 404 APIError for any name not in this set.
 	existing map[string]bool
 
+	// emails records each org's current contact email, so UpdateOrganization
+	// drift is observable and GetOrganization reads it back.
+	emails map[string]string
+
+	// markers records each org's ownership-marker robot description (the
+	// holos-owner robot). A name absent from this map has no marker; GetOrganization
+	// Robot then returns 404.
+	markers map[string]string
+
 	// getErr, when non-nil, is returned by GetOrganization regardless of the
 	// org's existence — used to simulate a non-404 Quay error (auth/server).
 	getErr error
 	// createErr, when non-nil, is returned by CreateOrganization — used to
 	// simulate a Quay create failure.
 	createErr error
+	// updateErr, when non-nil, is returned by UpdateOrganization.
+	updateErr error
 	// createRaceExisting, when non-empty, names an org that "appears" the moment
 	// CreateOrganization is called even though GetOrganization 404'd — used to
 	// simulate the create race where a duplicate (409 conflict) is returned.
 	createRaceExisting string
 	// deleteErr, when non-nil, is returned by DeleteOrganizationIfExists.
 	deleteErr error
+	// robotCreateErr, when non-nil, is returned by CreateOrganizationRobot — used
+	// to simulate a failed marker stamp.
+	robotCreateErr error
+	// robotGetErr, when non-nil, is returned by GetOrganizationRobot.
+	robotGetErr error
 
 	// Recorded calls, in order, e.g. "Get:acme", "Create:acme", "Delete:acme".
 	calls []string
@@ -39,7 +55,11 @@ type fakeOrgClient struct {
 
 // newFakeOrgClient returns a fake with the given pre-existing org names.
 func newFakeOrgClient(existing ...string) *fakeOrgClient {
-	f := &fakeOrgClient{existing: map[string]bool{}}
+	f := &fakeOrgClient{
+		existing: map[string]bool{},
+		emails:   map[string]string{},
+		markers:  map[string]string{},
+	}
 	for _, name := range existing {
 		f.existing[name] = true
 	}
@@ -81,7 +101,7 @@ func (f *fakeOrgClient) GetOrganization(ctx context.Context, name string) (*quay
 		return nil, f.getErr
 	}
 	if f.existing[name] {
-		return &quay.Organization{Name: name}, nil
+		return &quay.Organization{Name: name, Email: f.emails[name]}, nil
 	}
 	return nil, notFoundError(name)
 }
@@ -100,6 +120,18 @@ func (f *fakeOrgClient) CreateOrganization(ctx context.Context, name, email stri
 		return conflictError(name)
 	}
 	f.existing[name] = true
+	f.emails[name] = email
+	return nil
+}
+
+func (f *fakeOrgClient) UpdateOrganization(ctx context.Context, name, email string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("Update:" + name + ":" + email)
+	if f.updateErr != nil {
+		return f.updateErr
+	}
+	f.emails[name] = email
 	return nil
 }
 
@@ -111,7 +143,55 @@ func (f *fakeOrgClient) DeleteOrganizationIfExists(ctx context.Context, name str
 		return f.deleteErr
 	}
 	delete(f.existing, name)
+	delete(f.emails, name)
+	delete(f.markers, name)
 	return nil
+}
+
+func (f *fakeOrgClient) GetOrganizationRobot(ctx context.Context, org, shortname string) (*quay.OrganizationRobot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("GetRobot:" + org)
+	if f.robotGetErr != nil {
+		return nil, f.robotGetErr
+	}
+	desc, ok := f.markers[org]
+	if !ok {
+		return nil, notFoundError(org + "+" + shortname)
+	}
+	return &quay.OrganizationRobot{Name: org + "+" + shortname, Description: desc}, nil
+}
+
+func (f *fakeOrgClient) CreateOrganizationRobot(ctx context.Context, org, shortname, description string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("CreateRobot:" + org + ":" + description)
+	if f.robotCreateErr != nil {
+		return f.robotCreateErr
+	}
+	// Quay's create-robot endpoint is not idempotent: an existing robot is a
+	// conflict (the marker is write-once).
+	if _, ok := f.markers[org]; ok {
+		return conflictError(org + "+" + shortname)
+	}
+	f.markers[org] = description
+	return nil
+}
+
+func (f *fakeOrgClient) DeleteOrganizationRobotIfExists(ctx context.Context, org, shortname string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("DeleteRobot:" + org)
+	delete(f.markers, org)
+	return nil
+}
+
+// setMarker seeds the ownership-marker robot description for org, so tests can
+// simulate an org that already carries (or lacks) this CR's marker.
+func (f *fakeOrgClient) setMarker(org, description string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.markers[org] = description
 }
 
 // callsContain reports whether the recorded calls include the given call string.
