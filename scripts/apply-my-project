@@ -1,0 +1,351 @@
+#!/usr/bin/env bash
+# Apply the my-project Layer 3 delivery scaffold with the local-ca CA bundle
+# injected into the Quay Organization's caBundle (HOL-1322).
+#
+# my-project is DELIBERATELY excluded from the master scripts/apply.  Its
+# quay.holos.run Organization carries spec.caBundle — the per-cluster local-ca
+# certificate the Holos Controller (ADR-18/ADR-19) needs to trust the in-cluster
+# Quay registry's mkcert-signed serving certificate.  That trust material is
+# per-cluster and is NEVER committed (it is absent from the rendered
+# holos/deploy/ tree); it is injected here at apply time via the ca_bundle_pem
+# CUE tag, the same --inject pattern scripts/publish uses for app_image.
+#
+# ORDERING — run this AFTER both of the following are in place:
+#
+#   1. scripts/local-ca — creates the cert-manager local-ca whose certificate
+#      this script reads (from `mkcert -CAROOT`/rootCA.pem, or the local-ca
+#      Secret in the cert-manager namespace).  Without a local CA there is no
+#      PEM to inject and the Organization's caBundle would be empty.
+#
+#   2. The manual Quay superuser-credential setup the controller authenticates
+#      with: scripts/apply-svc-quay-resource-controller-creds creates the
+#      holos-controller-quay-creds Secret (keys url/token/optional username) in
+#      the holos-controller namespace from an OAuth Application token minted by
+#      hand under the platform-automation org — see
+#      docs/runbooks/quay-resource-controller-credentials.md and
+#      docs/runbooks/holos-controller.md.  The Organization's
+#      credentialsSecretRef defaults to that Secret; until it exists the
+#      controller cannot reconcile the org against Quay.
+#
+# It also assumes the master scripts/apply has already applied the platform
+# (the Argo CD / Kargo controllers, the namespaces component, and the
+# holos-controller itself), since the resources this helper applies are
+# reconciled by those controllers.
+#
+# What it does, mirroring the pre_my_project / wait_my_project logic lifted out
+# of scripts/apply:
+#
+#   - reads the local-ca PEM;
+#   - renders the platform with `holos render platform --inject
+#     ca_bundle_pem="$PEM" --write-to <tmp>` so the rendered my-project
+#     Organization carries the base64-encoded caBundle (the committed tree never
+#     does);
+#   - applies the my-project Namespace (owned by the namespaces component) and
+#     the rendered my-project component (Organization, Argo CD AppProject +
+#     Application, Kargo Project/ProjectConfig/Warehouse/Stage, and the
+#     webhook-token bootstrap Job) with server-side apply;
+#   - pre-applies the component's ServiceAccounts + RBAC and deletes the stale
+#     webhook-token Job so a fresh idempotent token-generate runs every time;
+#   - gates the webhook-token bootstrap Job's completion and the Kargo Project's
+#     adoption of the my-project namespace.
+#
+# Idempotent by construction: server-side apply converges, the bootstrap Job's
+# generate-once guard leaves an existing Secret untouched, and the pre-apply
+# delete makes each run re-run a fresh Job.
+#
+# Environment overrides:
+#   KUBE_CONTEXT     — kubectl context to apply to (default: the current
+#                      context, which must be k3d-holos — the cluster these
+#                      manifests are rendered for; setting this explicitly is
+#                      informed consent to target another context)
+#   CA_BUNDLE_PEM    — the local-ca certificate PEM to inject.  When unset the
+#                      script reads it from `mkcert -CAROOT`/rootCA.pem, falling
+#                      back to the local-ca Secret in the cert-manager namespace.
+#   ROLLOUT_TIMEOUT  — gate timeout for the bootstrap Job and Project Ready
+#                      condition (default: 300s)
+#   KEEP_WORKDIR     — set to a non-empty value to keep the temporary render
+#                      directory (for debugging) instead of removing it on exit.
+#
+# Prerequisites:
+#   - holos   (https://holos.run/docs/cli/) — renders the platform
+#   - kubectl, with a context pointing at the target cluster
+#
+# NOTE: prerequisite checks are inline rather than a copy of the check_prereq
+# helper shared verbatim by scripts/local-{ca,dns,k3d} — their NOTE blocks call
+# for consolidating into a shared helper if a fourth copy appears, so this
+# script deliberately avoids creating one (matching scripts/apply,
+# scripts/publish, and scripts/render).
+
+set -euo pipefail
+
+# Resolve the repo root so this script works from any working directory.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+HOLOS_DIR="${REPO_ROOT}/holos"
+
+ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
+
+# Convert a kubectl-style duration (h/m/s components, e.g. 300s, 5m, 1h30m) to
+# whole seconds for the poll-loop deadline arithmetic.  Same grammar as
+# scripts/apply's duration_seconds.
+duration_seconds() {
+  local duration="$1" rest="$1" total=0
+  if [[ ! "${duration}" =~ ^([0-9]+[hms])+$ ]]; then
+    echo "ERROR: cannot parse duration '${duration}' (expected e.g. 300s, 5m, 1h30m)." >&2
+    return 1
+  fi
+  while [[ "${rest}" =~ ^([0-9]+)([hms]) ]]; do
+    case "${BASH_REMATCH[2]}" in
+      h) total=$((total + 10#${BASH_REMATCH[1]} * 3600)) ;;
+      m) total=$((total + 10#${BASH_REMATCH[1]} * 60)) ;;
+      s) total=$((total + 10#${BASH_REMATCH[1]})) ;;
+    esac
+    rest="${rest:${#BASH_REMATCH[0]}}"
+  done
+  echo "${total}"
+}
+
+ROLLOUT_TIMEOUT_SECONDS="$(duration_seconds "${ROLLOUT_TIMEOUT}")" || exit 1
+
+# ---------------------------------------------------------------------------
+# Prerequisites
+# ---------------------------------------------------------------------------
+missing=0
+for tool in holos kubectl; do
+  if ! command -v "${tool}" >/dev/null 2>&1; then
+    echo "ERROR: '${tool}' not found on PATH." >&2
+    [[ "${tool}" == holos ]] && echo "       Install from https://holos.run/docs/cli/" >&2
+    missing=1
+  fi
+done
+if [[ "${missing}" -ne 0 ]]; then
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Resolve and pin the target context (the scripts/apply posture)
+# ---------------------------------------------------------------------------
+# The manifests are rendered for the k3d-holos cluster and server-side apply
+# with --force-conflicts seizes field ownership — refuse to do that to whatever
+# context happens to be current unless it is k3d-holos or the operator
+# explicitly opted in via KUBE_CONTEXT.
+if [[ -z "${KUBE_CONTEXT:-}" ]]; then
+  KUBE_CONTEXT="$(kubectl config current-context)"
+  if [[ "${KUBE_CONTEXT}" != "k3d-holos" ]]; then
+    echo "ERROR: current kubectl context is '${KUBE_CONTEXT}', expected 'k3d-holos'." >&2
+    echo "       The rendered manifests target the k3d-holos cluster.  Set" >&2
+    echo "       KUBE_CONTEXT explicitly to apply to a different context." >&2
+    exit 1
+  fi
+fi
+echo "Will apply manifests to kubectl context: ${KUBE_CONTEXT}"
+
+if ! kubectl --context "${KUBE_CONTEXT}" version --request-timeout=10s >/dev/null 2>&1; then
+  echo "ERROR: cannot reach the cluster for kubectl context '${KUBE_CONTEXT}'." >&2
+  echo "       Create the local cluster with scripts/local-k3d (see docs/local-cluster.md)." >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Resolve the local-ca PEM to inject as the Organization's caBundle
+# ---------------------------------------------------------------------------
+# Prefer the operator override, then the mkcert root CA scripts/local-ca seeds
+# the cluster from, then the in-cluster local-ca Secret as a fallback.  The
+# resolved PEM must be a real certificate — an empty value would render the
+# Organization with no caBundle and the controller would fail Quay TLS
+# verification, defeating the point of this helper.
+CA_BUNDLE_PEM="${CA_BUNDLE_PEM:-}"
+if [[ -z "${CA_BUNDLE_PEM}" ]] && command -v mkcert >/dev/null 2>&1; then
+  caroot="$(mkcert -CAROOT 2>/dev/null || true)"
+  if [[ -n "${caroot}" && -f "${caroot}/rootCA.pem" ]]; then
+    CA_BUNDLE_PEM="$(cat "${caroot}/rootCA.pem")"
+    echo "Read local-ca PEM from ${caroot}/rootCA.pem" >&2
+  fi
+fi
+if [[ -z "${CA_BUNDLE_PEM}" ]]; then
+  echo "mkcert root CA not found; reading the local-ca Secret from cert-manager ..." >&2
+  CA_BUNDLE_PEM="$(kubectl --context "${KUBE_CONTEXT}" --namespace cert-manager \
+    get secret local-ca -o jsonpath='{.data.ca\.crt}' 2>/dev/null | base64 -d || true)"
+fi
+if [[ -z "${CA_BUNDLE_PEM}" ]]; then
+  echo "ERROR: could not resolve the local-ca PEM." >&2
+  echo "       Run scripts/local-ca first, or set CA_BUNDLE_PEM to the local CA certificate." >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Render the platform with the local-ca PEM injected (cleaned up on exit)
+# ---------------------------------------------------------------------------
+# holos render platform writes relative to the holos module root, so the render
+# target must live under holos/.  Use a unique, gitignored temp dir there and
+# remove it on exit (the EXIT trap also restores from interrupts), mirroring
+# scripts/publish.
+WORKDIR="$(mktemp -d "${HOLOS_DIR}/.apply-my-project.XXXXXX")"
+RENDER_DIR="${WORKDIR}/deploy"
+cleanup() {
+  if [[ -z "${KEEP_WORKDIR:-}" ]]; then
+    rm -rf "${WORKDIR}"
+  else
+    echo "KEEP_WORKDIR set; left render directory at ${WORKDIR}" >&2
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+echo "Rendering platform with ca_bundle_pem injected ..." >&2
+(
+  cd "${HOLOS_DIR}"
+  holos render platform \
+    --inject "ca_bundle_pem=${CA_BUNDLE_PEM}" \
+    --write-to "$(basename "${WORKDIR}")/deploy"
+) >&2
+
+MY_PROJECT_DIR="${RENDER_DIR}/clusters/k3d-holos/components/my-project"
+NAMESPACE_FILE="${RENDER_DIR}/clusters/k3d-holos/components/namespaces/namespace-my-project.yaml"
+if [[ ! -d "${MY_PROJECT_DIR}" || ! -f "${NAMESPACE_FILE}" ]]; then
+  echo "ERROR: render produced no my-project manifests at ${MY_PROJECT_DIR}." >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Namespace first: the Kargo Project + workload namespace (HOL-1322)
+# ---------------------------------------------------------------------------
+# The my-project namespace is owned by the namespaces component (registered
+# centrally in holos/namespaces.cue), so apply just that one file here — it
+# carries the kargo.akuity.io/project adoption label the Kargo Project gates on.
+echo "==> namespace my-project" >&2
+kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
+  -f "${NAMESPACE_FILE}"
+
+# ---------------------------------------------------------------------------
+# pre-apply: ServiceAccounts + RBAC, then delete the stale bootstrap Job
+# ---------------------------------------------------------------------------
+# Lifted from pre_my_project in scripts/apply.
+#
+# Pre-apply ServiceAccounts + RBAC before the Jobs: `kubectl apply -f <dir>/`
+# processes a component's files in filename order, and
+# job-my-project-quay-webhook-bootstrap.yaml sorts before
+# serviceaccount-my-project-quay-webhook-bootstrap.yaml, so on a fresh cluster
+# the Job's pod would fail admission ("error looking up service account") until
+# the SA lands.  Pre-applying the identity here closes that race; the main apply
+# below re-applies it idempotently.  The `[[ -e ]]` guard drops a non-matching
+# glob (nullglob is not set) so a missing kind is not passed as a literal path.
+rbac_files=()
+for f in "${MY_PROJECT_DIR}"/serviceaccount-*.yaml \
+         "${MY_PROJECT_DIR}"/role-*.yaml \
+         "${MY_PROJECT_DIR}"/rolebinding-*.yaml; do
+  [[ -e "${f}" ]] && rbac_files+=(-f "${f}")
+done
+if ((${#rbac_files[@]})); then
+  kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
+    "${rbac_files[@]}"
+fi
+
+# Delete the prior webhook-token bootstrap Job so each run re-runs a fresh
+# idempotent token-generate (a completed Job's pod template is immutable, so a
+# server-side apply of the unchanged spec never re-runs it).  The Secret it
+# created survives the deletion, so the generate-once guarantee holds.
+# --cascade=foreground --wait reaps the old Job's pods first so the new Job is
+# the only one the gate below can match.
+kubectl --context "${KUBE_CONTEXT}" --namespace my-project \
+  delete job -l app.kubernetes.io/name=my-project-quay-webhook-bootstrap \
+  --ignore-not-found --cascade=foreground --wait --request-timeout=60s
+
+# ---------------------------------------------------------------------------
+# Apply the rendered my-project component
+# ---------------------------------------------------------------------------
+# Organization (quay.holos.run, reconciled by the Holos Controller with the
+# injected caBundle), Argo CD AppProject + Application, Kargo
+# Project/ProjectConfig/Warehouse/Stage, and the webhook-token bootstrap Job.
+echo "==> my-project" >&2
+kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
+  -f "${MY_PROJECT_DIR}/"
+
+# ---------------------------------------------------------------------------
+# wait: gate the bootstrap Job and the Kargo Project adoption
+# ---------------------------------------------------------------------------
+# Lifted from gate_job / wait_my_project in scripts/apply.
+
+# gate_job NAMESPACE JOB_NAME: poll a bootstrap Job to completion, returning 0
+# when it reports Complete=True (or is already TTL-GC'd / absent — the state it
+# created survives the Job, so a missing Job is success), and 1 when it reports
+# Failed=True, times out, or cannot be queried repeatedly.  Polled rather than
+# `kubectl wait --for=condition=Complete` so a Failed Job fails the gate on the
+# next poll instead of blocking the full timeout.
+gate_job() {
+  local namespace="$1" job="job/$2"
+  local job_state lookup_failures=0
+  local deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+  while true; do
+    if job_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace "${namespace}" \
+      get "${job}" --ignore-not-found --request-timeout=10s \
+      -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
+      lookup_failures=0
+      if [[ -z "${job_state}" ]] || grep -q '^Complete=True$' <<<"${job_state}"; then
+        break
+      fi
+      if grep -q '^Failed=True$' <<<"${job_state}"; then
+        echo "ERROR: ${namespace}/${job} failed; inspect it with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} --namespace ${namespace} describe ${job}" >&2
+        return 1
+      fi
+    else
+      lookup_failures=$((lookup_failures + 1))
+      if ((lookup_failures >= 3)); then
+        echo "ERROR: cannot query ${namespace}/${job}: ${lookup_failures} consecutive lookup failures." >&2
+        return 1
+      fi
+    fi
+    if ((SECONDS >= deadline)); then
+      echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for ${namespace}/${job} to complete." >&2
+      return 1
+    fi
+    sleep 5
+  done
+}
+
+# The webhook-token Job (my-project ns) generates the receiver Secret's token;
+# surface a Failed bootstrap here by name rather than as a missing-Secret error
+# later.
+gate_job my-project my-project-quay-webhook-bootstrap || exit 1
+
+# The Project (cluster-scoped in Kargo 1.10) adopts the pre-created my-project
+# namespace (which carries the kargo.akuity.io/project: "true" adoption label)
+# and reports Ready; only then does the namespace carry Kargo's project RBAC so
+# the namespaced ProjectConfig, Warehouse, and Stage reconcile.  Poll the Ready
+# condition so a Stalled Project — e.g. the adoption label missing — fails
+# promptly with a clear pointer.
+project="project.kargo.akuity.io/my-project"
+proj_lookup_failures=0
+proj_deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+while true; do
+  # Project is cluster-scoped (no --namespace).
+  if state=$(kubectl --context "${KUBE_CONTEXT}" \
+    get "${project}" --ignore-not-found --request-timeout=10s \
+    -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
+    proj_lookup_failures=0
+    if grep -q '^Ready=True$' <<<"${state}"; then
+      break
+    fi
+    if grep -q '^Stalled=True$' <<<"${state}"; then
+      echo "ERROR: ${project} is Stalled (often the my-project namespace is missing the" >&2
+      echo "       kargo.akuity.io/project: \"true\" adoption label); inspect it with:" >&2
+      echo "       kubectl --context ${KUBE_CONTEXT} --namespace my-project describe ${project}" >&2
+      exit 1
+    fi
+  else
+    proj_lookup_failures=$((proj_lookup_failures + 1))
+    if ((proj_lookup_failures >= 3)); then
+      echo "ERROR: repeated failures reading ${project}; aborting the gate." >&2
+      exit 1
+    fi
+  fi
+  if ((SECONDS >= proj_deadline)); then
+    echo "ERROR: timed out waiting for ${project} to become Ready." >&2
+    exit 1
+  fi
+  sleep 5
+done
+
+echo "my-project delivery scaffold applied."
