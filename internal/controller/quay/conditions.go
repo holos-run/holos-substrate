@@ -37,6 +37,12 @@ const (
 	// ConditionReady reports whether the resource has been fully provisioned in
 	// Quay (Gateway-API Ready).
 	ConditionReady = "Ready"
+	// ConditionWebhookConfigured reports whether the Repository's repo_push
+	// webhook notification reflects the desired target URL. It is a
+	// Repository-only condition surfaced distinctly from Ready so an operator can
+	// tell a provisioned-but-webhookless repository (e.g. its urlSecretRef Secret
+	// has not been created yet) from a fully-wired one (AC #5/#8).
+	ConditionWebhookConfigured = "WebhookConfigured"
 )
 
 // Condition reasons. Reasons are stable, CamelCase machine-readable tokens
@@ -60,6 +66,29 @@ const (
 	ReasonCredentialsNotFound = "CredentialsNotFound"
 	// ReasonQuayError marks a condition False because a Quay API call failed.
 	ReasonQuayError = "QuayError"
+	// ReasonReconciled marks a Repository as in steady state — its Quay repository
+	// (and webhook, if configured) reflect the spec.
+	ReasonReconciled = "Reconciled"
+	// ReasonOrganizationNotReady marks a Repository's conditions False because the
+	// Quay organization named by spec.organizationRef does not yet exist. The
+	// Repository reconciler never creates the org (AC #9); it requeues until the
+	// Organization reconciler provisions it.
+	ReasonOrganizationNotReady = "OrganizationNotReady"
+	// ReasonWebhookURLNotFound marks the WebhookConfigured condition False because
+	// the webhook urlSecretRef Secret (or its key) could not be resolved. This is
+	// recoverable: the reconciler requeues so a later-created Secret takes effect.
+	ReasonWebhookURLNotFound = "WebhookURLNotFound"
+	// ReasonInvalidWebhook marks a condition False because spec.webhook violated
+	// the mutual-exclusion rule (neither or both of url/urlSecretRef set) at
+	// runtime, a defense-in-depth check behind the CRD XValidation.
+	ReasonInvalidWebhook = "InvalidWebhook"
+	// ReasonWebhookConfigured marks the WebhookConfigured condition True because
+	// the repo_push notification reflects the resolved webhook URL.
+	ReasonWebhookConfigured = "WebhookConfigured"
+	// ReasonWebhookNotConfigured marks the WebhookConfigured condition False (with
+	// no error) because spec.webhook is unset — the repository is intentionally
+	// webhookless.
+	ReasonWebhookNotConfigured = "WebhookNotConfigured"
 )
 
 // setCondition sets a single condition on the supplied condition slice using
@@ -104,4 +133,13 @@ func markNotReady(conditions *[]metav1.Condition, reason, message string, observ
 // true when either condition changed.
 func setConflict(conditions *[]metav1.Condition, message string, observedGeneration int64) bool {
 	return markNotReady(conditions, ReasonConflict, message, observedGeneration)
+}
+
+// setWebhookCondition sets the WebhookConfigured condition to the given status
+// with the supplied reason and message, stamped with observedGeneration. It is
+// the Repository reconciler's webhook-specific status helper, kept here so the
+// Repository draws its condition vocabulary from the same place as Organization.
+// It returns true when the condition changed.
+func setWebhookCondition(conditions *[]metav1.Condition, status metav1.ConditionStatus, reason, message string, observedGeneration int64) bool {
+	return setCondition(conditions, ConditionWebhookConfigured, string(status), reason, message, observedGeneration)
 }

@@ -12,8 +12,8 @@
 // user-facing CLI, not the manager process.
 //
 // The manager starts, serves health and Prometheus metrics endpoints, registers
-// the scheme, and runs the Organization reconciler (HOL-1311). The Repository
-// reconciler is wired in a later phase (HOL-1312).
+// the scheme, and runs the Organization (HOL-1311) and Repository (HOL-1312)
+// reconcilers.
 package main
 
 import (
@@ -130,6 +130,18 @@ func main() {
 		Client: mgr.GetClient(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Organization")
+		os.Exit(1)
+	}
+
+	// Register the Repository reconciler (HOL-1312). Like the Organization
+	// reconciler it resolves the Quay credential from the controller's own
+	// namespace (POD_NAMESPACE / holos-controller default), so leaving Namespace
+	// empty lets SetupWithManager pick the env up. It additionally resolves the
+	// repo_push webhook URL from a Secret in each Repository's own namespace.
+	if err := (&quaycontroller.RepositoryReconciler{
+		Client: mgr.GetClient(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Repository")
 		os.Exit(1)
 	}
 
