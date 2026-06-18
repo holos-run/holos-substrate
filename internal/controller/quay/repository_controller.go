@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -27,8 +28,17 @@ import (
 const repositoryFinalizer = "repository.quay.holos.run/finalizer"
 
 // webhookTitle labels the repo_push notification this controller manages so a
-// human reading the Quay UI can tell it apart from manually-created webhooks.
+// human reading the Quay UI can tell it apart from manually-created webhooks, and
+// so the reconciler only deletes notifications it owns.
 const webhookTitle = "holos-controller repo_push"
+
+// webhookSecretResyncInterval is how often a Repository whose webhook URL comes
+// from a urlSecretRef is re-reconciled, so a change to the referenced Secret's
+// value is eventually picked up. The controller cannot watch Secrets (it holds
+// get, not list/watch, and uses a non-caching reader), so this periodic requeue
+// stands in for a Secret watch (AC #8). The interval mirrors the Quay team-resync
+// cadence used elsewhere in the platform.
+const webhookSecretResyncInterval = 30 * time.Minute
 
 // RepoClient is the seam the Repository reconciler drives Quay through: the
 // subset of internal/quay.Client's organization-existence, repository, and
@@ -183,7 +193,29 @@ func (r *RepositoryReconciler) reconcileNormal(ctx context.Context, logger logr.
 		return result, err
 	}
 
-	return r.succeed(ctx, logger, repo, webhookChanged)
+	res, err := r.succeed(ctx, logger, repo, webhookChanged)
+	if err != nil {
+		return res, err
+	}
+
+	// The controller resolves only the specific webhook-URL Secret a CR names, via
+	// a non-caching get (no cluster-wide Secret informer — the RBAC grants Secrets
+	// get only, not list/watch), so it cannot watch Secrets to be woken on a value
+	// change. For a urlSecretRef-backed webhook, periodically requeue so a later
+	// change to the Secret's value is picked up and re-pushed to Quay (AC #8's
+	// "watch the referenced Secret, or requeue on a sane interval"). An inline or
+	// absent webhook needs no resync — its desired URL lives entirely in the spec,
+	// which already triggers reconciliation on change.
+	if usesWebhookSecretRef(repo) {
+		res.RequeueAfter = webhookSecretResyncInterval
+	}
+	return res, nil
+}
+
+// usesWebhookSecretRef reports whether the Repository's webhook draws its URL
+// from a urlSecretRef (rather than an inline url or no webhook at all).
+func usesWebhookSecretRef(repo *quayv1alpha1.Repository) bool {
+	return repo.Spec.Webhook != nil && repo.Spec.Webhook.UrlSecretRef != nil
 }
 
 // resolveQuayOrg resolves the Quay organization name the Repository writes into
@@ -323,11 +355,21 @@ func (r *RepositoryReconciler) reconcileWebhook(ctx context.Context, logger logr
 	return false, changed, ctrl.Result{}, nil
 }
 
-// ensureWebhook makes the repository's repo_push webhook notifications converge
-// on exactly one delivering to url: it lists the existing repo_push webhooks,
-// leaves a single correct one untouched, and creates/replaces otherwise. Any
-// repo_push webhook with a different URL (or a duplicate) is deleted so re-runs
-// and URL changes never pile up stale notifications.
+// isManagedWebhook reports whether a notification is one this controller owns:
+// a repo_push webhook whose title is the controller's webhookTitle. Ownership is
+// the gate for deletion so the reconciler only ever removes notifications it
+// created — a manually-created repo_push webhook on the same repository (a
+// different title) is left untouched.
+func isManagedWebhook(n quay.Notification) bool {
+	return n.Event == quay.EventRepoPush && n.Method == quay.MethodWebhook && n.Title == webhookTitle
+}
+
+// ensureWebhook makes the controller-managed repo_push webhook notifications
+// converge on exactly one delivering to url: it lists the existing notifications,
+// leaves a single correct controller-owned one untouched, and creates/replaces
+// otherwise. Only controller-owned notifications (matched by webhookTitle) are
+// deleted, so a re-run or URL change never piles up duplicates and never removes
+// a manually-created webhook on the same repository.
 func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient, ns, name, url string) error {
 	notifications, err := qc.ListNotifications(ctx, ns, name)
 	if err != nil {
@@ -336,15 +378,17 @@ func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient,
 
 	matched := false
 	for _, n := range notifications {
-		if n.Event != quay.EventRepoPush || n.Method != quay.MethodWebhook {
+		if !isManagedWebhook(n) {
+			// Not ours (e.g. a manually-created webhook): never touch it.
 			continue
 		}
 		if !matched && n.Config.URL == url {
-			// Keep exactly one correct notification.
+			// Keep exactly one correct controller-owned notification.
 			matched = true
 			continue
 		}
-		// Wrong URL, or a duplicate of the one we keep: delete it.
+		// Our notification with the wrong URL, or a duplicate of the one we keep:
+		// delete it.
 		if err := qc.DeleteNotificationIfExists(ctx, ns, name, n.UUID); err != nil {
 			return fmt.Errorf("deleting stale Quay notification %s on %s/%s: %w", n.UUID, ns, name, err)
 		}
@@ -359,9 +403,9 @@ func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient,
 	return nil
 }
 
-// removeManagedWebhooks deletes every repo_push webhook notification on the
-// repository. It is used when spec.webhook is unset, and during finalization, to
-// leave the repository's notifications clean.
+// removeManagedWebhooks deletes every controller-owned repo_push webhook
+// notification on the repository (matched by webhookTitle), leaving any
+// manually-created webhooks intact. It is used when spec.webhook is unset.
 func (r *RepositoryReconciler) removeManagedWebhooks(ctx context.Context, qc RepoClient, ns, name string) error {
 	notifications, err := qc.ListNotifications(ctx, ns, name)
 	if err != nil {
@@ -372,7 +416,7 @@ func (r *RepositoryReconciler) removeManagedWebhooks(ctx context.Context, qc Rep
 		return fmt.Errorf("listing Quay notifications for %s/%s: %w", ns, name, err)
 	}
 	for _, n := range notifications {
-		if n.Event != quay.EventRepoPush || n.Method != quay.MethodWebhook {
+		if !isManagedWebhook(n) {
 			continue
 		}
 		if err := qc.DeleteNotificationIfExists(ctx, ns, name, n.UUID); err != nil {
@@ -575,6 +619,13 @@ func (r *RepositoryReconciler) updateStatus(ctx context.Context, repo *quayv1alp
 // SetupWithManager wires the reconciler into the manager: it watches Repository
 // resources, defaults the namespace and client factory if unset, and obtains an
 // event recorder.
+//
+// It deliberately does not watch Secrets: the controller resolves only the
+// specific credential/webhook-URL Secrets a CR names, via a non-caching get (the
+// RBAC grants Secrets get, not list/watch), so a Secret informer is neither
+// available nor desired. A urlSecretRef-backed Repository instead requeues on
+// webhookSecretResyncInterval (set on the reconcile result) so a later change to
+// the referenced Secret's value is eventually re-pushed to Quay (AC #8).
 func (r *RepositoryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.APIReader == nil {
 		r.APIReader = mgr.GetAPIReader()

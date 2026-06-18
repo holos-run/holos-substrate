@@ -145,6 +145,16 @@ func repoConditionReason(repo *quayv1alpha1.Repository, condType string) string 
 
 func ptr(s string) *string { return &s }
 
+// containsString reports whether xs contains want.
+func containsString(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestRepositoryCreatesWithInlineWebhook(t *testing.T) {
 	ctx := context.Background()
 	ns := makeNamespace(ctx, t)
@@ -221,6 +231,16 @@ func TestRepositoryCreatesWithSecretRefWebhook(t *testing.T) {
 	repo := getRepo(ctx, t, key)
 	if got := repoConditionStatus(repo, ConditionWebhookConfigured); got != metav1.ConditionTrue {
 		t.Errorf("WebhookConfigured = %q, want True", got)
+	}
+
+	// A urlSecretRef-backed repo requeues on an interval (no Secret watch) so a
+	// later Secret value change is eventually re-pushed.
+	res, err := reconcileRepo(ctx, r, key)
+	if err != nil {
+		t.Fatalf("steady-state reconcile: %v", err)
+	}
+	if res.RequeueAfter != webhookSecretResyncInterval {
+		t.Errorf("RequeueAfter = %v, want %v for a secretRef-backed webhook", res.RequeueAfter, webhookSecretResyncInterval)
 	}
 }
 
@@ -330,11 +350,14 @@ func TestRepositoryWebhookURLChangeReplacesNotification(t *testing.T) {
 	})
 
 	fake := newFakeRepoClient()
-	// Pre-create the repo with a stale repo_push webhook pointing elsewhere.
+	// Pre-create the repo with a stale controller-owned repo_push webhook pointing
+	// elsewhere (same webhookTitle, so the reconciler owns and replaces it) plus a
+	// manually-created webhook with a different title that must be preserved.
 	fake.repos[repoKey("acme", "rehook")] = &fakeRepoStore{
 		notifications: map[string]quay.Notification{},
 	}
-	fake.seedNotification("acme", "rehook", "https://old.example.test/stale")
+	fake.seedNotification("acme", "rehook", webhookTitle, "https://old.example.test/stale")
+	fake.seedNotification("acme", "rehook", "manual webhook", "https://manual.example.test/keep")
 
 	r, _ := newRepoReconciler(fake, ns)
 	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
@@ -342,8 +365,16 @@ func TestRepositoryWebhookURLChangeReplacesNotification(t *testing.T) {
 	}
 
 	urls := fake.webhookURLs("acme", "rehook")
-	if len(urls) != 1 || urls[0] != newHook {
-		t.Errorf("webhook URLs = %v, want exactly [%s] after replacement", urls, newHook)
+	// The stale controller-owned webhook is replaced by newHook; the manual one
+	// survives.
+	if !containsString(urls, newHook) {
+		t.Errorf("webhook URLs = %v, want to contain the new controller URL %s", urls, newHook)
+	}
+	if containsString(urls, "https://old.example.test/stale") {
+		t.Errorf("stale controller webhook should have been replaced; URLs = %v", urls)
+	}
+	if !containsString(urls, "https://manual.example.test/keep") {
+		t.Errorf("manually-created webhook must be preserved; URLs = %v", urls)
 	}
 }
 

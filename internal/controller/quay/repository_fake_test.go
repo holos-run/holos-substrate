@@ -205,9 +205,11 @@ func (f *fakeRepoClient) webhookURLs(ns, repo string) []string {
 	return urls
 }
 
-// seedNotification injects a pre-existing notification on ns/repo so tests can
-// exercise the URL-change-replaces-notification path.
-func (f *fakeRepoClient) seedNotification(ns, repo, url string) {
+// seedNotification injects a pre-existing repo_push webhook notification on
+// ns/repo with the given title and url so tests can exercise the
+// URL-change-replaces-notification path and the manual-webhook-preservation path
+// (title != webhookTitle).
+func (f *fakeRepoClient) seedNotification(ns, repo, title, url string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	st, ok := f.repos[repoKey(ns, repo)]
@@ -221,6 +223,7 @@ func (f *fakeRepoClient) seedNotification(ns, repo, url string) {
 		UUID:   uuid,
 		Event:  quay.EventRepoPush,
 		Method: quay.MethodWebhook,
+		Title:  title,
 		Config: quay.NotificationConfig{URL: url},
 	}
 }
