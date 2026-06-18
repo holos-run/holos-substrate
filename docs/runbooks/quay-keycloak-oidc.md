@@ -12,7 +12,7 @@ The binding **decision record** is
 operational companion and does not restate the full rationale. The declarative
 Keycloak client pattern and the PKCE guardrail checklist live in
 [holos/docs/keycloak-clients.md](../../holos/docs/keycloak-clients.md). The
-manual procedure for minting the future Quay Resource Controller's
+manual procedure for minting the shipped Holos Controller's Quay
 OAuth-Application credential is the
 [Quay Resource Controller credentials runbook](quay-resource-controller-credentials.md).
 
@@ -161,7 +161,7 @@ by their `preferred_username` (matched `preferred_username == username`):
 | `quay-admin` | human administrator | `platform-owner` | `quay-admin` | `password` |
 
 The `svc-` prefix marks `svc-quay-resource-controller` as a non-human **service
-account** — the future Quay Resource Controller's machine identity — distinct
+account** — the shipped Holos Controller's Quay machine identity — distinct
 from the human `quay-admin` administrator. Both are seeded in the realm by the
 keycloak phase (HOL-1294); each user's password is generated **once at runtime**
 by the `quay-user-password-bootstrap` Job into a Secret of the same name in the

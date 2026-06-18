@@ -205,7 +205,7 @@ Quay runs `AUTHENTICATION_TYPE: OIDC` (see [ADR-15](adr/ADR-15.md)), so the
 Keycloak `holos` realm is the **sole** identity store: there is no local `admin`
 user, and every Quay login is "Holos SSO". The seeded superusers are two
 Keycloak realm users in `SUPER_USERS` — **`svc-quay-resource-controller`** (a
-service account, the future Quay Resource Controller's identity) and
+service account, the shipped Holos Controller's Quay identity) and
 **`quay-admin`** (a human administrator). Their passwords are generated once at
 runtime by the keycloak phase (HOL-1294) into Secrets in the **`keycloak`**
 namespace, one per user, under the `password` key — nothing secret is committed,

@@ -377,7 +377,7 @@ Quay runs `AUTHENTICATION_TYPE: OIDC` with the Keycloak `holos` realm as the
 user, and the headless `/api/v1/user/initialize` bootstrap endpoint is
 unavailable. The two Quay superusers are Keycloak realm users listed in
 `SUPER_USERS` (by `preferred_username`) — the service account
-**`svc-quay-resource-controller`** (the future Quay Resource Controller's machine
+**`svc-quay-resource-controller`** (the shipped Holos Controller's Quay machine
 identity, distinguished by its `svc-` prefix) and the human **`quay-admin`** —
 both seeded by the keycloak phase (HOL-1294) with passwords generated once at
 runtime into Secrets of the same name in the `keycloak` namespace (key

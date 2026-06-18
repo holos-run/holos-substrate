@@ -353,8 +353,9 @@ The bring-up ordering and the `caBundle` TLS-trust note are documented in the
 ## See also
 
 - [ADR-15 — Quay↔Keycloak OIDC SSO](../adr/ADR-15.md) — the decision record
-  (Revision 4: OIDC backend, two Keycloak-backed superusers, data-plane
-  provisioning deferred to a future Quay Resource Controller).
+  (Revision 4: OIDC backend, two Keycloak-backed superusers; it deferred
+  data-plane provisioning to a future Quay Resource Controller, which has since
+  shipped as the Holos Controller per ADR-18/ADR-19).
 - [ADR-18 — The Holos Controller and the GitOps Rendered-Manifest Delivery
   Model](../adr/ADR-18.md) — the shipped controller (`Status: Partially
   Implemented`) that automates the **org/repo/webhook** provisioning this runbook
