@@ -487,10 +487,16 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 		// Status did not record a provisioned path. Re-resolve from the immutable
 		// spec + Organization CR so a crash between create and the status write
 		// cannot orphan a real Quay repository.
-		resolvedNs, resolvedName, resolveOK := r.resolveDeleteIdentity(ctx, repo)
+		resolvedNs, resolvedName, resolveOK, err := r.resolveDeleteIdentity(ctx, repo)
+		if err != nil {
+			// A transient API error reading the Organization must NOT be mistaken
+			// for an unresolvable identity — dropping the finalizer here would leak
+			// the Quay repo. Requeue with backoff and retry.
+			return ctrl.Result{}, err
+		}
 		if !resolveOK {
-			// Neither status nor the Organization CR yields an identity: nothing
-			// addressable to delete, release the CR.
+			// The Organization CR is genuinely gone: the Quay path is
+			// unaddressable, so there is nothing to delete. Release the CR.
 			return r.removeFinalizer(ctx, repo)
 		}
 		ns, name = resolvedNs, resolvedName
@@ -517,18 +523,28 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 // resolveDeleteIdentity reconstructs the Quay <org>/<repo> path for a Repository
 // whose status.QuayRepository is empty, by resolving the Organization CR named by
 // the (immutable) spec.organizationRef and combining its spec.name with the
-// (immutable) spec.name. ok is false when the Organization CR cannot be read
-// (e.g. it was deleted), in which case the Quay path is unaddressable.
-func (r *RepositoryReconciler) resolveDeleteIdentity(ctx context.Context, repo *quayv1alpha1.Repository) (ns, name string, ok bool) {
+// (immutable) spec.name.
+//
+// It distinguishes two non-resolution cases so the caller never leaks external
+// state on a transient failure:
+//   - ok=false, err=nil: the Organization CR is genuinely gone (NotFound) or
+//     carries no spec.name, so the Quay path is permanently unaddressable and the
+//     finalizer may be dropped.
+//   - err!=nil: a transient API error reading the CR; the caller must requeue and
+//     retry rather than assume there is nothing to delete.
+func (r *RepositoryReconciler) resolveDeleteIdentity(ctx context.Context, repo *quayv1alpha1.Repository) (ns, name string, ok bool, err error) {
 	org := &quayv1alpha1.Organization{}
 	key := client.ObjectKey{Namespace: repo.Namespace, Name: repo.Spec.OrganizationRef}
-	if err := r.Get(ctx, key, org); err != nil {
-		return "", "", false
+	if getErr := r.Get(ctx, key, org); getErr != nil {
+		if apierrors.IsNotFound(getErr) {
+			return "", "", false, nil
+		}
+		return "", "", false, fmt.Errorf("reading Organization %q during finalize: %w", repo.Spec.OrganizationRef, getErr)
 	}
 	if org.Spec.Name == "" || repo.Spec.Name == "" {
-		return "", "", false
+		return "", "", false, nil
 	}
-	return org.Spec.Name, repo.Spec.Name, true
+	return org.Spec.Name, repo.Spec.Name, true, nil
 }
 
 // removeFinalizer drops the repository finalizer and persists the change so the
