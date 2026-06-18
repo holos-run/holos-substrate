@@ -145,8 +145,17 @@ curl https://echo.holos.localhost/
 `scripts/apply` no longer applies the `my-project` Layer 3 delivery sample —
 it was removed from the master apply (HOL-1322) because its `quay.holos.run`
 Organization carries a per-cluster local-ca `caBundle` that is injected at apply
-time and never committed. Apply it separately, **after** the platform apply and
-**after** the manual Quay superuser-credential setup, with the dedicated helper:
+time and never committed. Apply it separately, **after** these prerequisites are
+in place, with the dedicated helper:
+
+1. **Deploy the Holos Controller** with the isolated `controller-*` targets
+   (`make controller-deploy` installs the `quay.holos.run` CRDs and the manager
+   into the `holos-controller` namespace) — `scripts/apply` does **not** install
+   them, and `scripts/apply-my-project` fails fast if the Organization CRD is
+   absent.
+2. **Mint and store the Quay superuser credential** the controller authenticates
+   with (`scripts/apply-svc-quay-resource-controller-creds` plus the
+   `platform-automation` org / OAuth token per the runbooks).
 
 ```bash
 scripts/apply-my-project
@@ -157,8 +166,8 @@ the `ca_bundle_pem` CUE tag, and applies the `my-project` Namespace +
 Organization (which the Holos Controller reconciles into the in-cluster Quay,
 trusting Quay's serving cert via the `caBundle`) along with the rest of the
 `my-project` component. See the
-[Holos Controller runbook](runbooks/holos-controller.md) for the credential
-wiring and bring-up ordering.
+[Holos Controller runbook](runbooks/holos-controller.md) for the controller
+deployment, credential wiring, and bring-up ordering.
 
 ## Verify Keycloak
 

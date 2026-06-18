@@ -158,12 +158,16 @@ Run the bring-up steps **in order**:
 1. **`scripts/local-ca`** — establishes the cert-manager `local-ca` whose
    certificate the in-cluster Quay serves TLS with, and whose PEM the next step
    injects as the Organization's `caBundle`.
-2. **The manual credential mint** — `scripts/apply-svc-quay-resource-controller-creds`
+2. **`make controller-deploy`** — installs the `quay.holos.run` CRDs and the
+   manager into the `holos-controller` namespace (the *Deploy and verify the
+   controller* steps above). `scripts/apply` does **not** install them, and
+   `scripts/apply-my-project` fails fast if the Organization CRD is absent.
+3. **The manual credential mint** — `scripts/apply-svc-quay-resource-controller-creds`
    plus the `platform-automation` org / OAuth-Application token, per the
    [credentials runbook](quay-resource-controller-credentials.md). This creates
    the `holos-controller-quay-creds` Secret the Organization's
    `credentialsSecretRef` resolves.
-3. **`scripts/apply-my-project`** — reads the local-ca PEM, renders the platform
+4. **`scripts/apply-my-project`** — reads the local-ca PEM, renders the platform
    with it injected via the `ca_bundle_pem` CUE tag, and applies the `my-project`
    Namespace + Organization (and the rest of the component). It gates the
    Organization reaching `Ready`.

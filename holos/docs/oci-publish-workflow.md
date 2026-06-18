@@ -448,9 +448,12 @@ kubectl --context "$KCTX" -n argocd get application my-project \
 
 The path is identical in shape to the echo loop — publish → webhook →
 Warehouse Freight → Stage promotion → Application sync — but driven by the real
-`repo_push` webhook and requiring no hand-created credential Secrets, because
-the `my-project` bootstrap Jobs provisioned them. The remaining gap is the
-**content** of the published artifact: discovery and promotion (steps 2–3) work
-for any artifact, but a clean Application **sync** (step 4) needs a
-project-scoped `my-project-config` artifact, which is the sample app's future
-work.
+`repo_push` webhook. It depends on the hand-provisioned Quay data plane: the
+`my-project/my-project-config` repository, its `repo_push` webhook registration,
+the push robot, and the Argo CD/Kargo pull-credential Secrets are **not** emitted
+by the component (the Organization is, but the Repository CR, robots, and pull
+Secrets remain manual — see the prerequisites above), so this loop only runs
+after that manual setup. The remaining gap is the **content** of the published
+artifact: discovery and promotion (steps 2–3) work for any artifact, but a clean
+Application **sync** (step 4) needs a project-scoped `my-project-config` artifact,
+which is the sample app's future work.
