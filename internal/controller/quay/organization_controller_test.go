@@ -144,6 +144,39 @@ func TestReconcileCreatesOrganization(t *testing.T) {
 	assertEvent(t, recorder, ReasonCreated)
 }
 
+func TestReconcileThreadsCABundleToClientFactory(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+
+	caBundle := []byte("-----BEGIN CERTIFICATE-----\nMIIB...test...\n-----END CERTIFICATE-----\n")
+	org := &quayv1alpha1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "acme"},
+		Spec: quayv1alpha1.OrganizationSpec{
+			Name:     "acme",
+			Email:    "acme@example.test",
+			CABundle: caBundle,
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, org); err != nil {
+		t.Fatalf("creating Organization: %v", err)
+	}
+	key := client.ObjectKeyFromObject(org)
+
+	fake := newFakeOrgClient()
+	r, _ := newReconciler(fake, ns)
+
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if string(fake.gotCABundle) != string(caBundle) {
+		t.Errorf("ClientFactory received caBundle %q, want the spec's %q", fake.gotCABundle, caBundle)
+	}
+}
+
 func TestReconcileAdoptsExistingOrganization(t *testing.T) {
 	ctx := context.Background()
 	ns := makeNamespace(ctx, t)

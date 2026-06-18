@@ -129,6 +129,17 @@ type RepositorySpec struct {
 	//
 	// +optional
 	Webhook *RepositoryWebhook `json:"webhook,omitempty"`
+
+	// CABundle carries PEM-encoded x509 CA certificates the controller trusts
+	// in addition to its system store when reaching the Quay API. Its semantics
+	// and serialization are the shared "CABundle convention" documented once in
+	// common_types.go: it follows the upstream Kubernetes caBundle convention
+	// (PEM certs serialized as a single base64 string) and an empty value uses
+	// the controller pod's system trust store unchanged. It is the trust anchor
+	// for the in-cluster Quay registry signed by the platform's local CA.
+	//
+	// +optional
+	CABundle []byte `json:"caBundle,omitempty"`
 }
 
 // RepositoryStatus defines the observed state of a Repository, following the

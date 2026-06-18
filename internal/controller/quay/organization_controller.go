@@ -73,16 +73,28 @@ type OrgClient interface {
 	DeleteOrganizationRobotIfExists(ctx context.Context, org, shortname string) error
 }
 
-// ClientFactory builds an OrgClient from a resolved Quay credential. The default
-// factory (NewQuayClient) returns a real *quay.Client; tests substitute a factory
+// ClientFactory builds an OrgClient from a resolved Quay credential and the
+// CA bundle the Organization spec carries. The default factory (NewQuayClient)
+// returns a real *quay.Client trusting that bundle; tests substitute a factory
 // that returns a fake, which is how the reconciler is exercised without a live
-// Quay or HTTP.
-type ClientFactory func(cred *quayCredential) OrgClient
+// Quay or HTTP. The caBundle comes from the spec (not the credential Secret), so
+// it is a separate argument and is never folded into quayCredential.
+type ClientFactory func(cred *quayCredential, caBundle []byte) OrgClient
 
 // NewQuayClient is the production ClientFactory: it builds a real internal/quay
-// client from the credential's url and token.
-func NewQuayClient(cred *quayCredential) OrgClient {
-	return quay.NewClient(cred.url, cred.token, nil)
+// client from the credential's url and token, trusting the PEM-encoded caBundle
+// (the in-cluster Quay registry's local-CA chain) in addition to the system
+// store. An empty caBundle yields system trust only — unchanged behavior. A
+// caBundle that contains no parseable certificate falls back to a system-trust
+// client so a misconfigured bundle surfaces as the original x509 trust error on
+// the Quay call rather than a silent nil client; the parse failure is logged.
+func NewQuayClient(cred *quayCredential, caBundle []byte) OrgClient {
+	c, err := quay.NewClientWithCABundle(cred.url, cred.token, caBundle)
+	if err != nil {
+		log.Log.Error(err, "building Quay client with caBundle; falling back to system trust")
+		return quay.NewClient(cred.url, cred.token, nil)
+	}
+	return c
 }
 
 // Compile-time assertion that the real Quay client satisfies the reconciler's
@@ -170,7 +182,7 @@ func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger log
 		return r.handleCredentialError(ctx, org, err)
 	}
 
-	qc := r.NewClient(cred)
+	qc := r.NewClient(cred, org.Spec.CABundle)
 
 	// ADR-19 claim model. Quay orgs are a single global namespace and the
 	// controller credential carries FEATURE_SUPERUSERS_FULL_ACCESS, so a naive
@@ -434,7 +446,7 @@ func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *quayv
 		return r.handleCredentialError(ctx, org, err)
 	}
 
-	qc := r.NewClient(cred)
+	qc := r.NewClient(cred, org.Spec.CABundle)
 
 	// Verify the durable server-side marker still names this CR before deleting.
 	// This closes HOL-1311 race (b): if a prior delete succeeded but finalizer

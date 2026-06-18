@@ -92,7 +92,10 @@ func newReconciler(fake *fakeOrgClient, namespace string) (*OrganizationReconcil
 		APIReader: shared.k8sClient,
 		Recorder:  recorder,
 		Namespace: namespace,
-		NewClient: func(cred *quayCredential) OrgClient { return fake },
+		NewClient: func(cred *quayCredential, caBundle []byte) OrgClient {
+			fake.gotCABundle = caBundle
+			return fake
+		},
 	}
 	return r, recorder
 }

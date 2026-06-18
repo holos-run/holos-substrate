@@ -70,15 +70,28 @@ type RepoClient interface {
 	DeleteNotificationIfExists(ctx context.Context, ns, repo, uuid string) error
 }
 
-// RepoClientFactory builds a RepoClient from a resolved Quay credential. The
-// default factory (NewQuayRepoClient) returns a real *quay.Client; tests
-// substitute a factory that returns a fake.
-type RepoClientFactory func(cred *quayCredential) RepoClient
+// RepoClientFactory builds a RepoClient from a resolved Quay credential and the
+// CA bundle the Repository spec carries. The default factory (NewQuayRepoClient)
+// returns a real *quay.Client trusting that bundle; tests substitute a factory
+// that returns a fake. The caBundle comes from the spec (not the credential
+// Secret), so it is a separate argument and is never folded into quayCredential.
+type RepoClientFactory func(cred *quayCredential, caBundle []byte) RepoClient
 
 // NewQuayRepoClient is the production RepoClientFactory: it builds a real
-// internal/quay client from the credential's url and token.
-func NewQuayRepoClient(cred *quayCredential) RepoClient {
-	return quay.NewClient(cred.url, cred.token, nil)
+// internal/quay client from the credential's url and token, trusting the
+// PEM-encoded caBundle (the in-cluster Quay registry's local-CA chain) in
+// addition to the system store. An empty caBundle yields system trust only —
+// unchanged behavior. A caBundle that contains no parseable certificate falls
+// back to a system-trust client so a misconfigured bundle surfaces as the
+// original x509 trust error on the Quay call rather than a silent nil client;
+// the parse failure is logged.
+func NewQuayRepoClient(cred *quayCredential, caBundle []byte) RepoClient {
+	c, err := quay.NewClientWithCABundle(cred.url, cred.token, caBundle)
+	if err != nil {
+		log.Log.Error(err, "building Quay client with caBundle; falling back to system trust")
+		return quay.NewClient(cred.url, cred.token, nil)
+	}
+	return c
 }
 
 // Compile-time assertion that the real Quay client satisfies the Repository
@@ -170,7 +183,7 @@ func (r *RepositoryReconciler) reconcileNormal(ctx context.Context, logger logr.
 		return r.handleCredentialError(ctx, repo, err)
 	}
 
-	qc := r.NewClient(cred)
+	qc := r.NewClient(cred, repo.Spec.CABundle)
 
 	// Resolve the Quay org name through the Organization CR named by
 	// spec.organizationRef in this Repository's namespace — never trust the ref as
@@ -556,7 +569,7 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 		return r.handleCredentialError(ctx, repo, err)
 	}
 
-	qc := r.NewClient(cred)
+	qc := r.NewClient(cred, repo.Spec.CABundle)
 	delErr := qc.DeleteRepositoryIfExists(ctx, ns, name)
 	recordQuayAPI(opDeleteRepository, delErr)
 	if err := delErr; err != nil {

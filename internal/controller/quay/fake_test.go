@@ -51,6 +51,11 @@ type fakeOrgClient struct {
 
 	// Recorded calls, in order, e.g. "Get:acme", "Create:acme", "Delete:acme".
 	calls []string
+
+	// gotCABundle records the caBundle the reconciler's ClientFactory was last
+	// invoked with, so a test asserts the spec's CABundle is threaded through to
+	// the client factory (HOL-1320).
+	gotCABundle []byte
 }
 
 // newFakeOrgClient returns a fake with the given pre-existing org names.
