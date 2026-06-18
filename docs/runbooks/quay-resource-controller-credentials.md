@@ -36,8 +36,8 @@ it create new organizations).
 > Kargo pull-credential Secrets) is still performed by hand in the interim.
 
 The binding decision record is
-[ADR-15 — Quay↔Keycloak OIDC SSO](../adr/ADR-15.md); the controller and CRDs that
-will automate this provisioning are designed in
+[ADR-15 — Quay↔Keycloak OIDC SSO](../adr/ADR-15.md); the shipped controller and
+CRDs that automate the org/repo/webhook provisioning are designed in
 [ADR-18 — The Holos Controller](../adr/ADR-18.md) and
 [ADR-19 — Quay Organization/Repository CRDs](../adr/ADR-19.md). The SSO wiring and
 day-to-day operations are in the
@@ -225,14 +225,25 @@ the selected scopes.
 
 ### 4. Scopes — and whether the token can create organizations
 
-**Recommendation: generate the token with `super:user`, `org:admin`, and
-`repo:create`.**
+**Recommendation: generate the token with the full set
+`scripts/apply-svc-quay-resource-controller-creds` instructs you to select —
+`super:user`, `org:admin`, `repo:create`, `repo:read`, `repo:write`,
+`repo:admin`, `user:admin`, and `user:read`.** The minimal set for the
+**Organization** reconciler alone is `super:user`/`org:admin`/`repo:create`, but
+the **Repository** reconciler also updates and deletes repositories and
+lists/creates/deletes `repo_push` notifications, so the repo write/admin scopes
+are required for the full data plane. This is the **one authoritative scope set**;
+the helper script selects exactly these.
 
 | Scope | Grants | Why the controller needs it |
 |-------|--------|-----------------------------|
 | `super:user` | the `/api/v1/superuser/*` API (the caller must also be in `SUPER_USERS`) | superuser-level provisioning across orgs; the broadest data-plane reach. With `FEATURE_SUPERUSERS_FULL_ACCESS: true` (enabled, see above) this scope also reaches the **normal** org/repo/robot/webhook endpoints inside orgs the controller does not own — adopting orgs created by other identities |
 | `org:admin` | administer organizations the user can administer (teams, robots, members, webhooks) | manage org/team/robot/webhook objects the controller provisions |
 | `repo:create` | create repositories | auto-create repositories under provisioned orgs |
+| `repo:read` | read repository metadata | confirm a repository exists / read its current state before updating |
+| `repo:write` | push/modify repository content and settings | apply `visibility`/`description` and reconcile repository state |
+| `repo:admin` | administer a repository (settings, notifications) | create/list/delete the `repo_push` webhook notification (AC #8) |
+| `user:admin` / `user:read` | administer/read the acting user's account | round out the acting user's reach for superuser data-plane operations |
 
 **Can this token create *additional* organizations?** **Yes.** Org creation is a
 **user ability**, not a distinct OAuth scope: any authenticated Quay user who is

@@ -26,10 +26,13 @@ project's behalf — Quay organizations, repositories, robots, and webhooks;
 Keycloak clients, roles, and groups. Today those gaps are filled by manual,
 imperative procedures: an operator signs in and clicks through a UI, or runs a
 documented one-off bootstrap. The clearest example is the Quay data plane, whose
-provisioning is currently **deferred to a "future Quay Resource Controller"** and
-performed by hand against a manually-minted superuser credential
-([ADR-15](ADR-15.md) Revisions 4–5;
+provisioning was, at the time this ADR was written, **deferred to a "future Quay
+Resource Controller"** and performed by hand against a manually-minted superuser
+credential ([ADR-15](ADR-15.md) Revisions 4–5;
 [Quay Resource Controller credentials runbook](../runbooks/quay-resource-controller-credentials.md)).
+This ADR's controller — now shipped (Revision 2) — is that "future Quay Resource
+Controller"; the Quay org/repo/webhook surface it reconciles is described below
+and specified in [ADR-19](ADR-19.md).
 
 Two questions follow. First, **what supplies the missing Kubernetes-native
 APIs** so that platform capabilities the upstream operators do not cover are

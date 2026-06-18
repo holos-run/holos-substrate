@@ -79,7 +79,9 @@ runtime-secret guardrail, [`AGENTS.md`](../../AGENTS.md) Conventions /
    [quay-resource-controller-credentials.md](quay-resource-controller-credentials.md):
    sign in to Quay via "Holos SSO" as `svc-quay-resource-controller`, create the
    OAuth Application in the `platform-automation` org, and generate a token with
-   the recommended scopes (`super:user`, `org:admin`, `repo:create`).
+   the authoritative scope set that runbook specifies (the same set the helper
+   script selects — `super:user`/`org:admin`/`repo:create` plus the repo
+   read/write/admin and user scopes the Repository reconciler needs).
 
 2. **Create the Secret** with the operator helper
    [`scripts/apply-svc-quay-resource-controller-creds`](../../scripts/apply-svc-quay-resource-controller-creds).

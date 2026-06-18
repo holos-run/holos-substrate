@@ -22,18 +22,21 @@ group is **`quay.holos.run`**. This ADR is the design specification for that
 group's two custom resources, both scoped to the in-cluster Quay registry: an
 **Organization** and a **Repository**.
 
-Today the Quay data plane a project needs — its organization and the
-rendered-manifests repository (and, per a project's wiring, a `repo_push` webhook
-that notifies Kargo) — is provisioned **by hand**. [ADR-15](ADR-15.md)
-Revisions 4–5 made the Keycloak `holos` realm Quay's sole identity store
-(`AUTHENTICATION_TYPE: OIDC`), which removed the local `admin` user and the
-headless token-mint path, so an operator now follows the
+Before this controller, the Quay data plane a project needs — its organization
+and the rendered-manifests repository (and, per a project's wiring, a `repo_push`
+webhook that notifies Kargo) — was provisioned **entirely by hand**.
+[ADR-15](ADR-15.md) Revisions 4–5 made the Keycloak `holos` realm Quay's sole
+identity store (`AUTHENTICATION_TYPE: OIDC`), which removed the local `admin` user
+and the headless token-mint path, so an operator follows the
 [Quay Resource Controller credentials runbook](../runbooks/quay-resource-controller-credentials.md)
 to mint a superuser OAuth-Application credential and click through the rest. The
 [`my-project` delivery scaffold](../../holos/components/my-project/buildplan.cue)
 documents the surface that procedure must cover: it emits the Kargo control plane
 and the Argo CD Application but **explicitly defers** the Quay org, repo, and
-`repo_push` webhook registration "to a future Quay Resource Controller."
+`repo_push` webhook registration "to a future Quay Resource Controller." The
+**org/repo/webhook** part of that surface is what these CRDs now reconcile; the
+robots and pull-credential Secrets remain a manual step (see *Out of scope*),
+and minting the controller's superuser credential stays manual by design.
 
 That future controller is the Holos Controller ([ADR-18](ADR-18.md)), now
 **shipped** as the `holos-controller` service in this repository. This ADR
