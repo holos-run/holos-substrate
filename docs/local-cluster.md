@@ -142,6 +142,33 @@ with a browser-trusted certificate:
 curl https://echo.holos.localhost/
 ```
 
+`scripts/apply` no longer applies the `my-project` Layer 3 delivery sample —
+it was removed from the master apply (HOL-1322) because its `quay.holos.run`
+Organization carries a per-cluster local-ca `caBundle` that is injected at apply
+time and never committed. Apply it separately, **after** these prerequisites are
+in place, with the dedicated helper:
+
+1. **Deploy the Holos Controller** with the isolated `controller-*` targets
+   (`make controller-deploy` installs the `quay.holos.run` CRDs and the manager
+   into the `holos-controller` namespace) — `scripts/apply` does **not** install
+   them, and `scripts/apply-my-project` fails fast if the Organization CRD is
+   absent.
+2. **Mint and store the Quay superuser credential** the controller authenticates
+   with (`scripts/apply-svc-quay-resource-controller-creds` plus the
+   `platform-automation` org / OAuth token per the runbooks).
+
+```bash
+scripts/apply-my-project
+```
+
+That script reads the local-ca PEM, renders the platform with it injected via
+the `ca_bundle_pem` CUE tag, and applies the `my-project` Namespace +
+Organization (which the Holos Controller reconciles into the in-cluster Quay,
+trusting Quay's serving cert via the `caBundle`) along with the rest of the
+`my-project` component. See the
+[Holos Controller runbook](runbooks/holos-controller.md) for the controller
+deployment, credential wiring, and bring-up ordering.
+
 ## Verify Keycloak
 
 The full bootstrap from zero — `scripts/local-dns` (one-time), then
@@ -187,7 +214,7 @@ Quay runs `AUTHENTICATION_TYPE: OIDC` (see [ADR-15](adr/ADR-15.md)), so the
 Keycloak `holos` realm is the **sole** identity store: there is no local `admin`
 user, and every Quay login is "Holos SSO". The seeded superusers are two
 Keycloak realm users in `SUPER_USERS` — **`svc-quay-resource-controller`** (a
-service account, the future Quay Resource Controller's identity) and
+service account, the shipped Holos Controller's Quay identity) and
 **`quay-admin`** (a human administrator). Their passwords are generated once at
 runtime by the keycloak phase (HOL-1294) into Secrets in the **`keycloak`**
 namespace, one per user, under the `password` key — nothing secret is committed,
@@ -200,16 +227,18 @@ Retrieve a password and base64-decode it:
 kubectl -n keycloak get secret quay-admin \
   -o jsonpath='{.data.password}' | base64 -d; echo
 
-# Service account (the future Quay Resource Controller's identity):
+# Service account (the Holos Controller's Quay identity):
 kubectl -n keycloak get secret svc-quay-resource-controller \
   -o jsonpath='{.data.password}' | base64 -d; echo
 ```
 
-In-cluster Quay org/repo/robot/webhook provisioning is **deferred to a future
-Quay Resource Controller** (the old `scripts/quay-init` org/robot bootstrap and
-the `quay-initial-admin` token were removed with the Database backend, HOL-1293).
-Until the controller ships, an operator mints its OAuth-Application credential by
-hand — see the
+In-cluster Quay org/repo/webhook provisioning is reconciled by the shipped Holos
+Controller ([ADR-18](adr/ADR-18.md)) from the `quay.holos.run` CRDs
+([ADR-19](adr/ADR-19.md)); the robot accounts and pull-credential Secrets stay
+manual (ADR-19 *Out of scope*). The old `scripts/quay-init` org/robot bootstrap
+and the `quay-initial-admin` token were removed with the Database backend
+(HOL-1293). The controller **consumes** a superuser OAuth-Application credential
+an operator mints by hand — see the
 [Quay Resource Controller credentials runbook](runbooks/quay-resource-controller-credentials.md).
 
 **Verify "Holos SSO" login and superuser access.** Sign in to Quay through the

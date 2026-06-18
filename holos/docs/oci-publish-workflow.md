@@ -118,9 +118,9 @@ design — the destination push credential is never sent to the source registry
 (which may be a different, untrusted registry):
 
 - **Destination** (the manifests artifact repo) needs **push** scope. For the
-  in-cluster Quay this is a push-capable Quay robot credential (its provisioning,
-  with write access to the manifests repo, is deferred to a future Quay Resource
-  Controller, HOL-1293); see the
+  in-cluster Quay this is a push-capable Quay robot credential (the robot and this
+  push Secret are not modeled by the `quay.holos.run` CRDs, ADR-19 *Out of scope*,
+  so they stay manually provisioned); see the
   [repository credential Secret shape](argocd-application-source.md#repository-credential-secret)
   in argocd-application-source.md (Argo CD's repo-server uses a *pull*-scoped
   credential to fetch the same artifact).
@@ -289,8 +289,9 @@ uncommitted** credential Secrets are required (the repo's runtime-secret posture
 — neither is rendered into the deploy tree):
 
 1. **Argo CD's repo-server** PULLs the artifact using a repository credential
-   Secret in the `argocd` namespace (the `holos+robot` pull credential; its
-   provisioning is deferred to a future Quay Resource Controller, HOL-1293) — see the
+   Secret in the `argocd` namespace (the `holos+robot` pull credential; the robot
+   and this pull Secret are not modeled by the `quay.holos.run` CRDs, ADR-19 *Out
+   of scope*, so they stay manually provisioned) — see the
    [repository credential Secret](argocd-application-source.md#repository-credential-secret)
    shape.
 2. **Kargo's controller** LISTs tags for the Warehouse using a separate
@@ -357,25 +358,44 @@ ways that simplify the operator workflow:
   `Warehouse`, and `Stage` all live in the single `my-project` component, and
   the Kargo Project namespace *is* the workload namespace (no separate
   `kargo-project-*` sibling).
-- **Quay-side provisioning is deferred to a future Quay Resource Controller
-  (HOL-1293).** The Quay org, the `my-project/my-project-config` repository, the
-  pull robot, the Argo CD repository Secret in `argocd`, and the `repo_push`
-  webhook registration were previously provisioned by an in-component
-  `my-project-quay-bootstrap` Job (HOL-1272) that authenticated with the removed
-  `quay-initial-admin` admin token; that Job no longer exists. Only the
-  Kargo-side `my-project-quay-webhook-bootstrap` Job (the receiver token) still
-  runs — it needs no Quay admin token. Until the controller ships, those Quay
-  objects and the Argo CD repository Secret are provisioned by hand, so a push
-  triggers Freight discovery only after that manual setup.
+- **The Quay org is reconciled from an emitted Organization CR; repo/robot/webhook
+  stay manual.** As of HOL-1322 the `my-project` component emits a
+  `quay.holos.run/v1alpha1` Organization (with a per-cluster local-ca `caBundle`)
+  that the shipped Holos Controller ([ADR-18](../../docs/adr/ADR-18.md)/[ADR-19](../../docs/adr/ADR-19.md))
+  reconciles into the in-cluster Quay org. The `my-project/my-project-config`
+  repository (a Repository CR is reconciled by the controller but **not** emitted
+  by this component yet), the pull robot, the Argo CD repository Secret in
+  `argocd`, and the `repo_push` webhook registration are **not** emitted — they
+  were previously provisioned by an in-component `my-project-quay-bootstrap` Job
+  (HOL-1272) that authenticated with the removed `quay-initial-admin` admin token;
+  that Job no longer exists. Only the Kargo-side `my-project-quay-webhook-bootstrap`
+  Job (the receiver token) still runs — it needs no Quay admin token. Those
+  remaining Quay objects and the Argo CD repository Secret are provisioned by hand,
+  so a push triggers Freight discovery only after that manual setup.
+- **Applied by `scripts/apply-my-project`, not `scripts/apply`.** HOL-1322 removed
+  `my-project` from the master apply; the dedicated `scripts/apply-my-project`
+  injects the local-ca PEM as the Organization's `caBundle` at apply time and
+  applies the component (Namespace, Organization, Argo CD/Kargo objects, and the
+  webhook-token Job).
 
 ### Verify the scaffold, and the end-to-end contract it will satisfy
 
-Prerequisites: the cluster is up and `scripts/apply` has run (so the
-`my-project-quay-webhook-bootstrap` receiver-token Job completed —
-`wait_my_project` gates it). The Quay org/repo/webhook and the Argo CD
-repository Secret are **not** created by `scripts/apply` — their provisioning is
-deferred to the future Quay Resource Controller (HOL-1293) and is done by hand
-until then.
+Prerequisites: the cluster is up, `scripts/apply` has run, and
+`scripts/apply-my-project` has been run (so the
+`my-project-quay-webhook-bootstrap` receiver-token Job completed — that script
+gates it, and gates the Organization reaching Ready). Two categories are **not**
+created by either script and must be provisioned by hand:
+
+- the `my-project/my-project-config` **repository** and its `repo_push` webhook —
+  reconcilable by a `quay.holos.run` Repository CR, but that CR is **not** emitted
+  by the component yet (the proposed Holos Project/Application components,
+  [ADR-21](../../docs/adr/ADR-21.md), would emit it);
+- the **push robot**, the **Argo CD repository (pull) Secret** in `argocd`, and
+  the **Kargo image-credential Secret** the Warehouse authenticates registry tag
+  discovery with — these are **not** modeled by the `quay.holos.run` CRDs at all
+  (ADR-19 *Out of scope*) and stay manual even after ADR-21. Without the Kargo
+  image credential, Warehouse discovery cannot authenticate and no Freight is
+  created.
 
 > **The publish step is future work — do not run it against the platform
 > render.** `scripts/publish` today packages the **whole-platform** render
@@ -436,9 +456,12 @@ kubectl --context "$KCTX" -n argocd get application my-project \
 
 The path is identical in shape to the echo loop — publish → webhook →
 Warehouse Freight → Stage promotion → Application sync — but driven by the real
-`repo_push` webhook and requiring no hand-created credential Secrets, because
-the `my-project` bootstrap Jobs provisioned them. The remaining gap is the
-**content** of the published artifact: discovery and promotion (steps 2–3) work
-for any artifact, but a clean Application **sync** (step 4) needs a
-project-scoped `my-project-config` artifact, which is the sample app's future
-work.
+`repo_push` webhook. It depends on the hand-provisioned Quay data plane: the
+`my-project/my-project-config` repository, its `repo_push` webhook registration,
+the push robot, and the Argo CD/Kargo pull-credential Secrets are **not** emitted
+by the component (the Organization is, but the Repository CR, robots, and pull
+Secrets remain manual — see the prerequisites above), so this loop only runs
+after that manual setup. The remaining gap is the **content** of the published
+artifact: discovery and promotion (steps 2–3) work for any artifact, but a clean
+Application **sync** (step 4) needs a project-scoped `my-project-config` artifact,
+which is the sample app's future work.

@@ -455,12 +455,13 @@ GitOps rendered-manifest model and is explicit about the boundary:
   collection-driven one is the design's hardest constraint, called out here for the
   component phase to solve.
 - **Depends on the controller and the Quay CRDs.** The Project's `Organization`
-  and the Application's `Repository` are reconciled by the Holos Controller
-  ([ADR-18](ADR-18.md)) against the `quay.holos.run` group ([ADR-19](ADR-19.md));
-  until the controller ships, those CRs have no reconciler and a project's registry
-  data plane stays in the manual-stop-gap state ADR-19 describes. The rendered
-  manifests are correct ahead of the controller; they simply do not converge until
-  it exists.
+  and the Application's `Repository` are reconciled by the shipped Holos Controller
+  ([ADR-18](ADR-18.md)) against the `quay.holos.run` group ([ADR-19](ADR-19.md)).
+  The controller and its Quay CRDs have shipped, so an emitted `Organization` (as
+  the `my-project` component already does) converges today; the parts these
+  components would add but that no `quay.holos.run` CR yet covers — the robots and
+  the Argo CD/Kargo pull-credential Secrets — stay in the manual-stop-gap state
+  ADR-19 describes.
 - **ADR-1 is partially resolved, not closed.** This ADR answers ADR-1's
   namespace-mapping and access-control deferrals but intentionally leaves the
   first-class `Project` CRD question open, so ADR-1 remains a living record that a

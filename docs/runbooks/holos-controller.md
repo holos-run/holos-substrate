@@ -143,6 +143,57 @@ A reconciling resource reports Gateway-API conditions
 `CredentialsNotFound` reason on `Ready=False` means the Secret/key wiring above is
 incomplete.
 
+## Cluster bring-up — provisioning the `my-project` sample
+
+Once the controller is deployed and the credential Secret is wired, the
+`my-project` Layer 3 delivery sample is applied **separately** from the master
+platform apply. As of HOL-1322, `my-project` is **removed from `scripts/apply`**
+and applied by the dedicated
+[`scripts/apply-my-project`](../../scripts/apply-my-project), because its
+`quay.holos.run` Organization carries a per-cluster `caBundle` that must be
+injected at apply time and never committed.
+
+Run the bring-up steps **in order**:
+
+1. **`scripts/local-ca`** — establishes the cert-manager `local-ca` whose
+   certificate the in-cluster Quay serves TLS with, and whose PEM the next step
+   injects as the Organization's `caBundle`.
+2. **`scripts/apply`** — applies the platform (including the Quay registry the
+   controller and credential mint target, and the `holos-controller` Namespace,
+   which is owned by the central namespace registry and applied here, **not** by
+   `make controller-deploy`).
+3. **`make controller-deploy`** — installs the `quay.holos.run` CRDs and the
+   manager into the `holos-controller` namespace (the *Deploy and verify the
+   controller* steps above). It targets, but does not create, that Namespace, and
+   `scripts/apply` does **not** install the CRDs; `scripts/apply-my-project` fails
+   fast if the Organization CRD is absent.
+4. **The manual credential mint** — `scripts/apply-svc-quay-resource-controller-creds`
+   plus the `platform-automation` org / OAuth-Application token, per the
+   [credentials runbook](quay-resource-controller-credentials.md). This creates
+   the `holos-controller-quay-creds` Secret the Organization's
+   `credentialsSecretRef` resolves.
+5. **`scripts/apply-my-project`** — reads the local-ca PEM, renders the platform
+   with it injected via the `ca_bundle_pem` CUE tag, and applies the `my-project`
+   Namespace + Organization (and the rest of the component). It gates the
+   Organization reaching `Ready`.
+
+```bash
+scripts/apply-my-project
+```
+
+**TLS trust comes from the resource's `caBundle`, not the pod's system store.**
+The in-cluster Quay (`quay.holos.localhost`) serves a certificate signed by the
+per-cluster mkcert local CA, which is **not** in the controller pod's system
+trust store. The controller therefore establishes TLS to Quay by trusting the
+**`spec.caBundle`** the `my-project` Organization carries (the standardized
+cross-Kind field, [ADR-19](../adr/ADR-19.md) — appended to the system roots, not
+replacing them) — `scripts/apply-my-project` populates it with the local-ca PEM
+at apply time. An Organization applied **without** a `caBundle` (e.g. by `kubectl
+apply` of the committed manifest, which carries none) would fail to reach `Ready`
+with an `x509: certificate signed by unknown authority` TLS error against Quay;
+always provision `my-project` through `scripts/apply-my-project` so the trust
+anchor is injected.
+
 ## See also
 
 - [ADR-18 — The Holos Controller](../adr/ADR-18.md) — the controller, its
