@@ -14,6 +14,7 @@
 | 2        | 2026-06-18 | @jeffmccune | Reconcile to the **as-built** `quay.holos.run/v1alpha1` schema shipped across HOL-1309..HOL-1313 (AC #10, authoritative). The implemented Organization/Repository specs are narrower than Revision 1's illustrative design: no inline `repositories[]` (AC #9), no `access[]`/`allowRepositoryCreation`, no `retention`/robot fields; the webhook is an inline `url`/`urlSecretRef` decoupled from Kargo (AC #8), not a `kargoProjectConfigRef`. Record the **API-group dependency boundary** (AC #7), the `credentialsSecretRef` → `holos-controller-quay-creds` in `holos-controller` credential wiring, and the Gateway-API conditions/reasons actually defined. Status `Proposed` → `Implemented` |
 | 3        | 2026-06-18 | @jeffmccune | Document the **durable server-side ownership marker** (HOL-1315): the controller stamps a `<org>+holos-owner` robot whose `description` carries the owning CR's UID and keys create/heal/delete on it (not solely on `status.created`), closing the two HOL-1311 races. Record that the Organization reconciler applies `spec.email` drift via `UpdateOrganization`. |
 | 4        | 2026-06-18 | @jeffmccune | Remove `spec.displayName` from the Organization CRD (HOL-1316). Quay 3.17.3 organizations have no display-name/description field, so the value was never programmable; the field is dropped entirely (unreleased — no migration or backwards compatibility). |
+| 5        | 2026-06-18 | @jeffmccune | Document the **`caBundle` spec field** (HOL-1320/HOL-1321): both Organization and Repository carry an identical `caBundle []byte` (JSON `caBundle,omitempty`, `+optional`) — a PEM/base64 trust anchor for the in-cluster Quay registry's local-CA serving cert, threaded into the Quay client's TLS `RootCAs`; empty means use the controller pod's system trust store. The shared shape is defined once in `api/quay/v1alpha1/common_types.go` and re-used by both Kinds (the cross-Kind convention ADR-18 Revision 3 states controller-wide). |
 
 ## Context and Problem Statement
 
@@ -155,6 +156,58 @@ Each resource's spec carries an optional `credentialsSecretRef` (a
   required key is missing the reconciler sets `Programmed`/`Ready` `False`
   (reason `CredentialsNotFound`) and requeues.
 
+### CA bundle (`caBundle`) — a standardized, cross-Kind field
+
+The in-cluster Quay registry (`quay.holos.localhost`) serves TLS with a
+certificate signed by the platform's **per-cluster mkcert local CA**, not a
+public root. That CA is not in the controller pod's system trust store, so the
+reconcilers' first attempt to reach Quay failed with
+`x509: certificate signed by unknown authority` (HOL-1319). The fix
+(HOL-1320) is a spec-supplied trust anchor: an optional **`caBundle`** field
+that the controller appends to its trust roots when establishing TLS to Quay.
+
+**Both Kinds carry the identical field**, and its semantics and serialization
+are described **once** and re-used — not redefined per Kind:
+
+- The shared convention is documented in
+  [`api/quay/v1alpha1/common_types.go`](../../api/quay/v1alpha1/common_types.go)
+  (the *CABundle convention* doc block); each spec's field godoc refers back to
+  it rather than restating the format.
+- `OrganizationSpec.CABundle` is in
+  [`api/quay/v1alpha1/organization_types.go`](../../api/quay/v1alpha1/organization_types.go);
+  `RepositorySpec.CABundle` is in
+  [`api/quay/v1alpha1/repository_types.go`](../../api/quay/v1alpha1/repository_types.go).
+  Both declare `CABundle []byte` with JSON tag `caBundle,omitempty` and
+  `+optional`.
+
+**Field shape (the standardized convention).** `caBundle` follows the upstream
+Kubernetes `caBundle` convention: a Go `[]byte` holding one or more PEM-encoded
+x509 CA certificates concatenated, which marshals to a **single base64 string**
+in JSON (the generated CRD property is `type: string, format: byte`). It is
+**configuration carried on the spec, not a credential** — the Quay API token
+lives in the `credentialsSecretRef` Secret; the CA bundle does not.
+
+| Spec field | Purpose |
+| --- | --- |
+| `caBundle` | optional PEM/base64 (`[]byte`) bundle of x509 CA certs the controller trusts **in addition to** its system store when reaching the Quay API. Identical on Organization and Repository; shared semantics in `common_types.go`. **Empty/omitted** ⇒ use the controller pod's system trust store unchanged (the historical behavior — the field is purely additive). |
+
+**Consumption (threaded into the Quay client's TLS `RootCAs`).** The reconcilers
+pass `spec.caBundle` to the `internal/quay` client, which builds an
+`*http.Client` whose transport's `TLSClientConfig.RootCAs` is the system pool
+(`x509.SystemCertPool()`, falling back to `x509.NewCertPool()` when it errors or
+returns nil) with the bundle appended via `AppendCertsFromPEM`
+([`internal/quay/client.go`](../../internal/quay/client.go):
+`NewClientWithCABundle` / `httpClientForCABundle`, with `ValidateCABundle`
+rejecting a non-empty-but-unparseable bundle up front). An empty bundle yields a
+`nil` `*http.Client`, so the Quay client falls back to `NewClient`'s default
+(system trust only, default transport) — behavior is unchanged.
+
+This is a **cross-Kind controller convention**, not a one-off: **every** Kind in
+the controller's API groups that talks to a TLS endpoint should accept a
+`caBundle` field of this same standardized shape. The convention is stated
+controller-wide in [ADR-18](ADR-18.md) (Revision 3); this section is the Quay
+group's worked instance of it.
+
 ### Organization
 
 An `Organization` names and applies a Quay organization. It **does not** inline
@@ -201,6 +254,7 @@ status:
 | `email` | unique namespace email Quay requires. Mutable: the reconciler pushes `spec.email` drift to Quay via `UpdateOrganization` (`PUT /api/v1/organization/{org}`) before marking an owned org Ready. |
 | `credentialsSecretRef` | the Quay superuser credential Secret; defaults to `holos-controller-quay-creds` in `holos-controller`. The resource's **only** auth dependency (AC #7). |
 | `adopt` | opt-in (default `false`) to take ownership of a pre-existing unmarked org; without it such an org is a `Conflict`. An adopted org is *released*, not deleted, on CR removal. |
+| `caBundle` | optional PEM/base64 CA trust anchor for the Quay registry's local-CA serving cert; see *CA bundle* above. Identical shape on both Kinds. |
 
 | Status field | Purpose |
 | --- | --- |
@@ -275,6 +329,7 @@ status:
 | `description` | optional human-friendly description. |
 | `credentialsSecretRef` | the Quay superuser credential Secret; defaults to `holos-controller-quay-creds`. Distinct from the webhook `urlSecretRef`. |
 | `webhook` | (AC #8) optional `repo_push` webhook; **exactly one** of inline `url` or `urlSecretRef` (a Secret `name`/`key` in the resource's own namespace holding the URL). A CEL `XValidation` enforces the mutual exclusion at admission. |
+| `caBundle` | optional PEM/base64 CA trust anchor for the Quay registry's local-CA serving cert; see *CA bundle* above. Identical shape to the Organization field. |
 
 | Status field | Purpose |
 | --- | --- |
