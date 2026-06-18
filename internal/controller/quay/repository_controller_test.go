@@ -48,7 +48,12 @@ func reconcileRepoUntilStable(ctx context.Context, t *testing.T, r *RepositoryRe
 		if err != nil {
 			return err
 		}
-		if !res.Requeue {
+		// The first pass requeues immediately (RequeueAfter == requeueImmediately)
+		// after adding the finalizer; keep looping only for that. A steady-state
+		// success with a urlSecretRef webhook legitimately sets a long resync
+		// RequeueAfter (webhookSecretResyncInterval) and must count as stable, so
+		// stop on anything other than the immediate-requeue sentinel.
+		if res.RequeueAfter != requeueImmediately {
 			return nil
 		}
 	}

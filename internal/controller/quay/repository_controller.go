@@ -126,8 +126,15 @@ type RepositoryReconciler struct {
 // observedGeneration → Status().Update. Credential, org-not-ready, webhook, and
 // Quay errors map to a False condition with an actionable reason; recoverable
 // ones (missing credential/webhook Secret, org not yet ready) requeue.
-func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, retErr error) {
 	logger := log.FromContext(ctx)
+
+	// Record the reconcile outcome (success/error) per kind for the custom
+	// holos_controller_reconcile_total metric (AC #4), alongside
+	// controller-runtime's built-in reconcile metrics. retErr is the named
+	// return, so the deferred record observes whatever error the reconcile
+	// ultimately returns regardless of which path produced it.
+	defer func() { recordReconcile(kindRepository, retErr) }()
 
 	repo := &quayv1alpha1.Repository{}
 	if err := r.Get(ctx, req.NamespacedName, repo); err != nil {
@@ -146,7 +153,9 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if err := r.Update(ctx, repo); err != nil {
 			return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
 		}
-		return ctrl.Result{Requeue: true}, nil
+		// RequeueAfter a negligible delay (not the deprecated Result.Requeue)
+		// re-enqueues the fresh object promptly without staticcheck SA1019.
+		return ctrl.Result{RequeueAfter: requeueImmediately}, nil
 	}
 
 	return r.reconcileNormal(ctx, logger, repo)
@@ -264,8 +273,12 @@ func (r *RepositoryReconciler) ensureRepository(ctx context.Context, qc RepoClie
 	visibility := string(repo.Spec.Visibility)
 
 	current, err := qc.GetRepository(ctx, ns, name)
+	// A NotFound is an expected branch (the create path), not a Quay-API failure.
+	recordQuayAPI(opGetRepository, ignoreNotFound(err))
 	if quay.IsNotFound(err) {
-		if createErr := qc.CreateRepository(ctx, ns, name, visibility, repo.Spec.Description); createErr != nil {
+		createErr := qc.CreateRepository(ctx, ns, name, visibility, repo.Spec.Description)
+		recordQuayAPI(opCreateRepository, createErr)
+		if createErr != nil {
 			return fmt.Errorf("creating Quay repository %s/%s: %w", ns, name, createErr)
 		}
 		// Record the provisioned identity so deletion targets exactly this path.
@@ -281,12 +294,16 @@ func (r *RepositoryReconciler) ensureRepository(ctx context.Context, qc RepoClie
 	// is_public on GET, so map the desired public/private to that to compare.
 	wantPublic := repo.Spec.Visibility == quayv1alpha1.RepositoryVisibilityPublic
 	if current.IsPublic != wantPublic {
-		if err := qc.UpdateRepositoryVisibility(ctx, ns, name, visibility); err != nil {
+		err := qc.UpdateRepositoryVisibility(ctx, ns, name, visibility)
+		recordQuayAPI(opUpdateRepository, err)
+		if err != nil {
 			return fmt.Errorf("updating Quay repository %s/%s visibility: %w", ns, name, err)
 		}
 	}
 	if current.Description != repo.Spec.Description {
-		if err := qc.UpdateRepositoryDescription(ctx, ns, name, repo.Spec.Description); err != nil {
+		err := qc.UpdateRepositoryDescription(ctx, ns, name, repo.Spec.Description)
+		recordQuayAPI(opUpdateRepository, err)
+		if err != nil {
 			return fmt.Errorf("updating Quay repository %s/%s description: %w", ns, name, err)
 		}
 	}
@@ -404,6 +421,7 @@ func isManagedWebhook(n quay.Notification) bool {
 // a manually-created webhook on the same repository.
 func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient, ns, name, url string) error {
 	notifications, err := qc.ListNotifications(ctx, ns, name)
+	recordQuayAPI(opListNotifications, err)
 	if err != nil {
 		return fmt.Errorf("listing Quay notifications for %s/%s: %w", ns, name, err)
 	}
@@ -421,15 +439,19 @@ func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient,
 		}
 		// Our notification with the wrong URL, or a duplicate of the one we keep:
 		// delete it.
-		if err := qc.DeleteNotificationIfExists(ctx, ns, name, n.UUID); err != nil {
-			return fmt.Errorf("deleting stale Quay notification %s on %s/%s: %w", n.UUID, ns, name, err)
+		delErr := qc.DeleteNotificationIfExists(ctx, ns, name, n.UUID)
+		recordQuayAPI(opDeleteNotification, delErr)
+		if delErr != nil {
+			return fmt.Errorf("deleting stale Quay notification %s on %s/%s: %w", n.UUID, ns, name, delErr)
 		}
 	}
 
 	if matched {
 		return nil
 	}
-	if _, err := qc.CreateNotification(ctx, ns, name, url, webhookTitle); err != nil {
+	_, err = qc.CreateNotification(ctx, ns, name, url, webhookTitle)
+	recordQuayAPI(opCreateNotification, err)
+	if err != nil {
 		return fmt.Errorf("creating Quay repo_push webhook on %s/%s: %w", ns, name, err)
 	}
 	return nil
@@ -440,8 +462,10 @@ func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient,
 // manually-created webhooks intact. It is used when spec.webhook is unset.
 func (r *RepositoryReconciler) removeManagedWebhooks(ctx context.Context, qc RepoClient, ns, name string) error {
 	notifications, err := qc.ListNotifications(ctx, ns, name)
+	// A repository that no longer exists has no notifications to clean up; its
+	// NotFound is an expected branch, not a Quay-API failure.
+	recordQuayAPI(opListNotifications, ignoreNotFound(err))
 	if err != nil {
-		// A repository that no longer exists has no notifications to clean up.
 		if quay.IsNotFound(err) {
 			return nil
 		}
@@ -451,8 +475,10 @@ func (r *RepositoryReconciler) removeManagedWebhooks(ctx context.Context, qc Rep
 		if !isManagedWebhook(n) {
 			continue
 		}
-		if err := qc.DeleteNotificationIfExists(ctx, ns, name, n.UUID); err != nil {
-			return fmt.Errorf("deleting Quay notification %s on %s/%s: %w", n.UUID, ns, name, err)
+		delErr := qc.DeleteNotificationIfExists(ctx, ns, name, n.UUID)
+		recordQuayAPI(opDeleteNotification, delErr)
+		if delErr != nil {
+			return fmt.Errorf("deleting Quay notification %s on %s/%s: %w", n.UUID, ns, name, delErr)
 		}
 	}
 	return nil
@@ -531,7 +557,9 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 	}
 
 	qc := r.NewClient(cred)
-	if err := qc.DeleteRepositoryIfExists(ctx, ns, name); err != nil {
+	delErr := qc.DeleteRepositoryIfExists(ctx, ns, name)
+	recordQuayAPI(opDeleteRepository, delErr)
+	if err := delErr; err != nil {
 		r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonQuayError,
 			fmt.Sprintf("deleting Quay repository %s/%s: %v", ns, name, err))
 		return ctrl.Result{}, fmt.Errorf("deleting Quay repository %s/%s: %w", ns, name, err)

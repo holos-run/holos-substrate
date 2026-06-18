@@ -1,0 +1,30 @@
+# Metrics Service for the holos-controller manager: exposes the manager's
+# Prometheus /metrics port (the controller-runtime metrics server binds
+# --metrics-bind-address=:8080) so a scraper — kube-prometheus's ServiceMonitor,
+# or a manual scrape — can reach it in-cluster at
+# holos-controller-manager-metrics-service.holos-controller.svc:8080/metrics.
+#
+# The selector matches the manager Deployment's pod label (control-plane:
+# controller-manager). The Namespace is set by the config/default kustomization
+# (namespace: holos-controller), so it is not pinned here.
+#
+# A ServiceMonitor is intentionally NOT shipped in the default tree: it depends
+# on the Prometheus operator's CRD being installed, which the platform does not
+# guarantee. If added later, keep it behind a kustomize component/overlay
+# (config/prometheus/) so the default install does not fail on a missing CRD.
+apiVersion: v1
+kind: Service
+metadata:
+  name: holos-controller-manager-metrics-service
+  labels:
+    app.kubernetes.io/name: holos-controller
+    app.kubernetes.io/managed-by: kustomize
+    control-plane: controller-manager
+spec:
+  selector:
+    control-plane: controller-manager
+  ports:
+    - name: metrics
+      port: 8080
+      protocol: TCP
+      targetPort: metrics

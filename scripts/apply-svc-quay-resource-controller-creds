@@ -1,13 +1,28 @@
 #!/usr/bin/env bash
 
+# Create the Quay superuser credential Secret the holos-controller reads.
+#
+# The script keeps its historical name (it provisions the credential that acts
+# as the svc-quay-resource-controller Keycloak superuser identity), but it now
+# produces the Secret the controller's credential resolver actually reads
+# (HOL-1313): holos-controller-quay-creds in the holos-controller namespace,
+# with keys url + token (+ optional username), matching
+# internal/controller/quay/credentials.go.
+#
+# The token is still minted by hand per
+# docs/runbooks/quay-resource-controller-credentials.md and never committed —
+# this helper only applies the operator-supplied value as a Secret's material at
+# runtime (the Runtime Secret Handling guardrail).
+
 set -euo pipefail
 
 cat <<'EOF'
 ╔═══════════════════════════════════════════════════════════════════════╗
 ║         Quay OAuth Application Token Setup                            ║
 ║                                                                       ║
-║  This script will help you create and apply a Quay OAuth Application  ║
-║  token for the svc-quay-resource-controller service account.          ║
+║  This script creates the holos-controller-quay-creds Secret in the    ║
+║  holos-controller namespace from a Quay OAuth Application token for    ║
+║  the svc-quay-resource-controller service account.                    ║
 ╚═══════════════════════════════════════════════════════════════════════╝
 
 INSTRUCTIONS:
@@ -49,20 +64,29 @@ if [ -z "$TOKEN" ]; then
     exit 1
 fi
 
-NAMESPACE="quay-resource-controller"
+# The Quay API base URL the controller's credential resolver reads from the
+# Secret's url key. Override QUAY_URL for a non-default Quay endpoint.
+QUAY_URL="${QUAY_URL:-https://quay.holos.localhost}"
 
-echo "Creating secret in $NAMESPACE namespace..."
+NAMESPACE="holos-controller"
+SECRET_NAME="holos-controller-quay-creds"
 
-kubectl create secret generic svc-quay-resource-controller-creds \
-    --namespace=$NAMESPACE \
-    --from-literal=username=svc-quay-resource-controller \
+echo "Creating secret $SECRET_NAME in $NAMESPACE namespace..."
+
+# Keys url + token + username match the controller's credential resolver
+# (internal/controller/quay/credentials.go): url and token are required;
+# username is informational (the identity the token acts as).
+kubectl create secret generic "$SECRET_NAME" \
+    --namespace="$NAMESPACE" \
+    --from-literal=url="$QUAY_URL" \
     --from-literal=token="$TOKEN" \
+    --from-literal=username=svc-quay-resource-controller \
     --dry-run=client -o yaml | kubectl apply -f -
 
-echo "✓ Secret 'svc-quay-resource-controller-creds' created in 'quay' namespace"
+echo "✓ Secret '$SECRET_NAME' created in '$NAMESPACE' namespace"
 echo ""
 echo "Verifying secret..."
-kubectl get secret svc-quay-resource-controller-creds -n $NAMESPACE
+kubectl get secret "$SECRET_NAME" -n "$NAMESPACE"
 
 echo ""
 echo "✓ Done!"

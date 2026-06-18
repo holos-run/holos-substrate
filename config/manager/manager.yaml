@@ -1,16 +1,14 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: holos-controller
-  labels:
-    app.kubernetes.io/name: holos-controller
-    app.kubernetes.io/managed-by: kustomize
----
+# The holos-controller Namespace is NOT defined here: it is owned centrally by
+# the platform's namespace registry (holos/namespaces.cue), per the component
+# guidelines that forbid a component creating its own namespace. The
+# config/default kustomization sets `namespace: holos-controller` so every
+# namespaced resource (this Deployment and the metrics Service) targets it
+# without this tree duplicating the Namespace object — which is why neither the
+# Deployment nor the Service pins `namespace` here.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: holos-controller-manager
-  namespace: holos-controller
   labels:
     app.kubernetes.io/name: holos-controller
     app.kubernetes.io/managed-by: kustomize
@@ -39,6 +37,17 @@ spec:
             - --leader-elect
             - --health-probe-bind-address=:8081
             - --metrics-bind-address=:8080
+          env:
+            # Expose the manager's own namespace via the downward API so the
+            # credential resolver reads holos-controller-quay-creds from the
+            # namespace the manager actually runs in (controllerNamespace() reads
+            # POD_NAMESPACE, defaulting to holos-controller). The Deployment does
+            # NOT envFrom/mount a fixed credential Secret — credentials are
+            # resolved per-resource via credentialsSecretRef (HOL-1311).
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           ports:
             - name: metrics
               containerPort: 8080

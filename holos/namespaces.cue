@@ -245,6 +245,18 @@ namespaces: {
 		}
 	}
 
-	// Namespace for the Quay Resource Controller.
-	"quay-resource-controller": _ambient: true
+	// holos-controller hosts the Holos Controller (ADR-18): the
+	// controller-runtime manager that reconciles the quay.holos.run API group's
+	// Organization and Repository custom resources (ADR-19) against the
+	// in-cluster Quay registry.  Its workloads enroll in the ambient mesh per the
+	// platform convention for controller namespaces, like cert-manager and
+	// cnpg-system.
+	//
+	// The Namespace object is owned here centrally (the component guidelines
+	// forbid a component creating its own namespace); the conventional kubebuilder
+	// config/ kustomize tree (config/default) merely TARGETS this namespace and
+	// does not duplicate Namespace creation.  The controller resolves its
+	// credential Secret (holos-controller-quay-creds) from this namespace via the
+	// downward-API POD_NAMESPACE the manager Deployment sets (HOL-1313).
+	"holos-controller": _ambient: true
 }

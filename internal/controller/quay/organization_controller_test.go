@@ -96,7 +96,10 @@ func reconcileUntilStable(ctx context.Context, t *testing.T, r *OrganizationReco
 		if err != nil {
 			return err
 		}
-		if !res.Requeue {
+		// The first pass requeues immediately (RequeueAfter == requeueImmediately)
+		// after adding the finalizer; keep looping only for that. The Organization
+		// reconciler sets no other RequeueAfter, so any other result is stable.
+		if res.RequeueAfter != requeueImmediately {
 			return nil
 		}
 	}

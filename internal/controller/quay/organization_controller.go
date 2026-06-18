@@ -91,8 +91,15 @@ type OrganizationReconciler struct {
 // Ready with observedGeneration → Status().Update. Credential and Quay errors map
 // to a False condition with an actionable reason and a Warning event, and return
 // an error so the request requeues with backoff.
-func (r *OrganizationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *OrganizationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, retErr error) {
 	logger := log.FromContext(ctx)
+
+	// Record the reconcile outcome (success/error) per kind for the custom
+	// holos_controller_reconcile_total metric (AC #4), alongside
+	// controller-runtime's built-in reconcile metrics. retErr is the named
+	// return, so the deferred record observes whatever error the reconcile
+	// ultimately returns regardless of which path produced it.
+	defer func() { recordReconcile(kindOrganization, retErr) }()
 
 	org := &quayv1alpha1.Organization{}
 	if err := r.Get(ctx, req.NamespacedName, org); err != nil {
@@ -114,8 +121,10 @@ func (r *OrganizationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
 		}
 		// The update changes the resourceVersion; requeue to reconcile the
-		// fresh object rather than continuing with a stale one.
-		return ctrl.Result{Requeue: true}, nil
+		// fresh object rather than continuing with a stale one. RequeueAfter a
+		// negligible delay (not the deprecated Result.Requeue) re-enqueues
+		// promptly without staticcheck SA1019.
+		return ctrl.Result{RequeueAfter: requeueImmediately}, nil
 	}
 
 	return r.reconcileNormal(ctx, logger, org)
@@ -138,8 +147,10 @@ func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger log
 	// CR created the org (and the finalizer may delete it); false means it
 	// adopted a pre-existing one (released, never deleted, on removal).
 	//
-	// GET the org and branch on the claim-model cases.
+	// GET the org and branch on the claim-model cases. A NotFound is an expected
+	// branch (create path), not a Quay-API failure, so it records as success.
 	_, getErr := qc.GetOrganization(ctx, org.Spec.Name)
+	recordQuayAPI(opGetOrganization, ignoreNotFound(getErr))
 	switch {
 	case quay.IsNotFound(getErr):
 		// Org does not appear to exist → try to create it. Use CreateOrganization
@@ -149,6 +160,10 @@ func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger log
 		// we did not create. On conflict, fall through to the exists-path claim
 		// decision (adopt or Conflict) rather than claiming ownership.
 		err := qc.CreateOrganization(ctx, org.Spec.Name, org.Spec.Email)
+		// A conflict is an expected claim-model branch (the org was created by a
+		// racing actor), not a Quay-API failure, so record only non-conflict
+		// errors as failures.
+		recordQuayAPI(opCreateOrganization, ignoreConflict(err))
 		switch {
 		case err == nil:
 			// Clean create: this CR is the owner.
@@ -256,7 +271,9 @@ func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *quayv
 	}
 
 	qc := r.NewClient(cred)
-	if err := qc.DeleteOrganizationIfExists(ctx, org.Spec.Name); err != nil {
+	delErr := qc.DeleteOrganizationIfExists(ctx, org.Spec.Name)
+	recordQuayAPI(opDeleteOrganization, delErr)
+	if err := delErr; err != nil {
 		r.Recorder.Event(org, corev1.EventTypeWarning, ReasonQuayError,
 			fmt.Sprintf("deleting Quay organization %q: %v", org.Spec.Name, err))
 		return ctrl.Result{}, fmt.Errorf("deleting Quay organization %q: %w", org.Spec.Name, err)
