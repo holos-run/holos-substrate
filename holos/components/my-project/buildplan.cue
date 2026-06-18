@@ -639,10 +639,13 @@ userDefinedBuildPlan: {
 					RoleBinding: (WEBHOOK_BOOTSTRAP):    WEBHOOK_BOOTSTRAP_ROLE_BINDING
 					Job: (WEBHOOK_BOOTSTRAP):            WEBHOOK_BOOTSTRAP_JOB
 
-					// Quay-side provisioning (org, repo, robot, repository
-					// pull-credential Secret, and the repo_push webhook
-					// registration) is DEFERRED to a future Quay Resource
-					// Controller (HOL-1293) — see the deferral note above.  The
+					// The Quay ORG is now reconciled by the shipped Holos
+					// Controller (ADR-18/ADR-19) from the ORGANIZATION_RESOURCE
+					// emitted above (HOL-1322).  The remaining Quay-side data
+					// plane — the my-project-config repo, the Argo CD pull robot,
+					// the repository pull-credential Secret, and the repo_push
+					// webhook registration — is NOT modeled by the v1alpha1 CRDs
+					// (ADR-19 out of scope) and stays manual for now.  The
 					// my-project-quay-bootstrap Job and its RBAC that previously
 					// emitted those resources were removed in HOL-1296 along with
 					// the retired quay-initial-admin admin token they depended on.
