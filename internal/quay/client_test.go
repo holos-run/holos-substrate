@@ -28,11 +28,13 @@ type recordingHandler struct {
 	gotAccept  string
 	gotBody    map[string]any
 	gotRawBody string
+	gotEscaped string
 }
 
 func (h *recordingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.gotMethod = r.Method
 	h.gotPath = r.URL.Path
+	h.gotEscaped = r.URL.EscapedPath()
 	h.gotAuth = r.Header.Get("Authorization")
 	h.gotContent = r.Header.Get("Content-Type")
 	h.gotAccept = r.Header.Get("Accept")
@@ -563,7 +565,11 @@ func TestPathEscaping(t *testing.T) {
 	if _, err := c.GetOrganization(context.Background(), "a b"); err != nil {
 		t.Fatalf("GetOrganization with space: %v", err)
 	}
-	// httptest decodes the path before handing it to the handler, so gotPath is
-	// the decoded form; the assertion above on wantPath confirms round-trip.
+	// r.URL.Path is already percent-decoded by net/http (so gotPath is the
+	// decoded form assertCommonRequest checks); the on-the-wire escaped path is
+	// what proves the client percent-encoded the space.
 	assertCommonRequest(t, h, false)
+	if h.gotEscaped != "/api/v1/organization/a%20b" {
+		t.Errorf("escaped path = %q, want the space percent-encoded as %%20", h.gotEscaped)
+	}
 }
