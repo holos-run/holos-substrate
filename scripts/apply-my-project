@@ -27,10 +27,18 @@
 #      credentialsSecretRef defaults to that Secret; until it exists the
 #      controller cannot reconcile the org against Quay.
 #
-# It also assumes the master scripts/apply has already applied the platform
-# (the Argo CD / Kargo controllers, the namespaces component, and the
-# holos-controller itself), since the resources this helper applies are
-# reconciled by those controllers.
+# It also assumes:
+#
+#   - the master scripts/apply has already applied the platform (the Argo CD /
+#     Kargo controllers and the namespaces component), since those reconcile the
+#     AppProject/Application and Kargo Project/Warehouse/Stage this helper applies;
+#   - the Holos Controller is installed — `make controller-deploy` (kubectl apply
+#     -k config/default into holos-controller, per docs/runbooks/holos-controller.md)
+#     establishes the quay.holos.run CRDs and runs the manager that reconciles the
+#     Organization.  scripts/apply does NOT install the controller, so this is a
+#     separate step.  The preflight below fails fast (with a pointer to
+#     `make controller-deploy`) if the Organization CRD is absent, rather than
+#     letting the component apply error with `no matches for kind "Organization"`.
 #
 # What it does, mirroring the pre_my_project / wait_my_project logic lifted out
 # of scripts/apply:
@@ -147,6 +155,21 @@ echo "Will apply manifests to kubectl context: ${KUBE_CONTEXT}"
 if ! kubectl --context "${KUBE_CONTEXT}" version --request-timeout=10s >/dev/null 2>&1; then
   echo "ERROR: cannot reach the cluster for kubectl context '${KUBE_CONTEXT}'." >&2
   echo "       Create the local cluster with scripts/local-k3d (see docs/local-cluster.md)." >&2
+  exit 1
+fi
+
+# Preflight: the Holos Controller's Organization CRD must be installed, or the
+# component apply below fails with `no matches for kind "Organization"` and the
+# Ready gate would wait forever for a controller that is absent.  scripts/apply
+# does NOT install the controller — `make controller-deploy` does — so fail fast
+# with that pointer.
+if ! kubectl --context "${KUBE_CONTEXT}" get crd organizations.quay.holos.run \
+  --request-timeout=10s >/dev/null 2>&1; then
+  echo "ERROR: the organizations.quay.holos.run CRD is not installed on context '${KUBE_CONTEXT}'." >&2
+  echo "       The Holos Controller reconciles the my-project Organization; install it first with:" >&2
+  echo "         make controller-deploy" >&2
+  echo "       (kubectl apply -k config/default into holos-controller — see" >&2
+  echo "        docs/runbooks/holos-controller.md).  scripts/apply does not install the controller." >&2
   exit 1
 fi
 
@@ -274,10 +297,15 @@ kubectl --context "${KUBE_CONTEXT}" --namespace my-project \
 # <dir>/` never prunes resources whose manifests were deleted, so a cluster that
 # ran an earlier revision would otherwise keep these retired objects (inert
 # cross-namespace RBAC, a now-unminted privileged superuser Secret) indefinitely.
-# This pruning moved here with my-project: now that the master scripts/apply no
-# longer touches my-project, this helper is the only path that converges an
-# upgraded cluster to the new state.  Delete the objects by label;
-# --ignore-not-found makes this a no-op on a fresh cluster or a second run.
+# This pruning moved here with my-project BY DESIGN (HOL-1322 AC #4 removes all
+# my-project machinery from the master scripts/apply): the retired objects are
+# all my-project's own (its quay-side bootstrap Job/RBAC and the superuser Secret
+# that Job used), so co-locating their cleanup with the my-project apply keeps
+# them converging exactly where my-project is managed, and leaves none of them
+# behind on any cluster that re-applies my-project.  A cluster that never
+# re-applies my-project keeps only inert leftovers (unused RBAC, a dead Secret)
+# that nothing references.  Delete the objects by label; --ignore-not-found makes
+# this a no-op on a fresh cluster or a second run.
 stale_label="app.kubernetes.io/name=my-project-quay-bootstrap"
 kubectl --context "${KUBE_CONTEXT}" --namespace quay \
   delete job,serviceaccount,role,rolebinding -l "${stale_label}" \
