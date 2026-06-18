@@ -201,13 +201,18 @@ func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger log
 		recordQuayAPI(opCreateOrganization, ignoreConflict(err))
 		switch {
 		case err == nil:
-			// Clean create: this CR is the owner. Stamp the durable server-side
-			// marker before recording status, so ownership is provable from Quay
-			// even if the status write is later lost.
+			// Clean create: this CR is the owner. Record ownership in
+			// status.Created *before* stamping the server-side marker, so that a
+			// marker-stamp failure cannot strand the just-created org: the next
+			// reconcile sees an existing org with status.Created=true and no marker
+			// and takes the heal path (re-stamp), rather than mistaking its own
+			// org for a foreign one and releasing it (Codex round 1).
+			org.Status.Created = true
 			if markerErr := r.ensureOwnerMarker(ctx, qc, org); markerErr != nil {
+				// fail() persists status (carrying Created=true) and requeues, so
+				// the heal path recovers the marker on the next reconcile.
 				return r.fail(ctx, org, markerErr)
 			}
-			org.Status.Created = true
 			return r.succeed(ctx, logger, org, ReasonCreated,
 				fmt.Sprintf("created Quay organization %q", org.Spec.Name))
 		case quay.IsConflict(err):
@@ -450,23 +455,29 @@ func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *quayv
 		return r.removeFinalizer(ctx, org)
 	}
 
-	// Remove the marker before the org. Deleting the org removes its robots too,
-	// so a stranded marker is harmless, but dropping it first keeps the cleanup
-	// explicit and idempotent if the org delete is retried.
-	markerDelErr := qc.DeleteOrganizationRobotIfExists(ctx, org.Spec.Name, ownerRobotShortname)
-	recordQuayAPI(opDeleteOrganizationRobot, markerDelErr)
-	if markerDelErr != nil {
-		r.Recorder.Event(org, corev1.EventTypeWarning, ReasonQuayError,
-			fmt.Sprintf("removing ownership marker for Quay organization %q: %v", org.Spec.Name, markerDelErr))
-		return ctrl.Result{}, fmt.Errorf("removing ownership marker for Quay organization %q: %w", org.Spec.Name, markerDelErr)
-	}
-
+	// Delete the org BEFORE the marker. Ordering matters for retry safety
+	// (Codex round 1): if the marker were removed first and the org delete then
+	// failed, the next retry would see no marker, classify the org as no longer
+	// ours, and release the finalizer — leaking the platform-created org. By
+	// deleting the org first, a failed org delete leaves the marker intact so the
+	// retry still verifies ownership and re-attempts the delete. Deleting the org
+	// also removes its robots, so the explicit marker cleanup below is a
+	// best-effort tidy-up of an already-gone robot.
 	delErr := qc.DeleteOrganizationIfExists(ctx, org.Spec.Name)
 	recordQuayAPI(opDeleteOrganization, delErr)
 	if err := delErr; err != nil {
 		r.Recorder.Event(org, corev1.EventTypeWarning, ReasonQuayError,
 			fmt.Sprintf("deleting Quay organization %q: %v", org.Spec.Name, err))
 		return ctrl.Result{}, fmt.Errorf("deleting Quay organization %q: %w", org.Spec.Name, err)
+	}
+
+	// The marker robot is removed with the org; this idempotent delete tolerates
+	// its absence and only tidies a stranded marker (e.g. if the org was already
+	// gone). A failure here must not block finalizer removal — the org is deleted.
+	markerDelErr := qc.DeleteOrganizationRobotIfExists(ctx, org.Spec.Name, ownerRobotShortname)
+	recordQuayAPI(opDeleteOrganizationRobot, markerDelErr)
+	if markerDelErr != nil {
+		log.FromContext(ctx).Error(markerDelErr, "tidying ownership marker after org delete", "name", org.Spec.Name)
 	}
 
 	r.Recorder.Event(org, corev1.EventTypeNormal, "Deleted",
