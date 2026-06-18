@@ -196,25 +196,33 @@ Namespace:
    [ADR-19](ADR-19.md), naming the Project's Quay org, mapping its OIDC groups to
    Quay teams/roles, and governing repository creation within it. The Holos
    Controller ([ADR-18](ADR-18.md)) reconciles it.
-7. **`ReferenceGrant`** — in the Istio gateway namespace (`istio-gateways`),
-   authorizing the cross-namespace references the Gateway API **does** gate by
-   `ReferenceGrant`. A clarification on the mechanism, so this ADR records it
-   correctly: **route-to-Gateway attachment is not one of them** — whether an
-   `HTTPRoute` may attach to the shared Gateway is governed by the listener's
-   `allowedRoutes` (today `namespaces: from: "All"` in
-   [`holos/components/istio-gateway/buildplan.cue`](../../holos/components/istio-gateway/buildplan.cue),
-   which the route-attachment placeholder in
-   [`holos/docs/placeholders.md`](../../holos/docs/placeholders.md) flags must
-   tighten to a label/namespace allow-list before tenant namespaces land). What a
-   `ReferenceGrant` *does* authorize is a cross-namespace **object** reference —
-   an `HTTPRoute`'s `backendRefs` pointing at a `Service` in another namespace, or
-   a listener's `certificateRefs` pointing at a `Secret` in another namespace (the
-   case the Gateway's own certificate comment in `istio-gateway/buildplan.cue`
-   calls out). This item is the per-project grant for whichever such
-   cross-namespace reference the Project needs (e.g. a route in the Project
-   Namespace whose backend or TLS Secret lives elsewhere); the **attachment**
-   policy is the listener's `allowedRoutes`, recorded here so the two mechanisms
-   are not conflated.
+7. **`ReferenceGrant`** — the Gateway-API grant authorizing the cross-namespace
+   **object** references the Project needs. Two clarifications on the mechanism, so
+   this ADR records it correctly:
+   - **Route-to-Gateway attachment is not gated by `ReferenceGrant`.** Whether an
+     `HTTPRoute` may attach to the shared Gateway is governed by the listener's
+     `allowedRoutes` (today `namespaces: from: "All"` in
+     [`holos/components/istio-gateway/buildplan.cue`](../../holos/components/istio-gateway/buildplan.cue),
+     which the route-attachment placeholder in
+     [`holos/docs/placeholders.md`](../../holos/docs/placeholders.md) flags must
+     tighten to a label/namespace allow-list before tenant namespaces land). What a
+     `ReferenceGrant` *does* authorize is a cross-namespace object reference — an
+     `HTTPRoute`'s `backendRefs` pointing at a `Service` in another namespace, or a
+     listener's `certificateRefs` pointing at a `Secret` in another namespace (the
+     case the Gateway's own certificate comment in `istio-gateway/buildplan.cue`
+     calls out).
+   - **A `ReferenceGrant` lives in the *referent* (target) namespace — the
+     namespace that holds the object being referenced — not in the referrer's
+     namespace.** So the grant's namespace depends on the direction of the
+     cross-namespace reference: if a project `HTTPRoute` (in the Project Namespace)
+     references a backend `Service` or TLS `Secret` that lives in `istio-gateways`,
+     the grant goes **in `istio-gateways`** (the issue's "in the Istio gateway
+     namespace" case); if instead the Gateway/Istio in `istio-gateways` references
+     an object in the Project Namespace, the grant goes **in the Project
+     Namespace**. This item is the per-project grant for whichever such reference
+     the Project actually needs, placed in the target namespace accordingly; the
+     **attachment** policy remains the listener's `allowedRoutes`, recorded here so
+     the two mechanisms are not conflated.
 8. **`HTTPRoute`** — the Project's route attaching to the shared Gateway (via the
    listener's `allowedRoutes`), exposing the Project's services through the
    platform ingress.
@@ -382,11 +390,15 @@ GitOps rendered-manifest model and is explicit about the boundary:
    self-service action is a **single pull-request entry**: `projects: "my-project":
    owners: …` or `apps: "my-app": project: "my-project"`.
 2. **One `projects.<name>` entry renders 8 project-level resources:** the
-   registry-integrated k8s `Namespace` (external-secrets + ambient), the Kargo
+   registry-integrated k8s `Namespace` (ambient-enrolled, and wired for
+   external-secrets — the store/controller wiring an open prerequisite), the Kargo
    `Project` (adopted via the namespace label), the Argo CD `AppProject` (OIDC-group
    access), the project-level Argo CD `Application`, the owner `RoleBinding`, the
-   Quay `Organization` ([ADR-19](ADR-19.md)), the `ReferenceGrant` in the gateway
-   namespace, and the `HTTPRoute`.
+   Quay `Organization` ([ADR-19](ADR-19.md)), the `ReferenceGrant` (placed in the
+   target namespace of whichever cross-namespace object reference the Project needs
+   — `istio-gateways` when the project route references a Service/Secret there; not
+   the route-attachment mechanism, which is the listener's `allowedRoutes`), and
+   the `HTTPRoute`.
 3. **One `apps.<name>` entry renders 11 application-level resources** scoped to
    its Project (workloads into the Project's Namespace; the Kargo `Warehouse`/
    `Stage` into the Project's Kargo Project namespace; the Argo CD `Application`
