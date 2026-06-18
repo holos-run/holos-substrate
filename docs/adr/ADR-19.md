@@ -199,7 +199,8 @@ returns nil) with the bundle appended via `AppendCertsFromPEM`
 ([`internal/quay/client.go`](../../internal/quay/client.go):
 `NewClientWithCABundle` / `httpClientForCABundle`, with `ValidateCABundle`
 rejecting a non-empty-but-unparseable bundle up front). An empty bundle yields a
-`nil` client — system trust only, default transport — so behavior is unchanged.
+`nil` `*http.Client`, so the Quay client falls back to `NewClient`'s default
+(system trust only, default transport) — behavior is unchanged.
 
 This is a **cross-Kind controller convention**, not a one-off: **every** Kind in
 the controller's API groups that talks to a TLS endpoint should accept a
