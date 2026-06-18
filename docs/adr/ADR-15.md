@@ -15,6 +15,7 @@
 | 4        | 2026-06-17 | @jeffmccune | HOL-1292/HOL-1293: revert to `AUTHENTICATION_TYPE: OIDC` as the sole identity store; PKCE (S256) re-enabled; team syncing re-enabled; superusers are the Keycloak-backed `svc-quay-resource-controller` + `quay-admin`; the `quay-initial-admin` bootstrap is removed; Quay data-plane provisioning deferred to a future Quay Resource Controller |
 | 5        | 2026-06-17 | @jeffmccune | HOL-1299: enable `FEATURE_SUPERUSERS_FULL_ACCESS` so the future Quay Resource Controller can adopt orgs it did not create; clarify the user/org/OAuth-Application distinction and the manual `platform-automation` org bootstrap |
 | 6        | 2026-06-17 | @jeffmccune | HOL-1306: the "future Quay Resource Controller" referenced throughout is now designed as the **Holos Controller** ([ADR-18](ADR-18.md)) with `quay.holos.run` Organization/Repository CRDs ([ADR-19](ADR-19.md)); add forward cross-links. The Revision 4 OIDC sole-identity-store model is unchanged. The controller is the intended end state for the **org/repo/robot/webhook provisioning**, which the manual runbook performs until it ships; per ADR-18 the controller still *consumes* the superuser OAuth-Application token this runbook mints (its external credential, read from the `quay`-namespace Secret), not one of the CRDs it reconciles. |
+| 7        | 2026-06-18 | @jeffmccune | HOL-1317: **disable PKCE again** for the `quay` client, reversing the Revision 4 re-enablement. Quay 3.17.3 stores the PKCE `code_challenge` state in the `_csrf_token` cookie and never clears it on logout, so a stale `code_verifier` is replayed on the next login and Keycloak rejects the exchange with `code exchange: 400` (login-after-logout fails). The `quay` client now sets `pkce.code.challenge.method` to the empty/"none" method (set explicitly so keycloak-config-cli overwrites any prior `S256` rather than merge-keeping it) and Quay sets `USE_PKCE: false` (no `PKCE_METHOD`); the client's `redirectUris` become the three explicit `/oauth2/keycloak/callback{,/attach,/cli}` paths (no `/*` wildcard). The OIDC sole-identity-store model is otherwise unchanged. |
 
 ## Context and Problem Statement
 
@@ -40,8 +41,10 @@ realm as the **sole** identity store. Two Keycloak realm users —
 administrator), both Keycloak-backed and both listed in `SUPER_USERS` — replace
 the local `admin` user; the `quay-initial-admin` headless bootstrap is removed,
 and in-cluster Quay data-plane provisioning (orgs, repos, robots, webhooks) is
-**deferred to a future Quay Resource Controller**. PKCE (S256) and team syncing
-are both re-enabled. This ADR documents the resulting behavior.
+**deferred to a future Quay Resource Controller**. Team syncing is re-enabled;
+PKCE, briefly re-enabled in Revision 4, is **disabled again** for the `quay`
+client in Revision 7 (HOL-1317) to work around a Quay 3.17.3 logout-state defect.
+This ADR documents the resulting behavior.
 
 ## References
 
@@ -125,29 +128,36 @@ Two consequences of the OIDC backend:
   mode that forced team syncing off under the Database backend (Revision 3).
   Team membership is therefore eventually consistent on the 30-minute resync
   cadence from the `groups` claim.
-- **PKCE (S256) is re-enabled** on both ends — see the login-flow section below.
+- **PKCE is disabled** for the `quay` client (Revision 7, HOL-1317) — see the
+  login-flow section below.
 
-### Login flow: Authorization Code, confidential client with PKCE (S256)
+### Login flow: Authorization Code, confidential client without PKCE
 
 Quay logs users in through the Keycloak `holos` realm using the OAuth 2.0
-Authorization Code flow, authenticated by the client secret **and** PKCE
-(`S256`). Both ends set it:
+Authorization Code flow, authenticated by the client secret **without** PKCE.
+Neither end uses it:
 
 - Quay (`holos/components/quay/buildplan.cue`,
-  `KEYCLOAK_LOGIN_CONFIG`): `USE_PKCE: true`, `PKCE_METHOD: "S256"`.
+  `KEYCLOAK_LOGIN_CONFIG`): `USE_PKCE: false` (no `PKCE_METHOD`).
 - The Keycloak `quay` client
   (`holos/components/keycloak/realm-config/buildplan.cue`):
-  `attributes."pkce.code.challenge.method": "S256"`.
+  `pkce.code.challenge.method` set to the empty/"none" method (set explicitly,
+  not omitted, so keycloak-config-cli's attribute merge overwrites any prior
+  `S256`).
 
-**Revision 4 (HOL-1292/HOL-1293) re-enables PKCE, reversing the Revision 2 /
-HOL-1257 no-PKCE exception.** Revision 2 had removed PKCE from both ends after
-Quay's confidential client-secret token exchange failed to round-trip a matching
-`code_verifier`, producing `Got non-2XX response for code exchange: 400`. Re-set
-on both ends together — matching the production reference configuration — PKCE
-now succeeds, so the `quay` client is no longer an exception: it carries the same
-`S256` attribute as the public `argocd` and `kargo` clients. The `code exchange:
-400` symptom remains a useful **PKCE-verification** signal (both ends must agree
-on PKCE) rather than the rationale for disabling it — see the
+**Revision 7 (HOL-1317) disables PKCE again, reversing the Revision 4 /
+HOL-1293 re-enablement.** PKCE's history for this client is: dropped in
+Revision 2 (HOL-1257), re-enabled in Revision 4 (HOL-1293/HOL-1294), and dropped
+again here. The reason is a Quay 3.17.3 defect: Quay stores the PKCE
+`code_challenge` state in the `_csrf_token` cookie and never clears it on logout,
+so a stale `code_verifier` is replayed on the next login and Keycloak rejects the
+exchange with `Got non-2XX response for code exchange: 400` — a logged-out user
+cannot log back in. Disabling PKCE on both ends removes that stale state. The
+`quay` client is therefore the deliberate PKCE exception again: the public
+`argocd` and `kargo` clients keep `S256`; only `quay` drops it. Do not re-enable
+PKCE for `quay` without first confirming the Quay logout-state defect is fixed.
+The same `code exchange: 400` also appears if PKCE is *mismatched* (set on only
+one end) — see the
 [runbook](../runbooks/quay-keycloak-oidc.md#troubleshooting-got-non-2xx-response-for-code-exchange-400).
 
 ### Confidential client authenticated by a client secret
@@ -156,8 +166,9 @@ Unlike the public `argocd` client, the `quay` client is **confidential**
 (`publicClient: false`, `standardFlowEnabled: true`,
 `serviceAccountsEnabled: false`, `directAccessGrantsEnabled: false`). Quay's
 `KEYCLOAK_LOGIN_CONFIG` validator requires a `CLIENT_SECRET`, so Quay cannot
-run as a public client; the client secret authenticates the application, with
-PKCE (`S256`) layered on the code exchange — see the login-flow section above.
+run as a public client; the client secret alone authenticates the application —
+no PKCE is layered on the code exchange (Revision 7, HOL-1317; see the login-flow
+section above).
 
 The shared client secret is the `quay-oidc` Secret (key `client_secret`)
 provisioned once by HOL-1218's bootstrap Job into **both** the `keycloak` and
@@ -349,8 +360,9 @@ Quay runs `AUTHENTICATION_TYPE: OIDC` — the Keycloak `holos` realm is the
 **sole** identity store (Revision 4, HOL-1292/HOL-1293): the "Holos SSO" button
 logs users in through the realm via the Authorization Code flow, and there is no
 local `admin` user. Quay authenticates to the token endpoint as a **confidential
-OIDC client with a client secret and PKCE (S256)** (Revision 4 re-enables PKCE,
-reversing Revision 2 / HOL-1257). Usernames come from the ID token's
+OIDC client with a client secret and no PKCE** (Revision 7 / HOL-1317 disables
+PKCE again, reversing the Revision 4 re-enablement, to work around the Quay
+3.17.3 logout-state defect). Usernames come from the ID token's
 `preferred_username` claim with no user customization, and the personal
 namespace is scoped to that username. Keycloak client roles, realm roles, and
 groups are folded into a single `groups` claim that Quay receives on each login;
@@ -371,12 +383,14 @@ committed.
   (`FEATURE_DIRECT_LOGIN: false`) and the Keycloak realm is the sole identity
   store. The two superusers are the Keycloak realm users
   `svc-quay-resource-controller` and `quay-admin` in `SUPER_USERS`.
-- PKCE (`S256`) is used for the `quay` client (Revision 4, HOL-1293), re-enabled
-  on both ends after Revision 2 / HOL-1257 had disabled it over a
-  `code exchange: 400` failure. The `quay` client is no longer the PKCE
-  exception — it carries the same `S256` attribute as the public `argocd` and
-  `kargo` clients. The `code exchange: 400` symptom is now a PKCE-verification
-  signal (both ends must agree on PKCE), not a reason to disable it.
+- PKCE is **not** used for the `quay` client (Revision 7, HOL-1317): the client
+  sets `pkce.code.challenge.method` to the empty/"none" method and Quay sets
+  `USE_PKCE: false`. PKCE was dropped (Revision 2 / HOL-1257), re-enabled
+  (Revision 4 / HOL-1293), then dropped again here because Quay 3.17.3 replays a
+  stale `code_verifier` from the `_csrf_token` cookie after logout, breaking the
+  next login with `code exchange: 400`. The `quay` client is the deliberate PKCE
+  exception; the public `argocd` and `kargo` clients keep `S256`. Re-enabling
+  PKCE for `quay` requires first confirming the Quay logout-state defect is fixed.
 - Automatic group→team synchronization is **enabled** in this revision
   (`FEATURE_TEAM_SYNCING: true`, `TEAM_RESYNC_STALE_TIME: 30m`, Revision 4 /
   HOL-1293): the OIDC user handler syncs groups, so Quay team membership is

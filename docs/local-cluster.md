@@ -215,7 +215,8 @@ hand — see the
 **Verify "Holos SSO" login and superuser access.** Sign in to Quay through the
 Keycloak realm with the Authorization Code flow (the confidential `quay` client
 the `keycloak-config` Job provisions, authenticated by its client secret **with
-PKCE `S256`**). The design is in [ADR-15](adr/ADR-15.md); verify it end to end:
+no PKCE** — HOL-1317, Quay 3.17.3 mishandles PKCE state across logout). The
+design is in [ADR-15](adr/ADR-15.md); verify it end to end:
 
 1. Open Quay and start SSO login:
 

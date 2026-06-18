@@ -23,7 +23,8 @@ Quay (`quay.holos.localhost`) runs `AUTHENTICATION_TYPE: OIDC` — the Keycloak
 There is no local `admin` user; every Quay identity is a realm user. Users sign
 in with the "Holos SSO" button through the OAuth 2.0 Authorization Code flow;
 Quay authenticates to the token endpoint as a **confidential client** with a
-client secret **and PKCE (S256)**.
+client secret and **without PKCE** (HOL-1317 — Quay 3.17.3 mishandles PKCE state
+across logout; see [PKCE on the `quay` client](#pkce-on-the-quay-client)).
 
 Usernames come from the ID token's `preferred_username` claim, and Keycloak
 groups, client roles, and the `platform-owner` realm role are folded into a
@@ -68,11 +69,16 @@ The `quay` client is defined in
   used.
 - `secret: "$(env:QUAY_OIDC_CLIENT_SECRET)"` — substituted at reconcile time
   from the bootstrap secret (see below), never a committed value.
-- `attributes."pkce.code.challenge.method": "S256"` — PKCE is required on the
-  code exchange, matching Quay's `USE_PKCE: true` / `PKCE_METHOD: "S256"`. See
+- **`attributes."pkce.code.challenge.method": ""`** — the empty/"none" method:
+  PKCE is intentionally **not** required on the code exchange (HOL-1317), matching
+  Quay's `USE_PKCE: false`. Set explicitly (not omitted) so keycloak-config-cli
+  overwrites any prior `S256` on a previously-PKCE cluster. See
   [PKCE on the `quay` client](#pkce-on-the-quay-client).
-- `redirectUris: ["https://quay.holos.localhost/*"]` — the wildcard covers
-  Quay's callback (see [Redirect-URI convention](#redirect-uri-convention)).
+- `redirectUris` — the three explicit Quay OAuth callback paths under
+  `https://quay.holos.localhost/oauth2/keycloak/callback` (`…/callback`,
+  `…/callback/attach`, `…/callback/cli`) from the HOL-1317 client JSON, replacing
+  the earlier `/*` wildcard (see
+  [Redirect-URI convention](#redirect-uri-convention)).
 
 ### The client-secret bootstrap
 
@@ -107,7 +113,7 @@ Quay's side is the `KEYCLOAK_LOGIN_CONFIG` block in
 | `LOGIN_SCOPES` | `openid`, `profile`, `email`, `groups`, `offline_access` | |
 | `PREFERRED_USERNAME_CLAIM_NAME` | `preferred_username` | username, verbatim |
 | `PREFERRED_GROUP_CLAIM_NAME` | `groups` | the group/role-name claim; team syncing from it is **on** (`FEATURE_TEAM_SYNCING: true`) |
-| `USE_PKCE` / `PKCE_METHOD` | `true` / `S256` | PKCE on the code exchange, matching the client's `pkce.code.challenge.method` |
+| `USE_PKCE` | `false` | PKCE disabled (HOL-1317); no `PKCE_METHOD`. Matches the `quay` client's empty `pkce.code.challenge.method` attribute |
 
 ### Issuer trailing-slash requirement
 
@@ -123,8 +129,10 @@ Quay's OIDC callback URL is
 `<service-id>` is the lowercase prefix of the login-config key before
 `_LOGIN_CONFIG` — here `keycloak` (from `KEYCLOAK_LOGIN_CONFIG`), giving
 `https://quay.holos.localhost/oauth2/keycloak/callback`. The Keycloak client's
-`redirectUris` is the wildcard `https://quay.holos.localhost/*`, which covers
-that callback.
+`redirectUris` is the three explicit callback paths from the HOL-1317 client
+JSON — `…/oauth2/keycloak/callback`, `…/callback/attach`, and `…/callback/cli`
+— replacing the earlier `https://quay.holos.localhost/*` wildcard. If Quay adds a
+new callback service-id, register its exact path here too.
 
 ### Reconciliation and the apply-order gate
 
@@ -211,33 +219,38 @@ CA/DNS is not trusted (see [docs/local-cluster.md](../local-cluster.md)).
 
 ## PKCE on the `quay` client
 
-The platform standard is **PKCE for OIDC clients** (`S256`), and the `quay`
-client follows it: it carries `attributes."pkce.code.challenge.method": "S256"`,
-matching Quay's `USE_PKCE: true` / `PKCE_METHOD: "S256"`. The public `argocd` and
-`kargo` clients carry the same attribute — `quay` is **no longer** an exception
-(ADR-15 Revision 4, HOL-1293).
+The platform standard is **PKCE for OIDC clients** (`S256`), but the `quay`
+client is the deliberate exception: it sets `pkce.code.challenge.method` to the
+empty/"none" method, matching Quay's `USE_PKCE: false` (HOL-1317). The public
+`argocd` and `kargo` clients keep `S256`; only `quay` drops it. The empty value is
+set **explicitly** (not omitted): keycloak-config-cli merges client attributes on
+update, so an omitted key would leave a prior `S256` in place on a cluster that
+once had PKCE enabled; the empty value overwrites it on every reconcile.
 
-Both ends must agree on PKCE. Quay sends a `code_challenge`; Keycloak (which
-treats a client that sets `pkce.code.challenge.method` as *requiring* PKCE)
-verifies the matching `code_verifier` at the token endpoint. If PKCE is set on
-only one end — e.g. the client attribute is dropped but Quay still sends a
-challenge, or vice versa — the token exchange fails with
-`Got non-2XX response for code exchange: 400`. Keep both ends in sync:
+Quay 3.17.3 mishandles PKCE state: it stores the `code_challenge`/verifier in the
+`_csrf_token` cookie and never clears it on logout, so a stale `code_verifier` is
+replayed on the next login and Keycloak rejects the exchange with
+`Got non-2XX response for code exchange: 400` — the login-after-logout failure.
+Disabling PKCE on both ends removes that stale state and lets a logged-out user
+log back in.
 
-- Quay (`holos/components/quay/buildplan.cue`): `USE_PKCE: true`,
-  `PKCE_METHOD: "S256"` in `KEYCLOAK_LOGIN_CONFIG`.
+Both ends must agree: neither sends nor requires PKCE.
+
+- Quay (`holos/components/quay/buildplan.cue`): `USE_PKCE: false` (no
+  `PKCE_METHOD`) in `KEYCLOAK_LOGIN_CONFIG`.
 - The Keycloak `quay` client
   (`holos/components/keycloak/realm-config/buildplan.cue`):
-  `attributes."pkce.code.challenge.method": "S256"`.
+  `pkce.code.challenge.method` set to the empty/"none" method.
 
-> **History.** PKCE was briefly **disabled** for the `quay` client (Revision 2,
-> HOL-1257) after Quay's confidential client-secret exchange failed to
-> round-trip a matching `code_verifier`, producing `code exchange: 400`.
-> Revision 4 (HOL-1293) re-enabled it on both ends, matching the production
-> reference configuration; the `code exchange: 400` symptom is now a PKCE
-> **verification** signal (see
-> [troubleshooting](#troubleshooting-got-non-2xx-response-for-code-exchange-400)),
-> not a reason to disable PKCE.
+> **History.** PKCE was **disabled** for the `quay` client (Revision 2, HOL-1257)
+> after the confidential client-secret exchange failed to round-trip a
+> `code_verifier`, **re-enabled** on both ends (Revision 4, HOL-1293/HOL-1294) to
+> match the production reference, then **disabled again** (HOL-1317) because Quay
+> 3.17.3 replays a stale `code_verifier` after logout and breaks the next login.
+> Do not re-enable PKCE for `quay` without first confirming that Quay
+> logout-state bug is fixed. Note the same `code exchange: 400` also appears when
+> PKCE is *mismatched* (set on only one end) — see
+> [troubleshooting](#troubleshooting-got-non-2xx-response-for-code-exchange-400).
 
 ## Operations
 
@@ -368,10 +381,11 @@ typically see and the remediation:
 
 | # | Root cause | Keycloak signal | Remediation |
 |---|-----------|-----------------|-------------|
-| 1 | **PKCE mismatch — only one end has it** — the `quay` client's `pkce.code.challenge.method` was dropped while Quay still sends a challenge, or Quay's `USE_PKCE` was removed while the client still requires PKCE | `invalid_grant` / `code_verifier_missing` | Confirm **both** ends use PKCE `S256`: `pkce.code.challenge.method: "S256"` on the `quay` client **and** `USE_PKCE: true` / `PKCE_METHOD: "S256"` in `KEYCLOAK_LOGIN_CONFIG`. See [PKCE on the `quay` client](#pkce-on-the-quay-client). Re-set on both ends, re-render, re-apply. |
+| 1a | **Stale PKCE state after logout (HOL-1317)** — the original symptom: PKCE was enabled and Quay 3.17.3 replayed a stale `code_verifier` from the `_csrf_token` cookie on the next login | `invalid_grant` | Fixed by disabling PKCE on both ends (HOL-1317). Confirm the `quay` client's `pkce.code.challenge.method` is empty (`""`) **and** Quay sets `USE_PKCE: false`. See [PKCE on the `quay` client](#pkce-on-the-quay-client). |
+| 1b | **PKCE mismatch — only one end has it** — the `quay` client's `pkce.code.challenge.method` was re-set to `S256` while Quay still sets `USE_PKCE: false`, or vice versa | `invalid_grant` / `code_verifier_missing` | Confirm **both** ends agree on *no* PKCE: `pkce.code.challenge.method: ""` on the `quay` client **and** `USE_PKCE: false` in `KEYCLOAK_LOGIN_CONFIG`. Re-render, re-apply. |
 | 2 | **Client secret mismatch / empty** — the `quay-oidc` Secret differs between namespaces, or wasn't substituted | `invalid_client` | Compare the secret in both namespaces (see [Inspect or rotate](#inspect-or-rotate-the-quay-oidc-secret)). If they differ, rotate so both match; then restart the Quay Deployment. |
 | 3 | **Public/confidential mismatch** — the `quay` client flipped to `publicClient: true`, or Quay stopped sending the secret | `invalid_client` | Confirm `publicClient: false` on the Keycloak client and `CLIENT_SECRET` present in Quay's config. Re-render/apply. |
-| 4 | **Redirect-URI mismatch** — the callback URL isn't covered by `redirectUris` | `invalid_grant` (redirect_uri) | Confirm the Keycloak client's `redirectUris` wildcard `https://quay.holos.localhost/*` covers `https://quay.holos.localhost/oauth2/keycloak/callback`. See [Redirect-URI convention](#redirect-uri-convention). |
+| 4 | **Redirect-URI mismatch** — the callback URL isn't one of the registered `redirectUris` | `invalid_grant` (redirect_uri) | Confirm the Keycloak client's explicit `redirectUris` include the callback in use — e.g. `https://quay.holos.localhost/oauth2/keycloak/callback` (HOL-1317 registers `…/callback`, `…/callback/attach`, `…/callback/cli`). A new Quay callback service-id needs its exact path added. See [Redirect-URI convention](#redirect-uri-convention). |
 | 5 | **Issuer / trailing-slash mismatch** — `OIDC_SERVER` doesn't end in `/`, or points at the wrong issuer | issuer mismatch / discovery failure | Confirm `OIDC_SERVER` ends in a single trailing `/` and equals Keycloak's advertised `issuer`. See [Issuer trailing-slash requirement](#issuer-trailing-slash-requirement). |
 | 6 | **Code reuse / expiry / clock skew** — the authorization code was already exchanged, expired, or node clocks differ | `invalid_grant` | Retry the login (a stale/replayed code is single-use). If persistent, check node time sync (NTP) between the Quay and Keycloak nodes. |
 

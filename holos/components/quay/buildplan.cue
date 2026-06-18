@@ -76,8 +76,9 @@ let PORT = 8080
 // quay.holos.localhost matches the shared Gateway's *.holos.localhost
 // listener hostname and resolves to 127.0.0.1 on the host per
 // docs/local-cluster.md, and the Keycloak realm's reconciled quay client
-// (managed by the keycloak-config Job) lists https://quay.holos.localhost/*
-// as a redirect URI.
+// (managed by the keycloak-config Job) lists the three explicit
+// https://quay.holos.localhost/oauth2/keycloak/callback{,/attach,/cli} paths
+// as its redirect URIs (HOL-1317).
 // k3d-registry.holos.localhost is deliberately NOT used: that name belongs to
 // the k3d bootstrap registry on port 5000 (scripts/local-k3d).
 let HOSTNAME = "quay.holos.localhost"
@@ -194,12 +195,17 @@ let REDIS_METADATA = {
 //     client_secret key) that the OIDC bootstrap Job provisioned into BOTH
 //     the keycloak and quay namespaces — so this component only consumes it
 //     and no secret value is ever committed.
-//   - USE_PKCE / PKCE_METHOD S256 re-enable PKCE on the token exchange,
-//     matching the keycloak quay client's restored pkce.code.challenge.method
-//     S256 attribute (HOL-1294) and the production example.  HOL-1233 once
-//     disabled PKCE over a "code exchange: 400" failure; HOL-1293 re-enables it
-//     on both ends — if that failure recurs, capture it on HOL-1293 rather than
-//     silently dropping PKCE.
+//   - USE_PKCE is false: PKCE is intentionally disabled on the token exchange
+//     (HOL-1317), matching the keycloak quay client whose
+//     pkce.code.challenge.method attribute is set to the empty/"none" method.
+//     Quay 3.17.3 does not
+//     properly support PKCE — it stores the code_challenge state in the
+//     _csrf_token cookie and never clears it on logout, so a stale code_verifier
+//     is replayed on the next login and Keycloak rejects the code exchange with
+//     "Got non-2XX response for code exchange: 400" (the login-after-logout
+//     failure).  With USE_PKCE false Quay sends no code_verifier and Keycloak
+//     requires none.  This reverses HOL-1293/HOL-1294, which had re-enabled PKCE;
+//     do not re-enable it without confirming the Quay logout-state bug is fixed.
 //   - FEATURE_DIRECT_LOGIN false removes the local username/password form, so
 //     "Holos SSO" is the only login path; FEATURE_USER_CREATION true lets first
 //     SSO login auto-provision the user's account namespace (a Quay user's
