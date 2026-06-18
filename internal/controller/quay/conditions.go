@@ -80,18 +80,28 @@ func setCondition(conditions *[]metav1.Condition, condType, status, reason, mess
 
 // markReady sets Accepted, Programmed, and Ready all True with the given reason
 // and message and the observed generation. It is the success path both
-// reconcilers call once Quay reflects the desired state.
-func markReady(conditions *[]metav1.Condition, reason, message string, observedGeneration int64) {
-	setCondition(conditions, ConditionAccepted, string(metav1.ConditionTrue), reason, message, observedGeneration)
-	setCondition(conditions, ConditionProgrammed, string(metav1.ConditionTrue), reason, message, observedGeneration)
-	setCondition(conditions, ConditionReady, string(metav1.ConditionTrue), reason, message, observedGeneration)
+// reconcilers call once Quay reflects the desired state. It returns true when any
+// of the three conditions changed, so callers can skip a redundant status write
+// and event (avoiding a self-triggered reconcile loop).
+func markReady(conditions *[]metav1.Condition, reason, message string, observedGeneration int64) bool {
+	a := setCondition(conditions, ConditionAccepted, string(metav1.ConditionTrue), reason, message, observedGeneration)
+	p := setCondition(conditions, ConditionProgrammed, string(metav1.ConditionTrue), reason, message, observedGeneration)
+	r := setCondition(conditions, ConditionReady, string(metav1.ConditionTrue), reason, message, observedGeneration)
+	return a || p || r
 }
 
 // markNotReady sets Programmed and Ready False with the given reason and message
 // and the observed generation, leaving Accepted untouched (the spec was still
 // understood; it just could not be programmed). It is the failure path for a
-// credential or Quay error.
-func markNotReady(conditions *[]metav1.Condition, reason, message string, observedGeneration int64) {
-	setCondition(conditions, ConditionProgrammed, string(metav1.ConditionFalse), reason, message, observedGeneration)
-	setCondition(conditions, ConditionReady, string(metav1.ConditionFalse), reason, message, observedGeneration)
+// credential or Quay error. It returns true when either condition changed.
+func markNotReady(conditions *[]metav1.Condition, reason, message string, observedGeneration int64) bool {
+	p := setCondition(conditions, ConditionProgrammed, string(metav1.ConditionFalse), reason, message, observedGeneration)
+	r := setCondition(conditions, ConditionReady, string(metav1.ConditionFalse), reason, message, observedGeneration)
+	return p || r
+}
+
+// setConflict marks Programmed and Ready False with reason Conflict. It returns
+// true when either condition changed.
+func setConflict(conditions *[]metav1.Condition, message string, observedGeneration int64) bool {
+	return markNotReady(conditions, ReasonConflict, message, observedGeneration)
 }

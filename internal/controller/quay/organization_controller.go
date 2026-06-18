@@ -8,6 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -31,9 +32,10 @@ type OrgClient interface {
 	// GetOrganization fetches a Quay organization; a missing org returns an
 	// error for which quay.IsNotFound reports true.
 	GetOrganization(ctx context.Context, name string) (*quay.Organization, error)
-	// CreateOrganizationIfNotExists creates the org, treating an already-exists
-	// response as success (idempotent).
-	CreateOrganizationIfNotExists(ctx context.Context, name, email string) error
+	// CreateOrganization creates the org, returning an error for which
+	// quay.IsConflict reports true when the org already exists — the reconciler
+	// branches on that to avoid falsely claiming ownership of a create race.
+	CreateOrganization(ctx context.Context, name, email string) error
 	// DeleteOrganizationIfExists deletes the org, treating an already-absent
 	// response as success (idempotent).
 	DeleteOrganizationIfExists(ctx context.Context, name string) error
@@ -149,17 +151,30 @@ func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger log
 	// CR created the org (and the finalizer may delete it); false means it
 	// adopted a pre-existing one (released, never deleted, on removal).
 	//
-	// GET the org and branch on the three claim-model cases.
+	// GET the org and branch on the claim-model cases.
 	_, getErr := qc.GetOrganization(ctx, org.Spec.Name)
 	switch {
 	case quay.IsNotFound(getErr):
-		// Org does not exist → create it and stamp this CR as the owner.
-		if err := qc.CreateOrganizationIfNotExists(ctx, org.Spec.Name, org.Spec.Email); err != nil {
+		// Org does not appear to exist → try to create it. Use CreateOrganization
+		// (not the IfNotExists wrapper) so a conflict is observable: if another
+		// actor created the org between the GET and this POST, a swallowed
+		// conflict would let us falsely stamp ownership and later delete an org
+		// we did not create. On conflict, fall through to the exists-path claim
+		// decision (adopt or Conflict) rather than claiming ownership.
+		err := qc.CreateOrganization(ctx, org.Spec.Name, org.Spec.Email)
+		switch {
+		case err == nil:
+			// Clean create: this CR is the owner.
+			org.Status.Created = true
+			return r.succeed(ctx, logger, org, ReasonCreated,
+				fmt.Sprintf("created Quay organization %q", org.Spec.Name))
+		case quay.IsConflict(err):
+			// Lost the create race: the org now exists but this CR did not
+			// create it. Treat it exactly like the exists-unowned path.
+			return r.reconcileExistingUnowned(ctx, logger, org)
+		default:
 			return r.fail(ctx, org, fmt.Errorf("creating Quay organization %q: %w", org.Spec.Name, err))
 		}
-		org.Status.Created = true
-		return r.succeed(ctx, logger, org, ReasonCreated,
-			fmt.Sprintf("created Quay organization %q", org.Spec.Name))
 
 	case getErr == nil && org.Status.Created:
 		// Org exists and this CR created it (owner marker present) → steady
@@ -167,27 +182,10 @@ func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger log
 		return r.succeed(ctx, logger, org, ReasonCreated,
 			fmt.Sprintf("reconciled Quay organization %q", org.Spec.Name))
 
-	case getErr == nil && org.Spec.Adopt:
-		// Org exists, this CR did not create it, but adoption was opted into →
-		// claim it. Mark Created false so the finalizer releases rather than
-		// deletes it (adoption is non-destructive).
-		org.Status.Created = false
-		return r.succeed(ctx, logger, org, ReasonAdopted,
-			fmt.Sprintf("adopted existing Quay organization %q", org.Spec.Name))
-
 	case getErr == nil:
-		// Org exists, unowned by this CR, and adoption was not opted into →
-		// Conflict. Refuse to write; this is a terminal state until the user
-		// sets spec.adopt, so do not return an error (no requeue storm). A spec
-		// change re-triggers reconcile.
-		message := fmt.Sprintf("Quay organization %q already exists and was not created by this resource; set spec.adopt to claim it", org.Spec.Name)
-		markNotReady(&org.Status.Conditions, ReasonConflict, message, org.Generation)
-		r.Recorder.Event(org, corev1.EventTypeWarning, ReasonConflict, message)
-		logger.Info("Organization conflict", "name", org.Spec.Name)
-		if err := r.updateStatus(ctx, org); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
+		// Org exists and this CR did not create it → adopt (if opted in) or
+		// Conflict.
+		return r.reconcileExistingUnowned(ctx, logger, org)
 
 	default:
 		// Any other Quay error (auth, server error): fail and requeue.
@@ -195,10 +193,39 @@ func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger log
 	}
 }
 
-// succeed stamps Ready/Programmed/Accepted true with the given reason+message,
-// emits a Normal event, and writes status.
+// reconcileExistingUnowned handles a Quay org that exists but was not created by
+// this CR: adopt it when spec.adopt is set (status.Created stays false so the
+// finalizer releases rather than deletes), otherwise refuse to write and set a
+// terminal Conflict condition (no requeue storm — a spec change re-triggers).
+func (r *OrganizationReconciler) reconcileExistingUnowned(ctx context.Context, logger logr.Logger, org *quayv1alpha1.Organization) (ctrl.Result, error) {
+	if org.Spec.Adopt {
+		org.Status.Created = false
+		return r.succeed(ctx, logger, org, ReasonAdopted,
+			fmt.Sprintf("adopted existing Quay organization %q", org.Spec.Name))
+	}
+
+	message := fmt.Sprintf("Quay organization %q already exists and was not created by this resource; set spec.adopt to claim it", org.Spec.Name)
+	if changed := setConflict(&org.Status.Conditions, message, org.Generation); changed {
+		r.Recorder.Event(org, corev1.EventTypeWarning, ReasonConflict, message)
+	}
+	logger.Info("Organization conflict", "name", org.Spec.Name)
+	if err := r.updateStatus(ctx, org); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}
+
+// succeed stamps Ready/Programmed/Accepted true with the given reason+message.
+// It emits a Normal event and writes status only when something actually changed
+// (a condition flipped or observedGeneration advanced), so a steady-state
+// reconcile of an unchanged resource does not write status — which would
+// otherwise re-enqueue the object and spin a reconcile/update/event loop.
 func (r *OrganizationReconciler) succeed(ctx context.Context, logger logr.Logger, org *quayv1alpha1.Organization, reason, message string) (ctrl.Result, error) {
-	markReady(&org.Status.Conditions, reason, message, org.Generation)
+	changed := markReady(&org.Status.Conditions, reason, message, org.Generation)
+	changed = changed || org.Status.ObservedGeneration != org.Generation
+	if !changed {
+		return ctrl.Result{}, nil
+	}
 	r.Recorder.Event(org, corev1.EventTypeNormal, reason, message)
 	logger.Info("reconciled Organization", "name", org.Spec.Name, "reason", reason)
 	if err := r.updateStatus(ctx, org); err != nil {
@@ -279,15 +306,36 @@ func (r *OrganizationReconciler) fail(ctx context.Context, org *quayv1alpha1.Org
 	return ctrl.Result{}, err
 }
 
-// updateStatus stamps observedGeneration and writes the status subresource. A
-// conflict (the CR changed under us) is ignored — the next reconcile recomputes
-// from the fresh object.
+// updateStatus stamps observedGeneration and writes the status subresource,
+// retrying on conflict. The retry is load-bearing for the ownership marker
+// (status.Created): a create side effect already happened in Quay, so the marker
+// MUST persist — silently dropping a conflicting write would lose it and let the
+// next reconcile mistake the org for foreign (and release rather than delete it).
+// On conflict it refetches the latest object and re-applies the computed status
+// (conditions, Created, observedGeneration) onto it before retrying. A NotFound
+// (the CR was deleted concurrently) is ignored — there is nothing left to update.
 func (r *OrganizationReconciler) updateStatus(ctx context.Context, org *quayv1alpha1.Organization) error {
 	org.Status.ObservedGeneration = org.Generation
-	if err := r.Status().Update(ctx, org); err != nil {
-		if apierrors.IsConflict(err) {
-			return nil
+	desired := org.Status.DeepCopy()
+
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if updateErr := r.Status().Update(ctx, org); updateErr != nil {
+			if apierrors.IsConflict(updateErr) {
+				// Refetch and re-apply the desired status onto the fresh object,
+				// then let RetryOnConflict try the update again.
+				if getErr := r.Get(ctx, client.ObjectKeyFromObject(org), org); getErr != nil {
+					return getErr
+				}
+				desired.DeepCopyInto(&org.Status)
+			}
+			return updateErr
 		}
+		return nil
+	})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
 		return fmt.Errorf("updating Organization status: %w", err)
 	}
 	return nil

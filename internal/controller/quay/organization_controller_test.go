@@ -314,6 +314,34 @@ func TestReconcileConflictWhenExistingOrgNotAdopted(t *testing.T) {
 	assertEvent(t, recorder, ReasonConflict)
 }
 
+func TestReconcileCreateRaceDoesNotClaimOwnership(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	// No adopt: the org does not exist at GET time, but another actor creates it
+	// before our POST, which then returns a conflict. We must NOT stamp ownership.
+	key := makeOrg(ctx, t, ns, "raced", "", false)
+
+	fake := newFakeOrgClient()        // GET returns 404...
+	fake.createRaceExisting = "raced" // ...but Create returns a conflict
+	r, _ := newReconciler(fake, ns)
+
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile should not error on a create-race conflict: %v", err)
+	}
+
+	org := getOrg(ctx, t, key)
+	if org.Status.Created {
+		t.Error("status.Created must be false after losing a create race — the org was not created by this CR")
+	}
+	// Without adopt, a raced-in org is a Conflict, not a silent claim.
+	if got := conditionReason(org, ConditionReady); got != ReasonConflict {
+		t.Errorf("Ready reason = %q, want %q", got, ReasonConflict)
+	}
+}
+
 func TestReconcileDeleteReleasesAdoptedOrgWithoutDeleting(t *testing.T) {
 	ctx := context.Background()
 	ns := makeNamespace(ctx, t)

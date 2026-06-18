@@ -23,9 +23,13 @@ type fakeOrgClient struct {
 	// getErr, when non-nil, is returned by GetOrganization regardless of the
 	// org's existence — used to simulate a non-404 Quay error (auth/server).
 	getErr error
-	// createErr, when non-nil, is returned by CreateOrganizationIfNotExists —
-	// used to simulate a Quay create failure.
+	// createErr, when non-nil, is returned by CreateOrganization — used to
+	// simulate a Quay create failure.
 	createErr error
+	// createRaceExisting, when non-empty, names an org that "appears" the moment
+	// CreateOrganization is called even though GetOrganization 404'd — used to
+	// simulate the create race where a duplicate (409 conflict) is returned.
+	createRaceExisting string
 	// deleteErr, when non-nil, is returned by DeleteOrganizationIfExists.
 	deleteErr error
 
@@ -58,6 +62,17 @@ func notFoundError(name string) error {
 	}
 }
 
+// conflictError builds an *APIError that quay.IsConflict recognizes, mirroring a
+// real already-exists response from Quay.
+func conflictError(name string) error {
+	return &quay.APIError{
+		StatusCode: http.StatusConflict,
+		Method:     http.MethodPost,
+		Path:       "/api/v1/organization/",
+		Message:    "organization " + name + " already exists",
+	}
+}
+
 func (f *fakeOrgClient) GetOrganization(ctx context.Context, name string) (*quay.Organization, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -71,12 +86,18 @@ func (f *fakeOrgClient) GetOrganization(ctx context.Context, name string) (*quay
 	return nil, notFoundError(name)
 }
 
-func (f *fakeOrgClient) CreateOrganizationIfNotExists(ctx context.Context, name, email string) error {
+func (f *fakeOrgClient) CreateOrganization(ctx context.Context, name, email string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("Create:" + name)
 	if f.createErr != nil {
 		return f.createErr
+	}
+	// Simulate a create race: the org "appeared" between GET and POST, so the
+	// create returns a conflict and does not mark it as created-by-this-call.
+	if f.createRaceExisting == name || f.existing[name] {
+		f.existing[name] = true
+		return conflictError(name)
 	}
 	f.existing[name] = true
 	return nil

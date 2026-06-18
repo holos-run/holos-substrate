@@ -86,7 +86,13 @@ controller-build: controller-fmt controller-vet ## Build the holos-controller bi
 # same invocation for a single test entrypoint.
 .PHONY: controller-test
 controller-test: controller-fmt controller-vet envtest-tool ## Run controller, API, and Quay client tests with the race detector.
-	KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
+	@set -e; \
+	assets="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)"; \
+	if [ -z "$$assets" ] || [ ! -x "$$assets/etcd" ]; then \
+		echo "ERROR: setup-envtest did not provision control-plane binaries (KUBEBUILDER_ASSETS would be empty); the envtest reconciler tests would silently skip." >&2; \
+		exit 1; \
+	fi; \
+	KUBEBUILDER_ASSETS="$$assets" \
 		go test -race ./api/... ./cmd/holos-controller/... ./internal/quay/... ./internal/controller/...
 
 # Image targets use buildx so the builder stage runs on the native host and the

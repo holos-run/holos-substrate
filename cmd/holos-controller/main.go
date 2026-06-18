@@ -11,10 +11,9 @@
 // it keeps the manager legible to the kubebuilder toolchain. Fisk is for the
 // user-facing CLI, not the manager process.
 //
-// This phase (HOL-1309) is a scaffold: the manager starts, serves health and
-// Prometheus metrics endpoints, and registers the scheme, but carries no
-// reconcile logic. The Organization and Repository reconcilers are wired in
-// later phases (HOL-1311, HOL-1312).
+// The manager starts, serves health and Prometheus metrics endpoints, registers
+// the scheme, and runs the Organization reconciler (HOL-1311). The Repository
+// reconciler is wired in a later phase (HOL-1312).
 package main
 
 import (
