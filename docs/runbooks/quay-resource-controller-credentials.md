@@ -340,6 +340,16 @@ the [Holos Controller runbook](holos-controller.md) for the consumer-side wiring
 This procedure is the record of how that bootstrap credential was first produced,
 exactly as ADR-18 anticipates.
 
+**Next step — provision the `my-project` sample.** With the credential Secret in
+place (and after `scripts/local-ca`), run
+[`scripts/apply-my-project`](../../scripts/apply-my-project) to apply the
+`my-project` Namespace + `quay.holos.run` Organization. That script injects the
+local-ca PEM as the Organization's `caBundle` so the controller trusts the
+in-cluster Quay's mkcert-signed serving certificate via the resource's `caBundle`
+([ADR-19](../adr/ADR-19.md)) rather than the controller pod's system trust store.
+The bring-up ordering and the `caBundle` TLS-trust note are documented in the
+[Holos Controller runbook → Cluster bring-up](holos-controller.md#cluster-bring-up--provisioning-the-my-project-sample).
+
 ## See also
 
 - [ADR-15 — Quay↔Keycloak OIDC SSO](../adr/ADR-15.md) — the decision record

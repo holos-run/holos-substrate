@@ -174,9 +174,11 @@ OIDC backend disables the local `admin` user and the headless
 mint a first token (the `/api/v1/superuser/*` APIs still answer an authenticated
 `SUPER_USERS` member's OAuth token — see
 [Verify superuser access](#verify-superuser-access)).
-In-cluster Quay data-plane provisioning (orgs, repos, robots, webhooks) is
-**deferred to a future Quay Resource Controller**; until it ships, an operator
-mints the controller's OAuth-Application credential by hand — see the
+In-cluster Quay org/repo/webhook provisioning is reconciled by the shipped Holos
+Controller (ADR-18) from the `quay.holos.run` CRDs (ADR-19); the robots and
+pull-credential Secrets stay manual (ADR-19 *Out of scope*). The controller
+**consumes** a superuser OAuth-Application credential an operator mints by hand —
+see the
 [Quay Resource Controller credentials runbook](quay-resource-controller-credentials.md).
 
 ### Retrieve a superuser password

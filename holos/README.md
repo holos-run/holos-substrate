@@ -383,13 +383,16 @@ both seeded by the keycloak phase (HOL-1294) with passwords generated once at
 runtime into Secrets of the same name in the `keycloak` namespace (key
 `password`), never committed.
 
-In-cluster Quay data-plane provisioning — the `holos`/project organizations,
-repositories, robot accounts, and `repo_push` webhooks — is **deferred to a
-future Quay Resource Controller** (HOL-1293). The removed Database-backend
+In-cluster Quay data-plane provisioning splits in two. The **organizations,
+repositories, and `repo_push` webhooks** are reconciled by the shipped Holos
+Controller ([ADR-18](../docs/adr/ADR-18.md)) from the `quay.holos.run`
+Organization/Repository CRDs ([ADR-19](../docs/adr/ADR-19.md), `Implemented`); the
+**robot accounts** and the Argo CD/Kargo pull-credential Secrets are not modeled
+by those CRDs (ADR-19 *Out of scope*) and stay manual. The removed Database-backend
 bootstrap (the `quay-admin-bootstrap` Job, the `quay-initial-admin` superuser
-token, and the `scripts/quay-init`/`scripts/quay-reset` helpers) no longer
-exists. Until the controller ships, an operator mints the controller's
-OAuth-Application credential by hand; see the
+token, and the `scripts/quay-init`/`scripts/quay-reset` helpers) no longer exists.
+The controller **consumes** a superuser OAuth-Application credential an operator
+mints by hand; see the
 [Quay Resource Controller credentials runbook](../docs/runbooks/quay-resource-controller-credentials.md).
 
 ### Quay OIDC SSO and roles
@@ -446,9 +449,9 @@ essentials:
 
 Two checks prove the registry behaviors the platform depends on; re-run them
 after any Quay change. Both assume the registry is reachable and the
-`holos/sample` org/repo exists. Because Quay data-plane provisioning is
-**deferred to a future Quay Resource Controller** (above), create that org/repo
-by hand first — sign in via "Holos SSO" as `svc-quay-resource-controller` or
+`holos/sample` org/repo exists. The `holos/sample` org/repo is **not** one the
+Holos Controller reconciles (no Organization/Repository CR targets it), so create
+it by hand first — sign in via "Holos SSO" as `svc-quay-resource-controller` or
 `quay-admin` and push to `holos/sample` per
 [Verify Quay](../docs/local-cluster.md#verify-quay), using a superuser
 OAuth-Application token minted per the
@@ -618,8 +621,8 @@ proves the path end to end with a throwaway artifact and Application;
 re-run it after any change to the argocd or quay components, or to the
 `quay-holos-localhost` ServiceEntry. It assumes a push-capable robot
 credential and the `holos/sample` org/repo exist (see
-[Quay credentials and data-plane provisioning](#quay-credentials-and-data-plane-provisioning),
-whose provisioning is deferred to a future Quay Resource Controller) and the
+[Quay credentials and data-plane provisioning](#quay-credentials-and-data-plane-provisioning);
+the robot and `holos/sample` org/repo are provisioned by hand) and the
 [`oras`](https://oras.land/) CLI is installed. Nothing here is committed:
 the artifact is pushed imperatively, so a committed Application would
 leave a fresh bootstrap perpetually Degraded (see the
@@ -847,31 +850,50 @@ a future self-service `ProjectRequest` (below). Its rendered resources are:
   and its receiver Secret), a `Warehouse` that watches the `my-project-config`
   OCI artifact, and the `project-config` `Stage` whose `argocd-update` step
   patches the Application's source to each discovered Freight digest.
+- a **`quay.holos.run/v1alpha1` `Organization`** (`my-project`, in the
+  `my-project` namespace) — emitted as of HOL-1322 with `spec.adopt: false`,
+  `spec.credentialsSecretRef.name: holos-controller-quay-creds`, and a gated
+  `spec.caBundle` carrying the per-cluster local-ca trust anchor. The shipped
+  Holos Controller ([ADR-18](../docs/adr/ADR-18.md)/[ADR-19](../docs/adr/ADR-19.md))
+  reconciles it into the in-cluster Quay org, trusting Quay's mkcert-signed
+  serving cert via that `caBundle` rather than the controller pod's system trust
+  store. The `caBundle` is injected at apply time (see *the separate apply step*
+  below), so the committed `holos/deploy/` manifest carries **no** CA material.
 - the **Kargo webhook receiver token bootstrap**: a `Job`
   (`my-project-quay-webhook-bootstrap`, in the `my-project` namespace) that
-  generates the Kargo receiver Secret's shared token. The **Quay-side** data
-  plane this scaffold needs — the `my-project` Quay org, the
-  `my-project/my-project-config` repository, the Argo CD pull-robot/repository
-  Secret in `argocd`, and the `repo_push` webhook **registration** that POSTs to
-  the Warehouse's Kargo receiver URL — is **deferred to a future Quay Resource
-  Controller** (HOL-1293). The earlier `my-project-quay-bootstrap` Job that
-  provisioned it (authenticating with the removed `quay-initial-admin` admin
-  token) no longer exists; only the Kargo-side receiver token Job above remains
-  (it needs no Quay admin token). Until the controller ships, a push will not
-  trigger Freight discovery until the org/repo/webhook are provisioned by hand.
+  generates the Kargo receiver Secret's shared token. The remaining **Quay-side**
+  data plane this scaffold needs — the `my-project/my-project-config`
+  **repository** (the `quay.holos.run` Repository CR is reconciled by the
+  controller but is **not** emitted by this component yet — only the Organization
+  is), the Argo CD pull-robot/repository Secret in `argocd`, and the `repo_push`
+  webhook **registration** that POSTs to the Warehouse's Kargo receiver URL — is
+  **not** emitted by the component (the robots/pull Secrets are out of scope for
+  the `v1alpha1` CRDs, ADR-19). The earlier `my-project-quay-bootstrap` Job that
+  provisioned all of it (authenticating with the removed `quay-initial-admin`
+  admin token) no longer exists; only the Kargo-side receiver token Job above
+  remains (it needs no Quay admin token). A push will not trigger Freight
+  discovery until the repo/robot/webhook are provisioned by hand.
 
-**Where it sits in the apply order.** `scripts/apply` applies `my-project`
-**last** in its `COMPONENTS` array, after `quay`, `argocd`, `kargo-crds`,
-`kargo`, and the `kargo-*-echo` pipeline: the Argo CD and Kargo CRDs and
-controllers must be established before its `argoproj.io`/`kargo.akuity.io`
-custom resources. `pre_my_project` deletes the prior
-`my-project-quay-webhook-bootstrap` Job so each apply re-runs it idempotently
-(and prunes the retired `my-project-quay-bootstrap` Job/RBAC on upgraded
-clusters), and `wait_my_project` gates that token Job's completion plus the
-Kargo Project's adoption of the `my-project` namespace. The Application stays
-`Unknown`/`Missing` until the first `my-project-config` artifact is published
-**and** the Quay org/repo are provisioned (deferred to the future Quay Resource
-Controller) — expected scaffolding.
+**The separate apply step — `scripts/apply-my-project`.** As of HOL-1322,
+`my-project` is **deliberately removed from the master `scripts/apply`** and is
+applied by the dedicated [`scripts/apply-my-project`](../scripts/apply-my-project)
+instead. That script reads the local-ca PEM (the `cert-manager/local-ca` Secret,
+or `$(mkcert -CAROOT)/rootCA.pem`), renders the platform with it injected via the
+`ca_bundle_pem` CUE tag (the `scripts/publish` `--inject` pattern), and applies
+the `my-project` Namespace + the rendered component (Organization, Argo CD
+AppProject/Application, the Kargo control plane, and the webhook-token bootstrap)
+with `kubectl apply --server-side`. It runs **after** `scripts/local-ca` and
+**after** the manual Quay superuser-credential setup
+(`scripts/apply-svc-quay-resource-controller-creds` plus the `platform-automation`
+org / OAuth token per the runbooks) — the Argo CD and Kargo CRDs and controllers
+and the Holos Controller must be established first, and the Organization's
+`credentialsSecretRef` resolves the `holos-controller-quay-creds` Secret. The
+script deletes the prior `my-project-quay-webhook-bootstrap` Job so each run
+re-generates the token idempotently, and gates that Job's completion, the Kargo
+Project's adoption of the `my-project` namespace, and the Organization reaching
+Ready. The Application stays `Unknown`/`Missing` until the first
+`my-project-config` artifact is published **and** the Quay repo is provisioned by
+hand — expected scaffolding.
 
 **Toward self-service `ProjectRequest`.** Everything above is what a future
 self-service `ProjectRequest` API would generate per tenant: a namespace, a
