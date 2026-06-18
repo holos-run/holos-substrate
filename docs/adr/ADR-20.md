@@ -29,9 +29,9 @@ needs to self-service. Concretely, four concepts:
 3. **Realm Roles** and the realm-role → client-role mapping (so a broad realm
    role like "core services developer" maps onto a service-scoped client role
    like "my-app editor"); and
-4. **Group creation and membership** under a custodian-managed model, so that
-   authenticating against a given OIDC client auto-assigns the right client
-   roles.
+4. **Group creation and membership** under a custodian-managed model, so that a
+   group member holds the right client roles and authenticating against a given
+   OIDC client carries those already-assigned roles into the client's token.
 
 Today the `holos` realm — its clients, roles, groups, default group membership,
 and protocol mappers — is **fully declarative but platform-owned**: it is
@@ -288,12 +288,17 @@ foreign object. Two mechanisms are therefore **required** before the disjointnes
 claim holds (their exact form is an open question below, but the *requirement* is
 fixed here):
 
-- **Reserved platform names.** The platform-owned identifiers
-  (`argocd`/`quay`/`kargo` clients; `platform-owner`/`platform-editor`/
-  `platform-viewer` realm roles; the `authenticated` group; the superuser users)
-  are reserved — a CR targeting one is rejected (`Ready=False reason: Reserved`),
-  never reconciled. This is what actually keeps the controller off config-cli's
-  objects; no-delete is necessary but not sufficient.
+- **Reserved platform names.** The platform-owned identifiers are reserved — a CR
+  targeting one is rejected (`Ready=False reason: Reserved`), never reconciled.
+  The reserved set must be keyed on the **actual** realm identifiers the CRDs
+  match against, not their colloquial component names: the platform **client IDs**
+  are `argocd`, `kargo`, and Quay's real `clientId` `https://quay.holos.localhost`
+  (plus the legacy disabled `quay` client ID) — reserving the display string
+  `quay` alone would miss the real Quay client and leave a bypass. Likewise the
+  `platform-owner`/`platform-editor`/`platform-viewer` realm roles, the
+  `authenticated` group, and the superuser usernames are reserved. This is what
+  actually keeps the controller off config-cli's objects; no-delete is necessary
+  but not sufficient.
 - **An ownership/claim model across tenants**, mirroring [ADR-19](ADR-19.md)'s
   Organization claim: the controller stamps a durable owner record on each realm
   object it creates (the claiming CR's namespace/name); on reconcile it acts only
