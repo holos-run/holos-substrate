@@ -1,0 +1,82 @@
+# Makefile.controller — isolated targets for the holos-controller service
+# (ADR-18, HOL-1309). Included from the root Makefile.
+#
+# Every target here is namespaced controller-* so it never collides with the
+# existing holos-paas targets (build, test, docker-build, publish, ...) and does
+# not touch scripts/apply, scripts/render, or scripts/publish. controller-gen
+# and kustomize are pinned and installed under bin/, the standard kubebuilder
+# convention, so generation is reproducible without a system-wide install.
+
+# Container image coordinates for the controller. Defaults target the local k3d
+# in-cluster registry so a pushed image is pullable by the cluster (mirrors the
+# holos-paas IMAGE_* defaults in the root Makefile).
+CONTROLLER_IMAGE_REPO ?= quay.holos.localhost/holos/holos-controller
+CONTROLLER_IMAGE_TAG  ?= dev
+CONTROLLER_IMAGE      ?= $(CONTROLLER_IMAGE_REPO):$(CONTROLLER_IMAGE_TAG)
+CONTROLLER_PLATFORM   ?= linux/arm64
+
+# Pinned tool versions and locations. bin/ is gitignored (root .gitignore /bin/).
+LOCALBIN ?= $(CURDIR)/bin
+CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
+KUSTOMIZE      ?= $(LOCALBIN)/kustomize
+CONTROLLER_GEN_VERSION ?= v0.20.1
+KUSTOMIZE_VERSION      ?= v5.6.0
+
+# CRD generation options: shared across deepcopy + manifests.
+CRD_OPTIONS ?= crd:generateEmbeddedObjectMeta=true
+
+$(LOCALBIN):
+	mkdir -p $(LOCALBIN)
+
+# The tool targets are .PHONY (not file targets) so the version check runs on
+# every invocation: a file target named $(CONTROLLER_GEN) would be considered
+# up to date whenever bin/controller-gen exists — even at the wrong version —
+# and Make would never re-run the check. As phony recipes they always compare
+# the installed version against the pin and reinstall on mismatch.
+.PHONY: controller-gen-tool
+controller-gen-tool: | $(LOCALBIN) ## Install controller-gen under bin/ at the pinned version.
+	@test -x $(CONTROLLER_GEN) && [ "$$($(CONTROLLER_GEN) --version 2>/dev/null | awk '{print $$2}')" = "$(CONTROLLER_GEN_VERSION)" ] || \
+		GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
+
+.PHONY: kustomize-tool
+kustomize-tool: | $(LOCALBIN) ## Install kustomize under bin/ at the pinned version.
+	@test -x $(KUSTOMIZE) && [ "v$$($(KUSTOMIZE) version 2>/dev/null | sed -E 's/^v?([0-9.]+).*/\1/')" = "$(KUSTOMIZE_VERSION)" ] || \
+		GOBIN=$(LOCALBIN) go install sigs.k8s.io/kustomize/kustomize/v5@$(KUSTOMIZE_VERSION)
+
+.PHONY: controller-generate
+controller-generate: controller-gen-tool ## Generate deepcopy methods (zz_generated.deepcopy.go).
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/..."
+
+.PHONY: controller-manifests
+controller-manifests: controller-gen-tool ## Generate CRD manifests and RBAC under config/.
+	$(CONTROLLER_GEN) $(CRD_OPTIONS) rbac:roleName=holos-controller-manager-role \
+		paths="./api/..." paths="./cmd/holos-controller/..." \
+		output:crd:artifacts:config=config/crd/bases \
+		output:rbac:artifacts:config=config/rbac
+
+.PHONY: controller-fmt
+controller-fmt: ## Run go fmt against the controller and API sources.
+	go fmt ./cmd/holos-controller/... ./api/...
+
+.PHONY: controller-vet
+controller-vet: ## Run go vet against the controller and API sources.
+	go vet ./cmd/holos-controller/... ./api/...
+
+.PHONY: controller-build
+controller-build: controller-fmt controller-vet ## Build the holos-controller binary.
+	go build -o bin/holos-controller ./cmd/holos-controller
+
+.PHONY: controller-test
+controller-test: controller-fmt controller-vet ## Run controller and API tests with the race detector.
+	go test -race ./api/... ./cmd/holos-controller/...
+
+# Image targets use buildx so the builder stage runs on the native host and the
+# Go toolchain cross-compiles to $(CONTROLLER_PLATFORM) — mirrors the holos-paas
+# docker-build/docker-push pattern but with the controller Dockerfile.
+.PHONY: controller-docker-build
+controller-docker-build: ## Build the controller image for $(CONTROLLER_PLATFORM) tagged $(CONTROLLER_IMAGE).
+	docker buildx build --platform $(CONTROLLER_PLATFORM) -f Dockerfile.controller -t $(CONTROLLER_IMAGE) --load .
+
+.PHONY: controller-docker-push
+controller-docker-push: ## Build for $(CONTROLLER_PLATFORM) and push $(CONTROLLER_IMAGE) to the registry.
+	docker buildx build --platform $(CONTROLLER_PLATFORM) -f Dockerfile.controller -t $(CONTROLLER_IMAGE) --push .

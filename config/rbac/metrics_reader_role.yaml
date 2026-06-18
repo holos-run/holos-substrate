@@ -1,0 +1,16 @@
+# A ClusterRole that grants permission to scrape the /metrics endpoint when the
+# manager runs with --metrics-secure. Bind it to whatever identity (e.g. a
+# Prometheus service account) should be allowed to scrape; the manager's
+# WithAuthenticationAndAuthorization filter checks this via SubjectAccessReview.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: holos-controller-metrics-reader
+  labels:
+    app.kubernetes.io/name: holos-controller
+    app.kubernetes.io/managed-by: kustomize
+rules:
+  - nonResourceURLs:
+      - /metrics
+    verbs:
+      - get

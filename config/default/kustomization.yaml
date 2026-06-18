@@ -1,0 +1,11 @@
+# The default kustomization composes the full holos-controller deployment: the
+# manager Deployment + namespace, the CRDs, and RBAC. The deployment manifest
+# and metrics/webhook wiring are fleshed out in HOL-1313; this is the scaffold
+# aggregator.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: holos-controller
+resources:
+  - ../crd
+  - ../rbac
+  - ../manager

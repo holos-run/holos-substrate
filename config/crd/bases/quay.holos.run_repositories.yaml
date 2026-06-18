@@ -1,0 +1,244 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: repositories.quay.holos.run
+spec:
+  group: quay.holos.run
+  names:
+    categories:
+    - holos
+    - quay
+    kind: Repository
+    listKind: RepositoryList
+    plural: repositories
+    singular: repository
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.organizationRef
+      name: Org
+      type: string
+    - jsonPath: .spec.name
+      name: Repo
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Repository is the Schema for the repositories API. It is a single repository
+          within an owning Organization in the in-cluster Quay registry (ADR-19).
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              RepositorySpec defines the desired state of a Quay Repository within an owning
+              Organization. As with Organization, the spec's only external coupling is the
+              Quay credential in CredentialsSecretRef plus the optional webhook URL — never
+              a Kargo/Argo CD type import (AC #7).
+
+              Scope note (HOL-1309, the scaffold phase): the webhook is modeled as the
+              HOL-1309-prescribed RepositoryWebhook with a mutually-exclusive inline url or
+              urlSecretRef (AC #8) — deliberately decoupled from Kargo. ADR-19's
+              illustrative pushWebhook.kargoProjectConfigRef form (reading the receiver URL
+              from a ProjectConfig.status) would import a Kargo coupling into the API group,
+              which AC #7 forbids; the reconciler instead resolves the receiver URL at
+              runtime and the CR carries it via urlSecretRef. ADR-19's retention and
+              robot-credential fields are likewise deferred to the reconciler/ADR phases
+              (HOL-1312, HOL-1314). New fields are additive, so deferring them is not an API
+              break.
+            properties:
+              credentialsSecretRef:
+                default:
+                  name: holos-controller-quay-creds
+                description: |-
+                  CredentialsSecretRef names the Secret holding the Quay superuser OAuth
+                  Application credential the reconciler authenticates to Quay with. A
+                  Secret named holos-controller-quay-creds in the holos-controller
+                  namespace is the suggested convention, and the field defaults to that
+                  name when omitted. The Secret carries the Quay API URL and token (keys
+                  url, token, optional username). This is the resource's only
+                  authentication dependency (AC #7) and is distinct from the webhook
+                  urlSecretRef; its material is created at runtime and never committed
+                  (secret-handling guardrail).
+                properties:
+                  key:
+                    description: |-
+                      Key within the Secret to read the credential from. The Secret carries
+                      the Quay API URL and token under keys url, token, and an optional
+                      username; key narrows resolution to a specific entry when set. When
+                      omitted the controller reads the conventional url/token/username keys.
+                    type: string
+                  name:
+                    default: holos-controller-quay-creds
+                    description: |-
+                      Name of the Secret holding the Quay superuser OAuth credential. When
+                      omitted it defaults to holos-controller-quay-creds, resolved in the
+                      controller's holos-controller namespace.
+                    type: string
+                type: object
+              description:
+                description: Description is an optional human-friendly repository
+                  description.
+                type: string
+              name:
+                description: Name is the repository name within the organization.
+                minLength: 1
+                type: string
+              organizationRef:
+                description: |-
+                  OrganizationRef is the name of the owning Organization CR (and, through
+                  it, the Quay organization) this repository is created within. The full
+                  Quay path is <organization>/<name>.
+                minLength: 1
+                type: string
+              visibility:
+                default: private
+                description: Visibility is the repository visibility, public or private.
+                enum:
+                - public
+                - private
+                type: string
+              webhook:
+                description: Webhook optionally configures a repo_push webhook on
+                  the repository.
+                properties:
+                  url:
+                    description: |-
+                      Url is the inline webhook target URL. Mutually exclusive with
+                      UrlSecretRef; set exactly one. Must be non-empty when present so an
+                      empty string is rejected at admission rather than failing later during
+                      Quay webhook registration.
+                    minLength: 1
+                    type: string
+                  urlSecretRef:
+                    description: |-
+                      UrlSecretRef points at a Secret in the resource's namespace holding the
+                      webhook target URL. Use it when the URL is hard-to-guess (e.g. the Kargo
+                      receiver URL) and must not be committed. Mutually exclusive with Url; set
+                      exactly one.
+                    properties:
+                      key:
+                        description: Key within the Secret holding the URL value.
+                        minLength: 1
+                        type: string
+                      name:
+                        description: Name of the Secret in the resource's namespace.
+                        minLength: 1
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                type: object
+                x-kubernetes-validations:
+                - message: exactly one of url or urlSecretRef must be set
+                  rule: '(has(self.url) ? 1 : 0) + (has(self.urlSecretRef) ? 1 : 0)
+                    == 1'
+            required:
+            - name
+            - organizationRef
+            type: object
+          status:
+            description: |-
+              RepositoryStatus defines the observed state of a Repository, following the
+              same Gateway-API status convention as Organization.
+            properties:
+              conditions:
+                description: |-
+                  Conditions represent the latest available observations of the
+                  repository's state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the most recent generation observed for this
+                  Repository by the controller.
+                format: int64
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

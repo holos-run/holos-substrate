@@ -1,0 +1,7 @@
+# This kustomization aggregates the generated CRD bases. CRD patches
+# (conversion webhooks, etc.) are added in later phases as needed.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - bases/quay.holos.run_organizations.yaml
+  - bases/quay.holos.run_repositories.yaml

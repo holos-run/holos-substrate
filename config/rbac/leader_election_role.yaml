@@ -1,0 +1,29 @@
+# Permissions to perform leader election. Conventional kubebuilder scaffold.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: holos-controller-leader-election-role
+  namespace: holos-controller
+  labels:
+    app.kubernetes.io/name: holos-controller
+    app.kubernetes.io/managed-by: kustomize
+rules:
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
