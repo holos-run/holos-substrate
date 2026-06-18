@@ -4,13 +4,14 @@
 | -------- | ----------------------- |
 | Date     | 2026-06-17              |
 | Author   | @jeffmccune             |
-| Status   | `Proposed`              |
+| Status   | `Partially Implemented` |
 | Tags     | controller, api, gitops |
 | Updates  | ADR-12, ADR-15          |
 
 | Revision | Date       | Author      | Info           |
 | -------- | ---------- | ----------- | -------------- |
 | 1        | 2026-06-17 | @jeffmccune | Initial design |
+| 2        | 2026-06-18 | @jeffmccune | The controller shipped (`holos-controller`, HOL-1309..HOL-1313) with its first API group `quay.holos.run` ([ADR-19](ADR-19.md), now `Implemented`). Record the **AC #7 API-group dependency boundary** (authoritative per HOL-1308 AC #10, refining the GitOps framing below): the `quay.holos.run` **API group / CRs** take **no dependency on Kargo or Argo CD** (only the Quay API + the credential `secretRef`), while the **controller binary may**. Confirm the install namespace remains `holos-controller` (no `quay-resource-controller` namespace anywhere) and that the Organization does not inline repositories (AC #9). Status `Proposed` → `Partially Implemented` (Quay group shipped; Keycloak group ADR-20 still proposed) |
 
 ## Context and Problem Statement
 
@@ -25,10 +26,13 @@ project's behalf — Quay organizations, repositories, robots, and webhooks;
 Keycloak clients, roles, and groups. Today those gaps are filled by manual,
 imperative procedures: an operator signs in and clicks through a UI, or runs a
 documented one-off bootstrap. The clearest example is the Quay data plane, whose
-provisioning is currently **deferred to a "future Quay Resource Controller"** and
-performed by hand against a manually-minted superuser credential
-([ADR-15](ADR-15.md) Revisions 4–5;
+provisioning was, at the time this ADR was written, **deferred to a "future Quay
+Resource Controller"** and performed by hand against a manually-minted superuser
+credential ([ADR-15](ADR-15.md) Revisions 4–5;
 [Quay Resource Controller credentials runbook](../runbooks/quay-resource-controller-credentials.md)).
+This ADR's controller — now shipped (Revision 2) — is that "future Quay Resource
+Controller"; the Quay org/repo/webhook surface it reconciles is described below
+and specified in [ADR-19](ADR-19.md).
 
 Two questions follow. First, **what supplies the missing Kubernetes-native
 APIs** so that platform capabilities the upstream operators do not cover are
@@ -69,8 +73,11 @@ and that the later, more detailed ADRs build on.
   rendered-manifest GitOps model that ADR-16's pipeline operates within, and the
   controller supplies the CRDs those rendered manifests reference.
 - [Quay Resource Controller credentials runbook](../runbooks/quay-resource-controller-credentials.md):
-  the manual OAuth-Application credential procedure that stands in until this
-  controller ships. The controller automates what the runbook does by hand.
+  the manual OAuth-Application credential procedure. The shipped controller
+  automates the **org/repo/webhook** provisioning the runbook performed by hand,
+  but still **consumes** the superuser credential the runbook mints (read from the
+  `holos-controller-quay-creds` Secret in `holos-controller`), so the credential
+  mint itself stays a manual step by design.
 - Forward references (later phases, detailed specifications):
   [**ADR-19**](ADR-19.md) — the Quay API group (`quay.holos.run`) Organization
   and Repository CRDs; [**ADR-20**](ADR-20.md) — the Keycloak API group CRDs
@@ -89,10 +96,12 @@ platform capabilities those operators do not cover become first-class
 Kubernetes-native APIs rather than manual procedures. Concretely, the gaps it
 closes are:
 
-- **Quay data plane** — organizations and repositories (and, in later phases,
-  the robots and `repo_push` webhooks a project needs). The upstream Quay
-  operator deploys and manages Quay itself but offers no CRD for these
-  tenant-facing objects.
+- **Quay data plane** — organizations and repositories (with an optional
+  `repo_push` webhook on a repository). The upstream Quay operator deploys and
+  manages Quay itself but offers no CRD for these tenant-facing objects. The
+  shipped `quay.holos.run` group ([ADR-19](ADR-19.md)) models an **Organization**
+  and a **Repository**; **repositories are provisioned only via the Repository
+  resource — the Organization never inlines them** (AC #9).
 - **Keycloak data plane** — clients, roles, and groups. The upstream Keycloak
   operator and the declarative `keycloak-config-cli` reconciliation manage the
   **platform's own** realm configuration today
@@ -122,6 +131,30 @@ schemas — is deliberate. The schemas are detailed design that belongs in the
 per-group ADRs (ADR-19, ADR-20); this ADR fixes the decisions those ADRs depend
 on: that there **is** a controller, where it runs, what it is for, and the
 API-group naming convention.
+
+### API-group dependency boundary (AC #7, Revision 2)
+
+The Holos PaaS parent issue's acceptance criteria are authoritative
+(HOL-1308 AC #10), and AC #7 refines this ADR's GitOps framing with a structural
+rule that the shipped controller observes:
+
+- **The controller's API groups (`api/<group>/...`) take no dependency on Kargo
+  or Argo CD.** For the first group, `quay.holos.run` (specified in
+  [ADR-19](ADR-19.md)), the custom resources depend **only** on the Quay API —
+  reached through a credential `secretRef` — and never `import` a Kargo
+  `ProjectConfig`, an Argo CD `Application`, or any Quay/Kargo/Argo CD Go type.
+  A resource that must carry a pipeline value (e.g. Kargo's hard-to-guess
+  `repo_push` webhook receiver URL) takes it as **data** — an inline value or a
+  `secretRef` — not as a typed reference to a pipeline object.
+- **The controller *binary* may depend on Kargo/Argo CD** if a future need
+  arises; that dependency lives in `cmd/holos-controller` / `internal/controller`,
+  never in the `api/` packages.
+
+This keeps the API packages extractable into their own module (per
+[ADR-12](ADR-12.md)) and the data-plane CRs legible independent of the delivery
+pipeline. It **refines** the "rendered manifests reference the controller's CRDs,
+Kargo/Argo CD deliver them" framing below: the delivery pipeline operates *around*
+the CRs (rendering and syncing them); the CR **types** stay decoupled from it.
 
 ### Delivery: the GitOps rendered-manifest pattern
 
@@ -188,6 +221,14 @@ controller ships, and the controller is what closes it.
    specified in ADR-19); the Keycloak group (clients, roles, groups) follows in
    ADR-20. This ADR names the controller and the convention; it does **not**
    specify the CRD schemas.
+   - **API-group dependency boundary (AC #7, Revision 2).** Each controller API
+     group (`api/<group>/...`) imports **no** Kargo or Argo CD types — the
+     `quay.holos.run` CRs depend only on the Quay API (via a credential
+     `secretRef`) and carry any pipeline value (e.g. a Kargo webhook URL) as
+     data. The controller **binary** may depend on Kargo/Argo CD; the `api/`
+     packages must not.
+   - **Repositories only via the Repository resource (AC #9).** The Organization
+     resource never inlines repository creation.
 3. **The developer experience is delivered via the GitOps rendered-manifest
    pattern, to start:** Holos renders CUE collections to manifests, Argo CD syncs
    them (via the [ADR-16](ADR-16.md) pipeline), and the controller's CRDs —
@@ -199,9 +240,13 @@ controller ships, and the controller is what closes it.
    by-hand provisioning becomes reconciled `quay.holos.run` resources, and the
    manually-minted OAuth-Application credential becomes the controller's
    service-account credential.
-5. **This is a design record only — no code is written in this phase.** The CRD
-   schemas (ADR-19, ADR-20) and the Project/Application component model (ADR-21)
-   are later phases that build on these decisions.
+5. **The system-design decisions above were the original phase's scope; the
+   controller has since shipped (Revision 2).** This ADR fixed the controller,
+   its namespace, and the API-group convention without specifying CRD schemas.
+   The first group's schemas (ADR-19) are now `Implemented` (the controller
+   shipped across HOL-1309..HOL-1313); the Keycloak group (ADR-20) and the
+   Project/Application component model (ADR-21) remain later phases that build on
+   these decisions.
 
 ## Consequences
 
@@ -216,13 +261,15 @@ controller ships, and the controller is what closes it.
   OAuth-Application credential the runbook currently mints by hand, carrying the
   Revision-5 `FEATURE_SUPERUSERS_FULL_ACCESS` reach — see ADR-15 Revisions 4–5).
   The specific permission sets are detailed in the per-group ADRs.
-- **The manual stop-gap is retired once the controller ships.** Until then,
-  [ADR-15](ADR-15.md) Revisions 4–5 and the
-  [credentials runbook](../runbooks/quay-resource-controller-credentials.md)
-  remain the operative procedure; afterward, the by-hand steps are replaced by
-  reconciled resources, and the runbook becomes the historical record of the
-  interim. Operators trade a documented manual procedure for a controller they
-  must keep healthy.
+- **The manual stop-gap is retired now the controller has shipped (Revision 2)** —
+  for the **org/repo/webhook** data plane. [ADR-15](ADR-15.md) Revisions 4–5 and
+  the [credentials runbook](../runbooks/quay-resource-controller-credentials.md)
+  become the historical record for those by-hand steps, which are now reconciled
+  `quay.holos.run` resources ([ADR-19](ADR-19.md)). The runbook stays operative
+  for the parts the controller does **not** automate: minting the superuser
+  credential the controller consumes, and (until later phases) the robots and
+  pull-credential Secrets. Operators trade most of the documented manual procedure
+  for a controller they must keep healthy.
 - **The KRM-native principle is reinforced.** Closing these gaps with CRDs plus a
   reconciler — rather than expanding the set of manual runbooks — keeps the
   platform's capabilities expressible and auditable through the Kubernetes API
