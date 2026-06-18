@@ -1,6 +1,8 @@
 package holos
 
 import (
+	"encoding/base64"
+
 	kargowarehouse "kargo.akuity.io/warehouse/v1alpha1"
 	kargostage "kargo.akuity.io/stage/v1alpha1"
 )
@@ -180,6 +182,54 @@ let APPLICATION_RESOURCE = {
 			// The my-project namespace is registered centrally and applied by
 			// the namespaces component, so Argo CD must not try to create it.
 			syncOptions: ["CreateNamespace=false"]
+		}
+	}
+}
+
+// --- Quay data plane (HOL-1322) ---------------------------------------------
+
+// ORGANIZATION_RESOURCE is the quay.holos.run/v1alpha1 Organization the shipped
+// Holos Controller (ADR-18/ADR-19) reconciles into the in-cluster Quay registry:
+// it creates (does not adopt — spec.adopt: false) the my-project org so the
+// my-project-config repo the delivery loop publishes to has a home.  The
+// controller authenticates with the superuser OAuth credential in the
+// holos-controller-quay-creds Secret (spec.credentialsSecretRef.name, the
+// resolver's default; named explicitly here to match the HOL-1319 worked
+// example) resolved from the controller's own namespace.
+//
+// spec.caBundle carries the per-cluster local-ca certificate so the controller
+// trusts Quay's mkcert-signed serving certificate (HOL-1319/HOL-1320): the
+// in-cluster registry serves *.holos.localhost with a cert not in the
+// controller pod's system trust store, so without this anchor the reconciler
+// fails Quay TLS verification with x509: certificate signed by unknown
+// authority.  The PEM arrives via the _CABundlePEM CUE tag (holos/tags.cue),
+// injected at apply time by scripts/apply-my-project; the field is base64-encoded
+// with encoding/base64 to satisfy the caBundle []byte/base64 serialization
+// (api/quay/v1alpha1).
+//
+// The field is GATED on a non-empty tag: when _CABundlePEM is "" (the default,
+// e.g. during `holos render platform` and scripts/render's clean-tree gate)
+// spec.caBundle is omitted entirely, so the committed holos/deploy/ tree carries
+// no per-cluster CA material (the runtime-secret posture — per-cluster trust is
+// injected at apply time, never committed).
+let ORGANIZATION_RESOURCE = {
+	apiVersion: "quay.holos.run/v1alpha1"
+	kind:       "Organization"
+	metadata: {
+		name:      NAME
+		namespace: NAMESPACE
+		labels: "app.kubernetes.io/name": NAME
+	}
+	spec: {
+		name:  NAME
+		email: "\(NAME)@holos.localhost"
+		credentialsSecretRef: name: "holos-controller-quay-creds"
+		adopt: false
+		// Only set caBundle when a PEM was injected (see the gate note above).
+		// base64.Encode(null, _CABundlePEM) base64-encodes the PEM bytes with no
+		// line breaks, the single-string form the caBundle []byte field expects.
+		if _CABundlePEM != "" {
+			caBundle: base64.Encode(null, _CABundlePEM)
 		}
 	}
 }
@@ -570,6 +620,7 @@ userDefinedBuildPlan: {
 				resources: #Resources & {
 					AppProject: (NAME):     APPPROJECT_RESOURCE
 					Application: (NAME):    APPLICATION_RESOURCE
+					Organization: (NAME):   ORGANIZATION_RESOURCE
 					Project: (NAME):        PROJECT_RESOURCE
 					ProjectConfig: (NAME):  PROJECT_CONFIG_RESOURCE
 					Warehouse: (WAREHOUSE): WAREHOUSE_RESOURCE

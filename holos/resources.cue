@@ -61,6 +61,20 @@ import (
 	Keycloak?: [_]:              kc.#Keycloak
 	KeycloakRealmImport?: [_]:   kcri.#KeycloakRealmImport
 	Namespace?: [_]:             corev1.#Namespace
+	// The quay.holos.run Organization kind (ADR-19, the shipped Holos
+	// Controller) gets an explicit but DELIBERATELY OPEN entry (the trailing
+	// `...`) rather than a vendored binding: the controller's CRDs have no
+	// generated CUE type under cue.mod/gen/ (they live in api/quay/v1alpha1/,
+	// not a vendored chart).  The openness is SCOPED to this kind, like the
+	// Kargo Project / ProjectConfig entries below, so the generic catch-all
+	// above stays CLOSED and a misspelled Kind still fails render-time
+	// validation.  my-project (HOL-1322) emits an Organization through
+	// #Resources, so the entry must exist and be open.
+	Organization?: [_]: {
+		kind: "Organization"
+		metadata: name: string
+		...
+	}
 	PersistentVolumeClaim?: [_]: corev1.#PersistentVolumeClaim
 	// The Kargo Project and ProjectConfig kinds (kargo.akuity.io) get explicit
 	// but DELIBERATELY OPEN entries (the trailing `...`) rather than a vendored
