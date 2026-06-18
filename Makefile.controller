@@ -97,16 +97,20 @@ controller-install: kustomize-tool ## Install the quay.holos.run CRDs into the c
 # this tree only targets it.
 #
 # When CONTROLLER_IMAGE is overridden from the committed default, the image is
-# substituted via a kustomize edit/restore pair so the override never lands in a
-# committed file: edit set image → build → checkout to revert config/manager back
-# to the committed default. The committed default already matches the no-override
-# case, so a plain `make controller-deploy` mutates nothing.
+# substituted via a kustomize edit and the exact prior bytes of
+# config/manager/kustomization.yaml are restored afterward from a temp copy — NOT
+# `git checkout`, which would clobber any pre-existing uncommitted edits to that
+# file. The backup/restore round-trips the file to whatever it was before this
+# target ran (committed or not). The committed default already matches the
+# no-override case, so a plain `make controller-deploy` makes no edit at all.
 .PHONY: controller-deploy
 controller-deploy: kustomize-tool ## Deploy the controller (CRDs, RBAC, manager, metrics Service).
 	@set -e; \
-	if [ "$(CONTROLLER_IMAGE)" != "$(CONTROLLER_IMAGE_REPO):$(CONTROLLER_IMAGE_TAG)" ] || [ -n "$$CONTROLLER_IMAGE_OVERRIDE" ]; then \
+	if [ "$(CONTROLLER_IMAGE)" != "$(CONTROLLER_IMAGE_REPO):$(CONTROLLER_IMAGE_TAG)" ]; then \
+		backup="$$(mktemp)"; \
+		cp config/manager/kustomization.yaml "$$backup"; \
+		trap 'cp "$$backup" config/manager/kustomization.yaml; rm -f "$$backup"' EXIT; \
 		( cd config/manager && $(KUSTOMIZE) edit set image controller=$(CONTROLLER_IMAGE) ); \
-		trap 'git checkout -- config/manager/kustomization.yaml' EXIT; \
 	fi; \
 	$(KUSTOMIZE) build config/default | kubectl apply --server-side -f -
 

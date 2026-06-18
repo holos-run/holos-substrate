@@ -2,13 +2,13 @@
 # the platform's namespace registry (holos/namespaces.cue), per the component
 # guidelines that forbid a component creating its own namespace. The
 # config/default kustomization sets `namespace: holos-controller` so every
-# namespaced resource below targets it without this tree duplicating the
-# Namespace object.
+# namespaced resource (this Deployment and the metrics Service) targets it
+# without this tree duplicating the Namespace object — which is why neither the
+# Deployment nor the Service pins `namespace` here.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: holos-controller-manager
-  namespace: holos-controller
   labels:
     app.kubernetes.io/name: holos-controller
     app.kubernetes.io/managed-by: kustomize
