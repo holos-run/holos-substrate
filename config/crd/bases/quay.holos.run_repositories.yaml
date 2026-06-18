@@ -60,6 +60,17 @@ spec:
               Organization. As with Organization, the spec's only external coupling is the
               Quay credential in CredentialsSecretRef plus the optional webhook URL — never
               a Kargo/Argo CD type import (AC #7).
+
+              Scope note (HOL-1309, the scaffold phase): the webhook is modeled as the
+              HOL-1309-prescribed RepositoryWebhook with a mutually-exclusive inline url or
+              urlSecretRef (AC #8) — deliberately decoupled from Kargo. ADR-19's
+              illustrative pushWebhook.kargoProjectConfigRef form (reading the receiver URL
+              from a ProjectConfig.status) would import a Kargo coupling into the API group,
+              which AC #7 forbids; the reconciler instead resolves the receiver URL at
+              runtime and the CR carries it via urlSecretRef. ADR-19's retention and
+              robot-credential fields are likewise deferred to the reconciler/ADR phases
+              (HOL-1312, HOL-1314). New fields are additive, so deferring them is not an API
+              break.
             properties:
               credentialsSecretRef:
                 default:

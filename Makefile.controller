@@ -28,15 +28,18 @@ CRD_OPTIONS ?= crd:generateEmbeddedObjectMeta=true
 $(LOCALBIN):
 	mkdir -p $(LOCALBIN)
 
+# The tool targets are .PHONY (not file targets) so the version check runs on
+# every invocation: a file target named $(CONTROLLER_GEN) would be considered
+# up to date whenever bin/controller-gen exists — even at the wrong version —
+# and Make would never re-run the check. As phony recipes they always compare
+# the installed version against the pin and reinstall on mismatch.
 .PHONY: controller-gen-tool
-controller-gen-tool: $(CONTROLLER_GEN) ## Install controller-gen under bin/ at the pinned version.
-$(CONTROLLER_GEN): $(LOCALBIN)
+controller-gen-tool: | $(LOCALBIN) ## Install controller-gen under bin/ at the pinned version.
 	@test -x $(CONTROLLER_GEN) && [ "$$($(CONTROLLER_GEN) --version 2>/dev/null | awk '{print $$2}')" = "$(CONTROLLER_GEN_VERSION)" ] || \
 		GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
 
 .PHONY: kustomize-tool
-kustomize-tool: $(KUSTOMIZE) ## Install kustomize under bin/ at the pinned version.
-$(KUSTOMIZE): $(LOCALBIN)
+kustomize-tool: | $(LOCALBIN) ## Install kustomize under bin/ at the pinned version.
 	@test -x $(KUSTOMIZE) && [ "v$$($(KUSTOMIZE) version 2>/dev/null | sed -E 's/^v?([0-9.]+).*/\1/')" = "$(KUSTOMIZE_VERSION)" ] || \
 		GOBIN=$(LOCALBIN) go install sigs.k8s.io/kustomize/kustomize/v5@$(KUSTOMIZE_VERSION)
 
