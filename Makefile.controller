@@ -67,6 +67,57 @@ controller-manifests: controller-gen-tool ## Generate CRD manifests and RBAC und
 		output:crd:artifacts:config=config/crd/bases \
 		output:rbac:artifacts:config=config/rbac
 
+# controller-manifests-build renders the full config/default kustomize tree to
+# stdout (CRDs, ServiceAccount, ClusterRole/Binding, leader-election RBAC, the
+# manager Deployment, and the metrics Service — all targeting holos-controller,
+# with the manager image set by config/manager's images transformer). It is the
+# read-only render/inspect entrypoint, convenient for diffing or golden-checking
+# the rendered install. It applies nothing and mutates no committed file: the
+# image override (for a non-default CONTROLLER_IMAGE) belongs to controller-deploy.
+.PHONY: controller-manifests-build
+controller-manifests-build: kustomize-tool ## Render config/default to stdout (no apply).
+	$(KUSTOMIZE) build config/default
+
+# The controller-{install,deploy,undeploy} targets are the isolated deploy
+# entrypoints (AC #6). They wrap kubectl apply/delete -k against the config/
+# kustomize tree and deliberately never invoke scripts/apply, scripts/render, or
+# any holos-paas target — the holos-controller install is managed independently
+# of the Holos-rendered platform (the Namespace it targets is the one exception,
+# owned centrally by holos/namespaces.cue and applied by the platform).
+#
+# controller-install applies only the CRDs (config/crd), so the API group is
+# registered before any custom resource or the manager that watches them.
+.PHONY: controller-install
+controller-install: kustomize-tool ## Install the quay.holos.run CRDs into the cluster.
+	$(KUSTOMIZE) build config/crd | kubectl apply --server-side -f -
+
+# controller-deploy applies the full install (CRDs + RBAC + manager + metrics
+# Service) with the manager image set to $(CONTROLLER_IMAGE). The holos-controller
+# Namespace must already exist (the platform's namespaces component creates it);
+# this tree only targets it.
+#
+# When CONTROLLER_IMAGE is overridden from the committed default, the image is
+# substituted via a kustomize edit/restore pair so the override never lands in a
+# committed file: edit set image → build → checkout to revert config/manager back
+# to the committed default. The committed default already matches the no-override
+# case, so a plain `make controller-deploy` mutates nothing.
+.PHONY: controller-deploy
+controller-deploy: kustomize-tool ## Deploy the controller (CRDs, RBAC, manager, metrics Service).
+	@set -e; \
+	if [ "$(CONTROLLER_IMAGE)" != "$(CONTROLLER_IMAGE_REPO):$(CONTROLLER_IMAGE_TAG)" ] || [ -n "$$CONTROLLER_IMAGE_OVERRIDE" ]; then \
+		( cd config/manager && $(KUSTOMIZE) edit set image controller=$(CONTROLLER_IMAGE) ); \
+		trap 'git checkout -- config/manager/kustomization.yaml' EXIT; \
+	fi; \
+	$(KUSTOMIZE) build config/default | kubectl apply --server-side -f -
+
+# controller-undeploy removes the full install. --ignore-not-found keeps it
+# idempotent. It does NOT delete the holos-controller Namespace (owned centrally
+# by the platform), only the resources this tree installs into it plus the
+# cluster-scoped CRDs and ClusterRole/Binding.
+.PHONY: controller-undeploy
+controller-undeploy: kustomize-tool ## Remove the controller install (keeps the namespace).
+	$(KUSTOMIZE) build config/default | kubectl delete --ignore-not-found -f -
+
 .PHONY: controller-fmt
 controller-fmt: ## Run go fmt against the controller, API, and internal sources.
 	go fmt ./cmd/holos-controller/... ./api/... ./internal/quay/... ./internal/controller/...
