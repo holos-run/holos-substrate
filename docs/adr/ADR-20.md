@@ -6,6 +6,7 @@
 | Author   | @jeffmccune                        |
 | Status   | `Proposed`                         |
 | Tags     | api, controller, keycloak, oidc, rbac |
+| Updates  | ADR-3                              |
 
 | Revision | Date       | Author      | Info           |
 | -------- | ---------- | ----------- | -------------- |
@@ -64,10 +65,16 @@ lock a final schema, and **no code or CRD Go types are written**.
 - [ADR-3 — Authorization via Kubernetes RBAC and Group Membership](ADR-3.md): the
   platform authorizes via Kubernetes RBAC, mapping **group membership** to access
   through `RoleBinding`/`ClusterRoleBinding` subjects of kind `Group`, with
-  **custodians** approving membership requests. The group-and-membership concept
-  in this ADR builds directly on ADR-3's custodian model — the Keycloak groups
-  this controller would manage are the identity-system side of the group
-  membership ADR-3 binds to RBAC.
+  **custodians** approving membership requests. ADR-3 explicitly treats group
+  **provisioning and custodianship** as an *external* prerequisite — "not
+  something the platform implements." This ADR **`Updates: ADR-3`** on exactly
+  that point: a controller that creates Keycloak groups and reconciles
+  custodian-approved membership makes the platform the provisioning mechanism for
+  the **identity-system side** of ADR-3's groups, rather than assuming an external
+  one. ADR-3's authorization *model* is unchanged — RBAC bindings with `Group`
+  subjects, membership a custodian approves; this ADR only changes **who
+  provisions the groups and runs the approval**, and that change is deferred (the
+  custodian mechanism is an open question below, and the status stays `Proposed`).
 - [ADR-19 — Quay API Group CRDs](ADR-19.md): the sibling first group. Its
   `Organization.spec.access[]` already keys on **Keycloak group names** as they
   appear in the shared `groups` claim — so the Quay access model and this
@@ -191,8 +198,30 @@ spec:
 ### Group + membership (illustrative)
 
 A `KeycloakGroup` creates a project group and reconciles a **custodian-managed**
-membership model so that authenticating against the client auto-assigns the
-client roles.
+membership model. A member of the group holds the group's client roles, and
+authenticating against the owning client carries those roles into **that
+client's own** token.
+
+How the roles actually surface in tokens matters, and the platform's existing
+mapper wiring constrains the design — the claim is **not** that a `my-app` client
+role automatically appears in a *different* client's token (Quay's or Argo CD's)
+just because a user logs in. In the current realm
+([keycloak-clients.md](../../holos/docs/keycloak-clients.md),
+[buildplan.cue](../../holos/components/keycloak/realm-config/buildplan.cue)) the
+client-role mapper is **per client** — the `quay` client carries an
+`oidc-usermodel-client-role-mapper` keyed to `usermodel.clientRoleMapping.clientId:
+QUAY_CLIENT_ID`, and Argo CD carries **no** client-role mapper at all. So:
+
+- A project client's own **client roles** reach **that client's** token via a
+  per-client client-role mapper the `KeycloakClient` reconciler provisions
+  (mirroring the `quay` client's mapper). They do not leak into other clients'
+  tokens.
+- What **cross-service** relying parties (Quay teams, Argo CD RBAC) key on is the
+  **group name** — and the platform **realm-role** names — folded into the shared
+  `groups` claim by the group-membership and realm-role mappers. The group is
+  therefore the cross-service join point ([ADR-19](ADR-19.md)'s
+  `Organization.spec.access[]` binds to the same group name); the per-client
+  client-role mapper is the per-service join point.
 
 ```yaml
 apiVersion: keycloak.holos.run/v1alpha1
@@ -201,11 +230,13 @@ metadata:
   name: my-app-editors
   namespace: my-project
 spec:
-  groupName: my-app-editors    # appears in the shared `groups` claim (ADR-19
-                               # Organization.spec.access[] binds to this name)
-  # The client roles every member of this group holds. Authenticating against
-  # the client carries these roles in the `groups` claim, so a relying party
-  # (Quay teams, Argo CD RBAC) keys on them uniformly.
+  groupName: my-app-editors    # folded into the shared `groups` claim by the
+                               # group-membership mapper; ADR-19
+                               # Organization.spec.access[] binds to this name.
+  # The client roles every member of this group holds. These reach the OWNING
+  # client's own token via that client's per-client client-role mapper (as the
+  # quay client does today); they are NOT carried into other clients' tokens.
+  # Cross-service relying parties key on `groupName` above, not on these.
   clientRoles:
     - clientRef: my-app
       role: editor
@@ -298,12 +329,17 @@ this ADR advances past `Proposed`:
   reconciler generate it generate-once/create-if-absent (mirroring the platform's
   `quay-oidc` bootstrap), or project it via an `ExternalSecret`? How is rotation
   handled without breaking in-flight sessions?
-- **The group-custodian authorization model.** How is the [ADR-3](ADR-3.md)
-  custodian model expressed — an inline `custodians` reference on the group, a
-  separate membership-request resource a custodian approves, or a binding to a
-  Kubernetes `Group` subject? How does "authenticating against the client
-  auto-assigns client roles" reconcile with Keycloak's group → role assignment
-  and the `groups`-claim mappers without a per-login write?
+- **The group-custodian authorization model (the `Updates: ADR-3` boundary).**
+  [ADR-3](ADR-3.md) treats group provisioning and custodianship as external; this
+  ADR proposes the controller take over provisioning the Keycloak groups and
+  running the approval. How is that custodian model expressed — an inline
+  `custodians` reference on the group, a separate membership-request resource a
+  custodian approves, or a binding to a Kubernetes `Group` subject? And how does
+  group membership translate to a member holding the group's client roles —
+  through Keycloak's group → role assignment plus the per-client client-role
+  mapper, reconciled once at group/membership change rather than a per-login
+  write? Settling this is what would advance the `Updates: ADR-3` change past
+  `Proposed`.
 - **Composite realm-role → client-role mapping semantics.** Is the mapping a
   Keycloak composite role, a controller-maintained association, or a protocol
   mapper change? How does it interact with the existing realm-role mapper that
