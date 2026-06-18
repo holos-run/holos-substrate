@@ -2,6 +2,7 @@ package quay
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -231,6 +232,10 @@ func TestRepositoryCreatesWithSecretRefWebhook(t *testing.T) {
 	repo := getRepo(ctx, t, key)
 	if got := repoConditionStatus(repo, ConditionWebhookConfigured); got != metav1.ConditionTrue {
 		t.Errorf("WebhookConfigured = %q, want True", got)
+	}
+	// The secret-backed webhook URL is sensitive; it must NOT appear in status.
+	if c := meta.FindStatusCondition(repo.Status.Conditions, ConditionWebhookConfigured); c != nil && strings.Contains(c.Message, hook) {
+		t.Errorf("WebhookConfigured message leaked the secret URL: %q", c.Message)
 	}
 
 	// A urlSecretRef-backed repo requeues on an interval (no Secret watch) so a
@@ -579,5 +584,49 @@ func TestRepositoryOrganizationExistsButNotReadyRequeues(t *testing.T) {
 	repo := getRepo(ctx, t, key)
 	if got := repoConditionReason(repo, ConditionReady); got != ReasonOrganizationNotReady {
 		t.Errorf("Ready reason = %q, want %q", got, ReasonOrganizationNotReady)
+	}
+}
+
+func TestRepositoryDeleteFallsBackToSpecWhenStatusEmpty(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	key := makeRepo(ctx, t, ns, "acme", "orphan", repoOpts{})
+
+	fake := newFakeRepoClient()
+	r, _ := newRepoReconciler(fake, ns)
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile create: %v", err)
+	}
+	if !fake.repoExists("acme", "orphan") {
+		t.Fatal("expected acme/orphan to exist before delete")
+	}
+
+	// Simulate a crash that created the Quay repo but never persisted
+	// status.QuayRepository: clear it so the finalizer must fall back to the spec +
+	// Organization CR to find the repo to delete.
+	repo := getRepo(ctx, t, key)
+	repo.Status.QuayRepository = ""
+	if err := shared.k8sClient.Status().Update(ctx, repo); err != nil {
+		t.Fatalf("clearing status.QuayRepository: %v", err)
+	}
+
+	repo = getRepo(ctx, t, key)
+	if err := shared.k8sClient.Delete(ctx, repo); err != nil {
+		t.Fatalf("deleting Repository: %v", err)
+	}
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile delete: %v", err)
+	}
+
+	// Despite the empty status, the fallback resolved acme/orphan and deleted it.
+	if !fake.callsContain("DeleteRepository:acme/orphan") {
+		t.Errorf("expected fallback delete of acme/orphan, calls were %v", fake.calls)
+	}
+	if fake.repoExists("acme", "orphan") {
+		t.Error("expected acme/orphan removed from Quay via the spec fallback")
 	}
 }

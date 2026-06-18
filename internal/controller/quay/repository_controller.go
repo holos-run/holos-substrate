@@ -349,8 +349,17 @@ func (r *RepositoryReconciler) reconcileWebhook(ctx context.Context, logger logr
 		return true, false, ctrl.Result{}, r.failErr(ctx, repo, err)
 	}
 
+	// Do not put the resolved URL in the status message when it came from a
+	// urlSecretRef: that URL is deliberately secret (e.g. Kargo's hard-to-guess
+	// receiver URL is held in a Secret precisely so it is not exposed), and status
+	// is readable by anyone with get on the Repository. An inline url is already
+	// in the spec, so echoing it is no additional disclosure.
+	message := "repo_push webhook configured"
+	if !usesWebhookSecretRef(repo) {
+		message = fmt.Sprintf("repo_push webhook configured to %s", url)
+	}
 	changed := setWebhookCondition(&repo.Status.Conditions, metav1.ConditionTrue,
-		ReasonWebhookConfigured, fmt.Sprintf("repo_push webhook configured to %s", url), repo.Generation)
+		ReasonWebhookConfigured, message, repo.Generation)
 	logger.V(1).Info("reconciled webhook", "repository", ns+"/"+name)
 	return false, changed, ctrl.Result{}, nil
 }
@@ -454,13 +463,16 @@ func (r *RepositoryReconciler) succeed(ctx context.Context, logger logr.Logger, 
 // reconcileDelete runs the finalizer: it deletes the Quay repository (which
 // removes its notifications) then drops the finalizer so the CR is removed.
 //
-// The repository identity comes from status.QuayRepository — the resolved
-// <org>/<repo> path recorded when the repo was provisioned — NOT from the spec.
-// Although organizationRef/name are immutable, status is the authoritative record
-// of what this CR actually created, so the finalizer deletes exactly that path
-// and never a different repo. An empty status.QuayRepository means the repository
-// was never provisioned (e.g. the org was never Ready), so there is nothing to
-// delete in Quay and the finalizer is dropped immediately.
+// The repository identity is taken from status.QuayRepository — the resolved
+// <org>/<repo> path recorded when the repo was provisioned. When status is empty
+// (a crash, or a status-write failure, may have raced between the Quay create and
+// the status persist, so an empty status does NOT prove the repo is absent) it
+// falls back to re-resolving the identity from the immutable spec.name plus the
+// Organization CR's spec.name. Because both inputs are immutable/stable, the
+// fallback reconstructs exactly the same path, so the finalizer never leaks a
+// repository a crash left behind. Only when neither status nor the Organization
+// CR yields an identity (the org CR is gone, so the Quay path is unaddressable)
+// does it drop the finalizer — there is nothing it can act on.
 //
 // A Quay error during delete fails the reconcile and requeues, so the finalizer
 // is not removed until cleanup succeeds. A missing credential during delete also
@@ -472,8 +484,16 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 
 	ns, name, ok := splitQuayRepository(repo.Status.QuayRepository)
 	if !ok {
-		// Never provisioned: nothing to delete in Quay, just release the CR.
-		return r.removeFinalizer(ctx, repo)
+		// Status did not record a provisioned path. Re-resolve from the immutable
+		// spec + Organization CR so a crash between create and the status write
+		// cannot orphan a real Quay repository.
+		resolvedNs, resolvedName, resolveOK := r.resolveDeleteIdentity(ctx, repo)
+		if !resolveOK {
+			// Neither status nor the Organization CR yields an identity: nothing
+			// addressable to delete, release the CR.
+			return r.removeFinalizer(ctx, repo)
+		}
+		ns, name = resolvedNs, resolvedName
 	}
 
 	cred, err := resolveCredential(ctx, r.APIReader, r.Namespace, repo.Spec.CredentialsSecretRef)
@@ -492,6 +512,23 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 		fmt.Sprintf("deleted Quay repository %s/%s", ns, name))
 
 	return r.removeFinalizer(ctx, repo)
+}
+
+// resolveDeleteIdentity reconstructs the Quay <org>/<repo> path for a Repository
+// whose status.QuayRepository is empty, by resolving the Organization CR named by
+// the (immutable) spec.organizationRef and combining its spec.name with the
+// (immutable) spec.name. ok is false when the Organization CR cannot be read
+// (e.g. it was deleted), in which case the Quay path is unaddressable.
+func (r *RepositoryReconciler) resolveDeleteIdentity(ctx context.Context, repo *quayv1alpha1.Repository) (ns, name string, ok bool) {
+	org := &quayv1alpha1.Organization{}
+	key := client.ObjectKey{Namespace: repo.Namespace, Name: repo.Spec.OrganizationRef}
+	if err := r.Get(ctx, key, org); err != nil {
+		return "", "", false
+	}
+	if org.Spec.Name == "" || repo.Spec.Name == "" {
+		return "", "", false
+	}
+	return org.Spec.Name, repo.Spec.Name, true
 }
 
 // removeFinalizer drops the repository finalizer and persists the change so the
