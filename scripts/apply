@@ -155,17 +155,19 @@ ROLLOUT_TIMEOUT_SECONDS="$(duration_seconds "${ROLLOUT_TIMEOUT}")" || exit 1
 # namespace exists before they apply.  The argocd-update promotion step the Stage
 # runs targets the echo Argo CD Application in the argocd namespace, applied here
 # too; Argo CD itself was applied earlier (argocd).  Nothing during bootstrap
-# depends on these.  my-project closes the sequence (HOL-1269/HOL-1270): it emits
-# the Layer 3 sample app's Argo CD AppProject + Application AND its Kargo control
+# depends on these.
+#
+# my-project is DELIBERATELY NOT in this array.  The Layer 3 sample app's
+# delivery scaffold — its Argo CD AppProject + Application, its Kargo control
 # plane (Project, ProjectConfig with a quay webhook receiver, Warehouse, the
-# project-config promotion Stage, and the webhook-token bootstrap Job), so it
-# trails argocd (its argoproj.io types and controller) and kargo (its
-# kargo.akuity.io types and controller).  pre_my_project deletes the prior
-# webhook-token bootstrap Job so each apply runs a fresh idempotent generate;
-# wait_my_project gates the bootstrap Job's completion and the Kargo Project's
-# adoption of the my-project namespace.  The Application stays Unknown until
-# scripts/publish pushes the first my-project-config OCI artifact; nothing during
-# bootstrap depends on it.
+# project-config promotion Stage, and the webhook-token bootstrap Job), and the
+# quay.holos.run Organization the Holos Controller reconciles — is applied by the
+# dedicated scripts/apply-my-project (HOL-1322), not by this master apply.  That
+# helper injects the per-cluster local-ca PEM into the Organization's caBundle at
+# render time (the inject is per-cluster trust material that must never be
+# committed), and it runs after the manual Quay superuser-credential setup the
+# controller depends on — neither of which the unparameterized master apply can
+# satisfy.  See scripts/apply-my-project for the lifted pre-/wait- gating logic.
 COMPONENTS=(
   namespaces
   gateway-api
@@ -192,7 +194,6 @@ COMPONENTS=(
   kargo
   kargo-project-echo
   kargo-echo
-  my-project
 )
 
 # local-ca and istio-gateway create cert-manager.io resources (ClusterIssuer,
@@ -393,8 +394,9 @@ pre_keycloak_config() {
   # job-quay-user-password-bootstrap.yaml is created before
   # serviceaccount-quay-user-password-bootstrap.yaml — on a fresh cluster the
   # Job's pod would fail admission ("error looking up service account") until the
-  # SA lands.  Pre-applying the identity here closes that race (the
-  # pre_my_project precedent); the main apply then re-applies it idempotently.
+  # SA lands.  Pre-applying the identity here closes that race (the same
+  # pre-apply pattern scripts/apply-my-project uses for the my-project bootstrap
+  # ServiceAccounts); the main apply then re-applies it idempotently.
   local pw_dir="${COMPONENTS_DIR}/keycloak-config"
   kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
     -f "${pw_dir}/serviceaccount-quay-user-password-bootstrap.yaml" \
@@ -802,187 +804,6 @@ wait_kargo_echo() {
     get stage.kargo.akuity.io/test --request-timeout=10s >/dev/null
   kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
     get application.argoproj.io/echo --request-timeout=10s >/dev/null
-}
-
-# my-project: delete the prior bootstrap Job before the apply.  Its name is
-# constant (no config hash), so a completed Job is never re-run by a server-side
-# apply of the unchanged spec; recreating it on every apply re-runs the
-# idempotent token generation (it exits 0 leaving an existing Secret untouched)
-# and lets wait_my_project gate a genuinely fresh run.  --cascade=foreground
-# --wait reaps the old Job's pods first so the new Job is the only one
-# wait_my_project can match.  Mirrors pre_keycloak_config.
-#
-# One Job:
-#   - my-project-quay-webhook-bootstrap (my-project ns) generates the Kargo
-#     webhook receiver Secret's token (HOL-1270).
-#
-# The Quay-side provisioning Job (my-project-quay-bootstrap, quay ns) that
-# previously ran here was removed in HOL-1296 along with the retired
-# quay-initial-admin admin token it authenticated with; Quay org/repo/robot/
-# webhook provisioning is deferred to a future Quay Resource Controller (HOL-1293).
-# pre_my_project now also prunes those retired objects (and the dead
-# quay-initial-admin Secret) by label on upgraded clusters, since a plain apply
-# never deletes resources whose manifests were removed.
-#
-# It also pre-applies the component's ServiceAccounts and their RBAC (Roles +
-# RoleBindings) ahead of the main component apply (HOL-1275).  The main apply is
-# `kubectl apply -f <dir>/`, which processes the rendered files in filename order
-# — and `job-my-project-quay-webhook-bootstrap.yaml` sorts before
-# `serviceaccount-my-project-quay-webhook-bootstrap.yaml`, so the Job is created
-# before its ServiceAccount exists.  The Job controller then immediately tries to
-# create a pod and fails with `error looking up service account ...:
-# serviceaccount "my-project-quay-webhook-bootstrap" not found`.  Applying the
-# ServiceAccounts and RBAC here first guarantees they exist before the Job is
-# created, so that race never happens.  Server-side apply is convergent, so the
-# main apply re-applying these same objects is a no-op.
-pre_my_project() {
-  # Pre-apply ServiceAccounts + RBAC before the Jobs (see comment above).  The
-  # shell expands each glob to the matching rendered files; the `[[ -e ]]` guard
-  # drops a non-matching pattern (nullglob is not set) so a missing kind is not
-  # passed to kubectl as a literal path.
-  local dir="${COMPONENTS_DIR}/my-project"
-  local rbac_files=() f
-  for f in "${dir}"/serviceaccount-*.yaml "${dir}"/role-*.yaml "${dir}"/rolebinding-*.yaml; do
-    [[ -e "${f}" ]] && rbac_files+=(-f "${f}")
-  done
-  if ((${#rbac_files[@]})); then
-    kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
-      "${rbac_files[@]}"
-  fi
-
-  kubectl --context "${KUBE_CONTEXT}" --namespace my-project \
-    delete job -l app.kubernetes.io/name=my-project-quay-webhook-bootstrap \
-    --ignore-not-found --cascade=foreground --wait --request-timeout=60s
-
-  # One-time migration cleanup (HOL-1296).  The my-project-quay-bootstrap Job and
-  # its three-namespace RBAC, and the quay-admin-bootstrap Job + quay-initial-admin
-  # Secret they depended on, were removed when Quay moved to OIDC-backend auth.
-  # A plain `kubectl apply -f <dir>/` never prunes resources whose manifests were
-  # deleted, so a cluster that ran an earlier revision would otherwise keep these
-  # retired objects (inert cross-namespace RBAC, a now-unminted superuser Secret)
-  # indefinitely.  Delete them by label so an upgraded cluster converges to the new
-  # state; --ignore-not-found makes this a no-op on a fresh cluster or a second run.
-  local stale_label="app.kubernetes.io/name=my-project-quay-bootstrap"
-  kubectl --context "${KUBE_CONTEXT}" --namespace quay \
-    delete job,serviceaccount,role,rolebinding -l "${stale_label}" \
-    --ignore-not-found --cascade=foreground --wait --request-timeout=60s
-  kubectl --context "${KUBE_CONTEXT}" --namespace my-project \
-    delete role,rolebinding -l "${stale_label}" \
-    --ignore-not-found --request-timeout=60s
-  kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
-    delete role,rolebinding -l "${stale_label}" \
-    --ignore-not-found --request-timeout=60s
-  # The retired headless superuser Secret (HOL-1295 deferred its prune to here):
-  # OIDC-backend auth can no longer mint it, so it is dead material on an upgraded
-  # cluster.  Removing it keeps the no-quay-initial-admin invariant true at runtime.
-  kubectl --context "${KUBE_CONTEXT}" --namespace quay \
-    delete secret quay-initial-admin \
-    --ignore-not-found --request-timeout=60s
-}
-
-# my-project: gate the webhook-token bootstrap Job's completion and the Kargo
-# Project's adoption of the my-project namespace.
-#
-# The bootstrap Job generates the my-project-quay-webhook receiver Secret's token
-# once; the future Quay Resource Controller will read that token to register the
-# webhook with Quay (that Quay-side registration is deferred — HOL-1296), so a
-# Failed bootstrap must surface here by name rather than as a missing-Secret error
-# later.  pre_my_project recreates the Job on every apply, so it is
-# present; polled (not `kubectl wait --for=condition=Complete`) so a Failed Job
-# fails the gate on the next poll instead of blocking the full timeout, and
-# --ignore-not-found tolerates a TTL-GC'd Job (the Secret it created survives).
-# This mirrors the wait_keycloak_config bootstrap-gate shape.
-#
-# The Project (cluster-scoped in Kargo 1.10) adopts the pre-created my-project
-# namespace (created by the namespaces component, carrying the
-# kargo.akuity.io/project: "true" adoption label) and reports Ready; only then
-# does the namespace carry Kargo's project RBAC so the namespaced ProjectConfig,
-# Warehouse, and Stage reconcile.  Poll the Ready condition (mirrors
-# wait_kargo_project_echo) so a Stalled Project — e.g. the adoption label missing
-# — fails promptly with a clear pointer.
-# gate_job NAMESPACE JOB_NAME: poll a bootstrap Job to completion, returning 0
-# when it reports Complete=True (or is already TTL-GC'd / absent — the state it
-# created survives the Job, so a missing Job is success), and 1 when it reports
-# Failed=True, times out, or cannot be queried repeatedly.  Polled rather than
-# `kubectl wait --for=condition=Complete` so a Failed Job fails the gate on the
-# next poll instead of blocking the full timeout.  The my-project webhook-token
-# Job uses this shape (a single gate now that the Quay-provisioning Job is gone —
-# HOL-1296), so the poll lives here once.
-gate_job() {
-  local namespace="$1" job="job/$2"
-  local job_state lookup_failures=0
-  local deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
-  while true; do
-    if job_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace "${namespace}" \
-      get "${job}" --ignore-not-found --request-timeout=10s \
-      -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
-      lookup_failures=0
-      if [[ -z "${job_state}" ]] || grep -q '^Complete=True$' <<<"${job_state}"; then
-        break
-      fi
-      if grep -q '^Failed=True$' <<<"${job_state}"; then
-        echo "ERROR: ${namespace}/${job} failed; inspect it with:" >&2
-        echo "       kubectl --context ${KUBE_CONTEXT} --namespace ${namespace} describe ${job}" >&2
-        return 1
-      fi
-    else
-      lookup_failures=$((lookup_failures + 1))
-      if ((lookup_failures >= 3)); then
-        echo "ERROR: cannot query ${namespace}/${job}: ${lookup_failures} consecutive lookup failures." >&2
-        return 1
-      fi
-    fi
-    if ((SECONDS >= deadline)); then
-      echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for ${namespace}/${job} to complete." >&2
-      return 1
-    fi
-    sleep 5
-  done
-}
-
-wait_my_project() {
-  # The webhook-token Job (my-project ns) generates the receiver Secret's token;
-  # the future Quay Resource Controller will read it (Quay-side webhook
-  # registration is deferred — HOL-1296), so surface a Failed bootstrap here by
-  # name rather than as a missing-Secret error later.
-  gate_job my-project my-project-quay-webhook-bootstrap || return 1
-
-  local project="project.kargo.akuity.io/my-project" state proj_lookup_failures=0
-  local proj_deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
-  while true; do
-    # Project is cluster-scoped (no --namespace).
-    if state=$(kubectl --context "${KUBE_CONTEXT}" \
-      get "${project}" --ignore-not-found --request-timeout=10s \
-      -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
-      proj_lookup_failures=0
-      if grep -q '^Ready=True$' <<<"${state}"; then
-        break
-      fi
-      if grep -q '^Stalled=True$' <<<"${state}"; then
-        echo "ERROR: ${project} is Stalled (often the my-project namespace is missing the" >&2
-        echo "       kargo.akuity.io/project: \"true\" adoption label); inspect it with:" >&2
-        echo "       kubectl --context ${KUBE_CONTEXT} --namespace my-project describe ${project}" >&2
-        return 1
-      fi
-    else
-      proj_lookup_failures=$((proj_lookup_failures + 1))
-      if ((proj_lookup_failures >= 3)); then
-        echo "ERROR: repeated failures reading ${project}; aborting the gate." >&2
-        return 1
-      fi
-    fi
-    if ((SECONDS >= proj_deadline)); then
-      echo "ERROR: timed out waiting for ${project} to become Ready." >&2
-      return 1
-    fi
-    sleep 5
-  done
-
-  # Quay-side provisioning (org, repo, robot, repository pull-credential Secret,
-  # and the repo_push webhook registration) is DEFERRED to a future Quay Resource
-  # Controller (HOL-1293).  The my-project-quay-bootstrap Job that previously ran
-  # here — and the gate on its completion — were removed in HOL-1296 along with
-  # the retired quay-initial-admin admin token it depended on.
 }
 
 if ! command -v kubectl >/dev/null 2>&1; then
