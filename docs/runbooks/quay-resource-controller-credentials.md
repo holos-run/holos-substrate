@@ -312,15 +312,14 @@ operator-configurable), so treat this as a generate-once credential: if it
 leaks, delete the Application's token in the
 Quay UI, regenerate (steps 3–5), and replace the Secret. When the Holos
 Controller ([ADR-18](../adr/ADR-18.md)) and its `quay.holos.run` CRDs
-([ADR-19](../adr/ADR-19.md)) ship, they automate the **org/repo/robot/webhook
-provisioning** that the rest of this runbook's surrounding workflow performs by
-hand. Note that this OAuth-Application token is the controller's **input**, not
-one of those CRDs: ADR-19 has the controller *read* it from this
-`quay`-namespace Secret to authenticate to Quay, so the CRDs do not mint or
-reconcile the token itself — provisioning the token Secret is part of standing
-the controller up, not something its CRDs reconcile away. How that bootstrap
-token is itself automated is left to the controller's implementation phase
-(ADR-18/ADR-19 do not settle it); until then this manual procedure produces it.
+([ADR-19](../adr/ADR-19.md)) ship, the **by-hand org/repo/robot/webhook
+provisioning** this runbook performs is retired — the controller does it through
+the CRDs instead. The controller still **consumes** this superuser
+OAuth-Application token: ADR-18 has it authenticate to Quay with the very
+credential this runbook mints, read from this `quay`-namespace Secret (it is the
+controller's external credential, not one of the CRDs the controller reconciles).
+So this procedure becomes the historical record of how that bootstrap credential
+was first produced, exactly as ADR-18 anticipates.
 
 ## See also
 

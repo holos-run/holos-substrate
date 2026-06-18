@@ -14,7 +14,7 @@
 | 3        | 2026-06-16 | @jeffmccune | HOL-1281: run `AUTHENTICATION_TYPE: Database` with Keycloak as a federated login provider (layered, not a backend swap); `FEATURE_TEAM_SYNCING: false`; no-PKCE exception retained |
 | 4        | 2026-06-17 | @jeffmccune | HOL-1292/HOL-1293: revert to `AUTHENTICATION_TYPE: OIDC` as the sole identity store; PKCE (S256) re-enabled; team syncing re-enabled; superusers are the Keycloak-backed `svc-quay-resource-controller` + `quay-admin`; the `quay-initial-admin` bootstrap is removed; Quay data-plane provisioning deferred to a future Quay Resource Controller |
 | 5        | 2026-06-17 | @jeffmccune | HOL-1299: enable `FEATURE_SUPERUSERS_FULL_ACCESS` so the future Quay Resource Controller can adopt orgs it did not create; clarify the user/org/OAuth-Application distinction and the manual `platform-automation` org bootstrap |
-| 6        | 2026-06-17 | @jeffmccune | HOL-1306: the "future Quay Resource Controller" referenced throughout is now designed as the **Holos Controller** ([ADR-18](ADR-18.md)) with `quay.holos.run` Organization/Repository CRDs ([ADR-19](ADR-19.md)); add forward cross-links. The Revision 4 OIDC sole-identity-store model is unchanged. The controller is the intended end state for the **org/repo/robot/webhook provisioning**, which the manual runbook performs until it ships; the superuser OAuth-Application **token** itself stays a manual bootstrap the controller *reads* (ADR-19), not something the CRDs mint — its automation is unsettled. |
+| 6        | 2026-06-17 | @jeffmccune | HOL-1306: the "future Quay Resource Controller" referenced throughout is now designed as the **Holos Controller** ([ADR-18](ADR-18.md)) with `quay.holos.run` Organization/Repository CRDs ([ADR-19](ADR-19.md)); add forward cross-links. The Revision 4 OIDC sole-identity-store model is unchanged. The controller is the intended end state for the **org/repo/robot/webhook provisioning**, which the manual runbook performs until it ships; per ADR-18 the controller still *consumes* the superuser OAuth-Application token this runbook mints (its external credential, read from the `quay`-namespace Secret), not one of the CRDs it reconciles. |
 
 ## Context and Problem Statement
 
@@ -66,9 +66,9 @@ are both re-enabled. This ADR documents the resulting behavior.
   Model](ADR-18.md): the "future Quay Resource Controller" this ADR defers to is
   designed as the **Holos Controller** (`Updates: ADR-15`). It is the intended
   end state for the org/repo/robot/webhook **provisioning** the manual runbook
-  performs until it ships; the superuser OAuth-Application **token** itself stays
-  a manual bootstrap the controller *reads* as input (ADR-19), not something the
-  CRDs mint.
+  performs until it ships; per ADR-18 the controller still *consumes* the
+  superuser OAuth-Application token this runbook mints as its external credential
+  (read from the `quay`-namespace Secret), not one of the CRDs it reconciles.
 - [ADR-19 — Quay API Group (`quay.holos.run`): Organization and Repository
   CRDs](ADR-19.md): the CRDs the Holos Controller reconciles to automate the
   org/repo/robot/webhook provisioning currently deferred to the manual runbook
