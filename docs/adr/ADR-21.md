@@ -214,13 +214,18 @@ Namespace:
    - **A `ReferenceGrant` lives in the *referent* (target) namespace — the
      namespace that holds the object being referenced — not in the referrer's
      namespace.** So the grant's namespace depends on the direction of the
-     cross-namespace reference: if a project `HTTPRoute` (in the Project Namespace)
-     references a backend `Service` or TLS `Secret` that lives in `istio-gateways`,
-     the grant goes **in `istio-gateways`** (the issue's "in the Istio gateway
-     namespace" case); if instead the Gateway/Istio in `istio-gateways` references
-     an object in the Project Namespace, the grant goes **in the Project
-     Namespace**. This item is the per-project grant for whichever such reference
-     the Project actually needs, placed in the target namespace accordingly; the
+     cross-namespace reference, and the two reference kinds differ: an `HTTPRoute`'s
+     cross-namespace object reference is its `backendRefs` (e.g. a `Service`), so a
+     project route referencing a backend `Service` in `istio-gateways` needs the
+     grant **in `istio-gateways`**; a cross-namespace **TLS `Secret`** reference is
+     a *Gateway listener* `certificateRefs` concern (not an `HTTPRoute` field), so
+     if the shared Gateway in `istio-gateways` referenced a `Secret` in the Project
+     Namespace the grant would go **in the Project Namespace**. (The platform's
+     current shared Gateway keeps its certificate co-namespaced precisely to avoid
+     such a grant — the certificate comment in `istio-gateway/buildplan.cue`.) The
+     general rule holds either way: the grant lives where the referenced object
+     lives. This item is the per-project grant for whichever such reference the
+     Project actually needs, placed in the target namespace accordingly; the
      **attachment** policy remains the listener's `allowedRoutes`, recorded here so
      the two mechanisms are not conflated.
 8. **`HTTPRoute`** — the Project's route attaching to the shared Gateway (via the
@@ -396,9 +401,9 @@ GitOps rendered-manifest model and is explicit about the boundary:
    access), the project-level Argo CD `Application`, the owner `RoleBinding`, the
    Quay `Organization` ([ADR-19](ADR-19.md)), the `ReferenceGrant` (placed in the
    target namespace of whichever cross-namespace object reference the Project needs
-   — `istio-gateways` when the project route references a Service/Secret there; not
-   the route-attachment mechanism, which is the listener's `allowedRoutes`), and
-   the `HTTPRoute`.
+   — e.g. `istio-gateways` when a project route's `backendRefs` point at a `Service`
+   there; not the route-attachment mechanism, which is the listener's
+   `allowedRoutes`), and the `HTTPRoute`.
 3. **One `apps.<name>` entry renders 11 application-level resources** scoped to
    its Project (workloads into the Project's Namespace; the Kargo `Warehouse`/
    `Stage` into the Project's Kargo Project namespace; the Argo CD `Application`
