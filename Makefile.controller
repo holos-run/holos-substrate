@@ -19,8 +19,17 @@ CONTROLLER_PLATFORM   ?= linux/arm64
 LOCALBIN ?= $(CURDIR)/bin
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 KUSTOMIZE      ?= $(LOCALBIN)/kustomize
+ENVTEST        ?= $(LOCALBIN)/setup-envtest
 CONTROLLER_GEN_VERSION ?= v0.20.1
 KUSTOMIZE_VERSION      ?= v5.6.0
+# setup-envtest is versioned by the controller-runtime branch it ships with.
+# Pin to the release-0.21 branch so it matches the controller-runtime v0.21.0
+# dependency and builds with the module's Go toolchain (newer setup-envtest tags
+# require a newer Go than go.mod declares).
+ENVTEST_VERSION        ?= release-0.21
+# Kubernetes API server / etcd binaries setup-envtest provisions for the
+# envtest-based reconciler tests. Pin the version to keep test runs reproducible.
+ENVTEST_K8S_VERSION    ?= 1.33.0
 
 # CRD generation options: shared across deepcopy + manifests.
 CRD_OPTIONS ?= crd:generateEmbeddedObjectMeta=true
@@ -43,6 +52,10 @@ kustomize-tool: | $(LOCALBIN) ## Install kustomize under bin/ at the pinned vers
 	@test -x $(KUSTOMIZE) && [ "v$$($(KUSTOMIZE) version 2>/dev/null | sed -E 's/^v?([0-9.]+).*/\1/')" = "$(KUSTOMIZE_VERSION)" ] || \
 		GOBIN=$(LOCALBIN) go install sigs.k8s.io/kustomize/kustomize/v5@$(KUSTOMIZE_VERSION)
 
+.PHONY: envtest-tool
+envtest-tool: | $(LOCALBIN) ## Install setup-envtest under bin/ (version follows controller-runtime).
+	@test -x $(ENVTEST) || GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(ENVTEST_VERSION)
+
 .PHONY: controller-generate
 controller-generate: controller-gen-tool ## Generate deepcopy methods (zz_generated.deepcopy.go).
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/..."
@@ -50,25 +63,31 @@ controller-generate: controller-gen-tool ## Generate deepcopy methods (zz_genera
 .PHONY: controller-manifests
 controller-manifests: controller-gen-tool ## Generate CRD manifests and RBAC under config/.
 	$(CONTROLLER_GEN) $(CRD_OPTIONS) rbac:roleName=holos-controller-manager-role \
-		paths="./api/..." paths="./cmd/holos-controller/..." \
+		paths="./api/..." paths="./cmd/holos-controller/..." paths="./internal/controller/..." \
 		output:crd:artifacts:config=config/crd/bases \
 		output:rbac:artifacts:config=config/rbac
 
 .PHONY: controller-fmt
 controller-fmt: ## Run go fmt against the controller, API, and internal sources.
-	go fmt ./cmd/holos-controller/... ./api/... ./internal/quay/...
+	go fmt ./cmd/holos-controller/... ./api/... ./internal/quay/... ./internal/controller/...
 
 .PHONY: controller-vet
 controller-vet: ## Run go vet against the controller, API, and internal sources.
-	go vet ./cmd/holos-controller/... ./api/... ./internal/quay/...
+	go vet ./cmd/holos-controller/... ./api/... ./internal/quay/... ./internal/controller/...
 
 .PHONY: controller-build
 controller-build: controller-fmt controller-vet ## Build the holos-controller binary.
 	go build -o bin/holos-controller ./cmd/holos-controller
 
+# controller-test provisions the envtest control-plane binaries (kube-apiserver +
+# etcd) via setup-envtest and exports KUBEBUILDER_ASSETS so the envtest-based
+# reconciler tests under internal/controller can stand up a real API server. The
+# api/, cmd/, and internal/quay packages have no such dependency but run in the
+# same invocation for a single test entrypoint.
 .PHONY: controller-test
-controller-test: controller-fmt controller-vet ## Run controller, API, and Quay client tests with the race detector.
-	go test -race ./api/... ./cmd/holos-controller/... ./internal/quay/...
+controller-test: controller-fmt controller-vet envtest-tool ## Run controller, API, and Quay client tests with the race detector.
+	KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
+		go test -race ./api/... ./cmd/holos-controller/... ./internal/quay/... ./internal/controller/...
 
 # Image targets use buildx so the builder stage runs on the native host and the
 # Go toolchain cross-compiles to $(CONTROLLER_PLATFORM) — mirrors the holos-paas

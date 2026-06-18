@@ -1,0 +1,263 @@
+package quay
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
+	"github.com/holos-run/holos-paas/internal/quay"
+)
+
+// organizationFinalizer guards Quay-side cleanup: while it is present, deleting
+// the Organization CR runs the finalizer (which deletes the Quay org) before the
+// CR is removed from the API server. Its value is the resource's qualified name
+// so it is unambiguous among any other finalizers.
+const organizationFinalizer = "organization.quay.holos.run/finalizer"
+
+// OrgClient is the seam the Organization reconciler drives Quay through. It is
+// the subset of internal/quay.Client's organization operations the reconciler
+// needs, named as an interface so tests inject a fake without HTTP. The concrete
+// *quay.Client satisfies it.
+type OrgClient interface {
+	// GetOrganization fetches a Quay organization; a missing org returns an
+	// error for which quay.IsNotFound reports true.
+	GetOrganization(ctx context.Context, name string) (*quay.Organization, error)
+	// CreateOrganizationIfNotExists creates the org, treating an already-exists
+	// response as success (idempotent).
+	CreateOrganizationIfNotExists(ctx context.Context, name, email string) error
+	// DeleteOrganizationIfExists deletes the org, treating an already-absent
+	// response as success (idempotent).
+	DeleteOrganizationIfExists(ctx context.Context, name string) error
+}
+
+// ClientFactory builds an OrgClient from a resolved Quay credential. The default
+// factory (NewQuayClient) returns a real *quay.Client; tests substitute a factory
+// that returns a fake, which is how the reconciler is exercised without a live
+// Quay or HTTP.
+type ClientFactory func(cred *quayCredential) OrgClient
+
+// NewQuayClient is the production ClientFactory: it builds a real internal/quay
+// client from the credential's url and token.
+func NewQuayClient(cred *quayCredential) OrgClient {
+	return quay.NewClient(cred.url, cred.token, nil)
+}
+
+// Compile-time assertion that the real Quay client satisfies the reconciler's
+// seam, so a signature drift in internal/quay is caught at build time.
+var _ OrgClient = (*quay.Client)(nil)
+
+// OrganizationReconciler reconciles a quay.holos.run Organization against the
+// in-cluster Quay registry: it creates or adopts the named Quay organization and,
+// on delete, runs a finalizer that deletes it. Status follows the Gateway-API
+// convention (see conditions.go) and meaningful transitions emit Events.
+type OrganizationReconciler struct {
+	// Client is the manager's cached client for the Organization CR and status.
+	client.Client
+	// APIReader is the manager's non-caching reader, used to Get the credential
+	// Secret without a cluster-wide Secret cache (the controller holds only get
+	// on Secrets, never list/watch).
+	APIReader client.Reader
+	// Recorder emits Kubernetes Events for created/adopted/failed/deleted
+	// transitions (AC #2).
+	Recorder record.EventRecorder
+	// Namespace is the controller's own namespace, where credential Secrets are
+	// resolved. Defaults to DefaultControllerNamespace via controllerNamespace().
+	Namespace string
+	// NewClient builds the Quay client from a resolved credential. Defaults to
+	// NewQuayClient; tests override it with a fake factory.
+	NewClient ClientFactory
+}
+
+// +kubebuilder:rbac:groups=quay.holos.run,resources=organizations,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=quay.holos.run,resources=organizations/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=quay.holos.run,resources=organizations/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+
+// Reconcile drives an Organization toward its desired state. Loop shape:
+// fetch CR → ensure finalizer → on delete run Quay delete then remove finalizer →
+// else resolve credential → GetOrganization (404 ⇒ create, else adopt) → mark
+// Ready with observedGeneration → Status().Update. Credential and Quay errors map
+// to a False condition with an actionable reason and a Warning event, and return
+// an error so the request requeues with backoff.
+func (r *OrganizationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	org := &quayv1alpha1.Organization{}
+	if err := r.Get(ctx, req.NamespacedName, org); err != nil {
+		// Not found: the CR was deleted and its finalizer already ran. Nothing
+		// to do; do not requeue.
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// Deletion path: run the finalizer (delete the Quay org) then drop it so the
+	// API server can remove the CR.
+	if !org.DeletionTimestamp.IsZero() {
+		return r.reconcileDelete(ctx, org)
+	}
+
+	// Ensure the finalizer is present before doing any Quay work, so a delete
+	// that races in still triggers Quay-side cleanup.
+	if controllerutil.AddFinalizer(org, organizationFinalizer) {
+		if err := r.Update(ctx, org); err != nil {
+			return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
+		}
+		// The update changes the resourceVersion; requeue to reconcile the
+		// fresh object rather than continuing with a stale one.
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	return r.reconcileNormal(ctx, logger, org)
+}
+
+// reconcileNormal resolves the credential, creates or adopts the Quay org, and
+// updates status.
+func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger logr.Logger, org *quayv1alpha1.Organization) (ctrl.Result, error) {
+	cred, err := resolveCredential(ctx, r.APIReader, r.Namespace, org.Spec.CredentialsSecretRef)
+	if err != nil {
+		if isMissingCredential(err) {
+			// A missing Secret/key is an expected, recoverable state: set a
+			// False condition, emit a Warning, and requeue with an error so the
+			// reconcile retries when the operator creates the Secret.
+			markNotReady(&org.Status.Conditions, ReasonCredentialsNotFound, err.Error(), org.Generation)
+			r.Recorder.Event(org, corev1.EventTypeWarning, ReasonCredentialsNotFound, err.Error())
+			if statusErr := r.updateStatus(ctx, org); statusErr != nil {
+				return ctrl.Result{}, statusErr
+			}
+			return ctrl.Result{}, err
+		}
+		// A transient API error reading the Secret: requeue with backoff without
+		// stamping a misleading reason.
+		return ctrl.Result{}, err
+	}
+
+	qc := r.NewClient(cred)
+
+	// Determine create-vs-adopt: GET the org, branch on 404.
+	reason := ReasonCreated
+	message := fmt.Sprintf("created Quay organization %q", org.Spec.Name)
+	eventReason := ReasonCreated
+
+	_, getErr := qc.GetOrganization(ctx, org.Spec.Name)
+	switch {
+	case getErr == nil:
+		// The org already exists: adopt it idempotently.
+		reason = ReasonAdopted
+		message = fmt.Sprintf("adopted existing Quay organization %q", org.Spec.Name)
+		eventReason = ReasonAdopted
+	case quay.IsNotFound(getErr):
+		// The org does not exist: create it.
+		if err := qc.CreateOrganizationIfNotExists(ctx, org.Spec.Name, org.Spec.Email); err != nil {
+			return r.fail(ctx, org, fmt.Errorf("creating Quay organization %q: %w", org.Spec.Name, err))
+		}
+	default:
+		// Any other Quay error (auth, server error): fail and requeue.
+		return r.fail(ctx, org, fmt.Errorf("getting Quay organization %q: %w", org.Spec.Name, getErr))
+	}
+
+	markReady(&org.Status.Conditions, reason, message, org.Generation)
+	r.Recorder.Event(org, corev1.EventTypeNormal, eventReason, message)
+	logger.Info("reconciled Organization", "name", org.Spec.Name, "reason", reason)
+	if err := r.updateStatus(ctx, org); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}
+
+// reconcileDelete runs the finalizer: delete the Quay org (idempotently), then
+// remove the finalizer so the CR is deleted. A Quay error during delete fails the
+// reconcile and requeues, so the finalizer is not removed until cleanup succeeds.
+func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *quayv1alpha1.Organization) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(org, organizationFinalizer) {
+		// Already finalized; nothing to do.
+		return ctrl.Result{}, nil
+	}
+
+	cred, err := resolveCredential(ctx, r.APIReader, r.Namespace, org.Spec.CredentialsSecretRef)
+	if err != nil {
+		if isMissingCredential(err) {
+			// Without the credential the Quay org cannot be deleted. Surface the
+			// condition and requeue; do not strand the CR by dropping the
+			// finalizer when cleanup could not run.
+			markNotReady(&org.Status.Conditions, ReasonCredentialsNotFound, err.Error(), org.Generation)
+			r.Recorder.Event(org, corev1.EventTypeWarning, ReasonCredentialsNotFound, err.Error())
+			if statusErr := r.updateStatus(ctx, org); statusErr != nil {
+				return ctrl.Result{}, statusErr
+			}
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, err
+	}
+
+	qc := r.NewClient(cred)
+	if err := qc.DeleteOrganizationIfExists(ctx, org.Spec.Name); err != nil {
+		r.Recorder.Event(org, corev1.EventTypeWarning, ReasonQuayError,
+			fmt.Sprintf("deleting Quay organization %q: %v", org.Spec.Name, err))
+		return ctrl.Result{}, fmt.Errorf("deleting Quay organization %q: %w", org.Spec.Name, err)
+	}
+
+	r.Recorder.Event(org, corev1.EventTypeNormal, "Deleted",
+		fmt.Sprintf("deleted Quay organization %q", org.Spec.Name))
+
+	controllerutil.RemoveFinalizer(org, organizationFinalizer)
+	if err := r.Update(ctx, org); err != nil {
+		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
+	}
+	return ctrl.Result{}, nil
+}
+
+// fail records a Quay error as a False condition + Warning event and returns the
+// error so the request requeues with backoff.
+func (r *OrganizationReconciler) fail(ctx context.Context, org *quayv1alpha1.Organization, err error) (ctrl.Result, error) {
+	markNotReady(&org.Status.Conditions, ReasonQuayError, err.Error(), org.Generation)
+	r.Recorder.Event(org, corev1.EventTypeWarning, ReasonQuayError, err.Error())
+	if statusErr := r.updateStatus(ctx, org); statusErr != nil {
+		// Prefer surfacing the original Quay error; log the status failure.
+		log.FromContext(ctx).Error(statusErr, "updating status after Quay error")
+	}
+	return ctrl.Result{}, err
+}
+
+// updateStatus stamps observedGeneration and writes the status subresource. A
+// conflict (the CR changed under us) is ignored — the next reconcile recomputes
+// from the fresh object.
+func (r *OrganizationReconciler) updateStatus(ctx context.Context, org *quayv1alpha1.Organization) error {
+	org.Status.ObservedGeneration = org.Generation
+	if err := r.Status().Update(ctx, org); err != nil {
+		if apierrors.IsConflict(err) {
+			return nil
+		}
+		return fmt.Errorf("updating Organization status: %w", err)
+	}
+	return nil
+}
+
+// SetupWithManager wires the reconciler into the manager: it watches
+// Organization resources, defaults the namespace and client factory if unset, and
+// obtains an event recorder.
+func (r *OrganizationReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
+	}
+	if r.Recorder == nil {
+		r.Recorder = mgr.GetEventRecorderFor("organization-controller")
+	}
+	if r.Namespace == "" {
+		r.Namespace = controllerNamespace()
+	}
+	if r.NewClient == nil {
+		r.NewClient = NewQuayClient
+	}
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&quayv1alpha1.Organization{}).
+		Complete(r)
+}

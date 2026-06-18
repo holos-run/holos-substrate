@@ -31,6 +31,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
+	quaycontroller "github.com/holos-run/holos-paas/internal/controller/quay"
 )
 
 // RBAC the manager needs once the reconcilers land (HOL-1311, HOL-1312): full
@@ -120,9 +121,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Reconcilers are registered here in later phases (HOL-1311, HOL-1312).
-	// This scaffold starts an otherwise-empty manager that serves health and
-	// metrics endpoints.
+	// Register the Organization reconciler (HOL-1311). It resolves the Quay
+	// superuser credential from the controller's own namespace — read from
+	// POD_NAMESPACE (the downward API, set by the deployment in HOL-1313) and
+	// otherwise defaulting to holos-controller — so leaving Namespace empty lets
+	// SetupWithManager pick the env up. The Repository reconciler is wired in
+	// HOL-1312.
+	if err := (&quaycontroller.OrganizationReconciler{
+		Client: mgr.GetClient(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Organization")
+		os.Exit(1)
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
