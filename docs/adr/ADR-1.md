@@ -92,9 +92,12 @@ to (the namespace-mapping and isolation questions below are now designed by
   resources and reducing cognitive load.
 - The "tenant" referenced by ADR-3, ADR-4, and ADR-5 resolves to the `Project`
   resource defined here.
-- Because the implementation (resource scope, schema, namespace mapping,
-  hierarchy) is deferred, this ADR will be refined; a follow-up is required
-  before the `Project` resource can be built.
+- Because the implementation is deferred, this ADR will be refined.
+  [ADR-21](ADR-21.md) now designs the **namespace mapping and isolation** (the
+  `Project` maps onto a Kubernetes Namespace acting as the security boundary,
+  rendered under the GitOps model of [ADR-18](ADR-18.md)); what remains deferred
+  is the first-class resource scope/schema and the GCP-hierarchy (folder/org)
+  questions, so ADR-1 stays a living record a future `Project` CRD ADR may refine.
 - Adopting the GCP Project model sets expectations — an immutable ID distinct
   from a display name, a lifecycle, and per-Project isolation — that the deferred
   implementation must honor.
