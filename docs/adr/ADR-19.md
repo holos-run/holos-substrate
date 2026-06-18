@@ -12,6 +12,7 @@
 | -------- | ---------- | ----------- | -------------- |
 | 1        | 2026-06-17 | @jeffmccune | Initial design |
 | 2        | 2026-06-18 | @jeffmccune | Reconcile to the **as-built** `quay.holos.run/v1alpha1` schema shipped across HOL-1309..HOL-1313 (AC #10, authoritative). The implemented Organization/Repository specs are narrower than Revision 1's illustrative design: no inline `repositories[]` (AC #9), no `access[]`/`allowRepositoryCreation`, no `retention`/robot fields; the webhook is an inline `url`/`urlSecretRef` decoupled from Kargo (AC #8), not a `kargoProjectConfigRef`. Record the **API-group dependency boundary** (AC #7), the `credentialsSecretRef` → `holos-controller-quay-creds` in `holos-controller` credential wiring, and the Gateway-API conditions/reasons actually defined. Status `Proposed` → `Implemented` |
+| 3        | 2026-06-18 | @jeffmccune | Document the **durable server-side ownership marker** (HOL-1315): the controller stamps a `<org>+holos-owner` robot whose `description` carries the owning CR's UID and keys create/heal/delete on it (not solely on `status.created`), closing the two HOL-1311 races. Record that the Organization reconciler applies `spec.email` drift via `UpdateOrganization`, and that `spec.displayName` has **no** Quay 3.17.3 org field to program (mutation deferred). |
 
 ## Context and Problem Statement
 
@@ -198,8 +199,8 @@ status:
 | Spec field | Purpose |
 | --- | --- |
 | `name` | the Quay org to create or adopt; **immutable**, required (no defaulting). |
-| `email` | unique namespace email Quay requires. |
-| `displayName` | optional human-friendly name. |
+| `email` | unique namespace email Quay requires. Mutable: the reconciler pushes `spec.email` drift to Quay via `UpdateOrganization` (`PUT /api/v1/organization/{org}`) before marking an owned org Ready. |
+| `displayName` | optional human-friendly name. **Not programmed into Quay:** Quay 3.17.3 organizations have no display-name/description field, so `spec.displayName` is accepted on the CR but has no Quay org field to map to. |
 | `credentialsSecretRef` | the Quay superuser credential Secret; defaults to `holos-controller-quay-creds` in `holos-controller`. The resource's **only** auth dependency (AC #7). |
 | `adopt` | opt-in (default `false`) to take ownership of a pre-existing unmarked org; without it such an org is a `Conflict`. An adopted org is *released*, not deleted, on CR removal. |
 
@@ -356,6 +357,40 @@ recorded by the durable `status.created` ownership marker:
 The finalizer deletes the Quay org only when `created: true`; an adopted org is
 released. This bounds the `FEATURE_SUPERUSERS_FULL_ACCESS` blast radius to orgs
 the platform created or was explicitly told to adopt.
+
+#### Durable server-side ownership marker
+
+`status.created` lives only on the CR, so two narrow races remain if it is the
+*sole* owner record: (a) a successful Quay create whose `created: true`
+status-write is lost could let a later reconcile mis-classify the org as foreign
+and release (leak) it; (b) a finalizer delete that succeeds but whose finalizer
+*removal* fails, racing another actor that recreates the same global org name in
+the gap, could let the retried delete destroy the recreated org. To close both,
+the reconciler also stamps a **durable, server-side ownership marker on the Quay
+org itself** and keys the create/heal/delete decisions on it — the exact
+mechanism is an implementation detail of the controller, not API surface:
+
+- The marker is a dedicated robot account, **`<org>+holos-owner`**, whose
+  free-text `description` holds an opaque, controller-managed token: the owning
+  `Organization` CR's `metadata.uid` (stable for the CR's lifetime, unique across
+  CRs, never reused). Quay 3.17.3 organizations expose no label/annotation/
+  description field of their own, so a marker robot is the durable per-org record
+  available through the standard org API. The marker is stamped immediately after
+  a clean create.
+- **Create / heal:** an existing org whose marker token matches this CR is owned
+  (its `status.created` is healed to `true` if a prior write was lost — closing
+  race (a) — rather than released). An existing org with no marker but
+  `status.created == true` is re-stamped and kept. An org whose marker holds a
+  *different* token is owned by another claim and is a `Conflict`, never seized —
+  even with `spec.adopt`.
+- **Delete:** before deleting, the finalizer re-reads the marker and deletes the
+  Quay org only when it still names this CR; if the marker is absent or holds a
+  foreign token (the org was recreated by another actor in the delete gap), it
+  **releases** instead of deleting — closing race (b).
+
+Adopted orgs (claimed via `spec.adopt`, `created: false`) are **not** marked:
+adoption is non-destructive, the finalizer releases them without touching Quay,
+and stamping a marker would wrongly arm them for deletion.
 
 ### Out of scope (deliberately)
 

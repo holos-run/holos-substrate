@@ -214,6 +214,94 @@ func TestGetOrganizationNotFound(t *testing.T) {
 	}
 }
 
+func TestUpdateOrganization(t *testing.T) {
+	h := &recordingHandler{t: t, wantMethod: http.MethodPut, wantPath: "/api/v1/organization/acme", status: http.StatusOK}
+	c, _ := newTestClient(t, h)
+
+	if err := c.UpdateOrganization(context.Background(), "acme", "new@acme.example"); err != nil {
+		t.Fatalf("UpdateOrganization: %v", err)
+	}
+	assertCommonRequest(t, h, true)
+	if h.gotBody["email"] != "new@acme.example" {
+		t.Errorf("body email = %v, want new@acme.example", h.gotBody["email"])
+	}
+	// Quay orgs have no display-name field, so the PUT body must carry only the
+	// email — not a display name.
+	if _, ok := h.gotBody["displayName"]; ok {
+		t.Errorf("PUT body unexpectedly carried displayName: %+v", h.gotBody)
+	}
+}
+
+func TestGetOrganizationRobot(t *testing.T) {
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodGet, wantPath: "/api/v1/organization/acme/robots/holos-owner",
+		status:   http.StatusOK,
+		respBody: `{"name":"acme+holos-owner","description":"owner-uid-123","token":"abc"}`,
+	}
+	c, _ := newTestClient(t, h)
+
+	robot, err := c.GetOrganizationRobot(context.Background(), "acme", "holos-owner")
+	if err != nil {
+		t.Fatalf("GetOrganizationRobot: %v", err)
+	}
+	assertCommonRequest(t, h, false)
+	if robot.Name != "acme+holos-owner" || robot.Description != "owner-uid-123" {
+		t.Errorf("decoded robot = %+v", robot)
+	}
+}
+
+func TestGetOrganizationRobotNotFound(t *testing.T) {
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodGet, wantPath: "/api/v1/organization/acme/robots/holos-owner",
+		status:   http.StatusNotFound,
+		respBody: `{"error_message":"Could not find robot with specified username"}`,
+	}
+	c, _ := newTestClient(t, h)
+
+	_, err := c.GetOrganizationRobot(context.Background(), "acme", "holos-owner")
+	if !IsNotFound(err) {
+		t.Fatalf("expected IsNotFound, got %v", err)
+	}
+}
+
+func TestCreateOrganizationRobot(t *testing.T) {
+	h := &recordingHandler{t: t, wantMethod: http.MethodPut, wantPath: "/api/v1/organization/acme/robots/holos-owner", status: http.StatusCreated}
+	c, _ := newTestClient(t, h)
+
+	if err := c.CreateOrganizationRobot(context.Background(), "acme", "holos-owner", "owner-uid-123"); err != nil {
+		t.Fatalf("CreateOrganizationRobot: %v", err)
+	}
+	assertCommonRequest(t, h, true)
+	if h.gotBody["description"] != "owner-uid-123" {
+		t.Errorf("body description = %v, want owner-uid-123", h.gotBody["description"])
+	}
+}
+
+func TestCreateOrganizationRobotDuplicateIsConflict(t *testing.T) {
+	// Quay's create-robot endpoint is not idempotent: an existing robot comes
+	// back as a 400 naming the duplicate, which must map to a conflict.
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodPut, wantPath: "/api/v1/organization/acme/robots/holos-owner",
+		status:   http.StatusBadRequest,
+		respBody: `{"message":"Existing robot with name: acme+holos-owner already exists"}`,
+	}
+	c, _ := newTestClient(t, h)
+
+	err := c.CreateOrganizationRobot(context.Background(), "acme", "holos-owner", "owner-uid-123")
+	if !IsConflict(err) {
+		t.Fatalf("expected IsConflict for duplicate robot, got %v", err)
+	}
+}
+
+func TestDeleteOrganizationRobotIfExistsSwallowsNotFound(t *testing.T) {
+	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: "/api/v1/organization/acme/robots/holos-owner", status: http.StatusNotFound}
+	c, _ := newTestClient(t, h)
+
+	if err := c.DeleteOrganizationRobotIfExists(context.Background(), "acme", "holos-owner"); err != nil {
+		t.Fatalf("DeleteOrganizationRobotIfExists should swallow 404, got %v", err)
+	}
+}
+
 func TestDeleteOrganization(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: "/api/v1/organization/acme", status: http.StatusNoContent}
 	c, _ := newTestClient(t, h)

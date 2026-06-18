@@ -37,6 +37,13 @@ type OrganizationSpec struct {
 
 	// DisplayName is an optional human-friendly name for the organization.
 	//
+	// Note: Quay 3.17.3 organizations have no display-name (or description)
+	// field, so this value is accepted on the CR but is NOT programmed into Quay
+	// — there is no org endpoint to apply it to. It is retained as forward-looking
+	// API surface for a future Quay release (or an alternate registry) that gains
+	// a display-name field. The contact Email, by contrast, IS mutable and is
+	// reconciled to Quay on drift.
+	//
 	// +optional
 	DisplayName string `json:"displayName,omitempty"`
 
