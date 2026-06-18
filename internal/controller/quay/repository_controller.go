@@ -346,7 +346,13 @@ func (r *RepositoryReconciler) reconcileWebhook(ctx context.Context, logger logr
 	}
 
 	if err := r.ensureWebhook(ctx, qc, ns, name, url); err != nil {
-		return true, false, ctrl.Result{}, r.failErr(ctx, repo, err)
+		// Quay's error body for a webhook call can echo the submitted config,
+		// including the target URL. For a secret-backed URL that value is sensitive
+		// (the hard-to-guess Kargo receiver URL is held in a Secret precisely so it
+		// is not exposed), so redact it before the error reaches the status
+		// condition that failErr writes. The returned (unredacted) error still
+		// drives requeue/backoff and is logged internally.
+		return true, false, ctrl.Result{}, r.failErr(ctx, repo, redactWebhookURL(err, repo, url))
 	}
 
 	// Do not put the resolved URL in the status message when it came from a
@@ -362,6 +368,23 @@ func (r *RepositoryReconciler) reconcileWebhook(ctx context.Context, logger logr
 		ReasonWebhookConfigured, message, repo.Generation)
 	logger.V(1).Info("reconciled webhook", "repository", ns+"/"+name)
 	return false, changed, ctrl.Result{}, nil
+}
+
+// redactWebhookURL scrubs a secret-backed webhook URL out of an error before it
+// is written into a status condition. When the Repository's webhook URL came from
+// a urlSecretRef, any occurrence of url in err's message is replaced with
+// "[redacted]" so a Quay error body that echoes the submitted config cannot leak
+// the hard-to-guess receiver URL into status (which is broadly readable). For an
+// inline URL — already present in the spec — the error is returned unchanged.
+func redactWebhookURL(err error, repo *quayv1alpha1.Repository, url string) error {
+	if err == nil || url == "" || !usesWebhookSecretRef(repo) {
+		return err
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, url) {
+		return err
+	}
+	return fmt.Errorf("%s", strings.ReplaceAll(msg, url, "[redacted]"))
 }
 
 // isManagedWebhook reports whether a notification is one this controller owns:

@@ -249,6 +249,52 @@ func TestRepositoryCreatesWithSecretRefWebhook(t *testing.T) {
 	}
 }
 
+func TestRepositorySecretRefWebhookErrorDoesNotLeakURL(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	const secretURL = "https://kargo.example.test/webhook/super-secret-token"
+	hookSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "kargo-receiver"},
+		Data:       map[string][]byte{"url": []byte(secretURL)},
+	}
+	if err := shared.k8sClient.Create(ctx, hookSecret); err != nil {
+		t.Fatalf("creating webhook secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	key := makeRepo(ctx, t, ns, "acme", "leaky", repoOpts{
+		webhook: &quayv1alpha1.RepositoryWebhook{
+			UrlSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "kargo-receiver", Key: "url"},
+		},
+	})
+
+	fake := newFakeRepoClient()
+	// Simulate a Quay error whose body echoes the submitted (secret) webhook URL.
+	fake.createNotifErr = &quay.APIError{
+		StatusCode: 400,
+		Method:     "POST",
+		Path:       "/api/v1/repository/acme/leaky/notification/",
+		Message:    "invalid webhook config for url " + secretURL,
+	}
+	r, _ := newRepoReconciler(fake, ns)
+
+	if _, err := reconcileRepo(ctx, r, key); err != nil {
+		t.Fatalf("first reconcile (finalizer): %v", err)
+	}
+	if _, err := reconcileRepo(ctx, r, key); err == nil {
+		t.Fatal("expected reconcile to error so it requeues on the webhook failure")
+	}
+
+	repo := getRepo(ctx, t, key)
+	for _, c := range repo.Status.Conditions {
+		if strings.Contains(c.Message, secretURL) {
+			t.Errorf("condition %q message leaked the secret URL: %q", c.Type, c.Message)
+		}
+	}
+}
+
 func TestRepositorySecretRefMissingKeySetsConditionAndRequeues(t *testing.T) {
 	ctx := context.Background()
 	ns := makeNamespace(ctx, t)

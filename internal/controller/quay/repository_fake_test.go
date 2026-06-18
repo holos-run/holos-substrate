@@ -34,6 +34,9 @@ type fakeRepoClient struct {
 
 	// createRepoErr, when non-nil, is returned by CreateRepository.
 	createRepoErr error
+	// createNotifErr, when non-nil, is returned by CreateNotification — used to
+	// simulate a Quay error whose body echoes the submitted (secret) webhook URL.
+	createNotifErr error
 
 	// nextUUID counts created notifications so each gets a unique UUID.
 	nextUUID int
@@ -137,6 +140,9 @@ func (f *fakeRepoClient) CreateNotification(ctx context.Context, ns, repo, url, 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("CreateNotification:" + repoKey(ns, repo) + ":" + url)
+	if f.createNotifErr != nil {
+		return nil, f.createNotifErr
+	}
 	st, ok := f.repos[repoKey(ns, repo)]
 	if !ok {
 		return nil, notFoundRepoError(ns, repo)
