@@ -26,9 +26,7 @@ type createOrganizationRequest struct {
 // updateOrganizationRequest is the PUT /api/v1/organization/{orgname} body
 // (Quay's changeOrganizationDetails). Quay 3.17.3 accepts email, invoice_email,
 // invoice_email_address, and tag_expiration_s on this endpoint; the controller
-// only programs the contact email, so only email is sent. There is no
-// display-name/description field on a Quay organization, so spec.displayName has
-// no Quay org field to map to (UpdateOrganization cannot program it).
+// only programs the contact email, so only email is sent.
 type updateOrganizationRequest struct {
 	Email string `json:"email,omitempty"`
 }
@@ -72,11 +70,6 @@ func (c *Client) GetOrganization(ctx context.Context, name string) (*Organizatio
 // PUT /api/v1/organization/{orgname} (Quay's changeOrganizationDetails). It
 // programs the contact email; reconcilers call it only when GetOrganization
 // reports drift from the desired email.
-//
-// Quay 3.17.3 organizations have no display-name or description field, so a
-// spec.displayName cannot be programmed through this (or any other) org endpoint;
-// callers that carry a display name must surface that limitation rather than
-// expect it to be applied here.
 func (c *Client) UpdateOrganization(ctx context.Context, name, email string) error {
 	req := updateOrganizationRequest{Email: email}
 	path := "/api/v1/organization/" + url.PathEscape(name)

@@ -225,11 +225,6 @@ func TestUpdateOrganization(t *testing.T) {
 	if h.gotBody["email"] != "new@acme.example" {
 		t.Errorf("body email = %v, want new@acme.example", h.gotBody["email"])
 	}
-	// Quay orgs have no display-name field, so the PUT body must carry only the
-	// email — not a display name.
-	if _, ok := h.gotBody["displayName"]; ok {
-		t.Errorf("PUT body unexpectedly carried displayName: %+v", h.gotBody)
-	}
 }
 
 func TestGetOrganizationRobot(t *testing.T) {

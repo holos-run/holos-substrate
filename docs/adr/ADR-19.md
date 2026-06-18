@@ -12,7 +12,8 @@
 | -------- | ---------- | ----------- | -------------- |
 | 1        | 2026-06-17 | @jeffmccune | Initial design |
 | 2        | 2026-06-18 | @jeffmccune | Reconcile to the **as-built** `quay.holos.run/v1alpha1` schema shipped across HOL-1309..HOL-1313 (AC #10, authoritative). The implemented Organization/Repository specs are narrower than Revision 1's illustrative design: no inline `repositories[]` (AC #9), no `access[]`/`allowRepositoryCreation`, no `retention`/robot fields; the webhook is an inline `url`/`urlSecretRef` decoupled from Kargo (AC #8), not a `kargoProjectConfigRef`. Record the **API-group dependency boundary** (AC #7), the `credentialsSecretRef` → `holos-controller-quay-creds` in `holos-controller` credential wiring, and the Gateway-API conditions/reasons actually defined. Status `Proposed` → `Implemented` |
-| 3        | 2026-06-18 | @jeffmccune | Document the **durable server-side ownership marker** (HOL-1315): the controller stamps a `<org>+holos-owner` robot whose `description` carries the owning CR's UID and keys create/heal/delete on it (not solely on `status.created`), closing the two HOL-1311 races. Record that the Organization reconciler applies `spec.email` drift via `UpdateOrganization`, and that `spec.displayName` has **no** Quay 3.17.3 org field to program (mutation deferred). |
+| 3        | 2026-06-18 | @jeffmccune | Document the **durable server-side ownership marker** (HOL-1315): the controller stamps a `<org>+holos-owner` robot whose `description` carries the owning CR's UID and keys create/heal/delete on it (not solely on `status.created`), closing the two HOL-1311 races. Record that the Organization reconciler applies `spec.email` drift via `UpdateOrganization`. |
+| 4        | 2026-06-18 | @jeffmccune | Remove `spec.displayName` from the Organization CRD (HOL-1316). Quay 3.17.3 organizations have no display-name/description field, so the value was never programmable; the field is dropped entirely (unreleased — no migration or backwards compatibility). |
 
 ## Context and Problem Statement
 
@@ -171,8 +172,6 @@ spec:
   name: my-project
   # Quay requires every namespace to have a unique email.
   email: my-project@holos.localhost
-  # Optional human-friendly display name.
-  displayName: My Project
   # The Quay superuser credential Secret (defaults to holos-controller-quay-creds
   # in the controller's holos-controller namespace).
   credentialsSecretRef:
@@ -200,7 +199,6 @@ status:
 | --- | --- |
 | `name` | the Quay org to create or adopt; **immutable**, required (no defaulting). |
 | `email` | unique namespace email Quay requires. Mutable: the reconciler pushes `spec.email` drift to Quay via `UpdateOrganization` (`PUT /api/v1/organization/{org}`) before marking an owned org Ready. |
-| `displayName` | optional human-friendly name. **Not programmed into Quay:** Quay 3.17.3 organizations have no display-name/description field, so `spec.displayName` is accepted on the CR but has no Quay org field to map to. |
 | `credentialsSecretRef` | the Quay superuser credential Secret; defaults to `holos-controller-quay-creds` in `holos-controller`. The resource's **only** auth dependency (AC #7). |
 | `adopt` | opt-in (default `false`) to take ownership of a pre-existing unmarked org; without it such an org is a `Conflict`. An adopted org is *released*, not deleted, on CR removal. |
 
@@ -451,7 +449,7 @@ new orgs and adopt orgs other identities created.
    (reached via the `credentialsSecretRef` credential) and, for a webhook, the
    inline `url` / `urlSecretRef`. The **controller binary** may depend on
    Kargo/Argo CD; the API package must not.
-3. **Organization** carries `name` (immutable), `email`, `displayName`,
+3. **Organization** carries `name` (immutable), `email`,
    `credentialsSecretRef` (defaulting to `holos-controller-quay-creds`), and an
    `adopt` opt-in; status carries `observedGeneration`, the `created` ownership
    marker, and Gateway-API `Accepted`/`Programmed`/`Ready` conditions. It has

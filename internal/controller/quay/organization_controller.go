@@ -290,8 +290,7 @@ func (r *OrganizationReconciler) reconcileOwned(ctx context.Context, logger logr
 
 	// Apply mutable spec drift before marking Ready. Quay 3.17.3 organizations
 	// expose only the contact email as a mutable, programmable field on this
-	// path; spec.displayName has no corresponding Quay org field, so it cannot be
-	// programmed (documented in UpdateOrganization and the deferred ACs).
+	// path.
 	if actual == nil {
 		fetched, err := qc.GetOrganization(ctx, org.Spec.Name)
 		recordQuayAPI(opGetOrganization, err)
