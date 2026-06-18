@@ -53,6 +53,21 @@ type OrganizationSpec struct {
 	// +optional
 	// +kubebuilder:default={name: "holos-controller-quay-creds"}
 	CredentialsSecretRef SecretReference `json:"credentialsSecretRef,omitempty"`
+
+	// Adopt opts in to taking ownership of a pre-existing, externally-created
+	// Quay organization of the same name (ADR-19's claim model). Default false:
+	// an org this CR did not create and does not already own is a Conflict
+	// (Ready=False, reason Conflict) and is never silently seized — the
+	// controller's credential carries FEATURE_SUPERUSERS_FULL_ACCESS, so without
+	// this guard a namespaced CR could take over another tenant's global Quay
+	// org. Set adopt: true to deliberately claim such an org.
+	//
+	// An adopted org is released (the finalizer drops without deleting) rather
+	// than deleted on CR removal, so adoption is non-destructive to a resource
+	// the platform did not create.
+	//
+	// +optional
+	Adopt bool `json:"adopt,omitempty"`
 }
 
 // Condition types surfaced on Organization and Repository status. The vocabulary
@@ -89,6 +104,16 @@ type OrganizationStatus struct {
 	//
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Created is the durable ownership marker of ADR-19's claim model: it
+	// records whether this CR created the Quay organization (true) versus
+	// adopted a pre-existing one (false). It is the controller-managed owner
+	// record the claim model requires, persisted on the resource's own status
+	// so it survives controller restarts. The finalizer deletes the Quay org
+	// only when Created is true; an adopted org is released, never deleted.
+	//
+	// +optional
+	Created bool `json:"created,omitempty"`
 }
 
 // +kubebuilder:object:root=true

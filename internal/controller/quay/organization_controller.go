@@ -142,30 +142,64 @@ func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger log
 
 	qc := r.NewClient(cred)
 
-	// Determine create-vs-adopt: GET the org, branch on 404.
-	reason := ReasonCreated
-	message := fmt.Sprintf("created Quay organization %q", org.Spec.Name)
-	eventReason := ReasonCreated
-
+	// ADR-19 claim model. Quay orgs are a single global namespace and the
+	// controller credential carries FEATURE_SUPERUSERS_FULL_ACCESS, so a naive
+	// "adopt any existing org" rule would let a namespaced CR seize another
+	// tenant's org. The durable owner record is status.Created: true means this
+	// CR created the org (and the finalizer may delete it); false means it
+	// adopted a pre-existing one (released, never deleted, on removal).
+	//
+	// GET the org and branch on the three claim-model cases.
 	_, getErr := qc.GetOrganization(ctx, org.Spec.Name)
 	switch {
-	case getErr == nil:
-		// The org already exists: adopt it idempotently.
-		reason = ReasonAdopted
-		message = fmt.Sprintf("adopted existing Quay organization %q", org.Spec.Name)
-		eventReason = ReasonAdopted
 	case quay.IsNotFound(getErr):
-		// The org does not exist: create it.
+		// Org does not exist → create it and stamp this CR as the owner.
 		if err := qc.CreateOrganizationIfNotExists(ctx, org.Spec.Name, org.Spec.Email); err != nil {
 			return r.fail(ctx, org, fmt.Errorf("creating Quay organization %q: %w", org.Spec.Name, err))
 		}
+		org.Status.Created = true
+		return r.succeed(ctx, logger, org, ReasonCreated,
+			fmt.Sprintf("created Quay organization %q", org.Spec.Name))
+
+	case getErr == nil && org.Status.Created:
+		// Org exists and this CR created it (owner marker present) → steady
+		// state. Reconcile idempotently; never error on an org we own.
+		return r.succeed(ctx, logger, org, ReasonCreated,
+			fmt.Sprintf("reconciled Quay organization %q", org.Spec.Name))
+
+	case getErr == nil && org.Spec.Adopt:
+		// Org exists, this CR did not create it, but adoption was opted into →
+		// claim it. Mark Created false so the finalizer releases rather than
+		// deletes it (adoption is non-destructive).
+		org.Status.Created = false
+		return r.succeed(ctx, logger, org, ReasonAdopted,
+			fmt.Sprintf("adopted existing Quay organization %q", org.Spec.Name))
+
+	case getErr == nil:
+		// Org exists, unowned by this CR, and adoption was not opted into →
+		// Conflict. Refuse to write; this is a terminal state until the user
+		// sets spec.adopt, so do not return an error (no requeue storm). A spec
+		// change re-triggers reconcile.
+		message := fmt.Sprintf("Quay organization %q already exists and was not created by this resource; set spec.adopt to claim it", org.Spec.Name)
+		markNotReady(&org.Status.Conditions, ReasonConflict, message, org.Generation)
+		r.Recorder.Event(org, corev1.EventTypeWarning, ReasonConflict, message)
+		logger.Info("Organization conflict", "name", org.Spec.Name)
+		if err := r.updateStatus(ctx, org); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+
 	default:
 		// Any other Quay error (auth, server error): fail and requeue.
 		return r.fail(ctx, org, fmt.Errorf("getting Quay organization %q: %w", org.Spec.Name, getErr))
 	}
+}
 
+// succeed stamps Ready/Programmed/Accepted true with the given reason+message,
+// emits a Normal event, and writes status.
+func (r *OrganizationReconciler) succeed(ctx context.Context, logger logr.Logger, org *quayv1alpha1.Organization, reason, message string) (ctrl.Result, error) {
 	markReady(&org.Status.Conditions, reason, message, org.Generation)
-	r.Recorder.Event(org, corev1.EventTypeNormal, eventReason, message)
+	r.Recorder.Event(org, corev1.EventTypeNormal, reason, message)
 	logger.Info("reconciled Organization", "name", org.Spec.Name, "reason", reason)
 	if err := r.updateStatus(ctx, org); err != nil {
 		return ctrl.Result{}, err
@@ -173,13 +207,25 @@ func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger log
 	return ctrl.Result{}, nil
 }
 
-// reconcileDelete runs the finalizer: delete the Quay org (idempotently), then
-// remove the finalizer so the CR is deleted. A Quay error during delete fails the
-// reconcile and requeues, so the finalizer is not removed until cleanup succeeds.
+// reconcileDelete runs the finalizer. Per ADR-19's claim model the Quay org is
+// deleted only when this CR created it (status.Created); an adopted org is
+// released (the finalizer drops without deleting), so removing a CR that merely
+// claimed a pre-existing org never destroys it. After cleanup the finalizer is
+// removed so the CR is deleted. A Quay error during delete fails the reconcile
+// and requeues, so the finalizer is not removed until cleanup succeeds.
 func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *quayv1alpha1.Organization) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(org, organizationFinalizer) {
 		// Already finalized; nothing to do.
 		return ctrl.Result{}, nil
+	}
+
+	// Adopted org (or one never created by this CR) → release, do not delete.
+	// No credential is needed: the controller does not touch Quay, it only
+	// relinquishes its claim.
+	if !org.Status.Created {
+		r.Recorder.Event(org, corev1.EventTypeNormal, ReasonReleased,
+			fmt.Sprintf("released Quay organization %q without deleting (adopted, not created by this resource)", org.Spec.Name))
+		return r.removeFinalizer(ctx, org)
 	}
 
 	cred, err := resolveCredential(ctx, r.APIReader, r.Namespace, org.Spec.CredentialsSecretRef)
@@ -208,6 +254,12 @@ func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *quayv
 	r.Recorder.Event(org, corev1.EventTypeNormal, "Deleted",
 		fmt.Sprintf("deleted Quay organization %q", org.Spec.Name))
 
+	return r.removeFinalizer(ctx, org)
+}
+
+// removeFinalizer drops the organization finalizer and persists the change so
+// the API server can delete the CR.
+func (r *OrganizationReconciler) removeFinalizer(ctx context.Context, org *quayv1alpha1.Organization) (ctrl.Result, error) {
 	controllerutil.RemoveFinalizer(org, organizationFinalizer)
 	if err := r.Update(ctx, org); err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)

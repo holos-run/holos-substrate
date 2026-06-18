@@ -47,6 +47,14 @@ const (
 	ReasonCreated = "Created"
 	// ReasonAdopted marks a pre-existing Quay object adopted by this resource.
 	ReasonAdopted = "Adopted"
+	// ReasonConflict marks a condition False because a pre-existing,
+	// externally-created Quay org of the same name exists and the resource did
+	// not opt in to adoption (spec.adopt). The org is never silently seized
+	// (ADR-19 claim model).
+	ReasonConflict = "Conflict"
+	// ReasonReleased marks an adopted Quay org released (finalizer dropped
+	// without deleting) on CR removal — adoption is non-destructive.
+	ReasonReleased = "Released"
 	// ReasonCredentialsNotFound marks a condition False because the credential
 	// Secret (or a required key within it) could not be resolved.
 	ReasonCredentialsNotFound = "CredentialsNotFound"

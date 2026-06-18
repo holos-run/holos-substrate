@@ -17,6 +17,14 @@ import (
 // carries the API URL and Bearer token, plus an optional username for diagnostic
 // logging. The reconciler authenticates to Quay solely through this credential
 // (ADR-19, AC #7).
+//
+// This shape — Secret holos-controller-quay-creds in the holos-controller
+// namespace, keys url + token (+ optional username) — is the contract this
+// reconciler's phase (HOL-1311) mandates and the deployment provisions (HOL-1313).
+// It supersedes the older single-key quay/quay-resource-controller token Secret
+// the credentials runbook documents for manual API calls; reconciling that
+// runbook to this controller contract is HOL-1314's scope. The token may also be
+// pointed at a non-default key via SecretReference.Key (honored below).
 const (
 	// credentialKeyURL is the Secret key holding the Quay API URL.
 	credentialKeyURL = "url"
@@ -105,8 +113,18 @@ func resolveCredential(ctx context.Context, reader client.Reader, namespace stri
 		return nil, fmt.Errorf("reading credential Secret %s/%s: %w", namespace, name, err)
 	}
 
+	// The token key is the conventional "token" unless the ref narrows it with
+	// an explicit Key — the SecretReference.Key field selects which Secret entry
+	// holds the token. Honoring it keeps the documented CRD field functional
+	// rather than silently ignored. url and username always use their
+	// conventional keys.
+	tokenKey := credentialKeyToken
+	if ref.Key != "" {
+		tokenKey = ref.Key
+	}
+
 	url := string(secret.Data[credentialKeyURL])
-	token := string(secret.Data[credentialKeyToken])
+	token := string(secret.Data[tokenKey])
 	if url == "" {
 		return nil, &missingCredentialError{
 			msg: fmt.Sprintf("credential Secret %s/%s is missing the %q key", namespace, name, credentialKeyURL),
@@ -114,7 +132,7 @@ func resolveCredential(ctx context.Context, reader client.Reader, namespace stri
 	}
 	if token == "" {
 		return nil, &missingCredentialError{
-			msg: fmt.Sprintf("credential Secret %s/%s is missing the %q key", namespace, name, credentialKeyToken),
+			msg: fmt.Sprintf("credential Secret %s/%s is missing the %q key", namespace, name, tokenKey),
 		}
 	}
 

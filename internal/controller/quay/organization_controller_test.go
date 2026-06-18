@@ -35,14 +35,16 @@ func makeNamespace(ctx context.Context, t *testing.T) string {
 }
 
 // makeOrg creates an Organization CR named orgName in namespace ns and returns
-// its object key. credSecret, when non-empty, sets the credentialsSecretRef name.
-func makeOrg(ctx context.Context, t *testing.T, ns, orgName, credSecret string) client.ObjectKey {
+// its object key. credSecret, when non-empty, sets the credentialsSecretRef name;
+// adopt sets spec.adopt.
+func makeOrg(ctx context.Context, t *testing.T, ns, orgName, credSecret string, adopt bool) client.ObjectKey {
 	t.Helper()
 	org := &quayv1alpha1.Organization{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: orgName},
 		Spec: quayv1alpha1.OrganizationSpec{
 			Name:  orgName,
 			Email: orgName + "@example.test",
+			Adopt: adopt,
 		},
 	}
 	if credSecret != "" {
@@ -107,7 +109,7 @@ func TestReconcileCreatesOrganization(t *testing.T) {
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
 	}
-	key := makeOrg(ctx, t, ns, "acme", "")
+	key := makeOrg(ctx, t, ns, "acme", "", false)
 
 	fake := newFakeOrgClient() // acme does not exist yet
 	r, recorder := newReconciler(fake, ns)
@@ -130,6 +132,9 @@ func TestReconcileCreatesOrganization(t *testing.T) {
 	if got := conditionReason(org, ConditionReady); got != ReasonCreated {
 		t.Errorf("Ready reason = %q, want %q", got, ReasonCreated)
 	}
+	if !org.Status.Created {
+		t.Error("expected status.Created = true after creating the org")
+	}
 	if org.Status.ObservedGeneration != org.Generation {
 		t.Errorf("observedGeneration = %d, want %d", org.Status.ObservedGeneration, org.Generation)
 	}
@@ -142,7 +147,7 @@ func TestReconcileAdoptsExistingOrganization(t *testing.T) {
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
 	}
-	key := makeOrg(ctx, t, ns, "preexisting", "")
+	key := makeOrg(ctx, t, ns, "preexisting", "", true) // adopt: true
 
 	fake := newFakeOrgClient("preexisting") // already exists
 	r, recorder := newReconciler(fake, ns)
@@ -162,6 +167,9 @@ func TestReconcileAdoptsExistingOrganization(t *testing.T) {
 	if got := conditionReason(org, ConditionReady); got != ReasonAdopted {
 		t.Errorf("Ready reason = %q, want %q", got, ReasonAdopted)
 	}
+	if org.Status.Created {
+		t.Error("expected status.Created = false for an adopted (not created) org")
+	}
 	assertEvent(t, recorder, ReasonAdopted)
 }
 
@@ -171,7 +179,7 @@ func TestReconcileQuayErrorSetsReadyFalse(t *testing.T) {
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
 	}
-	key := makeOrg(ctx, t, ns, "boom", "")
+	key := makeOrg(ctx, t, ns, "boom", "", false)
 
 	fake := newFakeOrgClient()
 	// Simulate a non-404 Quay error on GET (e.g. 500 / auth failure).
@@ -201,7 +209,7 @@ func TestReconcileMissingCredentialSecretSetsConditionAndNoQuayCall(t *testing.T
 	ctx := context.Background()
 	ns := makeNamespace(ctx, t)
 	// Deliberately do NOT create the credential Secret.
-	key := makeOrg(ctx, t, ns, "nocreds", "")
+	key := makeOrg(ctx, t, ns, "nocreds", "", false)
 
 	fake := newFakeOrgClient()
 	r, recorder := newReconciler(fake, ns)
@@ -235,7 +243,7 @@ func TestReconcileDeleteRemovesFinalizerAfterQuayDelete(t *testing.T) {
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
 	}
-	key := makeOrg(ctx, t, ns, "doomed", "")
+	key := makeOrg(ctx, t, ns, "doomed", "", false)
 
 	fake := newFakeOrgClient()
 	r, _ := newReconciler(fake, ns)
@@ -268,6 +276,128 @@ func TestReconcileDeleteRemovesFinalizerAfterQuayDelete(t *testing.T) {
 	// The CR should now be fully gone (finalizer removed → API server deletes it).
 	if err := shared.k8sClient.Get(ctx, key, &quayv1alpha1.Organization{}); !apierrors.IsNotFound(err) {
 		t.Errorf("expected Organization to be deleted, get returned %v", err)
+	}
+}
+
+func TestReconcileConflictWhenExistingOrgNotAdopted(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	// The org already exists in Quay but this CR did not create it and does not
+	// set adopt — the claim model must refuse to seize it.
+	key := makeOrg(ctx, t, ns, "foreign", "", false)
+
+	fake := newFakeOrgClient("foreign") // pre-existing, externally created
+	r, recorder := newReconciler(fake, ns)
+
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		// Conflict is a terminal state, not an error/requeue storm.
+		t.Fatalf("reconcile should not error on a conflict: %v", err)
+	}
+
+	if fake.callsContain("Create:foreign") {
+		t.Errorf("must not create when an existing org is unowned; calls were %v", fake.calls)
+	}
+
+	org := getOrg(ctx, t, key)
+	if got := conditionStatus(org, ConditionReady); got != metav1.ConditionFalse {
+		t.Errorf("Ready = %q, want False", got)
+	}
+	if got := conditionReason(org, ConditionReady); got != ReasonConflict {
+		t.Errorf("Ready reason = %q, want %q", got, ReasonConflict)
+	}
+	if org.Status.Created {
+		t.Error("expected status.Created = false on a conflict")
+	}
+	assertEvent(t, recorder, ReasonConflict)
+}
+
+func TestReconcileDeleteReleasesAdoptedOrgWithoutDeleting(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	// adopt: true claims a pre-existing org → status.Created stays false.
+	key := makeOrg(ctx, t, ns, "shared-org", "", true)
+
+	fake := newFakeOrgClient("shared-org") // pre-existing
+	r, _ := newReconciler(fake, ns)
+
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile adopt: %v", err)
+	}
+	if getOrg(ctx, t, key).Status.Created {
+		t.Fatal("expected adopted org status.Created = false")
+	}
+
+	// Delete the CR; the finalizer must release (not delete) the Quay org.
+	org := getOrg(ctx, t, key)
+	if err := shared.k8sClient.Delete(ctx, org); err != nil {
+		t.Fatalf("deleting Organization: %v", err)
+	}
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile delete: %v", err)
+	}
+
+	if fake.callsContain("Delete:shared-org") {
+		t.Errorf("must NOT delete an adopted org; calls were %v", fake.calls)
+	}
+	if !fake.orgExists("shared-org") {
+		t.Error("expected the adopted org to survive CR deletion")
+	}
+	// The CR itself is gone (finalizer released).
+	if err := shared.k8sClient.Get(ctx, key, &quayv1alpha1.Organization{}); !apierrors.IsNotFound(err) {
+		t.Errorf("expected Organization CR to be deleted, get returned %v", err)
+	}
+}
+
+func TestReconcileHonorsCredentialSecretRefKey(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	// A credential Secret whose token lives under a custom key, not "token".
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "holos-controller-quay-creds"},
+		Data: map[string][]byte{
+			credentialKeyURL: []byte("https://quay.example.test"),
+			"oauth":          []byte("token-under-custom-key"),
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, secret); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+
+	// Point credentialsSecretRef.key at the custom token key.
+	org := &quayv1alpha1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "keyed"},
+		Spec: quayv1alpha1.OrganizationSpec{
+			Name:                 "keyed",
+			Email:                "keyed@example.test",
+			CredentialsSecretRef: quayv1alpha1.SecretReference{Key: "oauth"},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, org); err != nil {
+		t.Fatalf("creating Organization: %v", err)
+	}
+	key := client.ObjectKeyFromObject(org)
+
+	fake := newFakeOrgClient()
+	r, _ := newReconciler(fake, ns)
+
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	// The token resolved from the custom key, so the reconcile reached Quay and
+	// created the org (rather than failing CredentialsNotFound on the missing
+	// default "token" key).
+	if !fake.orgExists("keyed") {
+		t.Error("expected keyed to be created; the custom credential key was not honored")
+	}
+	if got := conditionReason(getOrg(ctx, t, key), ConditionReady); got != ReasonCreated {
+		t.Errorf("Ready reason = %q, want %q", got, ReasonCreated)
 	}
 }
 
