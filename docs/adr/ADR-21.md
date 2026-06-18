@@ -144,28 +144,43 @@ entry composes and *how* they fit together, not the CUE that emits them.
 ### The Project component: 8 resources per `projects.<name>` entry
 
 One Project entry renders these **8** resources, all anchored on the Project's
-Namespace as the security boundary:
+Namespace as the security boundary. Two of them — the `AppProject` and the
+project-level `Application` — are Argo CD objects that, following the
+[`my-project` scaffold](../../holos/components/my-project/buildplan.cue), are
+**namespaced into `argocd`** alongside the Argo CD controller (their *destination*
+is the Project's Namespace); the rest belong to (or target) the Project's
+Namespace:
 
-1. **k8s `Namespace`** `my-project` — the Project's containment boundary,
-   integrated with the central [`holos/namespaces.cue`](../../holos/namespaces.cue)
-   registry (it is **registered there, never emitted inline** by the component —
-   the central-registration guardrail), with **external-secrets** enabled (so the
-   namespace's `ExternalSecret`s resolve) and **ambient mode** enabled
-   (`_ambient: true`, the `istio.io/dataplane-mode: ambient` label). The Project
-   component references the registered name and unifies it with
-   `#RegisteredNamespace`; the `namespaces` component renders the actual
-   `Namespace` manifest.
+1. **k8s `Namespace`** `my-project` — the Project's containment boundary. The
+   Project component does **not** emit this `Namespace` inline (the
+   [component guidelines](../../holos/docs/component-guidelines.md)
+   no-inline-Namespace guardrail); instead a one-line project registration
+   **derives a central [`holos/namespaces.cue`](../../holos/namespaces.cue)
+   registry entry** — with **external-secrets** enabled (so the namespace's
+   `ExternalSecret`s resolve) and **ambient mode** enabled (`_ambient: true`, the
+   `istio.io/dataplane-mode: ambient` label) — and the `namespaces` component
+   renders the actual `Namespace` manifest. The Project component references the
+   registered name and unifies it with `#RegisteredNamespace`. (Generalizing the
+   registry from a rendered collection is itself a design constraint — see
+   *Unifying applications under their project* below.)
 2. **Kargo `Project`** — the cluster-scoped Kargo `Project` whose name maps to the
    same-named Namespace; that Namespace carries the
    `kargo.akuity.io/project: "true"` adoption label (and the
    `kargo.akuity.io/keep-namespace` annotation) in the registry so the Kargo
-   Project controller **adopts** it rather than refusing or deleting it.
-3. **ArgoCD `AppProject`** — scopes what the Project's Argo CD `Application`s may
-   deploy, with **access control by OIDC group membership** ([ADR-3](ADR-3.md)):
-   `sourceRepos` constrained to the Project's Quay org path and `destinations`
-   constrained to the Project's Namespace.
-4. **ArgoCD `Application`** — manages the **project-level** resources (the
-   project's own rendered manifests), distinct from the per-Application Argo CD
+   Project controller **adopts** it rather than refusing or deleting it. As in the
+   [`my-project` scaffold](../../holos/components/my-project/buildplan.cue), the
+   Kargo `Project` brings its namespaced **`ProjectConfig`** (the auto-promotion
+   policy and the native Quay webhook **receiver**) and the generate-once
+   receiver-token bootstrap `Job` — project-level Kargo wiring shared by every
+   Application in the Project (the Applications' `Warehouse`s and `repo_push`
+   webhook registrations consume it; see the Application component below).
+3. **ArgoCD `AppProject`** — namespaced into `argocd`; scopes what the Project's
+   Argo CD `Application`s may deploy, with **access control by OIDC group
+   membership** ([ADR-3](ADR-3.md)): `sourceRepos` constrained to the Project's
+   Quay org path and `destinations` constrained to the Project's Namespace.
+4. **ArgoCD `Application`** — namespaced into `argocd` (its `destination` is the
+   Project's Namespace); manages the **project-level** resources (the project's
+   own rendered manifests), distinct from the per-Application Argo CD
    `Application`s that member apps render (item 5 of the Application component).
 5. **`RoleBinding`** — grants the Project's `owners` access to the Namespace
    (group-membership access control, [ADR-3](ADR-3.md)); the owners list comes
@@ -175,31 +190,59 @@ Namespace as the security boundary:
    Quay teams/roles, and governing repository creation within it. The Holos
    Controller ([ADR-18](ADR-18.md)) reconciles it.
 7. **`ReferenceGrant`** — in the Istio gateway namespace (`istio-gateways`),
-   allowing the Project's `HTTPRoute`s to attach to the shared Gateway across the
-   namespace boundary.
+   granting the Project's Namespace the cross-namespace reference the shared
+   Gateway needs. Today the shared Gateway admits routes from every namespace
+   (`allowedRoutes: namespaces: from: "All"` in
+   [`holos/components/istio-gateway/buildplan.cue`](../../holos/components/istio-gateway/buildplan.cue)),
+   acceptable only while every namespace is platform-managed; the route-attachment
+   policy placeholder ([`holos/docs/placeholders.md`](../../holos/docs/placeholders.md))
+   notes it must tighten to a per-namespace allow-list before tenant namespaces
+   land. Under that tightened policy a `ReferenceGrant` is the Gateway-API
+   mechanism that authorizes a specific tenant Namespace's cross-namespace
+   reference into `istio-gateways` (the same pattern the Gateway's own
+   `certificateRefs` note) — this item records the per-project grant the
+   tightened policy requires, **complementing** the listener's `allowedRoutes`,
+   not replacing it.
 8. **`HTTPRoute`** — the Project's route attaching to the shared Gateway, exposing
    the Project's services through the platform ingress.
 
 ### The Application component: 11 resources per `apps.<name>` entry
 
-One Application entry renders these **11** resources, all rendered **into the
-Namespace of the Project named by `apps.<name>.project`**:
+One Application entry renders these **11** resources. The Kargo `Warehouse` and
+`Stage` are namespaced into the Project's Kargo Project namespace (the Project's
+Namespace, per the single-namespace shape); the Argo CD `Application` is
+namespaced into `argocd` (its `destination` is the Project's Namespace,
+following the [`my-project` scaffold](../../holos/components/my-project/buildplan.cue));
+the `Deployment`/`Service`/`ExternalSecret`/`ConfigMap`/`ServiceAccount`/
+`RoleBinding` workload objects are rendered **into the Namespace of the Project
+named by `apps.<name>.project`**. The Kargo control plane these resources plug
+into — the cluster-scoped Kargo `Project`, the namespaced `ProjectConfig`
+carrying the auto-promotion policy and the native Quay webhook **receiver**, and
+the receiver-token bootstrap `Job` — is supplied by the **Project** component
+(it is project-level, shared by every app in the Project), not re-emitted per
+app; the Application's `Warehouse` and the `Repository`'s `repo_push` webhook
+registration both depend on it (ADR-19's `Repository.pushWebhook` reads the
+receiver URL from `ProjectConfig.status`):
 
 1. **Quay `Repository` CR** — the `quay.holos.run` `Repository` from
    [ADR-19](ADR-19.md), the app's rendered-manifests repository within the
    Project's Quay org.
-2. **Kargo `Warehouse` CR** — linked to the Quay `Repository`, watching the OCI
-   artifact and creating `Freight`, driven by the `repo_push` **webhook
-   notification** the `Repository` registers (with the polling interval as the
-   fallback) ([ADR-16](ADR-16.md)).
+2. **Kargo `Warehouse` CR** — namespaced into the Project's Kargo Project
+   namespace; linked to the Quay `Repository`, watching the OCI artifact and
+   creating `Freight`, driven by the `repo_push` **webhook notification** the
+   `Repository` registers against the Project's `ProjectConfig` receiver (with the
+   polling interval as the fallback) ([ADR-16](ADR-16.md)).
 3. **Kargo `Stage` CR** — the promotion target whose `argocd-update` step repoints
    the app's Argo CD `Application` at each promoted `Freight` digest.
-4. **Kargo blue-green progressive-delivery pipeline** — the Stage wiring that
-   delivers a new revision via a blue-green progression rather than a hard cutover.
-5. **ArgoCD `Application` CR** — the OCI-source `Application` Kargo patches
-   (`targetRevision` owned by Kargo, omitted from the committed manifest — the
-   "imperative revision, declarative Application" posture the `my-project`
-   scaffold establishes).
+4. **Kargo blue-green progressive-delivery pipeline** — the `Stage`'s
+   promotion-template **configuration** (a behavior expressed on the Kargo
+   resources above, not a separate Kubernetes object) that delivers a new revision
+   via a blue-green progression rather than a hard cutover.
+5. **ArgoCD `Application` CR** — namespaced into `argocd`; the OCI-source
+   `Application` Kargo patches (`targetRevision` owned by Kargo, omitted from the
+   committed manifest — the "imperative revision, declarative Application" posture
+   the `my-project` scaffold establishes), its `destination` the Project's
+   Namespace.
 6. **`Deployment`** — the application workload.
 7. **`Service`** — fronts the `Deployment`.
 8. **`ExternalSecret`** — the app's runtime secret material, resolved by
@@ -223,18 +266,25 @@ Project is the security boundary (≈ a Kubernetes Namespace).
   discipline `#RegisteredNamespace` applies to namespaces — drift between the two
   collections becomes a render error.
 - **Where an app's resources land.** Because the Project is realized as its
-  Namespace, every one of the Application component's 11 resources is rendered
-  **into the Project's Namespace** (resolved from `apps.<name>.project`). The
-  Project's `AppProject` (`destinations`) and owner `RoleBinding` already scope
-  that Namespace; the app's resources inherit the Project's boundary rather than
-  declaring their own. The Application's Quay `Repository` is created **within the
-  Project's Quay `Organization`** (its `organizationRef` resolves to the Project's
-  org), so the registry containment mirrors the Kubernetes containment.
+  Namespace, the Application component's **workload** objects (the
+  `Deployment`/`Service`/`ExternalSecret`/`ConfigMap`/`ServiceAccount`/`RoleBinding`)
+  and its Kargo `Warehouse`/`Stage` are rendered **into the Project's Namespace**
+  (resolved from `apps.<name>.project`). The two Argo CD-managed objects sit
+  outside it for the same reason the `my-project` scaffold places them there: the
+  app's Argo CD `Application` is namespaced into `argocd` (alongside the
+  controller) with its `destination` pointing **back at** the Project's Namespace.
+  The Project's `AppProject` (`destinations`) and owner `RoleBinding` already
+  scope that Namespace; the app's workloads inherit the Project's boundary rather
+  than declaring their own. The Application's Quay `Repository` is created **within
+  the Project's Quay `Organization`** (its `organizationRef` resolves to the
+  Project's org), so the registry containment mirrors the Kubernetes containment.
 - **How the two collections mix at render time.** Both collections are CUE
   ancestors of the build plan, so a single `holos render platform` evaluates them
   together: each `projects.<name>` renders the 8 project-level resources, each
-  `apps.<name>` renders the 11 application-level resources into its project's
-  namespace, and the cross-references (`apps.<name>.project` → a `projects` key,
+  `apps.<name>` renders the 11 application-level resources scoped to its project
+  (workloads into the project's namespace, the Argo CD `Application` into `argocd`
+  with that namespace as its destination), and the cross-references
+  (`apps.<name>.project` → a `projects` key,
   the `Repository.organizationRef` → the project's `Organization`) are resolved as
   ordinary CUE unification. Adding an app is one line in `holos/apps/`; adding a
   project is one line in `holos/projects/`; the renderer composes them into the
@@ -304,12 +354,17 @@ GitOps rendered-manifest model and is explicit about the boundary:
    access), the project-level Argo CD `Application`, the owner `RoleBinding`, the
    Quay `Organization` ([ADR-19](ADR-19.md)), the `ReferenceGrant` in the gateway
    namespace, and the `HTTPRoute`.
-3. **One `apps.<name>` entry renders 11 application-level resources** into its
-   Project's Namespace: the Quay `Repository` ([ADR-19](ADR-19.md)), the Kargo
-   `Warehouse` (linked to the Repository with webhook notification), the Kargo
-   `Stage`, the Kargo blue-green progressive-delivery pipeline, the Argo CD
-   `Application`, the `Deployment`, `Service`, `ExternalSecret`, `ConfigMap`,
-   `ServiceAccount`, and `RoleBinding`.
+3. **One `apps.<name>` entry renders 11 application-level resources** scoped to
+   its Project (workloads into the Project's Namespace; the Kargo `Warehouse`/
+   `Stage` into the Project's Kargo Project namespace; the Argo CD `Application`
+   into `argocd` with the Project's Namespace as its `destination`): the Quay
+   `Repository` ([ADR-19](ADR-19.md)), the Kargo `Warehouse` (linked to the
+   Repository, driven by the `repo_push` webhook into the Project's `ProjectConfig`
+   receiver), the Kargo `Stage`, the Kargo blue-green progressive-delivery pipeline
+   (the `Stage`'s promotion-template configuration), the Argo CD `Application`, the
+   `Deployment`, `Service`, `ExternalSecret`, `ConfigMap`, `ServiceAccount`, and
+   `RoleBinding`. The shared Kargo `Project`/`ProjectConfig`/receiver-token
+   wiring is the **Project** component's, not re-emitted per app.
 4. **Applications are unified under their Project by GCP-model containment:**
    `apps.<name>.project` binds an app to a Project, the Project is realized as its
    Namespace security boundary (the `my-project` single-namespace shape, where the
