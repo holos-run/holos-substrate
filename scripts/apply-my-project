@@ -71,8 +71,10 @@
 #                      manifests are rendered for; setting this explicitly is
 #                      informed consent to target another context)
 #   CA_BUNDLE_PEM    — the local-ca certificate PEM to inject.  When unset the
-#                      script reads it from `mkcert -CAROOT`/rootCA.pem, falling
-#                      back to the local-ca Secret in the cert-manager namespace.
+#                      script reads the cert-manager/local-ca Secret in the
+#                      selected context (the authoritative CA for that cluster),
+#                      falling back to `mkcert -CAROOT`/rootCA.pem only if the
+#                      Secret is unreadable.
 #   ROLLOUT_TIMEOUT  — gate timeout for the bootstrap Job and Project Ready
 #                      condition (default: 300s)
 #   KEEP_WORKDIR     — set to a non-empty value to keep the temporary render
@@ -402,7 +404,8 @@ while true; do
     if grep -q '^Stalled=True$' <<<"${state}"; then
       echo "ERROR: ${project} is Stalled (often the my-project namespace is missing the" >&2
       echo "       kargo.akuity.io/project: \"true\" adoption label); inspect it with:" >&2
-      echo "       kubectl --context ${KUBE_CONTEXT} --namespace my-project describe ${project}" >&2
+      # Project is cluster-scoped — no --namespace in the diagnostic command.
+      echo "       kubectl --context ${KUBE_CONTEXT} describe ${project}" >&2
       exit 1
     fi
   else
