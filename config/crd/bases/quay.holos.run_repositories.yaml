@@ -119,7 +119,10 @@ spec:
                   url:
                     description: |-
                       Url is the inline webhook target URL. Mutually exclusive with
-                      UrlSecretRef; set exactly one.
+                      UrlSecretRef; set exactly one. Must be non-empty when present so an
+                      empty string is rejected at admission rather than failing later during
+                      Quay webhook registration.
+                    minLength: 1
                     type: string
                   urlSecretRef:
                     description: |-

@@ -102,8 +102,9 @@ spec:
               name:
                 description: |-
                   Name is the Quay organization name to create or adopt. It is immutable:
-                  once set, the Quay org it binds to does not change. Defaults to the
-                  resource's metadata.name when omitted.
+                  once set, the Quay org it binds to does not change. It is required —
+                  callers conventionally set it to the resource's metadata.name, but the
+                  controller does not default it (no defaulting webhook in this scaffold).
                 minLength: 1
                 type: string
                 x-kubernetes-validations:

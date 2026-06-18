@@ -30,9 +30,12 @@ const (
 // +kubebuilder:validation:XValidation:rule="(has(self.url) ? 1 : 0) + (has(self.urlSecretRef) ? 1 : 0) == 1",message="exactly one of url or urlSecretRef must be set"
 type RepositoryWebhook struct {
 	// Url is the inline webhook target URL. Mutually exclusive with
-	// UrlSecretRef; set exactly one.
+	// UrlSecretRef; set exactly one. Must be non-empty when present so an
+	// empty string is rejected at admission rather than failing later during
+	// Quay webhook registration.
 	//
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	Url *string `json:"url,omitempty"`
 
 	// UrlSecretRef points at a Secret in the resource's namespace holding the

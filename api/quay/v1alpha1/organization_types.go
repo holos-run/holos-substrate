@@ -13,8 +13,9 @@ import (
 // CredentialsSecretRef.
 type OrganizationSpec struct {
 	// Name is the Quay organization name to create or adopt. It is immutable:
-	// once set, the Quay org it binds to does not change. Defaults to the
-	// resource's metadata.name when omitted.
+	// once set, the Quay org it binds to does not change. It is required —
+	// callers conventionally set it to the resource's metadata.name, but the
+	// controller does not default it (no defaulting webhook in this scaffold).
 	//
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="name is immutable"

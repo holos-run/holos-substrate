@@ -27,6 +27,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
@@ -39,12 +40,19 @@ import (
 // config/rbac/role.yaml; the reconcilers added in later phases use exactly these
 // verbs.
 //
+// Secrets are intentionally limited to get (not list/watch): the reconcilers
+// resolve only the specific credential/webhook-URL Secrets a CR names, via the
+// manager's non-caching APIReader, so the controller never enumerates Secrets
+// cluster-wide.
+//
 // +kubebuilder:rbac:groups=quay.holos.run,resources=organizations;repositories,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=quay.holos.run,resources=organizations/status;repositories/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=quay.holos.run,resources=organizations/finalizers;repositories/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=authentication.k8s.io,resources=tokenreviews,verbs=create
+// +kubebuilder:rbac:groups=authorization.k8s.io,resources=subjectaccessreviews,verbs=create
 
 var (
 	scheme   = runtime.NewScheme()
@@ -91,7 +99,12 @@ func main() {
 		BindAddress: metricsAddr,
 	}
 	if secureMetrics {
+		// Serve metrics over HTTPS and gate scrapes behind Kubernetes
+		// authentication and authorization (TokenReview + SubjectAccessReview),
+		// so the documented "authn/authz" actually holds. This requires the
+		// metrics-reader RBAC granted in config/rbac.
 		metricsOptions.SecureServing = true
+		metricsOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
 		metricsOptions.TLSOpts = []func(*tls.Config){}
 	}
 

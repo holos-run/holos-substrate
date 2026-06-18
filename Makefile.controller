@@ -37,7 +37,7 @@ $(CONTROLLER_GEN): $(LOCALBIN)
 .PHONY: kustomize-tool
 kustomize-tool: $(KUSTOMIZE) ## Install kustomize under bin/ at the pinned version.
 $(KUSTOMIZE): $(LOCALBIN)
-	@test -x $(KUSTOMIZE) || \
+	@test -x $(KUSTOMIZE) && [ "v$$($(KUSTOMIZE) version 2>/dev/null | sed -E 's/^v?([0-9.]+).*/\1/')" = "$(KUSTOMIZE_VERSION)" ] || \
 		GOBIN=$(LOCALBIN) go install sigs.k8s.io/kustomize/kustomize/v5@$(KUSTOMIZE_VERSION)
 
 .PHONY: controller-generate
