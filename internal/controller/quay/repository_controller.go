@@ -153,7 +153,9 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if err := r.Update(ctx, repo); err != nil {
 			return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
 		}
-		return ctrl.Result{Requeue: true}, nil
+		// RequeueAfter a negligible delay (not the deprecated Result.Requeue)
+		// re-enqueues the fresh object promptly without staticcheck SA1019.
+		return ctrl.Result{RequeueAfter: requeueImmediately}, nil
 	}
 
 	return r.reconcileNormal(ctx, logger, repo)

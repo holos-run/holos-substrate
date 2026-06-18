@@ -121,8 +121,10 @@ func (r *OrganizationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
 		}
 		// The update changes the resourceVersion; requeue to reconcile the
-		// fresh object rather than continuing with a stale one.
-		return ctrl.Result{Requeue: true}, nil
+		// fresh object rather than continuing with a stale one. RequeueAfter a
+		// negligible delay (not the deprecated Result.Requeue) re-enqueues
+		// promptly without staticcheck SA1019.
+		return ctrl.Result{RequeueAfter: requeueImmediately}, nil
 	}
 
 	return r.reconcileNormal(ctx, logger, org)

@@ -13,9 +13,19 @@
 package quay
 
 import (
+	"time"
+
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// requeueImmediately is a negligible RequeueAfter delay used to re-enqueue a
+// reconcile right after a write that bumps the resourceVersion (e.g. adding a
+// finalizer), so the next pass operates on the fresh object. It replaces the
+// deprecated ctrl.Result.Requeue=true (staticcheck SA1019): any positive
+// RequeueAfter requeues, and a millisecond is effectively immediate while
+// keeping the result non-zero so test helpers can detect the requeue.
+const requeueImmediately = time.Millisecond
 
 // Condition types surfaced on quay.holos.run resource status. They mirror the
 // vocabulary already declared on the API types (ConditionAccepted /
