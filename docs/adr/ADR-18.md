@@ -71,9 +71,10 @@ and that the later, more detailed ADRs build on.
 - [Quay Resource Controller credentials runbook](../runbooks/quay-resource-controller-credentials.md):
   the manual OAuth-Application credential procedure that stands in until this
   controller ships. The controller automates what the runbook does by hand.
-- Forward references (later phases, detailed specifications): **ADR-19** —
-  the Quay API group (`quay.holos.run`) Organization and Repository CRDs;
-  **ADR-20** — the Keycloak API group CRDs; **ADR-21** — the Holos
+- Forward references (later phases, detailed specifications):
+  [**ADR-19**](ADR-19.md) — the Quay API group (`quay.holos.run`) Organization
+  and Repository CRDs; [**ADR-20**](ADR-20.md) — the Keycloak API group CRDs
+  (OIDC clients, client/realm roles, groups); **ADR-21** — the Holos
   Project/Application delivery components. This ADR stays at the system-design
   altitude and does not specify their CRD schemas.
 
@@ -100,8 +101,9 @@ closes are:
   identity wiring the PaaS provisions on a project's behalf. The exact ownership
   boundary between the controller's Keycloak group and the existing
   `keycloak-config-cli` Job — so the two reconcilers never fight over the same
-  realm objects — is a question **ADR-20 must resolve**; this ADR only records
-  that the gap exists and is the controller's to close. (Until ADR-20 settles
+  realm objects — is a question [**ADR-20**](ADR-20.md) must resolve; this ADR
+  only records that the gap exists and is the controller's to close. (Until
+  ADR-20 settles
   that boundary, `keycloak-config-cli` remains the sole owner of realm clients,
   roles, and groups, per the platform's Keycloak guardrails.)
 
