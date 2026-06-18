@@ -42,15 +42,14 @@ data:
       PREFERRED_USERNAME_CLAIM_NAME: preferred_username
       VERIFIED_EMAIL_CLAIM_NAME: email
       PREFERRED_GROUP_CLAIM_NAME: groups
-      USE_PKCE: true
-      PKCE_METHOD: S256
+      USE_PKCE: false
     SUPER_USERS:
       - svc-quay-resource-controller
       - quay-admin
     FEATURE_SUPERUSERS_FULL_ACCESS: true
     FEATURE_MAILING: false
-    REGISTRY_TITLE: Holos Quay (quay)
-    REGISTRY_TITLE_SHORT: Holos Quay
+    REGISTRY_TITLE: Holos Container Registry
+    REGISTRY_TITLE_SHORT: Holos Container Registry
     DEFAULT_TAG_EXPIRATION: 2w
     TAG_EXPIRATION_OPTIONS:
       - 0s

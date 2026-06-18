@@ -102,7 +102,9 @@ let GATEWAY_NAME = "default"
 // match the production example — CLIENT_ID in KEYCLOAK_LOGIN_CONFIG must equal
 // it exactly or the token exchange fails the client_id check.
 let ISSUER_HOSTNAME = "auth.holos.localhost"
-let OIDC_ISSUER = "https://\(ISSUER_HOSTNAME)/realms/holos/"
+
+// The issuer value must not have a trailing slash
+let OIDC_ISSUER = "https://\(ISSUER_HOSTNAME)/realms/holos"
 let OIDC_CLIENT_ID = "https://\(HOSTNAME)"
 
 // OIDC_SECRET is the shared client-secret Secret HOL-1218's bootstrap Job
@@ -251,7 +253,8 @@ let CONFIG = {
 	TEAM_RESYNC_STALE_TIME:        "30m"
 	AUTHENTICATION_TYPE:           "OIDC"
 	KEYCLOAK_LOGIN_CONFIG: {
-		OIDC_SERVER:   OIDC_ISSUER
+		// Quay requires the OIDC server to have a trailing slash.
+		OIDC_SERVER:   OIDC_ISSUER + "/"
 		CLIENT_ID:     OIDC_CLIENT_ID
 		CLIENT_SECRET: "__OIDC_CLIENT_SECRET__"
 		SERVICE_NAME:  "Holos SSO"
@@ -265,8 +268,7 @@ let CONFIG = {
 		PREFERRED_USERNAME_CLAIM_NAME: "preferred_username"
 		VERIFIED_EMAIL_CLAIM_NAME:     "email"
 		PREFERRED_GROUP_CLAIM_NAME:    "groups"
-		USE_PKCE:                      true
-		PKCE_METHOD:                   "S256"
+		USE_PKCE:                      false
 	}
 	SUPER_USERS: [
 		"svc-quay-resource-controller",
@@ -295,8 +297,8 @@ let CONFIG = {
 	FEATURE_SUPERUSERS_FULL_ACCESS: true
 	FEATURE_MAILING:                false
 	// Cosmetic keys carried over from the production example (HOL-1292).
-	REGISTRY_TITLE:         "Holos Quay (quay)"
-	REGISTRY_TITLE_SHORT:   "Holos Quay"
+	REGISTRY_TITLE:         "Holos Container Registry"
+	REGISTRY_TITLE_SHORT:   "Holos Container Registry"
 	DEFAULT_TAG_EXPIRATION: "2w"
 	TAG_EXPIRATION_OPTIONS: [
 		"0s",
@@ -1149,9 +1151,9 @@ userDefinedBuildPlan: {
 						(BOOTSTRAP_SERVICE_ACCOUNT.metadata.name): BOOTSTRAP_SERVICE_ACCOUNT
 						(QUAY_SERVICE_ACCOUNT.metadata.name):      QUAY_SERVICE_ACCOUNT
 					}
-					Role: (BOOTSTRAP_ROLE.metadata.name):               BOOTSTRAP_ROLE
+					Role: (BOOTSTRAP_ROLE.metadata.name):                BOOTSTRAP_ROLE
 					RoleBinding: (BOOTSTRAP_ROLE_BINDING.metadata.name): BOOTSTRAP_ROLE_BINDING
-					Job: (BOOTSTRAP_JOB.metadata.name):                 BOOTSTRAP_JOB
+					Job: (BOOTSTRAP_JOB.metadata.name):                  BOOTSTRAP_JOB
 					Deployment: {
 						(DEPLOYMENT.metadata.name):       DEPLOYMENT
 						(REDIS_DEPLOYMENT.metadata.name): REDIS_DEPLOYMENT
