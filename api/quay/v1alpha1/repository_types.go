@@ -77,16 +77,28 @@ type WebhookURLSecretRef struct {
 // (HOL-1312, HOL-1314). New fields are additive, so deferring them is not an API
 // break.
 type RepositorySpec struct {
-	// OrganizationRef is the name of the owning Organization CR (and, through
-	// it, the Quay organization) this repository is created within. The full
-	// Quay path is <organization>/<name>.
+	// OrganizationRef is the name of the owning Organization CR in this
+	// Repository's own namespace. The reconciler resolves that CR and uses its
+	// spec.name as the Quay organization, so a Repository can only target a Quay
+	// org a same-namespace Organization resource has claimed — it never names a
+	// Quay org directly by string (which, with the controller's superuser
+	// credential, would bypass the Organization claim/adopt guardrail). The full
+	// Quay path is <Organization.spec.name>/<name>.
+	//
+	// It is immutable: the (organizationRef, name) pair is the repository's
+	// durable identity, so the finalizer always deletes exactly the Quay
+	// repository this CR provisioned even if other fields change.
 	//
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="organizationRef is immutable"
 	OrganizationRef string `json:"organizationRef"`
 
-	// Name is the repository name within the organization.
+	// Name is the repository name within the organization. It is immutable: the
+	// (organizationRef, name) pair is the repository's durable identity, so the
+	// finalizer always deletes exactly the Quay repository this CR provisioned.
 	//
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="name is immutable"
 	Name string `json:"name"`
 
 	// Visibility is the repository visibility, public or private.
@@ -137,6 +149,16 @@ type RepositoryStatus struct {
 	//
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// QuayRepository is the resolved Quay repository path
+	// (<Organization.spec.name>/<spec.name>) this CR provisioned. It is recorded
+	// when the repository is first created so the finalizer deletes exactly that
+	// path on CR removal, even if the owning Organization CR has since been
+	// deleted (its spec.name no longer resolvable). Empty until the repository is
+	// provisioned.
+	//
+	// +optional
+	QuayRepository string `json:"quayRepository,omitempty"`
 }
 
 // +kubebuilder:object:root=true
