@@ -3,10 +3,12 @@ package quay
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
@@ -33,12 +35,6 @@ const webhookTitle = "holos-controller repo_push"
 // notification operations the reconciler needs. Naming it an interface lets
 // tests inject a fake without HTTP; the concrete *quay.Client satisfies it.
 type RepoClient interface {
-	// GetOrganization fetches a Quay organization; a missing org returns an
-	// error for which quay.IsNotFound reports true. The Repository reconciler
-	// uses it only to confirm the owning org exists — it never creates one
-	// (AC #9).
-	GetOrganization(ctx context.Context, name string) (*quay.Organization, error)
-
 	// GetRepository fetches ns/repo; a missing repository returns an error for
 	// which quay.IsNotFound reports true.
 	GetRepository(ctx context.Context, ns, repo string) (*quay.Repository, error)
@@ -146,8 +142,9 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	return r.reconcileNormal(ctx, logger, repo)
 }
 
-// reconcileNormal resolves the credential, ensures the org exists, creates or
-// updates the Quay repository, reconciles the webhook, and updates status.
+// reconcileNormal resolves the credential, resolves the owning Quay org through
+// the Organization CR, creates or updates the Quay repository, reconciles the
+// webhook, and updates status.
 func (r *RepositoryReconciler) reconcileNormal(ctx context.Context, logger logr.Logger, repo *quayv1alpha1.Repository) (ctrl.Result, error) {
 	cred, err := resolveCredential(ctx, r.APIReader, r.Namespace, repo.Spec.CredentialsSecretRef)
 	if err != nil {
@@ -155,20 +152,21 @@ func (r *RepositoryReconciler) reconcileNormal(ctx context.Context, logger logr.
 	}
 
 	qc := r.NewClient(cred)
-	ns := repo.Spec.OrganizationRef
 
-	// AC #9: the Repository reconciler never creates the owning org. Confirm it
-	// exists; if not, surface a recoverable condition and requeue until the
-	// Organization reconciler provisions it.
-	if _, err := qc.GetOrganization(ctx, ns); err != nil {
-		if quay.IsNotFound(err) {
-			return r.handleOrgNotReady(ctx, repo)
-		}
-		return r.fail(ctx, repo, fmt.Errorf("checking Quay organization %q: %w", ns, err))
+	// Resolve the Quay org name through the Organization CR named by
+	// spec.organizationRef in this Repository's namespace — never trust the ref as
+	// a Quay org name directly. This binds the Repository to a Quay org a
+	// same-namespace Organization resource has claimed (ADR-19 claim model), so
+	// the controller's superuser credential cannot be used to write into an
+	// arbitrary org by string. AC #9: the Repository reconciler never creates the
+	// org; it requeues until the Organization CR exists and is Ready.
+	quayOrg, result, handled, err := r.resolveQuayOrg(ctx, repo)
+	if handled {
+		return result, err
 	}
 
 	// Create the repository or reconcile its visibility/description drift.
-	if err := r.ensureRepository(ctx, qc, repo); err != nil {
+	if err := r.ensureRepository(ctx, qc, repo, quayOrg); err != nil {
 		return r.fail(ctx, repo, err)
 	}
 
@@ -177,20 +175,59 @@ func (r *RepositoryReconciler) reconcileNormal(ctx context.Context, logger logr.
 	// reconcile; an invalid spec.webhook is a terminal (no-requeue) condition.
 	// Either of those is "handled": the webhook step already wrote the
 	// terminal/recoverable status, so the success path must not run and overwrite
-	// it with Ready=True.
-	handled, result, err := r.reconcileWebhook(ctx, logger, qc, repo)
+	// it with Ready=True. webhookChanged tells succeed() whether the
+	// WebhookConfigured condition flipped, so a webhook URL change that does not
+	// bump the generation still gets persisted.
+	handled, webhookChanged, result, err := r.reconcileWebhook(ctx, logger, qc, repo, quayOrg)
 	if handled {
 		return result, err
 	}
 
-	return r.succeed(ctx, logger, repo)
+	return r.succeed(ctx, logger, repo, webhookChanged)
+}
+
+// resolveQuayOrg resolves the Quay organization name the Repository writes into
+// by fetching the Organization CR named by spec.organizationRef in the
+// Repository's own namespace and reading its spec.name. It returns the Quay org
+// name when the Organization CR exists and is Ready; otherwise it records an
+// OrganizationNotReady condition, requeues, and reports handled=true so the
+// caller returns immediately.
+//
+// Going through the CR (rather than treating organizationRef as a Quay org name)
+// is the security boundary: a Repository may only target a Quay org that a
+// same-namespace Organization resource has claimed, so the controller's
+// superuser credential cannot create/update repos or webhooks in an arbitrary
+// org named by an unprivileged string.
+func (r *RepositoryReconciler) resolveQuayOrg(ctx context.Context, repo *quayv1alpha1.Repository) (quayOrg string, result ctrl.Result, handled bool, err error) {
+	org := &quayv1alpha1.Organization{}
+	key := client.ObjectKey{Namespace: repo.Namespace, Name: repo.Spec.OrganizationRef}
+	if getErr := r.Get(ctx, key, org); getErr != nil {
+		if apierrors.IsNotFound(getErr) {
+			res, e := r.handleOrgNotReady(ctx, repo,
+				fmt.Sprintf("Organization %q (spec.organizationRef) not found in namespace %q", repo.Spec.OrganizationRef, repo.Namespace))
+			return "", res, true, e
+		}
+		// Transient API error reading the CR: requeue with backoff without
+		// stamping a misleading reason.
+		return "", ctrl.Result{}, true, fmt.Errorf("reading Organization %q: %w", repo.Spec.OrganizationRef, getErr)
+	}
+
+	if !meta.IsStatusConditionTrue(org.Status.Conditions, ConditionReady) {
+		res, e := r.handleOrgNotReady(ctx, repo,
+			fmt.Sprintf("Organization %q is not Ready yet", repo.Spec.OrganizationRef))
+		return "", res, true, e
+	}
+
+	return org.Spec.Name, ctrl.Result{}, false, nil
 }
 
 // ensureRepository creates the Quay repository when absent, otherwise corrects
-// visibility and description drift. Visibility is compared against Quay's GET
-// boolean is_public; description is compared against the spec.
-func (r *RepositoryReconciler) ensureRepository(ctx context.Context, qc RepoClient, repo *quayv1alpha1.Repository) error {
-	ns := repo.Spec.OrganizationRef
+// visibility and description drift. quayOrg is the resolved Quay organization
+// name (Organization.spec.name). On first create it records the provisioned Quay
+// path in status so the finalizer can delete exactly it. Visibility is compared
+// against Quay's GET boolean is_public; description is compared against the spec.
+func (r *RepositoryReconciler) ensureRepository(ctx context.Context, qc RepoClient, repo *quayv1alpha1.Repository, quayOrg string) error {
+	ns := quayOrg
 	name := repo.Spec.Name
 	visibility := string(repo.Spec.Visibility)
 
@@ -199,11 +236,14 @@ func (r *RepositoryReconciler) ensureRepository(ctx context.Context, qc RepoClie
 		if createErr := qc.CreateRepository(ctx, ns, name, visibility, repo.Spec.Description); createErr != nil {
 			return fmt.Errorf("creating Quay repository %s/%s: %w", ns, name, createErr)
 		}
+		// Record the provisioned identity so deletion targets exactly this path.
+		repo.Status.QuayRepository = ns + "/" + name
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("getting Quay repository %s/%s: %w", ns, name, err)
 	}
+	repo.Status.QuayRepository = ns + "/" + name
 
 	// Repository exists: correct drift. Quay returns visibility as the boolean
 	// is_public on GET, so map the desired public/private to that to compare.
@@ -234,8 +274,13 @@ func (r *RepositoryReconciler) ensureRepository(ctx context.Context, qc RepoClie
 // status it just wrote. On a clean configuration (webhook programmed, or no
 // webhook desired) it returns handled=false, leaving the WebhookConfigured
 // condition staged for the caller's single Status().Update via succeed().
-func (r *RepositoryReconciler) reconcileWebhook(ctx context.Context, logger logr.Logger, qc RepoClient, repo *quayv1alpha1.Repository) (handled bool, result ctrl.Result, err error) {
-	ns := repo.Spec.OrganizationRef
+//
+// webhookChanged reports whether the staged WebhookConfigured condition actually
+// changed, so succeed() persists status even when Ready and observedGeneration
+// are unchanged — e.g. a urlSecretRef value changed (Quay was updated) without a
+// generation bump, which must not leave WebhookConfigured stale.
+func (r *RepositoryReconciler) reconcileWebhook(ctx context.Context, logger logr.Logger, qc RepoClient, repo *quayv1alpha1.Repository, quayOrg string) (handled, webhookChanged bool, result ctrl.Result, err error) {
+	ns := quayOrg
 	name := repo.Spec.Name
 
 	if repo.Spec.Webhook == nil {
@@ -243,11 +288,11 @@ func (r *RepositoryReconciler) reconcileWebhook(ctx context.Context, logger logr
 		// (e.g. spec.webhook was removed) and record the intentional absence. This
 		// is a clean state — fall through to succeed() so Ready is set.
 		if err := r.removeManagedWebhooks(ctx, qc, ns, name); err != nil {
-			return true, ctrl.Result{}, r.failErr(ctx, repo, err)
+			return true, false, ctrl.Result{}, r.failErr(ctx, repo, err)
 		}
-		setWebhookCondition(&repo.Status.Conditions, metav1.ConditionFalse,
+		changed := setWebhookCondition(&repo.Status.Conditions, metav1.ConditionFalse,
 			ReasonWebhookNotConfigured, "no webhook configured", repo.Generation)
-		return false, ctrl.Result{}, nil
+		return false, changed, ctrl.Result{}, nil
 	}
 
 	url, resolveErr := resolveWebhookURL(ctx, r.APIReader, repo.Namespace, repo.Spec.Webhook)
@@ -257,25 +302,25 @@ func (r *RepositoryReconciler) reconcileWebhook(ctx context.Context, logger logr
 			// Terminal: a spec change re-triggers reconciliation. Set a False
 			// condition and do not requeue.
 			res, e := r.handleWebhookCondition(ctx, repo, ReasonInvalidWebhook, resolveErr.Error(), false)
-			return true, res, e
+			return true, false, res, e
 		case isWebhookURLNotFound(resolveErr):
 			// Recoverable: requeue (error) so a later-created Secret takes effect.
 			res, e := r.handleWebhookCondition(ctx, repo, ReasonWebhookURLNotFound, resolveErr.Error(), true)
-			return true, res, e
+			return true, false, res, e
 		default:
 			// Transient API error reading the Secret: requeue with backoff.
-			return true, ctrl.Result{}, resolveErr
+			return true, false, ctrl.Result{}, resolveErr
 		}
 	}
 
 	if err := r.ensureWebhook(ctx, qc, ns, name, url); err != nil {
-		return true, ctrl.Result{}, r.failErr(ctx, repo, err)
+		return true, false, ctrl.Result{}, r.failErr(ctx, repo, err)
 	}
 
-	setWebhookCondition(&repo.Status.Conditions, metav1.ConditionTrue,
+	changed := setWebhookCondition(&repo.Status.Conditions, metav1.ConditionTrue,
 		ReasonWebhookConfigured, fmt.Sprintf("repo_push webhook configured to %s", url), repo.Generation)
 	logger.V(1).Info("reconciled webhook", "repository", ns+"/"+name)
-	return false, ctrl.Result{}, nil
+	return false, changed, ctrl.Result{}, nil
 }
 
 // ensureWebhook makes the repository's repo_push webhook notifications converge
@@ -338,19 +383,24 @@ func (r *RepositoryReconciler) removeManagedWebhooks(ctx context.Context, qc Rep
 }
 
 // succeed stamps Accepted/Programmed/Ready True (reason Reconciled) and writes
-// status when something changed (a condition flipped or observedGeneration
-// advanced), so a steady-state reconcile does not churn status. The
-// WebhookConfigured condition was already staged on repo.Status by
-// reconcileWebhook; this writes them together.
-func (r *RepositoryReconciler) succeed(ctx context.Context, logger logr.Logger, repo *quayv1alpha1.Repository) (ctrl.Result, error) {
-	message := fmt.Sprintf("reconciled Quay repository %s/%s", repo.Spec.OrganizationRef, repo.Spec.Name)
+// status when something changed (a Ready condition flipped, observedGeneration
+// advanced, or the WebhookConfigured condition changed), so a steady-state
+// reconcile does not churn status. webhookChanged is load-bearing: a urlSecretRef
+// value change updates Quay and flips WebhookConfigured without bumping the
+// generation, and without it that status update would be silently skipped.
+func (r *RepositoryReconciler) succeed(ctx context.Context, logger logr.Logger, repo *quayv1alpha1.Repository, webhookChanged bool) (ctrl.Result, error) {
+	target := repo.Status.QuayRepository
+	if target == "" {
+		target = repo.Spec.OrganizationRef + "/" + repo.Spec.Name
+	}
+	message := fmt.Sprintf("reconciled Quay repository %s", target)
 	changed := markReady(&repo.Status.Conditions, ReasonReconciled, message, repo.Generation)
-	changed = changed || repo.Status.ObservedGeneration != repo.Generation
+	changed = changed || webhookChanged || repo.Status.ObservedGeneration != repo.Generation
 	if !changed {
 		return ctrl.Result{}, nil
 	}
 	r.Recorder.Event(repo, corev1.EventTypeNormal, ReasonReconciled, message)
-	logger.Info("reconciled Repository", "repository", repo.Spec.OrganizationRef+"/"+repo.Spec.Name)
+	logger.Info("reconciled Repository", "repository", target)
 	if err := r.updateStatus(ctx, repo); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -358,13 +408,28 @@ func (r *RepositoryReconciler) succeed(ctx context.Context, logger logr.Logger, 
 }
 
 // reconcileDelete runs the finalizer: it deletes the Quay repository (which
-// removes its notifications) then drops the finalizer so the CR is removed. A
-// Quay error during delete fails the reconcile and requeues, so the finalizer is
-// not removed until cleanup succeeds. A missing credential during delete also
+// removes its notifications) then drops the finalizer so the CR is removed.
+//
+// The repository identity comes from status.QuayRepository — the resolved
+// <org>/<repo> path recorded when the repo was provisioned — NOT from the spec.
+// Although organizationRef/name are immutable, status is the authoritative record
+// of what this CR actually created, so the finalizer deletes exactly that path
+// and never a different repo. An empty status.QuayRepository means the repository
+// was never provisioned (e.g. the org was never Ready), so there is nothing to
+// delete in Quay and the finalizer is dropped immediately.
+//
+// A Quay error during delete fails the reconcile and requeues, so the finalizer
+// is not removed until cleanup succeeds. A missing credential during delete also
 // requeues rather than stranding the CR with the repository still in Quay.
 func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1alpha1.Repository) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(repo, repositoryFinalizer) {
 		return ctrl.Result{}, nil
+	}
+
+	ns, name, ok := splitQuayRepository(repo.Status.QuayRepository)
+	if !ok {
+		// Never provisioned: nothing to delete in Quay, just release the CR.
+		return r.removeFinalizer(ctx, repo)
 	}
 
 	cred, err := resolveCredential(ctx, r.APIReader, r.Namespace, repo.Spec.CredentialsSecretRef)
@@ -373,8 +438,6 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 	}
 
 	qc := r.NewClient(cred)
-	ns := repo.Spec.OrganizationRef
-	name := repo.Spec.Name
 	if err := qc.DeleteRepositoryIfExists(ctx, ns, name); err != nil {
 		r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonQuayError,
 			fmt.Sprintf("deleting Quay repository %s/%s: %v", ns, name, err))
@@ -384,11 +447,28 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 	r.Recorder.Event(repo, corev1.EventTypeNormal, "Deleted",
 		fmt.Sprintf("deleted Quay repository %s/%s", ns, name))
 
+	return r.removeFinalizer(ctx, repo)
+}
+
+// removeFinalizer drops the repository finalizer and persists the change so the
+// API server can delete the CR.
+func (r *RepositoryReconciler) removeFinalizer(ctx context.Context, repo *quayv1alpha1.Repository) (ctrl.Result, error) {
 	controllerutil.RemoveFinalizer(repo, repositoryFinalizer)
 	if err := r.Update(ctx, repo); err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 	}
 	return ctrl.Result{}, nil
+}
+
+// splitQuayRepository splits a recorded "org/repo" status.QuayRepository into its
+// namespace and name. ok is false when the value is empty or malformed (no single
+// slash), signaling there is no provisioned repository to act on.
+func splitQuayRepository(qr string) (ns, name string, ok bool) {
+	i := strings.IndexByte(qr, '/')
+	if i <= 0 || i == len(qr)-1 || strings.IndexByte(qr[i+1:], '/') != -1 {
+		return "", "", false
+	}
+	return qr[:i], qr[i+1:], true
 }
 
 // handleCredentialError maps a credential-resolution error to a reconcile
@@ -409,13 +489,12 @@ func (r *RepositoryReconciler) handleCredentialError(ctx context.Context, repo *
 	return ctrl.Result{}, err
 }
 
-// handleOrgNotReady records that the owning Quay org named by spec.organizationRef
-// does not yet exist and requeues. The Repository reconciler never creates the
-// org (AC #9); it waits for the Organization reconciler. The status write and
-// event fire only when the condition changed, and the returned error drives the
-// requeue with backoff.
-func (r *RepositoryReconciler) handleOrgNotReady(ctx context.Context, repo *quayv1alpha1.Repository) (ctrl.Result, error) {
-	message := fmt.Sprintf("Quay organization %q (spec.organizationRef) does not exist yet", repo.Spec.OrganizationRef)
+// handleOrgNotReady records that the owning Organization (named by
+// spec.organizationRef) is not resolvable/Ready and requeues. The Repository
+// reconciler never creates the org (AC #9); it waits for the Organization
+// reconciler. The status write and event fire only when the condition changed,
+// and the returned error drives the requeue with backoff.
+func (r *RepositoryReconciler) handleOrgNotReady(ctx context.Context, repo *quayv1alpha1.Repository, message string) (ctrl.Result, error) {
 	if changed := markNotReady(&repo.Status.Conditions, ReasonOrganizationNotReady, message, repo.Generation); changed {
 		r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonOrganizationNotReady, message)
 		if statusErr := r.updateStatus(ctx, repo); statusErr != nil {

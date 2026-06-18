@@ -22,20 +22,16 @@ type fakeRepoStore struct {
 // fakeRepoClient is a recording, in-memory stand-in for the Quay repository and
 // notification API the Repository reconciler drives. It satisfies RepoClient so a
 // test injects it via the reconciler's RepoClientFactory, exercising the full
-// reconcile loop without HTTP or a live Quay.
+// reconcile loop without HTTP or a live Quay. The owning organization is resolved
+// from the Organization CR by the reconciler, not from this fake, so the fake
+// models only repositories and notifications.
 type fakeRepoClient struct {
 	mu sync.Mutex
 
-	// orgs is the set of Quay org names that exist. GetOrganization 404s for any
-	// name not in this set so the reconciler's org-not-ready path is exercised.
-	orgs map[string]bool
 	// repos maps "ns/repo" → its in-memory state. A repository absent from the
 	// map 404s on GetRepository.
 	repos map[string]*fakeRepoStore
 
-	// getOrgErr, when non-nil, is returned by GetOrganization regardless of org
-	// existence — used to simulate a non-404 Quay error.
-	getOrgErr error
 	// createRepoErr, when non-nil, is returned by CreateRepository.
 	createRepoErr error
 
@@ -45,14 +41,9 @@ type fakeRepoClient struct {
 	calls []string
 }
 
-// newFakeRepoClient returns a fake with the given pre-existing org names. No
-// repositories exist initially.
-func newFakeRepoClient(orgs ...string) *fakeRepoClient {
-	f := &fakeRepoClient{orgs: map[string]bool{}, repos: map[string]*fakeRepoStore{}}
-	for _, o := range orgs {
-		f.orgs[o] = true
-	}
-	return f
+// newFakeRepoClient returns a fake with no repositories.
+func newFakeRepoClient() *fakeRepoClient {
+	return &fakeRepoClient{repos: map[string]*fakeRepoStore{}}
 }
 
 func (f *fakeRepoClient) record(call string) { f.calls = append(f.calls, call) }
@@ -66,19 +57,6 @@ func notFoundRepoError(ns, repo string) error {
 		Path:       "/api/v1/repository/" + ns + "/" + repo,
 		Message:    "not found",
 	}
-}
-
-func (f *fakeRepoClient) GetOrganization(ctx context.Context, name string) (*quay.Organization, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.record("GetOrganization:" + name)
-	if f.getOrgErr != nil {
-		return nil, f.getOrgErr
-	}
-	if f.orgs[name] {
-		return &quay.Organization{Name: name}, nil
-	}
-	return nil, notFoundError(name)
 }
 
 func (f *fakeRepoClient) GetRepository(ctx context.Context, ns, repo string) (*quay.Repository, error) {

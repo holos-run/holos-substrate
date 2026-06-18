@@ -85,6 +85,36 @@ func makeRepo(ctx context.Context, t *testing.T, ns, orgRef, repoName string, op
 	return client.ObjectKeyFromObject(repo)
 }
 
+// makeReadyOrg creates an Organization CR named orgName (its spec.name, the Quay
+// org, is the same string for test simplicity) in namespace ns and marks it
+// Ready=True, so the Repository reconciler resolves it and proceeds. It returns
+// the Quay org name (== orgName here).
+func makeReadyOrg(ctx context.Context, t *testing.T, ns, orgName string) string {
+	t.Helper()
+	org := &quayv1alpha1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: orgName},
+		Spec: quayv1alpha1.OrganizationSpec{
+			Name:  orgName,
+			Email: orgName + "@example.test",
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, org); err != nil {
+		t.Fatalf("creating Organization: %v", err)
+	}
+	meta.SetStatusCondition(&org.Status.Conditions, metav1.Condition{
+		Type:               ConditionReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             ReasonCreated,
+		Message:            "ready for test",
+		ObservedGeneration: org.Generation,
+	})
+	org.Status.Created = true
+	if err := shared.k8sClient.Status().Update(ctx, org); err != nil {
+		t.Fatalf("setting Organization Ready: %v", err)
+	}
+	return orgName
+}
+
 // getRepo fetches the current Repository state.
 func getRepo(ctx context.Context, t *testing.T, key client.ObjectKey) *quayv1alpha1.Repository {
 	t.Helper()
@@ -121,12 +151,13 @@ func TestRepositoryCreatesWithInlineWebhook(t *testing.T) {
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
 	}
+	makeReadyOrg(ctx, t, ns, "acme")
 	const hook = "https://kargo.example.test/webhook/abc"
 	key := makeRepo(ctx, t, ns, "acme", "web", repoOpts{
 		webhook: &quayv1alpha1.RepositoryWebhook{Url: ptr(hook)},
 	})
 
-	fake := newFakeRepoClient("acme") // org exists
+	fake := newFakeRepoClient()
 	r, recorder := newRepoReconciler(fake, ns)
 
 	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
@@ -170,13 +201,14 @@ func TestRepositoryCreatesWithSecretRefWebhook(t *testing.T) {
 	if err := shared.k8sClient.Create(ctx, hookSecret); err != nil {
 		t.Fatalf("creating webhook secret: %v", err)
 	}
+	makeReadyOrg(ctx, t, ns, "acme")
 	key := makeRepo(ctx, t, ns, "acme", "api", repoOpts{
 		webhook: &quayv1alpha1.RepositoryWebhook{
 			UrlSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "kargo-receiver", Key: "url"},
 		},
 	})
 
-	fake := newFakeRepoClient("acme")
+	fake := newFakeRepoClient()
 	r, _ := newRepoReconciler(fake, ns)
 
 	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
@@ -206,13 +238,14 @@ func TestRepositorySecretRefMissingKeySetsConditionAndRequeues(t *testing.T) {
 	if err := shared.k8sClient.Create(ctx, hookSecret); err != nil {
 		t.Fatalf("creating webhook secret: %v", err)
 	}
+	makeReadyOrg(ctx, t, ns, "acme")
 	key := makeRepo(ctx, t, ns, "acme", "missingkey", repoOpts{
 		webhook: &quayv1alpha1.RepositoryWebhook{
 			UrlSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "kargo-receiver", Key: "url"},
 		},
 	})
 
-	fake := newFakeRepoClient("acme")
+	fake := newFakeRepoClient()
 	r, recorder := newRepoReconciler(fake, ns)
 
 	// First pass adds the finalizer; the next hits the missing key.
@@ -249,12 +282,13 @@ func TestRepositoryCorrectsVisibilityAndDescriptionDrift(t *testing.T) {
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
 	}
+	makeReadyOrg(ctx, t, ns, "acme")
 	key := makeRepo(ctx, t, ns, "acme", "drift", repoOpts{
 		visibility:  quayv1alpha1.RepositoryVisibilityPublic,
 		description: "the desired description",
 	})
 
-	fake := newFakeRepoClient("acme")
+	fake := newFakeRepoClient()
 	// Pre-create the repo with the WRONG visibility and description, so reconcile
 	// must correct both.
 	fake.repos[repoKey("acme", "drift")] = &fakeRepoStore{
@@ -289,12 +323,13 @@ func TestRepositoryWebhookURLChangeReplacesNotification(t *testing.T) {
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
 	}
+	makeReadyOrg(ctx, t, ns, "acme")
 	const newHook = "https://kargo.example.test/webhook/new"
 	key := makeRepo(ctx, t, ns, "acme", "rehook", repoOpts{
 		webhook: &quayv1alpha1.RepositoryWebhook{Url: ptr(newHook)},
 	})
 
-	fake := newFakeRepoClient("acme")
+	fake := newFakeRepoClient()
 	// Pre-create the repo with a stale repo_push webhook pointing elsewhere.
 	fake.repos[repoKey("acme", "rehook")] = &fakeRepoStore{
 		notifications: map[string]quay.Notification{},
@@ -346,10 +381,11 @@ func TestRepositoryOrganizationNotReadyRequeues(t *testing.T) {
 func TestRepositoryMissingCredentialSetsConditionAndNoQuayCall(t *testing.T) {
 	ctx := context.Background()
 	ns := makeNamespace(ctx, t)
-	// Deliberately do NOT create the credential Secret.
+	// Deliberately do NOT create the credential Secret. The credential is
+	// resolved before the org, so no Organization CR is needed here.
 	key := makeRepo(ctx, t, ns, "acme", "nocreds", repoOpts{})
 
-	fake := newFakeRepoClient("acme")
+	fake := newFakeRepoClient()
 	r, recorder := newRepoReconciler(fake, ns)
 
 	if _, err := reconcileRepo(ctx, r, key); err != nil {
@@ -376,9 +412,10 @@ func TestRepositoryNoWebhookIsWebhookless(t *testing.T) {
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
 	}
+	makeReadyOrg(ctx, t, ns, "acme")
 	key := makeRepo(ctx, t, ns, "acme", "nohook", repoOpts{})
 
-	fake := newFakeRepoClient("acme")
+	fake := newFakeRepoClient()
 	r, _ := newRepoReconciler(fake, ns)
 	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -402,11 +439,12 @@ func TestRepositoryDeleteRemovesFinalizerAfterQuayDelete(t *testing.T) {
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
 	}
+	makeReadyOrg(ctx, t, ns, "acme")
 	key := makeRepo(ctx, t, ns, "acme", "doomed", repoOpts{
 		webhook: &quayv1alpha1.RepositoryWebhook{Url: ptr("https://kargo.example.test/webhook/x")},
 	})
 
-	fake := newFakeRepoClient("acme")
+	fake := newFakeRepoClient()
 	r, _ := newRepoReconciler(fake, ns)
 	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
 		t.Fatalf("reconcile create: %v", err)
@@ -431,5 +469,84 @@ func TestRepositoryDeleteRemovesFinalizerAfterQuayDelete(t *testing.T) {
 	}
 	if err := shared.k8sClient.Get(ctx, key, &quayv1alpha1.Repository{}); !apierrors.IsNotFound(err) {
 		t.Errorf("expected Repository deleted, get returned %v", err)
+	}
+}
+
+func TestRepositoryResolvesQuayOrgThroughOrganizationSpecName(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	// The Organization CR is named "team-acme" but its Quay org (spec.name) is
+	// "acme-quay-org". The Repository references the CR name; the reconciler must
+	// write into the spec.name org, not the ref string.
+	org := &quayv1alpha1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "team-acme"},
+		Spec:       quayv1alpha1.OrganizationSpec{Name: "acme-quay-org", Email: "a@example.test"},
+	}
+	if err := shared.k8sClient.Create(ctx, org); err != nil {
+		t.Fatalf("creating Organization: %v", err)
+	}
+	meta.SetStatusCondition(&org.Status.Conditions, metav1.Condition{
+		Type: ConditionReady, Status: metav1.ConditionTrue, Reason: ReasonCreated, Message: "ready",
+	})
+	if err := shared.k8sClient.Status().Update(ctx, org); err != nil {
+		t.Fatalf("setting Organization Ready: %v", err)
+	}
+
+	key := makeRepo(ctx, t, ns, "team-acme", "web", repoOpts{})
+
+	fake := newFakeRepoClient()
+	r, _ := newRepoReconciler(fake, ns)
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if !fake.repoExists("acme-quay-org", "web") {
+		t.Errorf("expected repo created in the Organization spec.name org acme-quay-org; calls were %v", fake.calls)
+	}
+	if fake.repoExists("team-acme", "web") {
+		t.Error("must not create the repo in an org named by the ref string")
+	}
+	repo := getRepo(ctx, t, key)
+	if got := repo.Status.QuayRepository; got != "acme-quay-org/web" {
+		t.Errorf("status.QuayRepository = %q, want acme-quay-org/web", got)
+	}
+}
+
+func TestRepositoryOrganizationExistsButNotReadyRequeues(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	// The Organization CR exists but has no Ready=True condition.
+	org := &quayv1alpha1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "pending-org"},
+		Spec:       quayv1alpha1.OrganizationSpec{Name: "pending-org", Email: "p@example.test"},
+	}
+	if err := shared.k8sClient.Create(ctx, org); err != nil {
+		t.Fatalf("creating Organization: %v", err)
+	}
+	key := makeRepo(ctx, t, ns, "pending-org", "web", repoOpts{})
+
+	fake := newFakeRepoClient()
+	r, _ := newRepoReconciler(fake, ns)
+
+	if _, err := reconcileRepo(ctx, r, key); err != nil {
+		t.Fatalf("first reconcile (finalizer): %v", err)
+	}
+	_, err := reconcileRepo(ctx, r, key)
+	if err == nil {
+		t.Fatal("expected reconcile to requeue while the org is not Ready")
+	}
+
+	if len(fake.calls) != 0 {
+		t.Errorf("expected no Quay calls while the org is not Ready, got %v", fake.calls)
+	}
+	repo := getRepo(ctx, t, key)
+	if got := repoConditionReason(repo, ConditionReady); got != ReasonOrganizationNotReady {
+		t.Errorf("Ready reason = %q, want %q", got, ReasonOrganizationNotReady)
 	}
 }
