@@ -11,6 +11,17 @@ IMAGE_TAG  ?= dev
 IMAGE      ?= $(IMAGE_REPO):$(IMAGE_TAG)
 PLATFORM   ?= linux/arm64
 
+# Multi-arch (manifest list) coordinates. MULTIARCH_PLATFORMS is the comma-list
+# of platforms baked into a single OCI image index by the docker-buildx target.
+# BUILDX_BUILDER is the deterministic name of a docker-container-driver buildx
+# builder shared by both the holos-paas and holos-controller multi-arch targets
+# (Makefile.controller reuses it): the default docker driver stores a single
+# architecture and cannot emit a manifest list, so a docker-container builder is
+# required. Defining the name once here, before the include below, keeps the two
+# builder-bootstrap targets pointed at the same builder.
+MULTIARCH_PLATFORMS ?= linux/amd64,linux/arm64
+BUILDX_BUILDER      ?= holos-paas-multiarch
+
 .PHONY: all
 all: build
 
@@ -60,6 +71,52 @@ docker-build: ## Build the container image for $(PLATFORM) tagged $(IMAGE).
 .PHONY: docker-push
 docker-push: ## Build for $(PLATFORM) and push $(IMAGE) to the registry.
 	docker buildx build --platform $(PLATFORM) -t $(IMAGE) --push .
+
+# The multi-arch targets build a single OCI image index (manifest list) spanning
+# $(MULTIARCH_PLATFORMS) — both the amd64 and arm64 cross-compiles in one image,
+# so it runs on amd64 and arm64 clusters alike. Because the Dockerfile pins the
+# builder stage to $BUILDPLATFORM and cross-compiles via the Go toolchain, no
+# QEMU emulation is needed — only a docker-container-driver buildx builder, which
+# docker-buildx-builder bootstraps idempotently.
+#
+# The builder runs with --driver-opt network=host because the default IMAGE lives
+# in the local quay.holos.localhost / k3d-registry.holos.localhost registries,
+# which a docker-container builder cannot resolve from its isolated network
+# without host networking (see docs/build-registry.md). TLS trust for the
+# mkcert-signed local registry comes from the host Docker daemon's trust store
+# (OrbStack syncs the macOS keychain; Docker Desktop reads ~/.docker/certs.d) per
+# docs/local-cluster.md — the builder needs no separate CA config.
+#
+# The guard recreates the builder unless it already exists as a docker-container
+# builder running on the host network: a leftover builder of the same name on the
+# wrong driver (e.g. the default docker driver, which cannot emit a manifest list)
+# or without host networking (which cannot reach the local registry) would
+# otherwise be reused silently. `docker buildx inspect` reports the driver on a
+# `Driver:` line and the host-network mode as a `network: host` driver-opt; the
+# guard requires both. Recreating is safe and idempotent.
+#
+# This is the single bootstrap for the shared $(BUILDX_BUILDER): the controller's
+# multi-arch builder target (Makefile.controller) depends on THIS target rather
+# than duplicating the guard, so the shared builder is created exactly once and a
+# parallel `make -j docker-buildx controller-docker-buildx` cannot race two
+# recipes mutating the same builder.
+.PHONY: docker-buildx-builder
+docker-buildx-builder: ## Ensure the shared docker-container buildx builder $(BUILDX_BUILDER) exists.
+	@info="$$(docker buildx inspect $(BUILDX_BUILDER) 2>/dev/null)"; \
+	if echo "$$info" | grep -q '^Driver: *docker-container' && echo "$$info" | grep -q 'network.*host'; then \
+		echo "buildx builder $(BUILDX_BUILDER) already present (docker-container, host network)"; \
+	else \
+		docker buildx rm $(BUILDX_BUILDER) >/dev/null 2>&1 || true; \
+		docker buildx create --name $(BUILDX_BUILDER) --driver docker-container --driver-opt network=host; \
+	fi
+
+# A multi-platform build cannot --load into the local Docker daemon (the daemon
+# stores a single architecture), so docker-buildx is push-only: it emits the
+# manifest list straight to $(IMAGE). Verify with:
+#   docker buildx imagetools inspect $(IMAGE)
+.PHONY: docker-buildx
+docker-buildx: docker-buildx-builder ## Build and push the multi-arch $(MULTIARCH_PLATFORMS) image index $(IMAGE).
+	docker buildx build --builder $(BUILDX_BUILDER) --platform $(MULTIARCH_PLATFORMS) -t $(IMAGE) --push .
 
 # The holos-controller service (ADR-18, HOL-1309) lives in this same module and
 # repo but keeps its targets isolated in Makefile.controller — all namespaced
