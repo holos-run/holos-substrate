@@ -71,6 +71,40 @@ type OrgClient interface {
 	// DeleteOrganizationRobotIfExists deletes the ownership-marker robot,
 	// treating an already-absent response as success (idempotent).
 	DeleteOrganizationRobotIfExists(ctx context.Context, org, shortname string) error
+
+	// ListTeams returns the org's teams keyed by name (derived from the org
+	// payload's teams map), giving the reconciler each team's current role and
+	// existence in a single request.
+	ListTeams(ctx context.Context, org string) (map[string]quay.Team, error)
+	// UpsertTeam creates or updates the org team with the given role and
+	// description (PUT is create-or-update, so it is idempotent).
+	UpsertTeam(ctx context.Context, org, team, role, description string) error
+	// DeleteTeamIfExists deletes the org team, treating an already-absent team as
+	// success (idempotent).
+	DeleteTeamIfExists(ctx context.Context, org, team string) error
+	// GetTeamMembers fetches the team-members payload, whose sync binding (the
+	// bound OIDC group via quay.TeamMembers.GroupName) the reconciler reads to
+	// detect drift and ownership.
+	GetTeamMembers(ctx context.Context, org, team string) (*quay.TeamMembers, error)
+	// EnableTeamSyncIfNotSynced binds the team's membership to oidcGroup, no-oping
+	// when it is already bound to that group (idempotent).
+	EnableTeamSyncIfNotSynced(ctx context.Context, org, team, oidcGroup string) error
+	// DisableTeamSyncIfSynced removes the team's sync binding, treating an
+	// already-unsynced team as success (idempotent).
+	DisableTeamSyncIfSynced(ctx context.Context, org, team string) error
+
+	// ListPrototypes returns the org's default-permission prototypes so the
+	// reconciler can find the one delegating to a given team.
+	ListPrototypes(ctx context.Context, org string) ([]quay.Prototype, error)
+	// CreatePrototype creates an org default-permission prototype delegating role
+	// to delegateTeam, returning the created prototype (with its assigned id).
+	CreatePrototype(ctx context.Context, org, role, delegateTeam string) (*quay.Prototype, error)
+	// UpdatePrototype sets the role on an existing prototype (the delegate is fixed
+	// at creation).
+	UpdatePrototype(ctx context.Context, org, prototypeID, role string) error
+	// DeletePrototypeIfExists deletes the prototype, treating an already-absent
+	// prototype as success (idempotent).
+	DeletePrototypeIfExists(ctx context.Context, org, prototypeID string) error
 }
 
 // ClientFactory builds an OrgClient from a resolved Quay credential and the
@@ -232,7 +266,7 @@ func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger log
 				// the heal path recovers the marker on the next reconcile.
 				return r.fail(ctx, org, markerErr)
 			}
-			return r.succeed(ctx, logger, org, ReasonCreated,
+			return r.reconcileTeamsThenSucceed(ctx, logger, qc, org, ReasonCreated,
 				fmt.Sprintf("created Quay organization %q", org.Spec.Name))
 		case quay.IsConflict(err):
 			// Lost the create race: the org now exists but this CR did not
@@ -293,7 +327,7 @@ func (r *OrganizationReconciler) reconcileExisting(ctx context.Context, logger l
 			return r.reconcileOwned(ctx, logger, qc, org, actual)
 		}
 		// Unowned, externally-created org → adopt (if opted in) or Conflict.
-		return r.reconcileExistingUnowned(ctx, logger, org)
+		return r.reconcileExistingUnowned(ctx, logger, qc, org)
 
 	default:
 		// Any other Quay error reading the marker: fail and requeue.
@@ -327,7 +361,7 @@ func (r *OrganizationReconciler) reconcileOwned(ctx context.Context, logger logr
 		logger.Info("applied Organization email drift", "name", org.Spec.Name)
 	}
 
-	return r.succeed(ctx, logger, org, ReasonCreated,
+	return r.reconcileTeamsThenSucceed(ctx, logger, qc, org, ReasonCreated,
 		fmt.Sprintf("reconciled Quay organization %q", org.Spec.Name))
 }
 
@@ -382,10 +416,10 @@ func (r *OrganizationReconciler) conflict(ctx context.Context, logger logr.Logge
 // this CR: adopt it when spec.adopt is set (status.Created stays false so the
 // finalizer releases rather than deletes), otherwise refuse to write and set a
 // terminal Conflict condition (no requeue storm — a spec change re-triggers).
-func (r *OrganizationReconciler) reconcileExistingUnowned(ctx context.Context, logger logr.Logger, org *quayv1alpha1.Organization) (ctrl.Result, error) {
+func (r *OrganizationReconciler) reconcileExistingUnowned(ctx context.Context, logger logr.Logger, qc OrgClient, org *quayv1alpha1.Organization) (ctrl.Result, error) {
 	if org.Spec.Adopt {
 		org.Status.Created = false
-		return r.succeed(ctx, logger, org, ReasonAdopted,
+		return r.reconcileTeamsThenSucceed(ctx, logger, qc, org, ReasonAdopted,
 			fmt.Sprintf("adopted existing Quay organization %q", org.Spec.Name))
 	}
 
@@ -405,14 +439,71 @@ func (r *OrganizationReconciler) reconcileExistingUnowned(ctx context.Context, l
 	return ctrl.Result{}, nil
 }
 
+// reconcileTeamsThenSucceed reconciles spec.syncedTeams into the now-owned (or
+// adopted) Quay org, then marks the resource Ready. It is the single funnel every
+// success path runs so teams are reconciled only after the org itself is
+// provisioned (AC #1). A team conflict (a spec team pre-exists and was not created
+// by this resource) is surfaced as a TeamConflict condition (a non-Ready outcome)
+// rather than a generic Quay error; any other Quay error fails the reconcile and
+// requeues. The status write that succeed()/teamConflict() performs also persists
+// the status.managedTeams set reconcileSyncedTeams computed.
+func (r *OrganizationReconciler) reconcileTeamsThenSucceed(ctx context.Context, logger logr.Logger, qc OrgClient, org *quayv1alpha1.Organization, reason, message string) (ctrl.Result, error) {
+	// Snapshot the managed-team set so a change to status.managedTeams (e.g. a team
+	// added, removed, or healed in) is persisted even when Ready and
+	// observedGeneration are unchanged — without it, succeed() would skip the write
+	// on a steady-state reconcile and lose the updated ownership record.
+	before := append([]string(nil), org.Status.ManagedTeams...)
+	if err := r.reconcileSyncedTeams(ctx, qc, org); err != nil {
+		if isTeamConflict(err) {
+			return r.teamConflict(ctx, logger, org, err.Error())
+		}
+		return r.fail(ctx, org, err)
+	}
+	managedChanged := !equalStrings(before, org.Status.ManagedTeams)
+	return r.succeed(ctx, logger, org, reason, message, managedChanged)
+}
+
+// equalStrings reports whether two string slices are element-wise equal. Both
+// managed-team slices are kept sorted (writeManagedTeams), so a positional
+// comparison is sufficient to detect a change.
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// teamConflict records a TeamConflict condition (Ready/Programmed False) for a
+// spec.syncedTeams entry that names a pre-existing Quay team this resource did not
+// create, emits a Warning, and persists status (which also carries the
+// status.managedTeams progress computed before the conflict). It always writes
+// status because the managed-team set may have changed even when the conditions
+// did not, so callers see durable progress.
+func (r *OrganizationReconciler) teamConflict(ctx context.Context, logger logr.Logger, org *quayv1alpha1.Organization, message string) (ctrl.Result, error) {
+	setTeamConflict(&org.Status.Conditions, message, org.Generation)
+	r.Recorder.Event(org, corev1.EventTypeWarning, ReasonTeamConflict, message)
+	logger.Info("Organization team conflict", "name", org.Spec.Name)
+	if err := r.updateStatus(ctx, org); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}
+
 // succeed stamps Ready/Programmed/Accepted true with the given reason+message.
 // It emits a Normal event and writes status only when something actually changed
-// (a condition flipped or observedGeneration advanced), so a steady-state
-// reconcile of an unchanged resource does not write status — which would
-// otherwise re-enqueue the object and spin a reconcile/update/event loop.
-func (r *OrganizationReconciler) succeed(ctx context.Context, logger logr.Logger, org *quayv1alpha1.Organization, reason, message string) (ctrl.Result, error) {
+// (a condition flipped, observedGeneration advanced, or extraChanged is set), so a
+// steady-state reconcile of an unchanged resource does not write status — which
+// would otherwise re-enqueue the object and spin a reconcile/update/event loop.
+// extraChanged is load-bearing for status.managedTeams: a team set that changes
+// without flipping Ready or bumping the generation must still be persisted.
+func (r *OrganizationReconciler) succeed(ctx context.Context, logger logr.Logger, org *quayv1alpha1.Organization, reason, message string, extraChanged bool) (ctrl.Result, error) {
 	changed := markReady(&org.Status.Conditions, reason, message, org.Generation)
-	changed = changed || org.Status.ObservedGeneration != org.Generation
+	changed = changed || extraChanged || org.Status.ObservedGeneration != org.Generation
 	if !changed {
 		return ctrl.Result{}, nil
 	}
@@ -430,6 +521,16 @@ func (r *OrganizationReconciler) succeed(ctx context.Context, logger logr.Logger
 // claimed a pre-existing org never destroys it. After cleanup the finalizer is
 // removed so the CR is deleted. A Quay error during delete fails the reconcile
 // and requeues, so the finalizer is not removed until cleanup succeeds.
+//
+// Synced teams need no separate finalizer (AC #7): deleting the Quay org cascades
+// its teams (and their default-permission prototypes), so the existing org delete
+// is sufficient cleanup for a created org. Adopted-org edge case: when the org is
+// released rather than deleted (status.Created false), the synced teams this
+// controller created inside it are intentionally NOT individually deleted — the
+// platform did not create the org and non-destructive release is the contract, so
+// the teams remain on the surviving org. (Dropping a team from spec.syncedTeams
+// while the CR lives still de-provisions that team via reconcileSyncedTeams; this
+// note is only about the whole-CR delete of an adopted org.)
 func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *quayv1alpha1.Organization) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(org, organizationFinalizer) {
 		// Already finalized; nothing to do.
