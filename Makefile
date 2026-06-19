@@ -78,10 +78,15 @@ docker-push: ## Build for $(PLATFORM) and push $(IMAGE) to the registry.
 # builder stage to $BUILDPLATFORM and cross-compiles via the Go toolchain, no
 # QEMU emulation is needed — only a docker-container-driver buildx builder, which
 # docker-buildx-builder bootstraps idempotently.
+#
+# The builder runs with --driver-opt network=host because the default IMAGE lives
+# in the local quay.holos.localhost / k3d-registry.holos.localhost registries,
+# which a docker-container builder cannot resolve from its isolated network
+# without host networking (see docs/build-registry.md).
 .PHONY: docker-buildx-builder
 docker-buildx-builder: ## Ensure the shared docker-container buildx builder $(BUILDX_BUILDER) exists.
 	docker buildx inspect $(BUILDX_BUILDER) >/dev/null 2>&1 || \
-		docker buildx create --name $(BUILDX_BUILDER) --driver docker-container
+		docker buildx create --name $(BUILDX_BUILDER) --driver docker-container --driver-opt network=host
 
 # A multi-platform build cannot --load into the local Docker daemon (the daemon
 # stores a single architecture), so docker-buildx is push-only: it emits the
