@@ -82,11 +82,23 @@ docker-push: ## Build for $(PLATFORM) and push $(IMAGE) to the registry.
 # The builder runs with --driver-opt network=host because the default IMAGE lives
 # in the local quay.holos.localhost / k3d-registry.holos.localhost registries,
 # which a docker-container builder cannot resolve from its isolated network
-# without host networking (see docs/build-registry.md).
+# without host networking (see docs/build-registry.md). TLS trust for the
+# mkcert-signed local registry comes from the host Docker daemon's trust store
+# (OrbStack syncs the macOS keychain; Docker Desktop reads ~/.docker/certs.d) per
+# docs/local-cluster.md — the builder needs no separate CA config.
+#
+# The guard recreates the builder unless it already exists with the
+# docker-container driver: a leftover builder of the same name on the wrong
+# driver (e.g. the default docker driver, which cannot emit a manifest list)
+# would otherwise be reused silently. Recreating is safe and idempotent.
 .PHONY: docker-buildx-builder
 docker-buildx-builder: ## Ensure the shared docker-container buildx builder $(BUILDX_BUILDER) exists.
-	docker buildx inspect $(BUILDX_BUILDER) >/dev/null 2>&1 || \
-		docker buildx create --name $(BUILDX_BUILDER) --driver docker-container --driver-opt network=host
+	@if docker buildx inspect $(BUILDX_BUILDER) 2>/dev/null | grep -q '^Driver: *docker-container'; then \
+		echo "buildx builder $(BUILDX_BUILDER) already present (docker-container driver)"; \
+	else \
+		docker buildx rm $(BUILDX_BUILDER) >/dev/null 2>&1 || true; \
+		docker buildx create --name $(BUILDX_BUILDER) --driver docker-container --driver-opt network=host; \
+	fi
 
 # A multi-platform build cannot --load into the local Docker daemon (the daemon
 # stores a single architecture), so docker-buildx is push-only: it emits the

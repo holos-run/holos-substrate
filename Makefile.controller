@@ -177,11 +177,19 @@ controller-docker-push: ## Build for $(CONTROLLER_PLATFORM) and push $(CONTROLLE
 # $BUILDPLATFORM and cross-compiles via the Go toolchain. --driver-opt
 # network=host lets the isolated builder reach the local quay.holos.localhost /
 # k3d-registry.holos.localhost registries the default CONTROLLER_IMAGE targets
-# (see docs/build-registry.md).
+# (see docs/build-registry.md); TLS trust comes from the host Docker daemon's
+# store (docs/local-cluster.md). The guard recreates the builder unless it
+# already exists with the docker-container driver, so a leftover builder of the
+# same name on the wrong driver is not reused silently — identical to the root
+# docker-buildx-builder target it intentionally shares $(BUILDX_BUILDER) with.
 .PHONY: controller-docker-buildx-builder
 controller-docker-buildx-builder: ## Ensure the shared docker-container buildx builder $(BUILDX_BUILDER) exists.
-	docker buildx inspect $(BUILDX_BUILDER) >/dev/null 2>&1 || \
-		docker buildx create --name $(BUILDX_BUILDER) --driver docker-container --driver-opt network=host
+	@if docker buildx inspect $(BUILDX_BUILDER) 2>/dev/null | grep -q '^Driver: *docker-container'; then \
+		echo "buildx builder $(BUILDX_BUILDER) already present (docker-container driver)"; \
+	else \
+		docker buildx rm $(BUILDX_BUILDER) >/dev/null 2>&1 || true; \
+		docker buildx create --name $(BUILDX_BUILDER) --driver docker-container --driver-opt network=host; \
+	fi
 
 # Push-only: a multi-platform build cannot --load into the local Docker daemon,
 # so this emits the manifest list straight to $(CONTROLLER_IMAGE). Verify with:
