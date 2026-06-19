@@ -453,13 +453,17 @@ func (r *OrganizationReconciler) reconcileTeamsThenSucceed(ctx context.Context, 
 	// observedGeneration are unchanged — without it, succeed() would skip the write
 	// on a steady-state reconcile and lose the updated ownership record.
 	before := append([]string(nil), org.Status.ManagedTeams...)
-	if err := r.reconcileSyncedTeams(ctx, qc, org); err != nil {
+	err := r.reconcileSyncedTeams(ctx, qc, org)
+	// reconcileSyncedTeams may rewrite status.managedTeams even when it returns a
+	// (conflict) error — it persists the progress made before the conflict — so
+	// compute the change for both the success and the conflict status write.
+	managedChanged := !equalStrings(before, org.Status.ManagedTeams)
+	if err != nil {
 		if isTeamConflict(err) {
-			return r.teamConflict(ctx, logger, org, err.Error())
+			return r.teamConflict(ctx, logger, org, err.Error(), managedChanged)
 		}
 		return r.fail(ctx, org, err)
 	}
-	managedChanged := !equalStrings(before, org.Status.ManagedTeams)
 	return r.succeed(ctx, logger, org, reason, message, managedChanged)
 }
 
@@ -480,12 +484,19 @@ func equalStrings(a, b []string) bool {
 
 // teamConflict records a TeamConflict condition (Ready/Programmed False) for a
 // spec.syncedTeams entry that names a pre-existing Quay team this resource did not
-// create, emits a Warning, and persists status (which also carries the
-// status.managedTeams progress computed before the conflict). It always writes
-// status because the managed-team set may have changed even when the conditions
-// did not, so callers see durable progress.
-func (r *OrganizationReconciler) teamConflict(ctx context.Context, logger logr.Logger, org *quayv1alpha1.Organization, message string) (ctrl.Result, error) {
-	setTeamConflict(&org.Status.Conditions, message, org.Generation)
+// create. It writes status and emits a Warning only when something actually
+// changed — the condition flipped, observedGeneration advanced, or the
+// managed-team set changed (managedChanged) — so a persistent, unchanged team
+// conflict does not rewrite identical status on every reconcile (which would
+// re-enqueue the object and spin a watch-triggered loop), mirroring the org-level
+// conflict path. managedChanged keeps the status.managedTeams progress made before
+// the conflict durable even when the condition itself is unchanged.
+func (r *OrganizationReconciler) teamConflict(ctx context.Context, logger logr.Logger, org *quayv1alpha1.Organization, message string, managedChanged bool) (ctrl.Result, error) {
+	changed := setTeamConflict(&org.Status.Conditions, message, org.Generation)
+	changed = changed || managedChanged || org.Status.ObservedGeneration != org.Generation
+	if !changed {
+		return ctrl.Result{}, nil
+	}
 	r.Recorder.Event(org, corev1.EventTypeWarning, ReasonTeamConflict, message)
 	logger.Info("Organization team conflict", "name", org.Spec.Name)
 	if err := r.updateStatus(ctx, org); err != nil {

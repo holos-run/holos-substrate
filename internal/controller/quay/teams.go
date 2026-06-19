@@ -113,10 +113,18 @@ func (r *OrganizationReconciler) reconcileSyncedTeams(ctx context.Context, qc Or
 
 		if present && !owned {
 			// The team exists but is not recorded as ours. Heal it into ownership
-			// only when its durable sync binding already names this entry's
-			// oidcGroup (a lost status write after our own create, AC #4); otherwise
-			// it was created by someone else and must not be adopted (AC #6).
-			healed, err := r.teamBoundToGroup(ctx, qc, orgName, t.Name, t.OIDCGroup)
+			// only when it carries the controller's durable server-side ownership
+			// marker — the managedTeamDescription stamped on every team we create —
+			// AND its sync binding already names this entry's oidcGroup (a lost
+			// status write after our own create, AC #4). Both are required so the
+			// heal mirrors the org robot's unforgeable marker: the description proves
+			// this controller created the team, and the group binding confirms it is
+			// the same desired team. A hand-created team that merely happens to be
+			// bound to the same oidcGroup lacks our description, so it is NOT adopted
+			// — it is a conflict, preserving the no-adoption / non-exclusive model
+			// (AC #5/#6). Adoption stays a reconcile-time error only; a future
+			// per-team adopt can flip this conflict path without an API break.
+			healed, err := r.teamHealable(ctx, qc, orgName, t.Name, t.OIDCGroup, existing)
 			if err != nil {
 				return err
 			}
@@ -129,32 +137,56 @@ func (r *OrganizationReconciler) reconcileSyncedTeams(ctx context.Context, qc Or
 			managed[t.Name] = true
 		}
 
-		if err := r.ensureTeam(ctx, qc, orgName, t, existing, present); err != nil {
+		// Record ownership immediately — before the sync/prototype steps that follow
+		// — so a transient Quay failure mid-team does not strand a controller-created
+		// team as "unmanaged" and wedge the next reconcile into a false TeamConflict.
+		// The managed set is persisted by the caller's status write on success; on a
+		// mid-team error the durable managedTeamDescription marker UpsertTeam stamps
+		// is the backstop that lets the next reconcile heal the team back into
+		// ownership rather than mistaking it for foreign.
+		if err := r.ensureTeamUpserted(ctx, qc, orgName, t, existing, present); err != nil {
 			return err
 		}
 		managed[t.Name] = true
+
+		if err := r.ensureTeamSyncAndPrototype(ctx, qc, orgName, t); err != nil {
+			return err
+		}
 	}
 
 	r.writeManagedTeams(org, managed)
 	return nil
 }
 
-// ensureTeam creates or reconciles a single desired team and its optional
-// default-permission prototype. existing/present describe the team as last listed
-// from Quay (present=false means it must be created).
-func (r *OrganizationReconciler) ensureTeam(ctx context.Context, qc OrgClient, orgName string, t *quayv1alpha1.SyncedTeam, existing quay.Team, present bool) error {
+// ensureTeamUpserted upserts a single desired team to its role with the
+// controller's ownership description, stamping the durable managedTeamDescription
+// marker. PUT is create-or-update, so this both creates an absent team and corrects
+// role drift on an existing one in one call. It is the first, ownership-stamping
+// step; bindTeamSync/reconcileTeamPrototype follow in ensureTeamSyncAndPrototype.
+// existing/present describe the team as last listed from Quay.
+//
+// The upsert always runs when the team is absent, its role drifted, or its
+// description is not yet the controller's marker (so a healed team that lacked the
+// marker gets stamped), and is skipped only when the team already matches on both
+// role and description — keeping a steady-state reconcile call-free.
+func (r *OrganizationReconciler) ensureTeamUpserted(ctx context.Context, qc OrgClient, orgName string, t *quayv1alpha1.SyncedTeam, existing quay.Team, present bool) error {
 	role := string(t.Role)
-
-	// Upsert the team to the desired role. PUT is create-or-update, so this both
-	// creates an absent team and corrects role drift on an existing one in one call.
-	if !present || existing.Role != role {
-		err := qc.UpsertTeam(ctx, orgName, t.Name, role, managedTeamDescription)
-		recordQuayAPI(opUpsertTeam, err)
-		if err != nil {
-			return fmt.Errorf("upserting Quay team %q in organization %q: %w", t.Name, orgName, err)
-		}
+	if present && existing.Role == role && existing.Description == managedTeamDescription {
+		return nil
 	}
+	err := qc.UpsertTeam(ctx, orgName, t.Name, role, managedTeamDescription)
+	recordQuayAPI(opUpsertTeam, err)
+	if err != nil {
+		return fmt.Errorf("upserting Quay team %q in organization %q: %w", t.Name, orgName, err)
+	}
+	return nil
+}
 
+// ensureTeamSyncAndPrototype binds the team's OIDC sync and reconciles its
+// optional default-permission prototype. It runs after ensureTeamUpserted has
+// stamped ownership, so a failure here leaves a team that the next reconcile heals
+// back into ownership via its description marker rather than mistaking for foreign.
+func (r *OrganizationReconciler) ensureTeamSyncAndPrototype(ctx context.Context, qc OrgClient, orgName string, t *quayv1alpha1.SyncedTeam) error {
 	// Bind (or re-bind) the team's membership to the desired OIDC group.
 	// EnableTeamSyncIfNotSynced no-ops when already bound to t.OIDCGroup; when bound
 	// to a different group it surfaces the drift, which we correct by disabling and
@@ -276,12 +308,27 @@ func (r *OrganizationReconciler) deprovisionTeam(ctx context.Context, qc OrgClie
 	return nil
 }
 
-// teamBoundToGroup reports whether the team's current sync binding names oidcGroup.
-// It is the heal check (AC #4): a team that exists but is not recorded as ours is
-// only adopted-by-healing when its durable server-side binding already matches the
-// desired group (proving this controller created it and only the status write was
-// lost). A read error surfaces so the reconcile requeues rather than guessing.
-func (r *OrganizationReconciler) teamBoundToGroup(ctx context.Context, qc OrgClient, orgName, team, oidcGroup string) (bool, error) {
+// teamHealable reports whether an existing-but-unrecorded team may be healed into
+// ownership (AC #4). It requires BOTH durable server-side ownership signals:
+//
+//   - the controller's managedTeamDescription on the listed team (existing.Description),
+//     the team-level analog of the org's holos-owner robot marker — proof this
+//     controller created the team; and
+//   - the team's sync binding already naming the desired oidcGroup — confirming it
+//     is the same desired team, not a stale controller team re-pointed by hand.
+//
+// Requiring the description marker (not just the group) is what keeps the heal from
+// silently adopting a hand-created team that merely happens to share the oidcGroup:
+// such a team lacks the controller's description, so teamHealable returns false and
+// the caller raises a TeamConflict. A read error surfaces so the reconcile requeues
+// rather than guessing.
+func (r *OrganizationReconciler) teamHealable(ctx context.Context, qc OrgClient, orgName, team, oidcGroup string, existing quay.Team) (bool, error) {
+	// The team must carry our ownership marker. existing comes from ListTeams, whose
+	// org payload exposes each team's description, so no extra round trip is needed
+	// for this gate.
+	if existing.Description != managedTeamDescription {
+		return false, nil
+	}
 	members, err := qc.GetTeamMembers(ctx, orgName, team)
 	recordQuayAPI(opGetTeamMembers, err)
 	if err != nil {

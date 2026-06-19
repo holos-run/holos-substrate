@@ -1155,9 +1155,10 @@ func TestReconcileSyncedTeamsHealsLostStatus(t *testing.T) {
 		{Name: "synced", OIDCGroup: "bound-group", Role: quayv1alpha1.OrganizationTeamRoleMember},
 	})
 	fake := newFakeOrgClient()
-	// The team already exists, bound to the desired group, but status.managedTeams
-	// does NOT record it (the status write was lost after a prior create).
-	fake.seedTeam("healteam", "synced", "member", "bound-group")
+	// The team already exists, carries the controller's ownership-marker
+	// description, and is bound to the desired group — but status.managedTeams does
+	// NOT record it (the status write was lost after a prior create).
+	fake.seedManagedTeam("healteam", "synced", "member", "bound-group")
 	r, _ := newReconciler(fake, ns)
 
 	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
@@ -1174,6 +1175,38 @@ func TestReconcileSyncedTeamsHealsLostStatus(t *testing.T) {
 	if !containsString(org.Status.ManagedTeams, "synced") {
 		t.Errorf("ManagedTeams = %v, want the healed team recorded", org.Status.ManagedTeams)
 	}
+}
+
+func TestReconcileSyncedTeamsBoundButUnmarkedIsConflict(t *testing.T) {
+	// Codex round 1 (CRITICAL): a hand-created team that merely happens to be bound
+	// to the desired oidcGroup but lacks the controller's ownership-marker
+	// description must NOT be healed/adopted — it is a TeamConflict. The heal rule
+	// requires the durable description marker, not just a coincidental group match.
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrgWithTeams(ctx, t, ns, "boundforeign", []quayv1alpha1.SyncedTeam{
+		{Name: "shared", OIDCGroup: "shared-group", Role: quayv1alpha1.OrganizationTeamRoleMember},
+	})
+	fake := newFakeOrgClient()
+	// Bound to the desired group, but with NO controller description (foreign).
+	fake.seedTeam("boundforeign", "shared", "member", "shared-group")
+	r, recorder := newReconciler(fake, ns)
+
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile should not error on a team conflict: %v", err)
+	}
+
+	org := getOrg(ctx, t, key)
+	if got := conditionReason(org, ConditionReady); got != ReasonTeamConflict {
+		t.Errorf("Ready reason = %q, want %q (a bound-but-unmarked team must not be adopted)", got, ReasonTeamConflict)
+	}
+	if containsString(org.Status.ManagedTeams, "shared") {
+		t.Errorf("ManagedTeams = %v, must not adopt a bound-but-unmarked foreign team", org.Status.ManagedTeams)
+	}
+	assertEvent(t, recorder, ReasonTeamConflict)
 }
 
 // assertEvent fails the test unless the recorder captured an event whose text

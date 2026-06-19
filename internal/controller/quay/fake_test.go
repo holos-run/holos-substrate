@@ -388,11 +388,24 @@ func (f *fakeOrgClient) DeletePrototypeIfExists(ctx context.Context, org, protot
 }
 
 // seedTeam pre-populates a team (optionally synced to oidcGroup, "" for unsynced)
-// so a test can simulate a pre-existing team — controller-managed or foreign.
+// so a test can simulate a pre-existing team — controller-managed or foreign. The
+// description is left empty (a foreign team); use seedManagedTeam to simulate a
+// controller-created team that carries the ownership-marker description.
 func (f *fakeOrgClient) seedTeam(org, team, role, oidcGroup string) {
+	f.seedTeamWithDescription(org, team, role, "", oidcGroup)
+}
+
+// seedManagedTeam pre-populates a team stamped with the controller's
+// managedTeamDescription marker, simulating a team this controller created whose
+// status record was lost — the heal candidate (AC #4).
+func (f *fakeOrgClient) seedManagedTeam(org, team, role, oidcGroup string) {
+	f.seedTeamWithDescription(org, team, role, managedTeamDescription, oidcGroup)
+}
+
+func (f *fakeOrgClient) seedTeamWithDescription(org, team, role, description, oidcGroup string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.teams[teamKey(org, team)] = quay.Team{Name: team, Role: role}
+	f.teams[teamKey(org, team)] = quay.Team{Name: team, Role: role, Description: description}
 	if oidcGroup != "" {
 		f.teamSync[teamKey(org, team)] = oidcGroup
 	}
