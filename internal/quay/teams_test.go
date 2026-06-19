@@ -336,50 +336,35 @@ func TestDeleteTeamIfExistsSwallowsAbsentTeam400(t *testing.T) {
 	}
 }
 
-func TestDeleteTeamIfExistsConfirmsAbsenceViaListOnOpaqueError(t *testing.T) {
-	// An unrecognized delete error, but the team is absent from the org's teams
-	// map: the ListTeams fallback confirms it is gone and the wrapper succeeds.
-	listHit := false
-	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
-		"DELETE /api/v1/organization/acme/team/gone": func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = io.WriteString(w, `{"error_message":"some opaque error"}`)
-		},
-		"GET /api/v1/organization/acme": func(w http.ResponseWriter, _ *http.Request) {
-			listHit = true
-			w.WriteHeader(http.StatusOK)
-			_, _ = io.WriteString(w, `{"name":"acme","teams":{"devs":{"role":"member"}}}`)
-		},
-	}}
-	c, _ := newTestClient(t, m)
-
-	if err := c.DeleteTeamIfExists(context.Background(), "acme", "gone"); err != nil {
-		t.Fatalf("DeleteTeamIfExists should succeed when ListTeams confirms absence, got %v", err)
+func TestDeleteTeamIfExistsSurfacesOtherError(t *testing.T) {
+	// Only the unambiguous absent signals (404 / absent-team 400) are swallowed;
+	// every other error — including a 500 or an auth failure — must surface so a
+	// real failure is never silently reported as a successful cleanup.
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodDelete, wantPath: "/api/v1/organization/acme/team/devs",
+		status:   http.StatusInternalServerError,
+		respBody: `{"error_message":"boom"}`,
 	}
-	if !listHit {
-		t.Error("expected a confirming ListTeams after the opaque delete error")
-	}
-}
-
-func TestDeleteTeamIfExistsSurfacesErrorWhenStillPresent(t *testing.T) {
-	// An unrecognized delete error AND the team still exists: the original
-	// delete error must surface rather than being swallowed.
-	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
-		"DELETE /api/v1/organization/acme/team/devs": func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = io.WriteString(w, `{"error_message":"boom"}`)
-		},
-		"GET /api/v1/organization/acme": func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			_, _ = io.WriteString(w, `{"name":"acme","teams":{"devs":{"role":"member"}}}`)
-		},
-	}}
-	c, _ := newTestClient(t, m)
+	c, _ := newTestClient(t, h)
 
 	err := c.DeleteTeamIfExists(context.Background(), "acme", "devs")
 	var ae *APIError
 	if !errors.As(err, &ae) || ae.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("expected the original 500 delete error to surface, got %v", err)
+		t.Fatalf("expected the 500 delete error to surface, got %v", err)
+	}
+}
+
+func TestDeleteTeamIfExistsSurfacesUnrelated400(t *testing.T) {
+	// A 400 that is not an absent-team signal must still surface.
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodDelete, wantPath: "/api/v1/organization/acme/team/devs",
+		status:   http.StatusBadRequest,
+		respBody: `{"error_message":"some other validation failure"}`,
+	}
+	c, _ := newTestClient(t, h)
+
+	if err := c.DeleteTeamIfExists(context.Background(), "acme", "devs"); err == nil {
+		t.Fatal("expected an unrelated 400 to surface, got nil")
 	}
 }
 

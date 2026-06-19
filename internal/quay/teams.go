@@ -237,24 +237,14 @@ func (c *Client) DeleteTeam(ctx context.Context, org, team string) error {
 // Quay's delete-team path raises InvalidTeamException for a team that does not
 // exist, which Quay 3.17.3 surfaces as a DataModelException with no well-defined
 // wire status (commonly a 400, not a clean 404). So a plain IsNotFound check is
-// not enough: isAbsentTeam additionally recognizes the absent-team 400, and for
-// any other non-2xx the method confirms absence via ListTeams and treats a
-// missing team as success — so a benign already-deleted team does not fail
-// cleanup while a genuine error (or a team that still exists) still surfaces.
+// not enough: isAbsentTeam additionally recognizes the absent-team 400 by its
+// message. Only those unambiguous absent signals are swallowed — every other
+// non-2xx (including auth and server errors) surfaces, so a real failure is
+// never silently reported as a successful cleanup. This mirrors
+// DeleteNotificationIfExists's 404-plus-absent-400 handling.
 func (c *Client) DeleteTeamIfExists(ctx context.Context, org, team string) error {
 	err := c.DeleteTeam(ctx, org, team)
-	if err == nil || IsNotFound(err) || isAbsentTeam(err) {
-		return nil
-	}
-	// The delete failed for some other reason; if the team is nonetheless absent
-	// the failure was a benign already-deleted (a Quay error shape we did not
-	// recognize), so succeed. If the existence check itself fails, return the
-	// original delete error.
-	teams, listErr := c.ListTeams(ctx, org)
-	if listErr != nil {
-		return err
-	}
-	if _, present := teams[team]; !present {
+	if IsNotFound(err) || isAbsentTeam(err) {
 		return nil
 	}
 	return err
