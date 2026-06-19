@@ -283,13 +283,13 @@ status:
 | `name` | the Quay team name to create and manage within the org; the list's `+listMapKey` (unique per org). Required (`MinLength=1`). |
 | `oidcGroup` | the OIDC groups-claim **value** (a plain string) this team's membership is synced from; the reconciler enables Quay team syncing bound to it. Referenced **by name only** — no Keycloak type is imported (AC #7). Required (`MinLength=1`). |
 | `role` | the team's **org-level** Quay role — `admin`, `creator`, or `member`. Required, no default (intent is always explicit). This is the team *org role*, distinct from `repositoryPermission` below. |
-| `repositoryPermission` | optional org **default repository permission** (a Quay *prototype*) delegating a repo role — `read`, `write`, or `admin` — to this team across all repositories in the org. A nil pointer ⇒ no default permission managed for this team. |
+| `repositoryPermission` | optional org **default repository permission** (a Quay *prototype*) delegating a repo role — `read`, `write`, or `admin` — to this team on repositories **subsequently created** in the org (a Quay prototype applies to new repos, not retroactively to pre-existing ones). A nil pointer ⇒ no default permission managed for this team. |
 
 | Status field | Purpose |
 | --- | --- |
 | `observedGeneration` | last `spec` generation reconciled. |
 | `created` | the durable ownership marker of the claim model: `true` if this CR created the Quay org, `false` if it adopted one. The finalizer deletes the Quay org only when `created: true`. |
-| `managedTeams[]` | the Quay team **names** this CR created and manages — the team-level analog of `created`. Underpins non-exclusive management (a team dropped from the spec is de-provisioned only if it appears here) and adoption-is-an-error (a spec team that exists in Quay but is absent here was created by someone else → `Conflict`). See *Synced teams* below. |
+| `managedTeams[]` | the Quay team **names** this CR created and manages — the team-level analog of `created`. Underpins non-exclusive management (a team dropped from the spec is de-provisioned only if it appears here) and adoption-is-an-error (a spec team that exists in Quay but is absent here was created by someone else → `TeamConflict`). See *Synced teams* below. |
 | `conditions[]` | Gateway-API `Accepted`/`Programmed`/`Ready` (see *Status conditions*). |
 
 There is **no** `access[]`, `allowRepositoryCreation`, or inline `repositories[]`
@@ -325,17 +325,18 @@ enum is `writer`/`reader`):
   `creator` may create repositories, `member` is plain membership with no
   creation or admin rights. Required, no default — the intent is always explicit.
 - **`repositoryPermission` — an org _default repository permission_** (a Quay
-  *prototype*; `RepositoryRole`). An optional repo role applied across **all**
-  repositories in the org via an org default-permission prototype delegating to
-  the team. The enum is **`read` / `write` / `admin`**: `read` is pull, `write`
-  is pull+push, `admin` is full repo control. Omitted (nil) ⇒ no default
-  permission is managed for the team.
+  *prototype*; `RepositoryRole`). An optional repo role granted to the team on
+  repositories **subsequently created** in the org, via an org default-permission
+  prototype delegating to the team. A Quay prototype applies to **newly created**
+  repositories, not retroactively to ones that already exist. The enum is
+  **`read` / `write` / `admin`**: `read` is pull, `write` is pull+push, `admin` is
+  full repo control. Omitted (nil) ⇒ no default permission is managed for the team.
 
 The two are independent: `role` is *org governance* (who may administer or create
 in the org), `repositoryPermission` is *data-plane access* (what the team can do
-to repositories). A team can be a plain `member` (no org rights) yet hold a
-`write` default permission (push to every repo), which is exactly the
-primitive-role model below.
+to repositories created in the org). A team can be a plain `member` (no org
+rights) yet hold a `write` default permission (push to new repos as they are
+created), which is exactly the primitive-role model below.
 
 #### API-group dependency boundary (AC #7), reaffirmed
 
@@ -409,9 +410,9 @@ project's Quay org:
 
 | OIDC group | Synced team `role` | `repositoryPermission` | Effect |
 | --- | --- | --- | --- |
-| `my-project-owner` | `admin` | — (full via org admin) | administer the org and all repos |
-| `my-project-editor` | `member` | `write` | push/pull every repo, no org admin |
-| `my-project-viewer` | `member` | `read` | pull every repo, read-only |
+| `my-project-owner` | `admin` | — (full via org admin) | administer the org and its repos (org admin reaches all repos) |
+| `my-project-editor` | `member` | `write` | push/pull repos created in the org, no org admin |
+| `my-project-viewer` | `member` | `read` | pull repos created in the org, read-only |
 
 `owner` gets the org `admin` role (org governance + implicit full repo access);
 `editor` and `viewer` are plain org `member`s whose data-plane reach comes from
