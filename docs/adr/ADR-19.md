@@ -15,6 +15,7 @@
 | 3        | 2026-06-18 | @jeffmccune | Document the **durable server-side ownership marker** (HOL-1315): the controller stamps a `<org>+holos-owner` robot whose `description` carries the owning CR's UID and keys create/heal/delete on it (not solely on `status.created`), closing the two HOL-1311 races. Record that the Organization reconciler applies `spec.email` drift via `UpdateOrganization`. |
 | 4        | 2026-06-18 | @jeffmccune | Remove `spec.displayName` from the Organization CRD (HOL-1316). Quay 3.17.3 organizations have no display-name/description field, so the value was never programmable; the field is dropped entirely (unreleased — no migration or backwards compatibility). |
 | 5        | 2026-06-18 | @jeffmccune | Document the **`caBundle` spec field** (HOL-1320/HOL-1321): both Organization and Repository carry an identical `caBundle []byte` (JSON `caBundle,omitempty`, `+optional`) — a PEM/base64 trust anchor for the in-cluster Quay registry's local-CA serving cert, threaded into the Quay client's TLS `RootCAs`; empty means use the controller pod's system trust store. The shared shape is defined once in `api/quay/v1alpha1/common_types.go` and re-used by both Kinds (the cross-Kind convention ADR-18 Revision 3 states controller-wide). |
+| 6        | 2026-06-19 | @jeffmccune | Document **Organization synced teams** ([HOL-1325](https://linear.app/holos-run/issue/HOL-1325), shipped HOL-1326..HOL-1328): the Organization gains `spec.syncedTeams[]` (`name`, `oidcGroup`, `role` ∈ `admin`/`creator`/`member`, optional `repositoryPermission` ∈ `read`/`write`/`admin`) and `status.managedTeams`. Records the **two distinct Quay concepts** (the team *org role* vs. the org *default repository permission*/prototype), the preserved **API-group dependency boundary** (OIDC groups referenced by name as data — no Keycloak import, AC #7), **non-exclusive management** + **adoption-is-an-error** with a future per-team `adopt` escape hatch, the `status.managedTeams` ownership marker and the durable-description **heal rule**, and the **GCP-style primitive-role use case** (owner/editor/viewer). Moves org group→team/role bindings out of *Out of scope* into the implemented design. |
 
 ## Context and Problem Statement
 
@@ -232,10 +233,30 @@ spec:
   # Opt-in to adopting a pre-existing, externally-created org of this name.
   # Default false: an org this CR did not create is a Conflict, never seized.
   adopt: false
+  # OIDC-synced Quay teams. Each entry's membership tracks an OIDC groups-claim
+  # value; the controller upserts the team, binds syncing to oidcGroup, sets the
+  # org role, and (optionally) manages an org default repository permission.
+  syncedTeams:
+    - name: my-project-owner       # the Quay team name (the +listMapKey)
+      oidcGroup: my-project-owner  # the OIDC groups-claim value, by name only
+      role: admin                  # team org role: admin | creator | member
+    - name: my-project-editor
+      oidcGroup: my-project-editor
+      role: member
+      repositoryPermission: write  # org default repo permission: read|write|admin
+    - name: my-project-viewer
+      oidcGroup: my-project-viewer
+      role: member
+      repositoryPermission: read
 status:
   observedGeneration: 2
   # Ownership marker: true = this CR created the Quay org; false = adopted.
   created: true
+  # The teams this CR created and manages (the team-level analog of `created`).
+  managedTeams:
+    - my-project-owner
+    - my-project-editor
+    - my-project-viewer
   conditions:
     - type: Accepted
       status: "True"
@@ -255,17 +276,160 @@ status:
 | `credentialsSecretRef` | the Quay superuser credential Secret; defaults to `holos-controller-quay-creds` in `holos-controller`. The resource's **only** auth dependency (AC #7). |
 | `adopt` | opt-in (default `false`) to take ownership of a pre-existing unmarked org; without it such an org is a `Conflict`. An adopted org is *released*, not deleted, on CR removal. |
 | `caBundle` | optional PEM/base64 CA trust anchor for the Quay registry's local-CA serving cert; see *CA bundle* above. Identical shape on both Kinds. |
+| `syncedTeams[]` | the OIDC-synced Quay teams this org manages; a keyed list (`+listMapKey=name`). Each entry carries `name`, `oidcGroup`, `role`, and optional `repositoryPermission` — see *Synced teams* below. Empty/omitted ⇒ no managed teams. |
+
+| `syncedTeams[]` entry | Purpose |
+| --- | --- |
+| `name` | the Quay team name to create and manage within the org; the list's `+listMapKey` (unique per org). Required (`MinLength=1`). |
+| `oidcGroup` | the OIDC groups-claim **value** (a plain string) this team's membership is synced from; the reconciler enables Quay team syncing bound to it. Referenced **by name only** — no Keycloak type is imported (AC #7). Required (`MinLength=1`). |
+| `role` | the team's **org-level** Quay role — `admin`, `creator`, or `member`. Required, no default (intent is always explicit). This is the team *org role*, distinct from `repositoryPermission` below. |
+| `repositoryPermission` | optional org **default repository permission** (a Quay *prototype*) delegating a repo role — `read`, `write`, or `admin` — to this team on repositories **subsequently created** in the org (a Quay prototype applies to new repos, not retroactively to pre-existing ones). A nil pointer ⇒ no default permission managed for this team. |
 
 | Status field | Purpose |
 | --- | --- |
 | `observedGeneration` | last `spec` generation reconciled. |
 | `created` | the durable ownership marker of the claim model: `true` if this CR created the Quay org, `false` if it adopted one. The finalizer deletes the Quay org only when `created: true`. |
+| `managedTeams[]` | the Quay team **names** this CR created and manages — the team-level analog of `created`. Underpins non-exclusive management (a team dropped from the spec is de-provisioned only if it appears here) and adoption-is-an-error (a spec team that exists in Quay but is absent here **and** lacks this CR's durable description marker → `TeamConflict`; a team carrying this CR's marker is healed back in, not a conflict). See *Synced teams* below. |
 | `conditions[]` | Gateway-API `Accepted`/`Programmed`/`Ready` (see *Status conditions*). |
 
 There is **no** `access[]`, `allowRepositoryCreation`, or inline `repositories[]`
-field. OIDC group→team mapping is handled by Quay's `FEATURE_TEAM_SYNCING` from
-the `groups` claim ([ADR-15](ADR-15.md)), not by this CRD; repositories are a
+field — but OIDC group→Quay-team/role bindings **are** modeled, via the
+`syncedTeams[]` field above (*Synced teams*). Quay's `FEATURE_TEAM_SYNCING`
+([ADR-15](ADR-15.md)) keeps each synced team's **membership** tracking the
+`groups` claim; the Organization CRD declares **which** teams exist, their org
+role, and their optional default repository permission. Repositories are a
 separate `Repository` resource (AC #9).
+
+### Synced teams (`spec.syncedTeams`)
+
+An Organization may declare a set of **OIDC-synced Quay teams**. The reconciler,
+after the org itself is provisioned (Created or Adopted), drives each entry into
+Quay: it upserts the named team with its org role, enables Quay team syncing
+bound to the team's `oidcGroup`, and — when `repositoryPermission` is set —
+maintains an org default-permission *prototype* delegating that repo role to the
+team. The shipped types are
+[`SyncedTeam`/`OrganizationSpec.SyncedTeams`/`OrganizationStatus.ManagedTeams`](../../api/quay/v1alpha1/organization_types.go)
+and the reconcile logic is in
+[`internal/controller/quay/teams.go`](../../internal/controller/quay/teams.go).
+
+#### Two distinct Quay concepts (team org role vs. default repository permission)
+
+`syncedTeams` touches **two** different Quay enums that are easy to conflate (the
+original design recollection of "admin/writer/reader" conflated them — neither
+enum is `writer`/`reader`):
+
+- **`role` — the team's _org-level_ role** (`OrganizationTeamRole`). The role a
+  team holds *within the organization*, mapping to the Quay team `role` field
+  (`PUT /api/v1/organization/{org}/team/{team}`). The enum is **`admin` /
+  `creator` / `member`**: `admin` is full administrative control of the org,
+  `creator` may create repositories, `member` is plain membership with no
+  creation or admin rights. Required, no default — the intent is always explicit.
+- **`repositoryPermission` — an org _default repository permission_** (a Quay
+  *prototype*; `RepositoryRole`). An optional repo role granted to the team on
+  repositories **subsequently created** in the org, via an org default-permission
+  prototype delegating to the team. A Quay prototype applies to **newly created**
+  repositories, not retroactively to ones that already exist. The enum is
+  **`read` / `write` / `admin`**: `read` is pull, `write` is pull+push, `admin` is
+  full repo control. Omitted (nil) ⇒ no default permission is managed for the team.
+
+The two are independent: `role` is *org governance* (who may administer or create
+in the org), `repositoryPermission` is *data-plane access* (what the team can do
+to repositories created in the org). A team can be a plain `member` (no org
+rights) yet hold a `write` default permission (push to new repos as they are
+created), which is exactly the primitive-role model below.
+
+#### API-group dependency boundary (AC #7), reaffirmed
+
+Synced teams **do not** breach the dependency boundary. `oidcGroup` is a plain
+group-**name string** — the value of the OIDC `groups` claim — carried as data,
+exactly like the webhook `url`. `api/quay/v1alpha1` imports **no** Keycloak,
+Kargo, or Argo CD type to express it; the binding works against whatever OIDC
+provider Quay is configured with, named only by string. This keeps the API
+package extractable and the identity coupling out of the Quay group, consistent
+with the *API-group dependency boundary* section above.
+
+#### Non-exclusive management and adoption-is-an-error
+
+Quay teams within an org are a shared namespace — an operator or another tool may
+create teams the controller knows nothing about. Management is therefore
+**non-exclusive**, gated by the `status.managedTeams` ownership record (the
+team-level analog of `status.created`):
+
+- **Non-exclusive (AC #5).** The reconciler manages exactly the teams it created
+  — those in `status.managedTeams` plus those it creates this pass — and leaves
+  every other team in the org untouched. A team that is neither in the spec nor
+  in `status.managedTeams` is ignored. A team **removed from the spec** is
+  de-provisioned (disable syncing, delete its default-permission prototype,
+  delete the team) **only if it appears in `status.managedTeams`** — never a
+  foreign team of the same name.
+- **Adoption-is-an-error (AC #6).** A `syncedTeams` entry that names a team which
+  **already exists in Quay** but is **not** controller-managed is a **Conflict**:
+  the reconciler refuses to modify it, sets `Ready=False` with reason
+  `TeamConflict`, and emits a Warning event. It is never silently seized.
+  Adoption is implemented as a reconcile-time error *only* — **no API field
+  forbids it** — so a future optional per-team `adopt` bool on `SyncedTeam` can
+  flip the conflict path to adoption **without an API break**. The schema is
+  deliberately free of any required field or validation that adding `adopt` would
+  have to change.
+
+This mirrors the org-level claim model: full-access credentials *can* seize a
+foreign team, so the controller deliberately refuses to.
+
+#### Ownership tracking (`status.managedTeams`) and the heal rule
+
+`status.managedTeams` is the durable owner record, but a status write can be lost
+after a successful Quay create (the team-level analog of the org-marker race in
+*Durable server-side ownership marker* above). To survive that, every team the
+controller creates also carries a **durable, server-side ownership marker** in
+its Quay team **description**: the prefix `managed by holos-controller ` followed
+by the owning CR's opaque ownership token (its `metadata.uid`). Because the token
+embeds the CR UID, the marker is **resource-specific and unforgeable** — a
+manually-created team cannot accidentally carry another CR's marker.
+
+The **heal rule (AC #4):** on reconcile, a Quay team whose description carries
+**this CR's** marker is treated as controller-managed and healed back into
+`status.managedTeams`, even if a prior status write was lost. A team that exists
+but lacks this CR's marker is a `TeamConflict`, never adopted — **even if it
+happens to be bound to the desired `oidcGroup`** (binding alone is not proof of
+ownership; only the unforgeable marker is). The rule is documented in a code
+comment on the reconcile helper.
+
+Org deletion needs no separate team finalizer: when `status.created == true` the
+org finalizer deletes the Quay org, which cascades its teams. An **adopted** org
+(`created: false`) is released, not deleted, so controller-created teams inside an
+adopted org are not individually deleted — an edge case noted in the controller's
+code.
+
+#### Use case: GCP-style primitive roles for a logical project
+
+The motivating use case is a **GCP-style primitive-role model** (owner / editor /
+viewer) for a logical project. A project `my-project` would have three
+OIDC groups — `my-project-owner`, `my-project-editor`, `my-project-viewer`
+(future Keycloak-managed; see below) — each mapped to a synced team in the
+project's Quay org:
+
+| OIDC group | Synced team `role` | `repositoryPermission` | Effect |
+| --- | --- | --- | --- |
+| `my-project-owner` | `admin` | — (full via org admin) | administer the org and its repos (org admin reaches all repos) |
+| `my-project-editor` | `member` | `write` | push/pull repos created in the org, no org admin |
+| `my-project-viewer` | `member` | `read` | pull repos created in the org, read-only |
+
+`owner` gets the org `admin` role (org governance + implicit full repo access);
+`editor` and `viewer` are plain org `member`s whose data-plane reach comes from
+the org default repository permission — `write` and `read` respectively. This is
+the worked example in the Organization YAML above.
+
+The **Keycloak side** of this — the `my-project-{owner,editor,viewer}` groups
+themselves, their membership custodians, and the per-project OIDC client/role
+model — is **future work**, specified in the proposed
+[ADR-20](ADR-20.md) (the Keycloak API group: per-project Client, `owner`/`editor`/`viewer`
+Client Roles, and custodian-managed Group creation/membership) and
+[ADR-21](ADR-21.md) (the Holos Project/Application components that would emit the
+Organization with its `syncedTeams` alongside the Keycloak groups). Until those
+land, the OIDC groups are provisioned by hand (or do not yet exist) and the
+Organization's `syncedTeams` references them **by name** — which is precisely why
+the dependency boundary names them as data: the Quay group does not need the
+Keycloak group to exist or be imported to declare the binding.
 
 ### Repository
 
@@ -379,6 +543,7 @@ on the API types) and shared by both reconcilers:
 | `Created` | Org/Repo | newly created in Quay. |
 | `Adopted` | Org | a pre-existing Quay org adopted via `spec.adopt`. |
 | `Conflict` | Org | a pre-existing, externally-created org of the same name exists and `adopt` was not set; never silently seized (claim model). |
+| `TeamConflict` | Org | a `spec.syncedTeams` entry names a pre-existing Quay team this CR did not create (absent from `status.managedTeams` and lacking this CR's team description marker); `Ready=False` with a Warning event. Adoption-is-an-error (AC #6); never silently seized. |
 | `Released` | Org | an adopted org released (finalizer dropped without deleting) on CR removal — adoption is non-destructive. |
 | `Reconciled` | Repo | the repository is in steady state. |
 | `OrganizationNotReady` | Repo | the owning `Organization` is not yet provisioned. |
@@ -452,9 +617,13 @@ schema is intentionally minimal. The following are **not** modeled by these CRDs
 in `v1alpha1` — including several fields Revision 1 sketched but that were **not
 built** — until a concrete requirement appears:
 
-- **Org `access[]` group→team/role bindings** and the `allowRepositoryCreation`
-  toggle. OIDC group→Quay-team mapping is handled by `FEATURE_TEAM_SYNCING`
-  ([ADR-15](ADR-15.md)) from the `groups` claim, not by the Organization CRD.
+- The `allowRepositoryCreation` toggle (Revision 1's sketch). OIDC group→Quay-team
+  **role and default-permission** bindings are now **in scope** — modeled by
+  `spec.syncedTeams` (*Synced teams* above, Revision 6) — while
+  `FEATURE_TEAM_SYNCING` ([ADR-15](ADR-15.md)) keeps each synced team's
+  *membership* tracking the `groups` claim. Per-team **adoption** of a
+  pre-existing externally-created team (a future optional per-team `adopt`) and a
+  free-form Revision 1-style `access[]` binding list remain deferred.
 - **Inline `repositories[]` on the Organization** — forbidden by AC #9;
   repositories are provisioned **only** by the `Repository` resource.
 - **Repository `retention`/auto-prune** policy.
@@ -484,9 +653,14 @@ new orgs and adopt orgs other identities created.
 
 - **Organization reconcile** resolves the credential, then create-or-claims the
   org per the claim model above (create + `created: true`, reconcile an owned
-  org, adopt on `spec.adopt`, or `Conflict`), and sets `Accepted`/`Programmed`/
-  `Ready` accordingly. A finalizer deletes a created org or releases an adopted
-  one.
+  org, adopt on `spec.adopt`, or `Conflict`). **After** the org is Created or
+  Adopted, it reconciles `spec.syncedTeams` non-exclusively (*Synced teams*
+  above): upsert each team with its role, bind syncing to `oidcGroup`, manage the
+  optional default-permission prototype, heal/track ownership in
+  `status.managedTeams`, de-provision teams dropped from the spec, and surface a
+  `TeamConflict` (with a Warning event) for a pre-existing unmanaged team. It sets
+  `Accepted`/`Programmed`/`Ready` accordingly. A finalizer deletes a created org
+  (cascading its teams) or releases an adopted one.
 - **Repository reconcile** resolves the credential and the owning `Organization`
   CR (requeuing with `OrganizationNotReady` until the org is provisioned),
   create-or-adopts `<org>/<name>` at `visibility`, applies `description`, and —
@@ -505,13 +679,19 @@ new orgs and adopt orgs other identities created.
    inline `url` / `urlSecretRef`. The **controller binary** may depend on
    Kargo/Argo CD; the API package must not.
 3. **Organization** carries `name` (immutable), `email`,
-   `credentialsSecretRef` (defaulting to `holos-controller-quay-creds`), and an
-   `adopt` opt-in; status carries `observedGeneration`, the `created` ownership
-   marker, and Gateway-API `Accepted`/`Programmed`/`Ready` conditions. It has
-   **no** inline repositories (AC #9), `access[]`, or `allowRepositoryCreation`.
-   The reconciler enforces an **ownership/claim model**: create + stamp
-   `created: true`, reconcile an owned org, adopt an external org only on
-   `adopt: true`, and treat any other pre-existing org as a `Conflict`.
+   `credentialsSecretRef` (defaulting to `holos-controller-quay-creds`), an
+   `adopt` opt-in, and `syncedTeams[]` (OIDC-synced Quay teams: `name`,
+   `oidcGroup` by name, an org `role` ∈ `admin`/`creator`/`member`, and an
+   optional `repositoryPermission` ∈ `read`/`write`/`admin` default permission);
+   status carries `observedGeneration`, the `created` ownership marker,
+   `managedTeams[]`, and Gateway-API `Accepted`/`Programmed`/`Ready` conditions.
+   It has **no** inline repositories (AC #9) or `allowRepositoryCreation`. The
+   reconciler enforces an **ownership/claim model** at both org and team level:
+   create + stamp `created: true`, reconcile an owned org, adopt an external org
+   only on `adopt: true`, treat any other pre-existing org as a `Conflict`; and
+   manage synced teams **non-exclusively** (tracked in `status.managedTeams`),
+   treating a pre-existing externally-created team named in the spec as a
+   `TeamConflict` rather than adopting it.
 4. **Repository** carries `organizationRef` (immutable; the owning Organization CR
    by name — repos are provisioned **only** here, never inlined, AC #9), `name`
    (immutable), `visibility`, `description`, `credentialsSecretRef`, and an
@@ -558,4 +738,8 @@ new orgs and adopt orgs other identities created.
 - **Foundation for the Keycloak group (ADR-20) and the delivery components
   (ADR-21).** The Quay CRDs are the registry half of the per-project data plane
   the Project/Application components (ADR-21) emit; the Keycloak group (ADR-20)
-  is the identity half.
+  is the identity half. `spec.syncedTeams` is the Quay-side landing pad for the
+  **GCP-style primitive roles** (*Synced teams* above): it already maps
+  owner/editor/viewer **by OIDC group name**, so once ADR-20's Keycloak group and
+  custodian CRDs provision `my-project-{owner,editor,viewer}`, no Quay-side API
+  change is needed to bind them — the two halves meet at the group-name string.

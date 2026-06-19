@@ -351,8 +351,12 @@ namespaces and silently fail to reconcile them.
   role (`project-admin` or a per-project role) or add them to the bound
   Keycloak group; Quay binds the matching team's membership from the `groups`
   claim automatically (`FEATURE_TEAM_SYNCING: true`, Revision 4) on the
-  30-minute `TEAM_RESYNC_STALE_TIME` cadence. A superuser performs the one-time
-  setup of the team→group binding in the organization UI.
+  30-minute `TEAM_RESYNC_STALE_TIME` cadence. The one-time setup of the
+  team→group binding (and the team's org role / default repository permission) no
+  longer requires a superuser clicking through the organization UI: it is now
+  declared on the Organization CR's `spec.syncedTeams` and reconciled by the
+  Holos Controller ([ADR-19](ADR-19.md), Revision 6). `FEATURE_TEAM_SYNCING`
+  still keeps the synced team's *membership* current from the claim.
 
 ## Decision
 

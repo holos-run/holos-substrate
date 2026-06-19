@@ -143,6 +143,33 @@ A reconciling resource reports Gateway-API conditions
 `CredentialsNotFound` reason on `Ready=False` means the Secret/key wiring above is
 incomplete.
 
+### Verify Organization synced teams
+
+An Organization may declare OIDC-synced Quay teams in `spec.syncedTeams` — each
+with an org `role` (`admin`/`creator`/`member`) and an optional org default
+repository permission `repositoryPermission` (`read`/`write`/`admin`) — which the
+controller reconciles into Quay after the org is provisioned ([ADR-19](../adr/ADR-19.md)
+Revision 6). To verify they reconcile:
+
+```bash
+# The teams the controller created and manages are tracked in status:
+kubectl -n my-project get organization my-project \
+  -o jsonpath='{.status.managedTeams}'   # expect the spec.syncedTeams names
+
+# A pre-existing, externally-created team named in spec.syncedTeams is NOT
+# adopted — it surfaces Ready=False with reason TeamConflict and a Warning event:
+kubectl -n my-project get organization my-project \
+  -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}'
+kubectl -n my-project describe organization my-project   # see the Warning event
+```
+
+Management is **non-exclusive**: teams the controller never created (absent from
+`status.managedTeams`) are ignored, and a team removed from `spec.syncedTeams` is
+de-provisioned only if it was controller-managed. `FEATURE_TEAM_SYNCING`
+([ADR-15](../adr/ADR-15.md)) keeps each synced team's *membership* tracking the
+OIDC `groups` claim; the Organization CR declares which teams exist, their role,
+and their default permission.
+
 ## Cluster bring-up — provisioning the `my-project` sample
 
 Once the controller is deployed and the credential Secret is wired, the
