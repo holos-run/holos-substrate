@@ -289,7 +289,7 @@ status:
 | --- | --- |
 | `observedGeneration` | last `spec` generation reconciled. |
 | `created` | the durable ownership marker of the claim model: `true` if this CR created the Quay org, `false` if it adopted one. The finalizer deletes the Quay org only when `created: true`. |
-| `managedTeams[]` | the Quay team **names** this CR created and manages — the team-level analog of `created`. Underpins non-exclusive management (a team dropped from the spec is de-provisioned only if it appears here) and adoption-is-an-error (a spec team that exists in Quay but is absent here was created by someone else → `TeamConflict`). See *Synced teams* below. |
+| `managedTeams[]` | the Quay team **names** this CR created and manages — the team-level analog of `created`. Underpins non-exclusive management (a team dropped from the spec is de-provisioned only if it appears here) and adoption-is-an-error (a spec team that exists in Quay but is absent here **and** lacks this CR's durable description marker → `TeamConflict`; a team carrying this CR's marker is healed back in, not a conflict). See *Synced teams* below. |
 | `conditions[]` | Gateway-API `Accepted`/`Programmed`/`Ready` (see *Status conditions*). |
 
 There is **no** `access[]`, `allowRepositoryCreation`, or inline `repositories[]`
