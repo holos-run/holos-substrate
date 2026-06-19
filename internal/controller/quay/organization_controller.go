@@ -538,10 +538,17 @@ func (r *OrganizationReconciler) succeed(ctx context.Context, logger logr.Logger
 // is sufficient cleanup for a created org. Adopted-org edge case: when the org is
 // released rather than deleted (status.Created false), the synced teams this
 // controller created inside it are intentionally NOT individually deleted — the
-// platform did not create the org and non-destructive release is the contract, so
-// the teams remain on the surviving org. (Dropping a team from spec.syncedTeams
-// while the CR lives still de-provisions that team via reconcileSyncedTeams; this
-// note is only about the whole-CR delete of an adopted org.)
+// platform did not create the org and non-destructive release is the contract
+// (mirroring the org-level claim model: an adopted org is never mutated on
+// release), so the teams remain on the surviving org. This is a deliberate
+// tradeoff mandated by AC #7: it can leave controller-created teams (OIDC-synced,
+// possibly with default repository permissions) behind on an adopted org, i.e.
+// stale access grants an operator must clean up out of band. The alternative —
+// deprovisioning status.managedTeams before releasing — would mutate an org the
+// platform does not own, which AC #7 deliberately forbids. (Dropping a team from
+// spec.syncedTeams while the CR lives still de-provisions that team via
+// reconcileSyncedTeams; this note is only about the whole-CR delete of an adopted
+// org.)
 func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *quayv1alpha1.Organization) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(org, organizationFinalizer) {
 		// Already finalized; nothing to do.

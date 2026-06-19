@@ -123,6 +123,7 @@ func (r *OrganizationReconciler) reconcileSyncedTeams(ctx context.Context, qc Or
 		owned := managed[t.Name]
 
 		if present && !owned {
+			// Heal-or-conflict for an existing team this CR does not yet record.
 			// The team exists but is not recorded as ours. Heal it into ownership
 			// only when it carries this CR's durable, unforgeable server-side
 			// ownership marker — managedTeamMarker(org), the team-level analog of the
@@ -141,7 +142,6 @@ func (r *OrganizationReconciler) reconcileSyncedTeams(ctx context.Context, qc Or
 				r.writeManagedTeams(org, managed)
 				return &teamConflictError{team: t.Name}
 			}
-			owned = true
 			managed[t.Name] = true
 		}
 
