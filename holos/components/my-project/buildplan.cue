@@ -212,6 +212,26 @@ let APPLICATION_RESOURCE = {
 // spec.caBundle is omitted entirely, so the committed holos/deploy/ tree carries
 // no per-cluster CA material (the runtime-secret posture — per-cluster trust is
 // injected at apply time, never committed).
+//
+// spec.syncedTeams declares the OIDC-synced Quay teams the shipped controller
+// reconciles for this org (HOL-1325, ADR-19 Revision 6; the API is
+// api/quay/v1alpha1 SyncedTeam, the reconciler internal/controller/quay/teams.go).
+// The set here is the worked GCP-style primitive-role example from ADR-19: a
+// logical project's owner/editor/viewer OIDC groups map to three synced teams.
+// OIDC groups are referenced BY NAME ONLY (the oidcGroup string) — no Keycloak
+// dependency: the Quay API group imports no IdP type, and these
+// my-project-{owner,editor,viewer} groups are future Keycloak work (ADR-20/ADR-21),
+// referenced here as data before they exist.
+//
+// The two enums are distinct (ADR-19 "Two distinct Quay concepts"): `role` is the
+// team's ORG role (admin | creator | member), `repositoryPermission` is an
+// optional org DEFAULT REPOSITORY PERMISSION (a Quay prototype: read | write |
+// admin) applied to repos created in the org. owner→admin needs no default
+// permission (org admin reaches all repos); editor→member+write and
+// viewer→member+read get their data-plane reach from the default permission.
+// Authored as a plain CUE list of structs (the Organization is a structured
+// Kubernetes object, so no marshalled YAML/JSON blob — the "marshal it" guardrail
+// is naturally satisfied).
 let ORGANIZATION_RESOURCE = {
 	apiVersion: "quay.holos.run/v1alpha1"
 	kind:       "Organization"
@@ -225,6 +245,25 @@ let ORGANIZATION_RESOURCE = {
 		email: "\(NAME)@holos.localhost"
 		credentialsSecretRef: name: "holos-controller-quay-creds"
 		adopt: false
+		syncedTeams: [
+			{
+				name:      "my-project-owner"
+				oidcGroup: "my-project-owner"
+				role:      "admin"
+			},
+			{
+				name:                 "my-project-editor"
+				oidcGroup:            "my-project-editor"
+				role:                 "member"
+				repositoryPermission: "write"
+			},
+			{
+				name:                 "my-project-viewer"
+				oidcGroup:            "my-project-viewer"
+				role:                 "member"
+				repositoryPermission: "read"
+			},
+		]
 		// Only set caBundle when a PEM was injected (see the gate note above).
 		// base64.Encode(null, _CABundlePEM) base64-encodes the PEM bytes with no
 		// line breaks, the single-string form the caBundle []byte field expects.

@@ -11,3 +11,15 @@ spec:
     name: holos-controller-quay-creds
   email: my-project@holos.localhost
   name: my-project
+  syncedTeams:
+  - name: my-project-owner
+    oidcGroup: my-project-owner
+    role: admin
+  - name: my-project-editor
+    oidcGroup: my-project-editor
+    repositoryPermission: write
+    role: member
+  - name: my-project-viewer
+    oidcGroup: my-project-viewer
+    repositoryPermission: read
+    role: member
