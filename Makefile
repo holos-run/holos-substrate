@@ -87,14 +87,24 @@ docker-push: ## Build for $(PLATFORM) and push $(IMAGE) to the registry.
 # (OrbStack syncs the macOS keychain; Docker Desktop reads ~/.docker/certs.d) per
 # docs/local-cluster.md — the builder needs no separate CA config.
 #
-# The guard recreates the builder unless it already exists with the
-# docker-container driver: a leftover builder of the same name on the wrong
-# driver (e.g. the default docker driver, which cannot emit a manifest list)
-# would otherwise be reused silently. Recreating is safe and idempotent.
+# The guard recreates the builder unless it already exists as a docker-container
+# builder running on the host network: a leftover builder of the same name on the
+# wrong driver (e.g. the default docker driver, which cannot emit a manifest list)
+# or without host networking (which cannot reach the local registry) would
+# otherwise be reused silently. `docker buildx inspect` reports the driver on a
+# `Driver:` line and the host-network mode as a `network: host` driver-opt; the
+# guard requires both. Recreating is safe and idempotent.
+#
+# This is the single bootstrap for the shared $(BUILDX_BUILDER): the controller's
+# multi-arch builder target (Makefile.controller) depends on THIS target rather
+# than duplicating the guard, so the shared builder is created exactly once and a
+# parallel `make -j docker-buildx controller-docker-buildx` cannot race two
+# recipes mutating the same builder.
 .PHONY: docker-buildx-builder
 docker-buildx-builder: ## Ensure the shared docker-container buildx builder $(BUILDX_BUILDER) exists.
-	@if docker buildx inspect $(BUILDX_BUILDER) 2>/dev/null | grep -q '^Driver: *docker-container'; then \
-		echo "buildx builder $(BUILDX_BUILDER) already present (docker-container driver)"; \
+	@info="$$(docker buildx inspect $(BUILDX_BUILDER) 2>/dev/null)"; \
+	if echo "$$info" | grep -q '^Driver: *docker-container' && echo "$$info" | grep -q 'network.*host'; then \
+		echo "buildx builder $(BUILDX_BUILDER) already present (docker-container, host network)"; \
 	else \
 		docker buildx rm $(BUILDX_BUILDER) >/dev/null 2>&1 || true; \
 		docker buildx create --name $(BUILDX_BUILDER) --driver docker-container --driver-opt network=host; \
