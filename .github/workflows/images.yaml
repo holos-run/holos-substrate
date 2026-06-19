@@ -8,16 +8,27 @@ name: Images
 # (or `gh workflow run`) against a caller-supplied Git ref. Keep the trigger as
 # workflow_dispatch only.
 #
-# Security model: the build job publishes official `ghcr.io/<owner>/...` images
-# and therefore runs in the `publish-images` GitHub Environment. Configure that
-# environment with required reviewers and/or a deployment branch/tag policy
-# (Settings -> Environments) so that an arbitrary unreviewed `ref` cannot be
-# published without approval — `workflow_dispatch` itself only gates on actors
-# with write access, which is not a strong enough boundary for image publishing.
-# All dispatch inputs are passed to shell steps via `env:` (never interpolated
-# directly into `run:` scripts) and the free-form `tag`/`registry` inputs are
-# validated against strict allow-patterns before use, to close the script-
-# injection vector inherent to untrusted `workflow_dispatch` inputs.
+# Security model:
+#
+#  * Admission control. Building a caller-supplied `ref` (a SHA/branch/tag) is
+#    the explicit purpose of this workflow, so the checkout source cannot be
+#    pinned to `github.ref`. The boundary instead is the `publish-images`
+#    GitHub Environment the build job runs in: configure it with REQUIRED
+#    REVIEWERS so every dispatch — whatever `ref` it names — is approved by a
+#    human before the publish job runs (Settings -> Environments). Environment
+#    *branch/tag deployment policies* gate only the workflow run ref, NOT this
+#    checkout input, so required reviewers (not a branch policy) are the control
+#    that covers an arbitrary `ref`. `workflow_dispatch` alone only gates on
+#    write access, which is not a strong enough boundary for image publishing.
+#  * Token confinement. The job authenticates with the built-in GITHUB_TOKEN,
+#    so the `registry` input is constrained to an allowlist (a `type: choice`,
+#    re-checked in the validate step) — the token is never sent to an arbitrary
+#    caller-supplied host.
+#  * Injection. All dispatch inputs reach shell steps via `env:` (never
+#    interpolated into `run:` script bodies), are rejected if they contain
+#    CR/LF, and the `tag` input is validated against the Docker tag grammar
+#    before use — closing the script- and env-injection vectors inherent to
+#    untrusted `workflow_dispatch` inputs.
 on:
   workflow_dispatch:
     inputs:
@@ -38,12 +49,18 @@ on:
         type: string
       registry:
         description: >-
-          Registry host to publish to. Defaults to ghcr.io; override to target
-          a different registry (login is GITHUB_TOKEN-based, so a non-ghcr
-          target also needs its own credentials).
+          Registry host to publish to. Must be one of the allowlisted hosts
+          (currently only ghcr.io). The host is restricted by an explicit
+          allowlist below because the job authenticates with the built-in
+          GITHUB_TOKEN — sending that token to an arbitrary caller-supplied
+          host would leak it, so a future Quay/other target is added by
+          extending REGISTRY_ALLOWLIST (a one-line change), not by accepting
+          free-form input.
         required: false
         default: ghcr.io
-        type: string
+        type: choice
+        options:
+          - ghcr.io
 
 # Minimal default permissions; the build job widens to packages: write below.
 permissions:
@@ -87,26 +104,45 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
-      # Validate the free-form dispatch inputs once, up front, before any value
-      # reaches a build/push command. `registry` and `tag` arrive from an
-      # untrusted workflow_dispatch input, so they are surfaced via `env:`
-      # (never interpolated into the script body) and checked against strict
-      # allow-patterns; anything else fails the run rather than flowing into a
-      # shell command. Validated values are re-exported to $GITHUB_ENV so later
-      # steps consume the vetted, quoted shell variables instead of raw
-      # `${{ inputs.* }}` interpolation.
+      # Validate the dispatch inputs once, up front, before any value reaches a
+      # build/push command. `registry` and `tag` arrive from an untrusted
+      # workflow_dispatch input, so they are surfaced via `env:` (never
+      # interpolated into the script body) and checked here; anything that does
+      # not pass fails the run rather than flowing into a shell command, a
+      # `docker login`, or a `$GITHUB_ENV` record. Validated values are
+      # re-exported to $GITHUB_ENV so later steps consume vetted, quoted shell
+      # variables instead of raw `${{ inputs.* }}` interpolation.
+      #
+      # REGISTRY_ALLOWLIST is the trusted set of hosts the GITHUB_TOKEN may be
+      # sent to. The `registry` input is already a `type: choice` constrained
+      # to this same set, so this is defense-in-depth; extend both to add a new
+      # target. Never accept a free-form registry host here — the login step
+      # sends GITHUB_TOKEN to whatever host wins, so an arbitrary value would
+      # leak the token.
       - name: Validate and resolve inputs
         id: meta
         env:
           IN_REGISTRY: ${{ inputs.registry }}
           IN_TAG: ${{ inputs.tag }}
+          REGISTRY_ALLOWLIST: |
+            ghcr.io
         run: |
           set -euo pipefail
-          # Registry host: DNS-style hostname with an optional :port. Rejects
-          # whitespace, shell metacharacters, slashes, and path segments.
-          if ! printf '%s' "${IN_REGISTRY}" \
-            | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]+)?$'; then
-            echo "::error::Invalid registry host: '${IN_REGISTRY}'" >&2
+          # Reject any value carrying a CR or LF before pattern-matching: grep
+          # is line-oriented, so a multi-line value with a benign first line
+          # could otherwise slip past `^...$` and then inject extra records
+          # when written to $GITHUB_ENV / $GITHUB_OUTPUT. `case` matches the
+          # whole string (newlines included), closing that vector.
+          case "${IN_REGISTRY}${IN_TAG}" in
+            *[$'\n\r']*)
+              echo "::error::inputs must not contain newline characters" >&2
+              exit 1
+              ;;
+          esac
+          # Registry host must be one of the allowlisted trusted hosts — the
+          # GITHUB_TOKEN is only ever sent to this value at login.
+          if ! grep -Fxq "${IN_REGISTRY}" <<<"${REGISTRY_ALLOWLIST}"; then
+            echo "::error::Registry '${IN_REGISTRY}' is not in the allowlist" >&2
             exit 1
           fi
           # Docker tag grammar: [A-Za-z0-9_][A-Za-z0-9_.-]{0,127}. An empty tag
@@ -122,7 +158,8 @@ jobs:
             tag="$(git rev-parse --short HEAD)"
           fi
           # Re-export the vetted values for downstream steps. printf (not echo)
-          # writes them so no value is re-interpreted by the shell.
+          # writes them so no value is re-interpreted by the shell. Both values
+          # are now guaranteed single-line and pattern-clean.
           {
             printf 'REGISTRY=%s\n' "${IN_REGISTRY}"
             printf 'IMAGE_TAG_RESOLVED=%s\n' "${tag}"
