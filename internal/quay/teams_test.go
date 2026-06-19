@@ -2,6 +2,8 @@ package quay
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"testing"
@@ -186,17 +188,12 @@ func TestEnableTeamSyncAlreadySyncedIsConflict(t *testing.T) {
 	}
 }
 
-func TestEnableTeamSyncIfNotSyncedSameGroupSucceeds(t *testing.T) {
-	// Already synced to the requested group: the conflict is verified via a
-	// members GET and swallowed as a benign no-op.
-	getHit := false
+func TestEnableTeamSyncIfNotSyncedSameGroupNoOps(t *testing.T) {
+	// Already synced to the requested group: a members GET confirms it and the
+	// call is a no-op success — no POST is issued (the syncing endpoint is not
+	// idempotent, so re-POSTing would fail the unique TeamSync constraint).
 	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
-		"POST /api/v1/organization/acme/team/devs/syncing": func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusConflict)
-			_, _ = io.WriteString(w, `{"error_message":"already synced"}`)
-		},
 		"GET /api/v1/organization/acme/team/devs/members": func(w http.ResponseWriter, _ *http.Request) {
-			getHit = true
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{"name":"devs","synced":{"service":"oidc","config":{"group_name":"platform-devs"}}}`)
 		},
@@ -204,43 +201,41 @@ func TestEnableTeamSyncIfNotSyncedSameGroupSucceeds(t *testing.T) {
 	c, _ := newTestClient(t, m)
 
 	if err := c.EnableTeamSyncIfNotSynced(context.Background(), "acme", "devs", "platform-devs"); err != nil {
-		t.Fatalf("EnableTeamSyncIfNotSynced should succeed when already synced to the same group, got %v", err)
-	}
-	if !getHit {
-		t.Error("expected a confirming GET members after the conflict")
+		t.Fatalf("EnableTeamSyncIfNotSynced should no-op when already synced to the same group, got %v", err)
 	}
 }
 
-func TestEnableTeamSyncIfNotSyncedWrongGroupSurfacesConflict(t *testing.T) {
-	// Already synced to a DIFFERENT group: the conflict must surface so the
-	// reconciler corrects the drift, never silently reporting success.
+func TestEnableTeamSyncIfNotSyncedWrongGroupSurfacesError(t *testing.T) {
+	// Already synced to a DIFFERENT group: it must attempt a real enable so the
+	// resulting error surfaces as drift the reconciler corrects, never silently
+	// reporting success.
+	postHit := false
 	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
-		"POST /api/v1/organization/acme/team/devs/syncing": func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusConflict)
-			_, _ = io.WriteString(w, `{"error_message":"already synced"}`)
-		},
 		"GET /api/v1/organization/acme/team/devs/members": func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{"name":"devs","synced":{"service":"oidc","config":{"group_name":"some-other-group"}}}`)
+		},
+		"POST /api/v1/organization/acme/team/devs/syncing": func(w http.ResponseWriter, _ *http.Request) {
+			postHit = true
+			w.WriteHeader(http.StatusConflict)
+			_, _ = io.WriteString(w, `{"error_message":"already synced"}`)
 		},
 	}}
 	c, _ := newTestClient(t, m)
 
 	err := c.EnableTeamSyncIfNotSynced(context.Background(), "acme", "devs", "platform-devs")
-	if !IsConflict(err) {
-		t.Fatalf("expected the conflict to surface for a wrong-group binding, got %v", err)
+	if err == nil {
+		t.Fatal("expected an error for a wrong-group binding, got nil")
+	}
+	if !postHit {
+		t.Error("expected a real enable attempt for a wrong-group binding")
 	}
 }
 
-func TestEnableTeamSyncIfNotSyncedSurfacesConflictWhenMembersUnreadable(t *testing.T) {
-	// The conflict cannot be confirmed against the existing binding (members
-	// GET fails), so the original conflict must surface rather than be assumed
-	// to match.
+func TestEnableTeamSyncIfNotSyncedSurfacesMembersReadError(t *testing.T) {
+	// The current binding cannot be read; the read error surfaces rather than
+	// risking a duplicate POST against the unique TeamSync constraint.
 	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
-		"POST /api/v1/organization/acme/team/devs/syncing": func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusConflict)
-			_, _ = io.WriteString(w, `{"error_message":"already synced"}`)
-		},
 		"GET /api/v1/organization/acme/team/devs/members": func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = io.WriteString(w, `{"error_message":"boom"}`)
@@ -249,21 +244,41 @@ func TestEnableTeamSyncIfNotSyncedSurfacesConflictWhenMembersUnreadable(t *testi
 	c, _ := newTestClient(t, m)
 
 	err := c.EnableTeamSyncIfNotSynced(context.Background(), "acme", "devs", "platform-devs")
-	if !IsConflict(err) {
-		t.Fatalf("expected the original conflict to surface when members is unreadable, got %v", err)
+	var ae *APIError
+	if !errors.As(err, &ae) || ae.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected the members read error to surface, got %v", err)
 	}
 }
 
 func TestEnableTeamSyncIfNotSyncedFirstEnableSucceeds(t *testing.T) {
-	// Not yet synced: enabling succeeds outright, no members GET needed.
-	h := &recordingHandler{t: t, wantMethod: http.MethodPost, wantPath: "/api/v1/organization/acme/team/devs/syncing", status: http.StatusOK}
-	c, _ := newTestClient(t, h)
+	// Not yet synced: a members GET shows no binding, then the enable POST is
+	// issued and succeeds.
+	postHit := false
+	var gotGroup any
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"GET /api/v1/organization/acme/team/devs/members": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"name":"devs","can_sync":{"service":"oidc"}}`)
+		},
+		"POST /api/v1/organization/acme/team/devs/syncing": func(w http.ResponseWriter, r *http.Request) {
+			postHit = true
+			body, _ := io.ReadAll(r.Body)
+			var parsed map[string]any
+			_ = json.Unmarshal(body, &parsed)
+			gotGroup = parsed["group_name"]
+			w.WriteHeader(http.StatusOK)
+		},
+	}}
+	c, _ := newTestClient(t, m)
 
 	if err := c.EnableTeamSyncIfNotSynced(context.Background(), "acme", "devs", "platform-devs"); err != nil {
 		t.Fatalf("EnableTeamSyncIfNotSynced should succeed on a fresh enable, got %v", err)
 	}
-	if h.gotBody["group_name"] != "platform-devs" {
-		t.Errorf("body group_name = %v, want platform-devs", h.gotBody["group_name"])
+	if !postHit {
+		t.Error("expected an enable POST when the team is not yet synced")
+	}
+	if gotGroup != "platform-devs" {
+		t.Errorf("POST body group_name = %v, want platform-devs", gotGroup)
 	}
 }
 
@@ -302,6 +317,69 @@ func TestDeleteTeamIfExistsSwallowsNotFound(t *testing.T) {
 
 	if err := c.DeleteTeamIfExists(context.Background(), "acme", "gone"); err != nil {
 		t.Fatalf("DeleteTeamIfExists should swallow 404, got %v", err)
+	}
+}
+
+func TestDeleteTeamIfExistsSwallowsAbsentTeam400(t *testing.T) {
+	// Quay's remove_team raises InvalidTeamException for a missing team, which
+	// can surface as a 400 (not 404); the if-exists wrapper must treat it as
+	// gone by message, without a confirming GET.
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodDelete, wantPath: "/api/v1/organization/acme/team/gone",
+		status:   http.StatusBadRequest,
+		respBody: `{"error_message":"Team 'gone' is not a team in org 'acme'"}`,
+	}
+	c, _ := newTestClient(t, h)
+
+	if err := c.DeleteTeamIfExists(context.Background(), "acme", "gone"); err != nil {
+		t.Fatalf("DeleteTeamIfExists should swallow an absent-team 400, got %v", err)
+	}
+}
+
+func TestDeleteTeamIfExistsConfirmsAbsenceViaListOnOpaqueError(t *testing.T) {
+	// An unrecognized delete error, but the team is absent from the org's teams
+	// map: the ListTeams fallback confirms it is gone and the wrapper succeeds.
+	listHit := false
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"DELETE /api/v1/organization/acme/team/gone": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error_message":"some opaque error"}`)
+		},
+		"GET /api/v1/organization/acme": func(w http.ResponseWriter, _ *http.Request) {
+			listHit = true
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"name":"acme","teams":{"devs":{"role":"member"}}}`)
+		},
+	}}
+	c, _ := newTestClient(t, m)
+
+	if err := c.DeleteTeamIfExists(context.Background(), "acme", "gone"); err != nil {
+		t.Fatalf("DeleteTeamIfExists should succeed when ListTeams confirms absence, got %v", err)
+	}
+	if !listHit {
+		t.Error("expected a confirming ListTeams after the opaque delete error")
+	}
+}
+
+func TestDeleteTeamIfExistsSurfacesErrorWhenStillPresent(t *testing.T) {
+	// An unrecognized delete error AND the team still exists: the original
+	// delete error must surface rather than being swallowed.
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"DELETE /api/v1/organization/acme/team/devs": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"error_message":"boom"}`)
+		},
+		"GET /api/v1/organization/acme": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"name":"acme","teams":{"devs":{"role":"member"}}}`)
+		},
+	}}
+	c, _ := newTestClient(t, m)
+
+	err := c.DeleteTeamIfExists(context.Background(), "acme", "devs")
+	var ae *APIError
+	if !errors.As(err, &ae) || ae.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected the original 500 delete error to surface, got %v", err)
 	}
 }
 

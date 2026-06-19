@@ -174,33 +174,35 @@ func (c *Client) EnableTeamSync(ctx context.Context, org, team, oidcGroup string
 	return mapDuplicateToConflict(err)
 }
 
-// EnableTeamSyncIfNotSynced enables sync and returns nil only when the team is
-// already synced to the requested oidcGroup, so the call is idempotent across
-// reconciler re-runs without masking drift.
+// EnableTeamSyncIfNotSynced enables sync, but no-ops when the team is already
+// synced to the requested oidcGroup, so the call is idempotent across reconciler
+// re-runs without masking drift.
 //
-// Quay rejects enabling sync on an already-synced team with a conflict
-// regardless of which group it is bound to. Swallowing that blindly would report
-// success even when the team is synced to a different (wrong) group, leaving the
-// wrong group authorized. So on conflict this verifies the existing binding via
-// GetTeamMembers: if it already points at oidcGroup the call is a no-op success;
-// otherwise the original conflict surfaces so the reconciler corrects the drift
-// (e.g. DisableTeamSync then re-enable). A conflict on a team whose binding
-// cannot be read back also surfaces, never silently succeeds.
+// Quay's syncing endpoint is not idempotent: the TeamSync row has a unique
+// constraint on the team, so a second POST for an already-synced team fails with
+// a database integrity error rather than a clean conflict, and Quay 3.17.3 maps
+// that DataModelException to no well-defined wire status. Rather than depend on
+// that ambiguous shape, this checks the current binding via GetTeamMembers
+// first: if the team is already synced to oidcGroup the call is a no-op success;
+// if it is synced to a different group the EnableTeamSync error surfaces so the
+// reconciler corrects the drift (e.g. DisableTeamSync then re-enable); only when
+// the team is not yet synced does it POST. A failure reading the current binding
+// surfaces rather than risking a duplicate POST.
 func (c *Client) EnableTeamSyncIfNotSynced(ctx context.Context, org, team, oidcGroup string) error {
-	err := c.EnableTeamSync(ctx, org, team, oidcGroup)
-	if !IsConflict(err) {
+	members, err := c.GetTeamMembers(ctx, org, team)
+	if err != nil {
 		return err
 	}
-	members, getErr := c.GetTeamMembers(ctx, org, team)
-	if getErr != nil {
-		// Cannot confirm the existing binding; surface the original conflict
-		// rather than assuming it matches.
-		return err
+	if members.Synced != nil {
+		if members.GroupName() == oidcGroup {
+			return nil
+		}
+		// Already synced to a different group; surface the conflict from a real
+		// enable attempt so the reconciler treats it as drift to correct rather
+		// than reconciled.
+		return c.EnableTeamSync(ctx, org, team, oidcGroup)
 	}
-	if members.GroupName() == oidcGroup {
-		return nil
-	}
-	return err
+	return c.EnableTeamSync(ctx, org, team, oidcGroup)
 }
 
 // DisableTeamSync removes the org team's sync binding via
@@ -231,9 +233,28 @@ func (c *Client) DeleteTeam(ctx context.Context, org, team string) error {
 
 // DeleteTeamIfExists deletes the org team and returns nil when it is already
 // absent, so the call is idempotent for cleanup and finalizer logic.
+//
+// Quay's delete-team path raises InvalidTeamException for a team that does not
+// exist, which Quay 3.17.3 surfaces as a DataModelException with no well-defined
+// wire status (commonly a 400, not a clean 404). So a plain IsNotFound check is
+// not enough: isAbsentTeam additionally recognizes the absent-team 400, and for
+// any other non-2xx the method confirms absence via ListTeams and treats a
+// missing team as success — so a benign already-deleted team does not fail
+// cleanup while a genuine error (or a team that still exists) still surfaces.
 func (c *Client) DeleteTeamIfExists(ctx context.Context, org, team string) error {
 	err := c.DeleteTeam(ctx, org, team)
-	if IsNotFound(err) {
+	if err == nil || IsNotFound(err) || isAbsentTeam(err) {
+		return nil
+	}
+	// The delete failed for some other reason; if the team is nonetheless absent
+	// the failure was a benign already-deleted (a Quay error shape we did not
+	// recognize), so succeed. If the existence check itself fails, return the
+	// original delete error.
+	teams, listErr := c.ListTeams(ctx, org)
+	if listErr != nil {
+		return err
+	}
+	if _, present := teams[team]; !present {
 		return nil
 	}
 	return err

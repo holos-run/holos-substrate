@@ -109,6 +109,28 @@ func isAbsentNotification(err error) bool {
 		strings.Contains(hay, "could not find notification")
 }
 
+// isAbsentTeam reports whether err is an *APIError describing a Quay
+// delete-team response for a team that is already gone. Quay's remove_team
+// raises InvalidTeamException for a missing team, a DataModelException that
+// Quay 3.17.3 does not uniformly surface as 404 — it commonly arrives as a 400.
+// This recognizes that absent-team 400 (by its message) so DeleteTeamIfExists
+// stays idempotent; a genuine 404 is handled separately by IsNotFound.
+func isAbsentTeam(err error) bool {
+	var ae *APIError
+	if !errors.As(err, &ae) {
+		return false
+	}
+	if ae.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	hay := strings.ToLower(ae.Message + " " + ae.Body)
+	return strings.Contains(hay, "not a team") ||
+		strings.Contains(hay, "invalid team") ||
+		strings.Contains(hay, "team not found") ||
+		strings.Contains(hay, "could not find team") ||
+		strings.Contains(hay, "unknown team")
+}
+
 // isDuplicateMessage reports whether a Quay error message or body unambiguously
 // indicates an already-exists conflict. Quay phrases these inconsistently across
 // endpoints: organization and repository creation both say "already
