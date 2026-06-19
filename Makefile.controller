@@ -15,6 +15,14 @@ CONTROLLER_IMAGE_TAG  ?= dev
 CONTROLLER_IMAGE      ?= $(CONTROLLER_IMAGE_REPO):$(CONTROLLER_IMAGE_TAG)
 CONTROLLER_PLATFORM   ?= linux/arm64
 
+# Multi-arch (manifest list) platforms for the controller image. The buildx
+# builder itself is the shared $(BUILDX_BUILDER) defined in the root Makefile
+# before the include: both services cross-compile identically, so they
+# intentionally share one docker-container builder rather than each bootstrapping
+# its own. controller-docker-buildx-builder below is deliberately equivalent to
+# the root docker-buildx-builder target.
+CONTROLLER_MULTIARCH_PLATFORMS ?= linux/amd64,linux/arm64
+
 # Pinned tool versions and locations. bin/ is gitignored (root .gitignore /bin/).
 LOCALBIN ?= $(CURDIR)/bin
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
@@ -160,3 +168,21 @@ controller-docker-build: ## Build the controller image for $(CONTROLLER_PLATFORM
 .PHONY: controller-docker-push
 controller-docker-push: ## Build for $(CONTROLLER_PLATFORM) and push $(CONTROLLER_IMAGE) to the registry.
 	docker buildx build --platform $(CONTROLLER_PLATFORM) -f Dockerfile.controller -t $(CONTROLLER_IMAGE) --push .
+
+# Multi-arch controller image index. Mirrors the root docker-buildx pair: the
+# builder bootstrap is intentionally equivalent to (and reuses the same
+# $(BUILDX_BUILDER) as) the root docker-buildx-builder target, since both
+# services produce identical cross-compiled output from a docker-container
+# builder. No QEMU is required — Dockerfile.controller pins the builder stage to
+# $BUILDPLATFORM and cross-compiles via the Go toolchain.
+.PHONY: controller-docker-buildx-builder
+controller-docker-buildx-builder: ## Ensure the shared docker-container buildx builder $(BUILDX_BUILDER) exists.
+	docker buildx inspect $(BUILDX_BUILDER) >/dev/null 2>&1 || \
+		docker buildx create --name $(BUILDX_BUILDER) --driver docker-container
+
+# Push-only: a multi-platform build cannot --load into the local Docker daemon,
+# so this emits the manifest list straight to $(CONTROLLER_IMAGE). Verify with:
+#   docker buildx imagetools inspect $(CONTROLLER_IMAGE)
+.PHONY: controller-docker-buildx
+controller-docker-buildx: controller-docker-buildx-builder ## Build and push the multi-arch $(CONTROLLER_MULTIARCH_PLATFORMS) image index $(CONTROLLER_IMAGE).
+	docker buildx build --builder $(BUILDX_BUILDER) --platform $(CONTROLLER_MULTIARCH_PLATFORMS) -f Dockerfile.controller -t $(CONTROLLER_IMAGE) --push .
