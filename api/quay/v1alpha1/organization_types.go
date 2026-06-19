@@ -4,6 +4,101 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// OrganizationTeamRole is the org-level role a Quay team holds within its
+// organization. It maps directly to the Quay team "role" (the role field of
+// PUT /api/v1/organization/{org}/team/{team}). It is distinct from
+// RepositoryRole, which is a per-repository permission rather than an org role.
+//
+//   - admin   — full administrative control of the organization.
+//   - creator — may create repositories in the organization.
+//   - member  — plain membership with no creation or admin rights.
+//
+// +kubebuilder:validation:Enum=admin;creator;member
+type OrganizationTeamRole string
+
+const (
+	// OrganizationTeamRoleAdmin grants full administrative control of the org.
+	OrganizationTeamRoleAdmin OrganizationTeamRole = "admin"
+	// OrganizationTeamRoleCreator allows repository creation in the org.
+	OrganizationTeamRoleCreator OrganizationTeamRole = "creator"
+	// OrganizationTeamRoleMember is plain membership with no creation or admin
+	// rights.
+	OrganizationTeamRoleMember OrganizationTeamRole = "member"
+)
+
+// RepositoryRole is a Quay repository permission level — the role granted on a
+// repository (e.g. via an organization default permission / prototype). It is
+// the repo-permission enum and is deliberately distinct from
+// RepositoryVisibility in repository_types.go, which controls public/private
+// visibility rather than an access role.
+//
+//   - read  — pull access.
+//   - write — pull and push access.
+//   - admin — full control of the repository.
+//
+// +kubebuilder:validation:Enum=read;write;admin
+type RepositoryRole string
+
+const (
+	// RepositoryRoleRead grants pull access to a repository.
+	RepositoryRoleRead RepositoryRole = "read"
+	// RepositoryRoleWrite grants pull and push access to a repository.
+	RepositoryRoleWrite RepositoryRole = "write"
+	// RepositoryRoleAdmin grants full control of a repository.
+	RepositoryRoleAdmin RepositoryRole = "admin"
+)
+
+// SyncedTeam declares a Quay team whose membership is OIDC-synced from a group.
+// The reconciler upserts the named team, binds it to the OIDC group, sets its
+// org role, and (optionally) grants it an org default repository permission.
+//
+// OIDC group reference, not a Keycloak coupling: OIDCGroup is a plain
+// group-name string — the value of the OIDC groups claim. The quay.holos.run
+// API group deliberately does not depend on Keycloak (or any other identity
+// provider) type or import (ADR-19 dependency boundary, AC #2/#7): the group is
+// referenced only by name, so the team binding works against whatever OIDC
+// provider Quay is configured with, not specifically Keycloak.
+//
+// Adoption boundary (forward-compatibility): adoption of a pre-existing Quay
+// team this CR did not create is currently unsupported and is surfaced as a
+// reconcile error rather than a silent takeover (mirroring the Organization
+// claim model). Per-team adoption is reserved for a future optional Adopt bool
+// field on this struct; the schema is intentionally free of any required field
+// or validation that would have to change to add it backwards-compatibly
+// (AC #6).
+type SyncedTeam struct {
+	// Name is the Quay team name to create and manage within the organization.
+	// It is the +listMapKey for the spec.syncedTeams list, so it is unique per
+	// Organization.
+	//
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// OIDCGroup is the OIDC groups-claim value this team's membership is synced
+	// from. It is a plain group-name reference: the quay.holos.run group does
+	// not depend on Keycloak (or any IdP) type or import — the group is named by
+	// string only (ADR-19 dependency boundary, AC #2). The reconciler enables
+	// Quay team syncing bound to this group so membership tracks the claim.
+	//
+	// +kubebuilder:validation:MinLength=1
+	OIDCGroup string `json:"oidcGroup"`
+
+	// Role is the team's org-level Quay role. It is required with no default so
+	// the intent (admin vs. creator vs. member) is always explicit rather than
+	// inherited from a default.
+	Role OrganizationTeamRole `json:"role"`
+
+	// RepositoryPermission optionally grants this team an organization default
+	// repository permission (a Quay prototype): a repo role applied across all
+	// repositories in the organization. A nil pointer means no default
+	// permission is managed for this team. When set, the reconciler maintains an
+	// org default-permission prototype delegating the given repo role to this
+	// team.
+	//
+	// +optional
+	RepositoryPermission *RepositoryRole `json:"repositoryPermission,omitempty"`
+}
+
 // OrganizationSpec defines the desired state of a Quay Organization.
 //
 // The reconciler creates (or, per the ADR-19 claim model, adopts) the named
@@ -74,6 +169,23 @@ type OrganizationSpec struct {
 	//
 	// +optional
 	CABundle []byte `json:"caBundle,omitempty"`
+
+	// SyncedTeams declares the Quay teams whose membership is OIDC-synced from a
+	// group, each with an org role and an optional org default repository
+	// permission. Zero or more entries; an empty or omitted list means the
+	// organization manages no synced teams. It is a keyed list (listMapKey
+	// name), so server-side apply merges entries by team name and the reconciler
+	// can add, update, or remove individual teams without clobbering peers.
+	//
+	// Management is non-exclusive: the controller manages only the teams it
+	// creates (tracked in status.managedTeams) and leaves teams created by other
+	// identities alone — adopting a pre-existing team is a reconcile error, not a
+	// takeover (see SyncedTeam).
+	//
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	SyncedTeams []SyncedTeam `json:"syncedTeams,omitempty"`
 }
 
 // Condition types surfaced on Organization and Repository status. The vocabulary
@@ -120,6 +232,22 @@ type OrganizationStatus struct {
 	//
 	// +optional
 	Created bool `json:"created,omitempty"`
+
+	// ManagedTeams records the Quay team names this CR created and manages. It is
+	// the controller-managed owner record for synced teams, the team-level analog
+	// of Created: it lists only the teams this resource provisioned, never teams
+	// created by other identities.
+	//
+	// It underpins two reconcile behaviors. Non-exclusive management (AC #5): the
+	// reconciler manages exactly these teams and ignores the rest, so a team
+	// dropped from spec.syncedTeams is deleted only if it appears here (this CR
+	// created it), never a foreign team of the same name. Adoption-is-an-error
+	// (AC #6): a spec team that already exists in Quay but is absent from this
+	// list was not created by this CR, so the reconciler reports a conflict
+	// rather than silently adopting it.
+	//
+	// +optional
+	ManagedTeams []string `json:"managedTeams,omitempty"`
 }
 
 // +kubebuilder:object:root=true

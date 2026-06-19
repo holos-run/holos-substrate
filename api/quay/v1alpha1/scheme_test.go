@@ -59,9 +59,29 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 		t.Errorf("cloned Webhook.Url = %q, want %q", *clone.Spec.Webhook.Url, url)
 	}
 
-	org := &Organization{Spec: OrganizationSpec{Name: "my-project", Email: "a@b.c"}}
-	if org.DeepCopy().Spec.Name != "my-project" {
+	perm := RepositoryRoleWrite
+	org := &Organization{Spec: OrganizationSpec{
+		Name:  "my-project",
+		Email: "a@b.c",
+		SyncedTeams: []SyncedTeam{{
+			Name:                 "developers",
+			OIDCGroup:            "my-project-developers",
+			Role:                 OrganizationTeamRoleMember,
+			RepositoryPermission: &perm,
+		}},
+	}}
+	orgClone := org.DeepCopy()
+	if orgClone.Spec.Name != "my-project" {
 		t.Error("Organization DeepCopy lost Spec.Name")
+	}
+	if &orgClone.Spec.SyncedTeams[0] == &org.Spec.SyncedTeams[0] {
+		t.Error("DeepCopy did not clone the SyncedTeams slice")
+	}
+	if orgClone.Spec.SyncedTeams[0].RepositoryPermission == org.Spec.SyncedTeams[0].RepositoryPermission {
+		t.Error("DeepCopy did not clone the SyncedTeam.RepositoryPermission pointer")
+	}
+	if *orgClone.Spec.SyncedTeams[0].RepositoryPermission != RepositoryRoleWrite {
+		t.Errorf("cloned RepositoryPermission = %q, want write", *orgClone.Spec.SyncedTeams[0].RepositoryPermission)
 	}
 }
 
