@@ -7,6 +7,17 @@ name: Images
 # workflow needs registry write and is dispatched by hand from the Actions tab
 # (or `gh workflow run`) against a caller-supplied Git ref. Keep the trigger as
 # workflow_dispatch only.
+#
+# Security model: the build job publishes official `ghcr.io/<owner>/...` images
+# and therefore runs in the `publish-images` GitHub Environment. Configure that
+# environment with required reviewers and/or a deployment branch/tag policy
+# (Settings -> Environments) so that an arbitrary unreviewed `ref` cannot be
+# published without approval — `workflow_dispatch` itself only gates on actors
+# with write access, which is not a strong enough boundary for image publishing.
+# All dispatch inputs are passed to shell steps via `env:` (never interpolated
+# directly into `run:` scripts) and the free-form `tag`/`registry` inputs are
+# validated against strict allow-patterns before use, to close the script-
+# injection vector inherent to untrusted `workflow_dispatch` inputs.
 on:
   workflow_dispatch:
     inputs:
@@ -42,6 +53,13 @@ jobs:
   images:
     name: Build and publish ${{ matrix.image }}
     runs-on: ubuntu-latest
+    # Gate package publishing behind a GitHub Environment so org policy
+    # (required reviewers, deployment branch/tag restrictions) governs which
+    # refs may be published — workflow_dispatch alone is not a sufficient
+    # boundary. The environment may be created with no protection rules to keep
+    # the workflow functional, then hardened in repo settings without touching
+    # this file.
+    environment: publish-images
     permissions:
       contents: read
       # Required to push image packages to ghcr.io with GITHUB_TOKEN.
@@ -69,6 +87,48 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
+      # Validate the free-form dispatch inputs once, up front, before any value
+      # reaches a build/push command. `registry` and `tag` arrive from an
+      # untrusted workflow_dispatch input, so they are surfaced via `env:`
+      # (never interpolated into the script body) and checked against strict
+      # allow-patterns; anything else fails the run rather than flowing into a
+      # shell command. Validated values are re-exported to $GITHUB_ENV so later
+      # steps consume the vetted, quoted shell variables instead of raw
+      # `${{ inputs.* }}` interpolation.
+      - name: Validate and resolve inputs
+        id: meta
+        env:
+          IN_REGISTRY: ${{ inputs.registry }}
+          IN_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          # Registry host: DNS-style hostname with an optional :port. Rejects
+          # whitespace, shell metacharacters, slashes, and path segments.
+          if ! printf '%s' "${IN_REGISTRY}" \
+            | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]+)?$'; then
+            echo "::error::Invalid registry host: '${IN_REGISTRY}'" >&2
+            exit 1
+          fi
+          # Docker tag grammar: [A-Za-z0-9_][A-Za-z0-9_.-]{0,127}. An empty tag
+          # is allowed here and resolved to the short SHA below.
+          if [ -n "${IN_TAG}" ] \
+            && ! printf '%s' "${IN_TAG}" \
+              | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'; then
+            echo "::error::Invalid image tag: '${IN_TAG}'" >&2
+            exit 1
+          fi
+          tag="${IN_TAG}"
+          if [ -z "${tag}" ]; then
+            tag="$(git rev-parse --short HEAD)"
+          fi
+          # Re-export the vetted values for downstream steps. printf (not echo)
+          # writes them so no value is re-interpreted by the shell.
+          {
+            printf 'REGISTRY=%s\n' "${IN_REGISTRY}"
+            printf 'IMAGE_TAG_RESOLVED=%s\n' "${tag}"
+          } >> "${GITHUB_ENV}"
+          printf 'tag=%s\n' "${tag}" >> "${GITHUB_OUTPUT}"
+
       # Provision a docker-container-driver buildx builder — the CI equivalent
       # of HOL-1333's docker-buildx-builder make target. The make target's own
       # bootstrap is a compatible no-op against this builder (buildx uses the
@@ -80,41 +140,43 @@ jobs:
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
       # Authenticate to the registry. ghcr.io needs no extra secrets: the
-      # built-in GITHUB_TOKEN plus packages: write is sufficient.
-      - name: Log in to ${{ inputs.registry }}
+      # built-in GITHUB_TOKEN plus packages: write is sufficient. REGISTRY is
+      # the validated host exported above.
+      - name: Log in to registry
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
-          registry: ${{ inputs.registry }}
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Resolve the image tag: use the dispatch input when provided, otherwise
-      # the short SHA of the checked-out commit so every run is addressable.
-      - name: Resolve image tag
-        id: meta
-        run: |
-          set -euo pipefail
-          tag="${{ inputs.tag }}"
-          if [ -z "${tag}" ]; then
-            tag="$(git rev-parse --short HEAD)"
-          fi
-          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
-          echo "Publishing ${{ matrix.image }} as tag ${tag}"
 
       # Drive the build through the multi-arch make target (HOL-1333) so the
       # buildx invocation stays single-sourced between local hosts and CI. The
       # target is push-only (a manifest list cannot be --load-ed into the local
       # daemon) and emits a multi-arch (linux/amd64 + linux/arm64) OCI image
-      # index to the registry.
+      # index to the registry. All dynamic values come from env (validated
+      # REGISTRY/IMAGE_TAG_RESOLVED, the trusted github context, and the
+      # static matrix entries), quoted, so nothing is interpolated into the
+      # script body.
       - name: Build and push ${{ matrix.image }}
+        env:
+          MAKE_TARGET: ${{ matrix.make_target }}
+          REPO_VAR: ${{ matrix.repo_var }}
+          TAG_VAR: ${{ matrix.tag_var }}
+          OWNER: ${{ github.repository_owner }}
+          IMAGE: ${{ matrix.image }}
         run: |
-          make ${{ matrix.make_target }} \
-            ${{ matrix.repo_var }}=${{ inputs.registry }}/${{ github.repository_owner }}/${{ matrix.image }} \
-            ${{ matrix.tag_var }}=${{ steps.meta.outputs.tag }}
+          set -euo pipefail
+          make "${MAKE_TARGET}" \
+            "${REPO_VAR}=${REGISTRY}/${OWNER}/${IMAGE}" \
+            "${TAG_VAR}=${IMAGE_TAG_RESOLVED}"
 
       # Surface both platforms in the run log as a published-artifact sanity
       # check (the image index should list linux/amd64 and linux/arm64).
       - name: Inspect published image
+        env:
+          OWNER: ${{ github.repository_owner }}
+          IMAGE: ${{ matrix.image }}
         run: |
+          set -euo pipefail
           docker buildx imagetools inspect \
-            ${{ inputs.registry }}/${{ github.repository_owner }}/${{ matrix.image }}:${{ steps.meta.outputs.tag }}
+            "${REGISTRY}/${OWNER}/${IMAGE}:${IMAGE_TAG_RESOLVED}"
