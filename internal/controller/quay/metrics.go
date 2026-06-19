@@ -59,6 +59,16 @@ const (
 	opListNotifications       = "list_notifications"
 	opCreateNotification      = "create_notification"
 	opDeleteNotification      = "delete_notification"
+	opListTeams               = "list_teams"
+	opUpsertTeam              = "upsert_team"
+	opDeleteTeam              = "delete_team"
+	opGetTeamMembers          = "get_team_members"
+	opEnableTeamSync          = "enable_team_sync"
+	opDisableTeamSync         = "disable_team_sync"
+	opListPrototypes          = "list_prototypes"
+	opCreatePrototype         = "create_prototype"
+	opUpdatePrototype         = "update_prototype"
+	opDeletePrototype         = "delete_prototype"
 )
 
 var (

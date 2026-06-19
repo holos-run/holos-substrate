@@ -79,6 +79,16 @@ const (
 	// ReasonReconciled marks a Repository as in steady state — its Quay repository
 	// (and webhook, if configured) reflect the spec.
 	ReasonReconciled = "Reconciled"
+	// ReasonTeamConflict marks an Organization's Programmed/Ready conditions False
+	// because a spec.syncedTeams entry names a Quay team that already exists but was
+	// not created by this resource: it is absent from status.managedTeams and its
+	// description does not carry this CR's managedTeamMarker (the unforgeable,
+	// UID-bearing ownership marker). The team is never silently seized — adoption of
+	// a pre-existing team is a reconcile error, mirroring the org-level claim model
+	// (ADR-19), even when the team happens to be bound to the entry's oidcGroup. It
+	// is distinct from ReasonConflict so an operator can tell an org-name conflict
+	// from a team conflict.
+	ReasonTeamConflict = "TeamConflict"
 	// ReasonOrganizationNotReady marks a Repository's conditions False because the
 	// Quay organization named by spec.organizationRef does not yet exist. The
 	// Repository reconciler never creates the org (AC #9); it requeues until the
@@ -143,6 +153,14 @@ func markNotReady(conditions *[]metav1.Condition, reason, message string, observ
 // true when either condition changed.
 func setConflict(conditions *[]metav1.Condition, message string, observedGeneration int64) bool {
 	return markNotReady(conditions, ReasonConflict, message, observedGeneration)
+}
+
+// setTeamConflict marks Programmed and Ready False with reason TeamConflict — the
+// team-level analog of setConflict, used when a spec.syncedTeams entry names a
+// pre-existing Quay team this resource did not create. It returns true when either
+// condition changed.
+func setTeamConflict(conditions *[]metav1.Condition, message string, observedGeneration int64) bool {
+	return markNotReady(conditions, ReasonTeamConflict, message, observedGeneration)
 }
 
 // setWebhookCondition sets the WebhookConfigured condition to the given status

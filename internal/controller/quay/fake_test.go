@@ -2,6 +2,7 @@ package quay
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync"
 
@@ -28,6 +29,29 @@ type fakeOrgClient struct {
 	// holos-owner robot). A name absent from this map has no marker; GetOrganization
 	// Robot then returns 404.
 	markers map[string]string
+
+	// teams records each org's teams keyed by "<org>/<team>", modeling the org
+	// payload's teams map the reconciler reconciles spec.syncedTeams against.
+	teams map[string]quay.Team
+	// teamSync records each team's bound OIDC group keyed by "<org>/<team>"; a key
+	// absent from this map means the team is not synced. It backs GetTeamMembers'
+	// sync binding and the EnableTeamSync/DisableTeamSync transitions.
+	teamSync map[string]string
+	// prototypes records each org's default-permission prototypes keyed by org
+	// name, modeling the org prototypes collection. IDs are assigned on create.
+	prototypes map[string][]quay.Prototype
+	// nextPrototypeID is the monotonically-increasing source of synthetic prototype
+	// IDs CreatePrototype assigns.
+	nextPrototypeID int
+
+	// listTeamsErr/upsertTeamErr/enableSyncErr/listPrototypesErr/createPrototypeErr,
+	// when non-nil, are returned by the corresponding method to simulate a Quay
+	// failure on a team/prototype operation.
+	listTeamsErr       error
+	upsertTeamErr      error
+	enableSyncErr      error
+	listPrototypesErr  error
+	createPrototypeErr error
 
 	// getErr, when non-nil, is returned by GetOrganization regardless of the
 	// org's existence — used to simulate a non-404 Quay error (auth/server).
@@ -61,9 +85,12 @@ type fakeOrgClient struct {
 // newFakeOrgClient returns a fake with the given pre-existing org names.
 func newFakeOrgClient(existing ...string) *fakeOrgClient {
 	f := &fakeOrgClient{
-		existing: map[string]bool{},
-		emails:   map[string]string{},
-		markers:  map[string]string{},
+		existing:   map[string]bool{},
+		emails:     map[string]string{},
+		markers:    map[string]string{},
+		teams:      map[string]quay.Team{},
+		teamSync:   map[string]string{},
+		prototypes: map[string][]quay.Prototype{},
 	}
 	for _, name := range existing {
 		f.existing[name] = true
@@ -216,6 +243,197 @@ func (f *fakeOrgClient) orgExists(name string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.existing[name]
+}
+
+// teamKey is the composite map key for the fake's per-team state.
+func teamKey(org, team string) string { return org + "/" + team }
+
+func (f *fakeOrgClient) ListTeams(ctx context.Context, org string) (map[string]quay.Team, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("ListTeams:" + org)
+	if f.listTeamsErr != nil {
+		return nil, f.listTeamsErr
+	}
+	out := map[string]quay.Team{}
+	prefix := org + "/"
+	for k, t := range f.teams {
+		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
+			name := k[len(prefix):]
+			t.Name = name
+			_, t.IsSynced = f.teamSync[k]
+			out[name] = t
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeOrgClient) UpsertTeam(ctx context.Context, org, team, role, description string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("UpsertTeam:" + org + "/" + team + ":" + role)
+	if f.upsertTeamErr != nil {
+		return f.upsertTeamErr
+	}
+	f.teams[teamKey(org, team)] = quay.Team{Name: team, Role: role, Description: description}
+	return nil
+}
+
+func (f *fakeOrgClient) DeleteTeamIfExists(ctx context.Context, org, team string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("DeleteTeam:" + org + "/" + team)
+	key := teamKey(org, team)
+	delete(f.teams, key)
+	delete(f.teamSync, key)
+	return nil
+}
+
+func (f *fakeOrgClient) GetTeamMembers(ctx context.Context, org, team string) (*quay.TeamMembers, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("GetTeamMembers:" + org + "/" + team)
+	out := &quay.TeamMembers{Name: team}
+	if group, ok := f.teamSync[teamKey(org, team)]; ok {
+		out.Synced = &quay.TeamSync{
+			Service: "oidc",
+			Config:  map[string]any{"group_name": group},
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeOrgClient) EnableTeamSyncIfNotSynced(ctx context.Context, org, team, oidcGroup string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("EnableSync:" + org + "/" + team + ":" + oidcGroup)
+	if f.enableSyncErr != nil {
+		return f.enableSyncErr
+	}
+	// Idempotent: already bound to the same group is a no-op success.
+	if cur, ok := f.teamSync[teamKey(org, team)]; ok && cur == oidcGroup {
+		return nil
+	}
+	f.teamSync[teamKey(org, team)] = oidcGroup
+	return nil
+}
+
+func (f *fakeOrgClient) DisableTeamSyncIfSynced(ctx context.Context, org, team string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("DisableSync:" + org + "/" + team)
+	delete(f.teamSync, teamKey(org, team))
+	return nil
+}
+
+func (f *fakeOrgClient) ListPrototypes(ctx context.Context, org string) ([]quay.Prototype, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("ListPrototypes:" + org)
+	if f.listPrototypesErr != nil {
+		return nil, f.listPrototypesErr
+	}
+	// Return a copy so callers cannot mutate the fake's slice in place.
+	return append([]quay.Prototype(nil), f.prototypes[org]...), nil
+}
+
+func (f *fakeOrgClient) CreatePrototype(ctx context.Context, org, role, delegateTeam string) (*quay.Prototype, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("CreatePrototype:" + org + ":" + delegateTeam + ":" + role)
+	if f.createPrototypeErr != nil {
+		return nil, f.createPrototypeErr
+	}
+	f.nextPrototypeID++
+	p := quay.Prototype{
+		ID:   fmt.Sprintf("proto-%d", f.nextPrototypeID),
+		Role: role,
+		Delegate: quay.PrototypeDelegate{
+			Name: delegateTeam,
+			Kind: quay.PrototypeDelegateTeam,
+		},
+	}
+	f.prototypes[org] = append(f.prototypes[org], p)
+	return &p, nil
+}
+
+func (f *fakeOrgClient) UpdatePrototype(ctx context.Context, org, prototypeID, role string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("UpdatePrototype:" + org + ":" + prototypeID + ":" + role)
+	list := f.prototypes[org]
+	for i := range list {
+		if list[i].ID == prototypeID {
+			list[i].Role = role
+			f.prototypes[org] = list
+			return nil
+		}
+	}
+	return notFoundError(prototypeID)
+}
+
+func (f *fakeOrgClient) DeletePrototypeIfExists(ctx context.Context, org, prototypeID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("DeletePrototype:" + org + ":" + prototypeID)
+	list := f.prototypes[org]
+	out := list[:0:0]
+	for _, p := range list {
+		if p.ID != prototypeID {
+			out = append(out, p)
+		}
+	}
+	f.prototypes[org] = out
+	return nil
+}
+
+// seedTeam pre-populates a team (optionally synced to oidcGroup, "" for unsynced)
+// with an empty description, simulating a foreign (not controller-created) team.
+// Use seedTeamWithDescription to stamp this CR's ownership marker (the heal
+// candidate, AC #4).
+func (f *fakeOrgClient) seedTeam(org, team, role, oidcGroup string) {
+	f.seedTeamWithDescription(org, team, role, "", oidcGroup)
+}
+
+// seedTeamWithDescription pre-populates a team with an explicit description, so a
+// test can simulate a controller-created team carrying this CR's managedTeamMarker
+// (managedTeamPrefix + the org CR UID) — the heal candidate whose status record was
+// lost — or any other foreign-but-described team.
+func (f *fakeOrgClient) seedTeamWithDescription(org, team, role, description, oidcGroup string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.teams[teamKey(org, team)] = quay.Team{Name: team, Role: role, Description: description}
+	if oidcGroup != "" {
+		f.teamSync[teamKey(org, team)] = oidcGroup
+	}
+}
+
+// teamRole returns a team's recorded role and whether it exists.
+func (f *fakeOrgClient) teamRole(org, team string) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.teams[teamKey(org, team)]
+	return t.Role, ok
+}
+
+// teamGroup returns a team's bound OIDC group and whether it is synced.
+func (f *fakeOrgClient) teamGroup(org, team string) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	g, ok := f.teamSync[teamKey(org, team)]
+	return g, ok
+}
+
+// teamPrototype returns the prototype delegating to team and whether one exists.
+func (f *fakeOrgClient) teamPrototype(org, team string) (quay.Prototype, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.prototypes[org] {
+		if p.Delegate.Kind == quay.PrototypeDelegateTeam && p.Delegate.Name == team {
+			return p, true
+		}
+	}
+	return quay.Prototype{}, false
 }
 
 // compile-time assertion that the fake satisfies the reconciler's seam.

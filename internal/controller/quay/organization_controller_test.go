@@ -788,6 +788,513 @@ func TestReconcileDeleteReleasesWhenMarkerForeignAfterRecreate(t *testing.T) {
 	}
 }
 
+// makeOrgWithTeams creates an Organization CR with the given spec.syncedTeams and
+// returns its object key. It mirrors makeOrg but sets the synced teams so the
+// team-reconciliation path is exercised.
+func makeOrgWithTeams(ctx context.Context, t *testing.T, ns, orgName string, teams []quayv1alpha1.SyncedTeam) client.ObjectKey {
+	t.Helper()
+	org := &quayv1alpha1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: orgName},
+		Spec: quayv1alpha1.OrganizationSpec{
+			Name:        orgName,
+			Email:       orgName + "@example.test",
+			SyncedTeams: teams,
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, org); err != nil {
+		t.Fatalf("creating Organization with teams: %v", err)
+	}
+	return client.ObjectKeyFromObject(org)
+}
+
+// repoRole returns a pointer to a RepositoryRole, for the optional
+// SyncedTeam.RepositoryPermission field.
+func repoRole(r quayv1alpha1.RepositoryRole) *quayv1alpha1.RepositoryRole { return &r }
+
+// updateSyncedTeams sets spec.syncedTeams on the live Organization and persists it.
+func updateSyncedTeams(ctx context.Context, t *testing.T, key client.ObjectKey, teams []quayv1alpha1.SyncedTeam) {
+	t.Helper()
+	org := getOrg(ctx, t, key)
+	org.Spec.SyncedTeams = teams
+	if err := shared.k8sClient.Update(ctx, org); err != nil {
+		t.Fatalf("updating spec.syncedTeams: %v", err)
+	}
+}
+
+func TestReconcileSyncedTeamsZeroIsNoop(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrg(ctx, t, ns, "noteams", "", false)
+
+	fake := newFakeOrgClient()
+	r, _ := newReconciler(fake, ns)
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	org := getOrg(ctx, t, key)
+	if got := conditionStatus(org, ConditionReady); got != metav1.ConditionTrue {
+		t.Errorf("Ready = %q, want True", got)
+	}
+	if len(org.Status.ManagedTeams) != 0 {
+		t.Errorf("ManagedTeams = %v, want empty for an org with no synced teams", org.Status.ManagedTeams)
+	}
+	// No team operations should have run (only org/marker calls).
+	for _, c := range fake.calls {
+		if strings.HasPrefix(c, "UpsertTeam:") || strings.HasPrefix(c, "EnableSync:") {
+			t.Errorf("unexpected team call on a zero-team org: %v", fake.calls)
+		}
+	}
+}
+
+func TestReconcileSyncedTeamsCreatesTeamSyncAndDefaultPermission(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrgWithTeams(ctx, t, ns, "withteam", []quayv1alpha1.SyncedTeam{
+		{
+			Name:                 "devs",
+			OIDCGroup:            "dev-group",
+			Role:                 quayv1alpha1.OrganizationTeamRoleMember,
+			RepositoryPermission: repoRole(quayv1alpha1.RepositoryRoleWrite),
+		},
+	})
+
+	fake := newFakeOrgClient()
+	r, _ := newReconciler(fake, ns)
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if role, ok := fake.teamRole("withteam", "devs"); !ok || role != "member" {
+		t.Errorf("team devs role = %q (exists=%v), want member", role, ok)
+	}
+	if group, ok := fake.teamGroup("withteam", "devs"); !ok || group != "dev-group" {
+		t.Errorf("team devs synced group = %q (synced=%v), want dev-group", group, ok)
+	}
+	p, ok := fake.teamPrototype("withteam", "devs")
+	if !ok || p.Role != "write" {
+		t.Errorf("default permission = %+v (exists=%v), want role write delegating to devs", p, ok)
+	}
+
+	org := getOrg(ctx, t, key)
+	if got := conditionStatus(org, ConditionReady); got != metav1.ConditionTrue {
+		t.Errorf("Ready = %q, want True", got)
+	}
+	if !containsString(org.Status.ManagedTeams, "devs") {
+		t.Errorf("ManagedTeams = %v, want to contain devs", org.Status.ManagedTeams)
+	}
+}
+
+func TestReconcileSyncedTeamsRoleDrift(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrgWithTeams(ctx, t, ns, "roledrift", []quayv1alpha1.SyncedTeam{
+		{Name: "ops", OIDCGroup: "ops-group", Role: quayv1alpha1.OrganizationTeamRoleMember},
+	})
+	fake := newFakeOrgClient()
+	r, _ := newReconciler(fake, ns)
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile create: %v", err)
+	}
+
+	// Change the team role; a subsequent reconcile must upsert the new role.
+	updateSyncedTeams(ctx, t, key, []quayv1alpha1.SyncedTeam{
+		{Name: "ops", OIDCGroup: "ops-group", Role: quayv1alpha1.OrganizationTeamRoleCreator},
+	})
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile drift: %v", err)
+	}
+
+	if role, _ := fake.teamRole("roledrift", "ops"); role != "creator" {
+		t.Errorf("team ops role = %q after drift, want creator", role)
+	}
+}
+
+func TestReconcileSyncedTeamsOIDCGroupRebind(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrgWithTeams(ctx, t, ns, "rebind", []quayv1alpha1.SyncedTeam{
+		{Name: "t1", OIDCGroup: "group-a", Role: quayv1alpha1.OrganizationTeamRoleMember},
+	})
+	fake := newFakeOrgClient()
+	r, _ := newReconciler(fake, ns)
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile create: %v", err)
+	}
+	if group, _ := fake.teamGroup("rebind", "t1"); group != "group-a" {
+		t.Fatalf("initial group = %q, want group-a", group)
+	}
+
+	// Change the bound OIDC group; the reconciler must disable then re-enable sync.
+	updateSyncedTeams(ctx, t, key, []quayv1alpha1.SyncedTeam{
+		{Name: "t1", OIDCGroup: "group-b", Role: quayv1alpha1.OrganizationTeamRoleMember},
+	})
+	before := len(fake.calls)
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile rebind: %v", err)
+	}
+
+	if group, _ := fake.teamGroup("rebind", "t1"); group != "group-b" {
+		t.Errorf("team group = %q after rebind, want group-b", group)
+	}
+	sawDisable := false
+	for _, c := range fake.calls[before:] {
+		if c == "DisableSync:rebind/t1" {
+			sawDisable = true
+		}
+	}
+	if !sawDisable {
+		t.Errorf("expected a DisableSync call during oidcGroup rebind, calls were %v", fake.calls[before:])
+	}
+}
+
+func TestReconcileSyncedTeamsDefaultPermissionAddChangeRemove(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	// Start with no default permission.
+	key := makeOrgWithTeams(ctx, t, ns, "permteam", []quayv1alpha1.SyncedTeam{
+		{Name: "team", OIDCGroup: "g", Role: quayv1alpha1.OrganizationTeamRoleMember},
+	})
+	fake := newFakeOrgClient()
+	r, _ := newReconciler(fake, ns)
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile create: %v", err)
+	}
+	if _, ok := fake.teamPrototype("permteam", "team"); ok {
+		t.Fatal("did not expect a default permission before one is requested")
+	}
+
+	// Add a default permission (read).
+	updateSyncedTeams(ctx, t, key, []quayv1alpha1.SyncedTeam{
+		{Name: "team", OIDCGroup: "g", Role: quayv1alpha1.OrganizationTeamRoleMember, RepositoryPermission: repoRole(quayv1alpha1.RepositoryRoleRead)},
+	})
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile add permission: %v", err)
+	}
+	p, ok := fake.teamPrototype("permteam", "team")
+	if !ok || p.Role != "read" {
+		t.Fatalf("default permission = %+v (exists=%v), want read", p, ok)
+	}
+	protoID := p.ID
+
+	// Change the permission (read → admin): same prototype updated in place.
+	updateSyncedTeams(ctx, t, key, []quayv1alpha1.SyncedTeam{
+		{Name: "team", OIDCGroup: "g", Role: quayv1alpha1.OrganizationTeamRoleMember, RepositoryPermission: repoRole(quayv1alpha1.RepositoryRoleAdmin)},
+	})
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile change permission: %v", err)
+	}
+	p, ok = fake.teamPrototype("permteam", "team")
+	if !ok || p.Role != "admin" {
+		t.Fatalf("default permission = %+v after change, want admin", p)
+	}
+	if p.ID != protoID {
+		t.Errorf("prototype ID changed on a role update (%q → %q); want in-place update", protoID, p.ID)
+	}
+
+	// Remove the permission: the prototype is deleted.
+	updateSyncedTeams(ctx, t, key, []quayv1alpha1.SyncedTeam{
+		{Name: "team", OIDCGroup: "g", Role: quayv1alpha1.OrganizationTeamRoleMember},
+	})
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile remove permission: %v", err)
+	}
+	if _, ok := fake.teamPrototype("permteam", "team"); ok {
+		t.Error("expected the default permission to be deleted when removed from spec")
+	}
+}
+
+func TestReconcileSyncedTeamsRemovedFromSpecIsDeprovisioned(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrgWithTeams(ctx, t, ns, "removal", []quayv1alpha1.SyncedTeam{
+		{Name: "keep", OIDCGroup: "keep-g", Role: quayv1alpha1.OrganizationTeamRoleMember},
+		{Name: "drop", OIDCGroup: "drop-g", Role: quayv1alpha1.OrganizationTeamRoleMember, RepositoryPermission: repoRole(quayv1alpha1.RepositoryRoleRead)},
+	})
+	fake := newFakeOrgClient()
+	r, _ := newReconciler(fake, ns)
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile create: %v", err)
+	}
+	if _, ok := fake.teamRole("removal", "drop"); !ok {
+		t.Fatal("expected team drop to exist before removal")
+	}
+
+	// Drop "drop" from the spec; it must be de-provisioned (team + prototype gone).
+	updateSyncedTeams(ctx, t, key, []quayv1alpha1.SyncedTeam{
+		{Name: "keep", OIDCGroup: "keep-g", Role: quayv1alpha1.OrganizationTeamRoleMember},
+	})
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile removal: %v", err)
+	}
+
+	if _, ok := fake.teamRole("removal", "drop"); ok {
+		t.Error("expected team drop to be deleted after removal from spec")
+	}
+	if _, ok := fake.teamPrototype("removal", "drop"); ok {
+		t.Error("expected drop's default permission to be deleted")
+	}
+	if _, ok := fake.teamRole("removal", "keep"); !ok {
+		t.Error("expected team keep to survive")
+	}
+	org := getOrg(ctx, t, key)
+	if containsString(org.Status.ManagedTeams, "drop") {
+		t.Errorf("ManagedTeams = %v, must not contain the de-provisioned team drop", org.Status.ManagedTeams)
+	}
+	if !containsString(org.Status.ManagedTeams, "keep") {
+		t.Errorf("ManagedTeams = %v, want to still contain keep", org.Status.ManagedTeams)
+	}
+}
+
+func TestReconcileSyncedTeamsPreexistingUnmanagedIsConflict(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrgWithTeams(ctx, t, ns, "teamconflict", []quayv1alpha1.SyncedTeam{
+		{Name: "foreign", OIDCGroup: "want-group", Role: quayv1alpha1.OrganizationTeamRoleMember},
+	})
+	fake := newFakeOrgClient()
+	// The org is created by this CR, but a team of the desired name pre-exists and
+	// is NOT bound to the desired group (so it is not a heal candidate).
+	r, recorder := newReconciler(fake, ns)
+	// First create the org so the team pre-exists on an owned org; seed the foreign
+	// team before reconcile by pre-seeding the fake after the org is known to exist.
+	// Seed directly: the team exists with a different (or no) sync binding.
+	fake.seedTeam("teamconflict", "foreign", "member", "")
+
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile should not error on a team conflict: %v", err)
+	}
+
+	org := getOrg(ctx, t, key)
+	if got := conditionStatus(org, ConditionReady); got != metav1.ConditionFalse {
+		t.Errorf("Ready = %q, want False on a team conflict", got)
+	}
+	if got := conditionReason(org, ConditionReady); got != ReasonTeamConflict {
+		t.Errorf("Ready reason = %q, want %q", got, ReasonTeamConflict)
+	}
+	if containsString(org.Status.ManagedTeams, "foreign") {
+		t.Errorf("ManagedTeams = %v, must not adopt the foreign team", org.Status.ManagedTeams)
+	}
+	// The foreign team must not have been modified.
+	if !fake.callsContain("ListTeams:teamconflict") {
+		t.Errorf("expected the reconciler to list teams; calls were %v", fake.calls)
+	}
+	for _, c := range fake.calls {
+		if c == "UpsertTeam:teamconflict/foreign:member" {
+			t.Errorf("must not upsert a foreign team; calls were %v", fake.calls)
+		}
+	}
+	assertEvent(t, recorder, ReasonTeamConflict)
+}
+
+func TestReconcileSyncedTeamsUnmanagedOutsideSpecIsIgnored(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrgWithTeams(ctx, t, ns, "ignoreteam", []quayv1alpha1.SyncedTeam{
+		{Name: "mine", OIDCGroup: "mine-g", Role: quayv1alpha1.OrganizationTeamRoleMember},
+	})
+	fake := newFakeOrgClient()
+	// A team that the controller never created and is not in the spec at all.
+	fake.seedTeam("ignoreteam", "stranger", "admin", "stranger-group")
+	r, _ := newReconciler(fake, ns)
+
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	org := getOrg(ctx, t, key)
+	if got := conditionStatus(org, ConditionReady); got != metav1.ConditionTrue {
+		t.Errorf("Ready = %q, want True (a stranger team outside the spec is ignored)", got)
+	}
+	// The stranger team must be untouched: still present, still admin, still synced.
+	if role, ok := fake.teamRole("ignoreteam", "stranger"); !ok || role != "admin" {
+		t.Errorf("stranger role = %q (exists=%v), want untouched admin", role, ok)
+	}
+	if containsString(org.Status.ManagedTeams, "stranger") {
+		t.Errorf("ManagedTeams = %v, must not include an ignored stranger team", org.Status.ManagedTeams)
+	}
+	if !containsString(org.Status.ManagedTeams, "mine") {
+		t.Errorf("ManagedTeams = %v, want to contain mine", org.Status.ManagedTeams)
+	}
+}
+
+func TestReconcileSyncedTeamsHealsLostStatus(t *testing.T) {
+	// AC #4: a team that pre-exists and carries this CR's managedTeamMarker (a lost
+	// status write after our own create) is healed into ownership via the marker
+	// alone — even when unsynced — rather than treated as an adoption conflict.
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrgWithTeams(ctx, t, ns, "healteam", []quayv1alpha1.SyncedTeam{
+		{Name: "synced", OIDCGroup: "bound-group", Role: quayv1alpha1.OrganizationTeamRoleMember},
+	})
+	fake := newFakeOrgClient()
+	// The team already exists and carries THIS CR's ownership marker (the prefix
+	// plus the org CR UID), but status.managedTeams does NOT record it (the status
+	// write was lost after a prior create). The marker alone heals it back into
+	// ownership — independent of the sync binding (here it is even unsynced).
+	marker := managedTeamPrefix + string(getOrg(ctx, t, key).UID)
+	fake.seedTeamWithDescription("healteam", "synced", "member", marker, "")
+	r, _ := newReconciler(fake, ns)
+
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile heal: %v", err)
+	}
+
+	org := getOrg(ctx, t, key)
+	if got := conditionStatus(org, ConditionReady); got != metav1.ConditionTrue {
+		t.Errorf("Ready = %q, want True (a bound team must heal, not conflict)", got)
+	}
+	if got := conditionReason(org, ConditionReady); got != ReasonCreated {
+		t.Errorf("Ready reason = %q, want %q (healed, not TeamConflict)", got, ReasonCreated)
+	}
+	if !containsString(org.Status.ManagedTeams, "synced") {
+		t.Errorf("ManagedTeams = %v, want the healed team recorded", org.Status.ManagedTeams)
+	}
+}
+
+func TestReconcileSyncedTeamsBoundButUnmarkedIsConflict(t *testing.T) {
+	// Codex round 1 (CRITICAL): a hand-created team that merely happens to be bound
+	// to the desired oidcGroup but lacks the controller's ownership-marker
+	// description must NOT be healed/adopted — it is a TeamConflict. The heal rule
+	// requires the durable description marker, not just a coincidental group match.
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrgWithTeams(ctx, t, ns, "boundforeign", []quayv1alpha1.SyncedTeam{
+		{Name: "shared", OIDCGroup: "shared-group", Role: quayv1alpha1.OrganizationTeamRoleMember},
+	})
+	fake := newFakeOrgClient()
+	// Bound to the desired group, but with NO controller description (foreign).
+	fake.seedTeam("boundforeign", "shared", "member", "shared-group")
+	r, recorder := newReconciler(fake, ns)
+
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile should not error on a team conflict: %v", err)
+	}
+
+	org := getOrg(ctx, t, key)
+	if got := conditionReason(org, ConditionReady); got != ReasonTeamConflict {
+		t.Errorf("Ready reason = %q, want %q (a bound-but-unmarked team must not be adopted)", got, ReasonTeamConflict)
+	}
+	if containsString(org.Status.ManagedTeams, "shared") {
+		t.Errorf("ManagedTeams = %v, must not adopt a bound-but-unmarked foreign team", org.Status.ManagedTeams)
+	}
+	assertEvent(t, recorder, ReasonTeamConflict)
+}
+
+func TestReconcileSyncedTeamsForeignMarkerIsConflict(t *testing.T) {
+	// Codex round 2 (CRITICAL): the ownership marker embeds the CR UID, so a team
+	// carrying a DIFFERENT CR's marker (or any non-matching description) must not be
+	// healed — it is a conflict. This is the team-level analog of the org's
+	// foreign-marker conflict.
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrgWithTeams(ctx, t, ns, "foreignmarker", []quayv1alpha1.SyncedTeam{
+		{Name: "team", OIDCGroup: "g", Role: quayv1alpha1.OrganizationTeamRoleMember},
+	})
+	fake := newFakeOrgClient()
+	// Marker prefix is right but the UID is some other CR's — unforgeable, so this
+	// is not our team.
+	fake.seedTeamWithDescription("foreignmarker", "team", "member", managedTeamPrefix+"some-other-cr-uid", "g")
+	r, recorder := newReconciler(fake, ns)
+
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile should not error on a team conflict: %v", err)
+	}
+
+	org := getOrg(ctx, t, key)
+	if got := conditionReason(org, ConditionReady); got != ReasonTeamConflict {
+		t.Errorf("Ready reason = %q, want %q (a foreign-marker team must not be adopted)", got, ReasonTeamConflict)
+	}
+	if containsString(org.Status.ManagedTeams, "team") {
+		t.Errorf("ManagedTeams = %v, must not adopt a foreign-marker team", org.Status.ManagedTeams)
+	}
+	assertEvent(t, recorder, ReasonTeamConflict)
+}
+
+func TestReconcileSyncedTeamsRecoversAfterPostUpsertFailure(t *testing.T) {
+	// Codex round 2 (CRITICAL): if UpsertTeam succeeds but the following sync step
+	// fails, the team carries this CR's marker. The next reconcile must heal it back
+	// into ownership (via the marker) and complete — never wedge into a false
+	// TeamConflict.
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrgWithTeams(ctx, t, ns, "recover", []quayv1alpha1.SyncedTeam{
+		{Name: "team", OIDCGroup: "g", Role: quayv1alpha1.OrganizationTeamRoleMember},
+	})
+	fake := newFakeOrgClient()
+	// The sync step fails on the first create pass, after UpsertTeam stamps the
+	// marker, so the reconcile errors and the status write does not record the team.
+	fake.enableSyncErr = &quay.APIError{StatusCode: http.StatusInternalServerError, Message: "sync boom"}
+	r, _ := newReconciler(fake, ns)
+
+	// Drive the finalizer + create + failing sync; expect a requeue error.
+	for i := 0; i < 3; i++ {
+		if _, err := reconcile(ctx, r, key); err != nil {
+			break
+		}
+	}
+	// The team was created (carries our marker) but is NOT yet in managedTeams.
+	if _, ok := fake.teamRole("recover", "team"); !ok {
+		t.Fatal("expected the team to be created despite the sync failure")
+	}
+	if containsString(getOrg(ctx, t, key).Status.ManagedTeams, "team") {
+		t.Fatal("did not expect the team in managedTeams before the status write succeeded")
+	}
+
+	// Clear the sync fault; the next reconcile must heal (not conflict) and finish.
+	fake.enableSyncErr = nil
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile recover: %v", err)
+	}
+
+	org := getOrg(ctx, t, key)
+	if got := conditionReason(org, ConditionReady); got != ReasonCreated {
+		t.Errorf("Ready reason = %q, want %q (healed, not TeamConflict)", got, ReasonCreated)
+	}
+	if group, ok := fake.teamGroup("recover", "team"); !ok || group != "g" {
+		t.Errorf("team sync = %q (synced=%v), want bound to g after recovery", group, ok)
+	}
+	if !containsString(org.Status.ManagedTeams, "team") {
+		t.Errorf("ManagedTeams = %v, want the recovered team recorded", org.Status.ManagedTeams)
+	}
+}
+
 // assertEvent fails the test unless the recorder captured an event whose text
 // contains want. record.FakeRecorder formats events as "<Type> <Reason>
 // <Message>" and delivers them on a buffered channel; this drains what is
