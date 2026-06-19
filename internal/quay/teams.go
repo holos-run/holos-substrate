@@ -82,11 +82,16 @@ func (m *TeamMembers) GroupName() string {
 }
 
 // upsertTeamRequest is the PUT /api/v1/organization/{orgname}/team/{teamname}
-// body (Quay's TeamDescription schema): a required role and an optional
-// description.
+// body (Quay's TeamDescription schema): a required role and a description.
+//
+// The description has no omitempty: Quay's handler only changes the description
+// when the JSON key is present, so omitting it on an empty desired value would
+// leave a previously-set description in place and the reconciled team
+// permanently drifted. Always sending the key lets UpsertTeam clear a
+// description by passing "".
 type upsertTeamRequest struct {
 	Role        string `json:"role"`
-	Description string `json:"description,omitempty"`
+	Description string `json:"description"`
 }
 
 // enableTeamSyncRequest is the POST
@@ -169,11 +174,30 @@ func (c *Client) EnableTeamSync(ctx context.Context, org, team, oidcGroup string
 	return mapDuplicateToConflict(err)
 }
 
-// EnableTeamSyncIfNotSynced enables sync and returns nil when the team is
-// already synced, so the call is idempotent across reconciler re-runs.
+// EnableTeamSyncIfNotSynced enables sync and returns nil only when the team is
+// already synced to the requested oidcGroup, so the call is idempotent across
+// reconciler re-runs without masking drift.
+//
+// Quay rejects enabling sync on an already-synced team with a conflict
+// regardless of which group it is bound to. Swallowing that blindly would report
+// success even when the team is synced to a different (wrong) group, leaving the
+// wrong group authorized. So on conflict this verifies the existing binding via
+// GetTeamMembers: if it already points at oidcGroup the call is a no-op success;
+// otherwise the original conflict surfaces so the reconciler corrects the drift
+// (e.g. DisableTeamSync then re-enable). A conflict on a team whose binding
+// cannot be read back also surfaces, never silently succeeds.
 func (c *Client) EnableTeamSyncIfNotSynced(ctx context.Context, org, team, oidcGroup string) error {
 	err := c.EnableTeamSync(ctx, org, team, oidcGroup)
-	if IsConflict(err) {
+	if !IsConflict(err) {
+		return err
+	}
+	members, getErr := c.GetTeamMembers(ctx, org, team)
+	if getErr != nil {
+		// Cannot confirm the existing binding; surface the original conflict
+		// rather than assuming it matches.
+		return err
+	}
+	if members.GroupName() == oidcGroup {
 		return nil
 	}
 	return err

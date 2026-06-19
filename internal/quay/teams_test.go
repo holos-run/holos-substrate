@@ -2,6 +2,7 @@ package quay
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"testing"
 )
@@ -22,7 +23,10 @@ func TestUpsertTeam(t *testing.T) {
 	}
 }
 
-func TestUpsertTeamOmitsEmptyDescription(t *testing.T) {
+func TestUpsertTeamSendsEmptyDescription(t *testing.T) {
+	// Quay only changes the description when the key is present, so an empty
+	// desired description must still be sent (as "") to clear a prior value —
+	// otherwise a reconciled team stays permanently drifted.
 	h := &recordingHandler{t: t, wantMethod: http.MethodPut, wantPath: "/api/v1/organization/acme/team/devs", status: http.StatusOK}
 	c, _ := newTestClient(t, h)
 
@@ -30,8 +34,12 @@ func TestUpsertTeamOmitsEmptyDescription(t *testing.T) {
 		t.Fatalf("UpsertTeam: %v", err)
 	}
 	assertCommonRequest(t, h, true)
-	if _, ok := h.gotBody["description"]; ok {
-		t.Errorf("empty description must be omitted, got %v", h.gotBody["description"])
+	desc, ok := h.gotBody["description"]
+	if !ok {
+		t.Error("description key must be present even when empty, so Quay clears a prior value")
+	}
+	if desc != "" {
+		t.Errorf("body description = %v, want empty string", desc)
 	}
 	if h.gotBody["role"] != "admin" {
 		t.Errorf("body role = %v, want admin", h.gotBody["role"])
@@ -176,22 +184,86 @@ func TestEnableTeamSyncAlreadySyncedIsConflict(t *testing.T) {
 	if !IsConflict(err) {
 		t.Fatalf("expected IsConflict for already-synced team, got %v", err)
 	}
-	// The if-not-synced wrapper swallows it.
+}
+
+func TestEnableTeamSyncIfNotSyncedSameGroupSucceeds(t *testing.T) {
+	// Already synced to the requested group: the conflict is verified via a
+	// members GET and swallowed as a benign no-op.
+	getHit := false
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"POST /api/v1/organization/acme/team/devs/syncing": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = io.WriteString(w, `{"error_message":"already synced"}`)
+		},
+		"GET /api/v1/organization/acme/team/devs/members": func(w http.ResponseWriter, _ *http.Request) {
+			getHit = true
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"name":"devs","synced":{"service":"oidc","config":{"group_name":"platform-devs"}}}`)
+		},
+	}}
+	c, _ := newTestClient(t, m)
+
 	if err := c.EnableTeamSyncIfNotSynced(context.Background(), "acme", "devs", "platform-devs"); err != nil {
-		t.Fatalf("EnableTeamSyncIfNotSynced should treat already-synced as success, got %v", err)
+		t.Fatalf("EnableTeamSyncIfNotSynced should succeed when already synced to the same group, got %v", err)
+	}
+	if !getHit {
+		t.Error("expected a confirming GET members after the conflict")
 	}
 }
 
-func TestEnableTeamSyncConflict409(t *testing.T) {
-	h := &recordingHandler{
-		t: t, wantMethod: http.MethodPost, wantPath: "/api/v1/organization/acme/team/devs/syncing",
-		status:   http.StatusConflict,
-		respBody: `{"error_message":"already synced"}`,
+func TestEnableTeamSyncIfNotSyncedWrongGroupSurfacesConflict(t *testing.T) {
+	// Already synced to a DIFFERENT group: the conflict must surface so the
+	// reconciler corrects the drift, never silently reporting success.
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"POST /api/v1/organization/acme/team/devs/syncing": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = io.WriteString(w, `{"error_message":"already synced"}`)
+		},
+		"GET /api/v1/organization/acme/team/devs/members": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"name":"devs","synced":{"service":"oidc","config":{"group_name":"some-other-group"}}}`)
+		},
+	}}
+	c, _ := newTestClient(t, m)
+
+	err := c.EnableTeamSyncIfNotSynced(context.Background(), "acme", "devs", "platform-devs")
+	if !IsConflict(err) {
+		t.Fatalf("expected the conflict to surface for a wrong-group binding, got %v", err)
 	}
+}
+
+func TestEnableTeamSyncIfNotSyncedSurfacesConflictWhenMembersUnreadable(t *testing.T) {
+	// The conflict cannot be confirmed against the existing binding (members
+	// GET fails), so the original conflict must surface rather than be assumed
+	// to match.
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"POST /api/v1/organization/acme/team/devs/syncing": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = io.WriteString(w, `{"error_message":"already synced"}`)
+		},
+		"GET /api/v1/organization/acme/team/devs/members": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"error_message":"boom"}`)
+		},
+	}}
+	c, _ := newTestClient(t, m)
+
+	err := c.EnableTeamSyncIfNotSynced(context.Background(), "acme", "devs", "platform-devs")
+	if !IsConflict(err) {
+		t.Fatalf("expected the original conflict to surface when members is unreadable, got %v", err)
+	}
+}
+
+func TestEnableTeamSyncIfNotSyncedFirstEnableSucceeds(t *testing.T) {
+	// Not yet synced: enabling succeeds outright, no members GET needed.
+	h := &recordingHandler{t: t, wantMethod: http.MethodPost, wantPath: "/api/v1/organization/acme/team/devs/syncing", status: http.StatusOK}
 	c, _ := newTestClient(t, h)
 
 	if err := c.EnableTeamSyncIfNotSynced(context.Background(), "acme", "devs", "platform-devs"); err != nil {
-		t.Fatalf("EnableTeamSyncIfNotSynced should swallow 409, got %v", err)
+		t.Fatalf("EnableTeamSyncIfNotSynced should succeed on a fresh enable, got %v", err)
+	}
+	if h.gotBody["group_name"] != "platform-devs" {
+		t.Errorf("body group_name = %v, want platform-devs", h.gotBody["group_name"])
 	}
 }
 
