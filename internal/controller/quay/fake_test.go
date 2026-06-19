@@ -388,20 +388,17 @@ func (f *fakeOrgClient) DeletePrototypeIfExists(ctx context.Context, org, protot
 }
 
 // seedTeam pre-populates a team (optionally synced to oidcGroup, "" for unsynced)
-// so a test can simulate a pre-existing team — controller-managed or foreign. The
-// description is left empty (a foreign team); use seedManagedTeam to simulate a
-// controller-created team that carries the ownership-marker description.
+// with an empty description, simulating a foreign (not controller-created) team.
+// Use seedTeamWithDescription to stamp this CR's ownership marker (the heal
+// candidate, AC #4).
 func (f *fakeOrgClient) seedTeam(org, team, role, oidcGroup string) {
 	f.seedTeamWithDescription(org, team, role, "", oidcGroup)
 }
 
-// seedManagedTeam pre-populates a team stamped with the controller's
-// managedTeamDescription marker, simulating a team this controller created whose
-// status record was lost — the heal candidate (AC #4).
-func (f *fakeOrgClient) seedManagedTeam(org, team, role, oidcGroup string) {
-	f.seedTeamWithDescription(org, team, role, managedTeamDescription, oidcGroup)
-}
-
+// seedTeamWithDescription pre-populates a team with an explicit description, so a
+// test can simulate a controller-created team carrying this CR's managedTeamMarker
+// (managedTeamPrefix + the org CR UID) — the heal candidate whose status record was
+// lost — or any other foreign-but-described team.
 func (f *fakeOrgClient) seedTeamWithDescription(org, team, role, description, oidcGroup string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

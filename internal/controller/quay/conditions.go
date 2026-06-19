@@ -81,11 +81,13 @@ const (
 	ReasonReconciled = "Reconciled"
 	// ReasonTeamConflict marks an Organization's Programmed/Ready conditions False
 	// because a spec.syncedTeams entry names a Quay team that already exists but was
-	// not created by this resource (it is absent from status.managedTeams and is not
-	// bound to the entry's oidcGroup). The team is never silently seized — adoption
-	// of a pre-existing team is a reconcile error, mirroring the org-level claim
-	// model (ADR-19). It is distinct from ReasonConflict so an operator can tell an
-	// org-name conflict from a team conflict.
+	// not created by this resource: it is absent from status.managedTeams and its
+	// description does not carry this CR's managedTeamMarker (the unforgeable,
+	// UID-bearing ownership marker). The team is never silently seized — adoption of
+	// a pre-existing team is a reconcile error, mirroring the org-level claim model
+	// (ADR-19), even when the team happens to be bound to the entry's oidcGroup. It
+	// is distinct from ReasonConflict so an operator can tell an org-name conflict
+	// from a team conflict.
 	ReasonTeamConflict = "TeamConflict"
 	// ReasonOrganizationNotReady marks a Repository's conditions False because the
 	// Quay organization named by spec.organizationRef does not yet exist. The
