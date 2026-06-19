@@ -97,12 +97,14 @@ platform capabilities those operators do not cover become first-class
 Kubernetes-native APIs rather than manual procedures. Concretely, the gaps it
 closes are:
 
-- **Quay data plane** — organizations and repositories (with an optional
-  `repo_push` webhook on a repository). The upstream Quay operator deploys and
-  manages Quay itself but offers no CRD for these tenant-facing objects. The
-  shipped `quay.holos.run` group ([ADR-19](ADR-19.md)) models an **Organization**
-  and a **Repository**; **repositories are provisioned only via the Repository
-  resource — the Organization never inlines them** (AC #9).
+- **Quay data plane** — organizations (with their OIDC-synced teams and org
+  default repository permissions) and repositories (with an optional `repo_push`
+  webhook on a repository). The upstream Quay operator deploys and manages Quay
+  itself but offers no CRD for these tenant-facing objects. The shipped
+  `quay.holos.run` group ([ADR-19](ADR-19.md)) models an **Organization** (whose
+  `spec.syncedTeams` declares OIDC group→Quay-team/role bindings, ADR-19
+  Revision 6) and a **Repository**; **repositories are provisioned only via the
+  Repository resource — the Organization never inlines them** (AC #9).
 - **Keycloak data plane** — clients, roles, and groups. The upstream Keycloak
   operator and the declarative `keycloak-config-cli` reconciliation manage the
   **platform's own** realm configuration today
