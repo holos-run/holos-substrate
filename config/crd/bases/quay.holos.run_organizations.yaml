@@ -153,6 +153,12 @@ spec:
                   creates (tracked in status.managedTeams) and leaves teams created by other
                   identities alone — adopting a pre-existing team is a reconcile error, not a
                   takeover (see SyncedTeam).
+
+                  Phase note: this field is the API surface only. The reconciler that
+                  consumes it — creating/syncing Quay teams and org default permissions and
+                  recording them in status.managedTeams — lands in a later phase, so setting
+                  it has no effect until then. The field is additive and backward-compatible,
+                  so declaring it ahead of the reconciler does not change existing behavior.
                 items:
                   description: |-
                     SyncedTeam declares a Quay team whose membership is OIDC-synced from a group.
