@@ -1,0 +1,120 @@
+name: Images
+
+# Manual-only multi-arch image build/publish.
+#
+# This workflow is deliberately NOT triggered on push, pull_request, or tags:
+# ci.yaml owns the automatic, registry-free build/test path, while this
+# workflow needs registry write and is dispatched by hand from the Actions tab
+# (or `gh workflow run`) against a caller-supplied Git ref. Keep the trigger as
+# workflow_dispatch only.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: >-
+          Git reference to build: a commit SHA, a branch (main or
+          refs/heads/main), or a tag (v0.1.0 or refs/tags/v0.1.0). Passed to
+          actions/checkout's ref.
+        required: true
+        default: main
+        type: string
+      tag:
+        description: >-
+          Image tag to publish. Defaults to the short SHA of the resolved ref
+          when left blank.
+        required: false
+        default: ""
+        type: string
+      registry:
+        description: >-
+          Registry host to publish to. Defaults to ghcr.io; override to target
+          a different registry (login is GITHUB_TOKEN-based, so a non-ghcr
+          target also needs its own credentials).
+        required: false
+        default: ghcr.io
+        type: string
+
+# Minimal default permissions; the build job widens to packages: write below.
+permissions:
+  contents: read
+
+jobs:
+  images:
+    name: Build and publish ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required to push image packages to ghcr.io with GITHUB_TOKEN.
+      packages: write
+    strategy:
+      fail-fast: false
+      # One matrix entry per image. Each carries the make target plus the two
+      # make variables that point that target at the dispatched registry/repo.
+      # Both builds run in parallel; both must be covered.
+      matrix:
+        include:
+          - image: holos-paas
+            make_target: docker-buildx
+            repo_var: IMAGE_REPO
+            tag_var: IMAGE_TAG
+          - image: holos-controller
+            make_target: controller-docker-buildx
+            repo_var: CONTROLLER_IMAGE_REPO
+            tag_var: CONTROLLER_IMAGE_TAG
+    steps:
+      # Pinned to the full commit SHA of v4.3.1 for supply-chain hardening
+      # (matches ci.yaml). Checks out the dispatched ref so the build reflects
+      # exactly that commit/branch/tag.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.ref }}
+
+      # Provision a docker-container-driver buildx builder — the CI equivalent
+      # of HOL-1333's docker-buildx-builder make target. The make target's own
+      # bootstrap is a compatible no-op against this builder (buildx uses the
+      # active builder set up here). No QEMU (docker/setup-qemu-action) is
+      # needed: both Dockerfiles pin the builder stage to $BUILDPLATFORM and
+      # cross-compile via the Go toolchain to the target arch, so amd64 and
+      # arm64 outputs are produced without emulating the target architecture.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      # Authenticate to the registry. ghcr.io needs no extra secrets: the
+      # built-in GITHUB_TOKEN plus packages: write is sufficient.
+      - name: Log in to ${{ inputs.registry }}
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Resolve the image tag: use the dispatch input when provided, otherwise
+      # the short SHA of the checked-out commit so every run is addressable.
+      - name: Resolve image tag
+        id: meta
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag }}"
+          if [ -z "${tag}" ]; then
+            tag="$(git rev-parse --short HEAD)"
+          fi
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "Publishing ${{ matrix.image }} as tag ${tag}"
+
+      # Drive the build through the multi-arch make target (HOL-1333) so the
+      # buildx invocation stays single-sourced between local hosts and CI. The
+      # target is push-only (a manifest list cannot be --load-ed into the local
+      # daemon) and emits a multi-arch (linux/amd64 + linux/arm64) OCI image
+      # index to the registry.
+      - name: Build and push ${{ matrix.image }}
+        run: |
+          make ${{ matrix.make_target }} \
+            ${{ matrix.repo_var }}=${{ inputs.registry }}/${{ github.repository_owner }}/${{ matrix.image }} \
+            ${{ matrix.tag_var }}=${{ steps.meta.outputs.tag }}
+
+      # Surface both platforms in the run log as a published-artifact sanity
+      # check (the image index should list linux/amd64 and linux/arm64).
+      - name: Inspect published image
+        run: |
+          docker buildx imagetools inspect \
+            ${{ inputs.registry }}/${{ github.repository_owner }}/${{ matrix.image }}:${{ steps.meta.outputs.tag }}
