@@ -126,7 +126,7 @@ spec:
                   this endpoint with the admin credential, so plaintext http is rejected at
                   admission rather than silently sending the credential in the clear.
                 minLength: 1
-                pattern: ^https://[^/?#\s]+(:[0-9]+)?(/[^\s]*)?$
+                pattern: ^https://[^/?#\s:@]+(:[0-9]+)?(/[^\s]*)?$
                 type: string
             required:
             - realm

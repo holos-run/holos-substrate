@@ -24,7 +24,7 @@ type KeycloakInstanceSpec struct {
 	// admission rather than silently sending the credential in the clear.
 	//
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:Pattern=`^https://[^/?#\s]+(:[0-9]+)?(/[^\s]*)?$`
+	// +kubebuilder:validation:Pattern=`^https://[^/?#\s:@]+(:[0-9]+)?(/[^\s]*)?$`
 	URL string `json:"url"`
 
 	// Realm is the Keycloak realm this instance targets (e.g. holos). It is
