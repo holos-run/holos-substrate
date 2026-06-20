@@ -199,11 +199,20 @@ spec:
                 - name
                 type: object
               type:
-                description: Type is the OIDC client type, public or confidential.
+                description: |-
+                  Type is the OIDC client type, public or confidential. It is immutable: a
+                  public<->confidential transition would strand the per-client artifacts keyed
+                  to the prior type (a confidential->public edit would orphan the delivered
+                  client-secret Secret; a public->confidential edit would need a freshly
+                  generated secret and a redirect/PKCE re-evaluation), so the type is fixed for
+                  the client's life — recreate the resource to change it.
                 enum:
                 - public
                 - confidential
                 type: string
+                x-kubernetes-validations:
+                - message: type is immutable
+                  rule: self == oldSelf
               webOrigins:
                 description: WebOrigins are the allowed CORS web origins for the client.
                 items:

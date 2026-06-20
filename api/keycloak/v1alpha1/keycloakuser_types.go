@@ -54,9 +54,13 @@ type KeycloakUserSpec struct {
 
 	// Username optionally sets the Keycloak username. When omitted the controller
 	// derives one (conventionally the email), so set it only to pin a specific
-	// username.
+	// username. It is immutable: the username is applied only at user creation, so
+	// editing it after the user exists would silently diverge the CR from Keycloak
+	// (the reconciler does not rename an existing user). Recreate the resource to
+	// change the pinned username.
 	//
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="username is immutable"
 	Username string `json:"username,omitempty"`
 
 	// InstanceRef references the KeycloakInstance this user is provisioned in. A

@@ -62,7 +62,14 @@ type KeycloakClientSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="clientId is immutable"
 	ClientID string `json:"clientId"`
 
-	// Type is the OIDC client type, public or confidential.
+	// Type is the OIDC client type, public or confidential. It is immutable: a
+	// public<->confidential transition would strand the per-client artifacts keyed
+	// to the prior type (a confidential->public edit would orphan the delivered
+	// client-secret Secret; a public->confidential edit would need a freshly
+	// generated secret and a redirect/PKCE re-evaluation), so the type is fixed for
+	// the client's life — recreate the resource to change it.
+	//
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="type is immutable"
 	Type KeycloakClientType `json:"type"`
 
 	// InstanceRef references the KeycloakInstance this client is provisioned in. A

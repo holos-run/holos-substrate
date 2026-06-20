@@ -399,10 +399,19 @@ func (r *ClientReconciler) deliverClientSecret(ctx context.Context, kc ClientCli
 	getErr := r.APIReader.Get(ctx, key, existing)
 	switch {
 	case getErr == nil:
+		// The Secret must be one THIS KeycloakClient owns (controller owner-reference
+		// by UID) before it is accepted as delivered — otherwise a name/key collision
+		// with a foreign Secret that happens to carry the same key would make the
+		// resource report Ready while consumers receive the wrong secret. A foreign
+		// Secret (no matching owner reference) is a collision the operator must
+		// resolve, whether or not it carries the key.
+		if !ownedBy(existing, kclient) {
+			return fmt.Errorf("client-secret Secret %s/%s exists but is not owned by this KeycloakClient; refusing to treat a foreign Secret as the delivered client secret", key.Namespace, key.Name)
+		}
 		if v, ok := existing.Data[ref.Key]; ok && len(v) > 0 {
 			return nil
 		}
-		return fmt.Errorf("client-secret Secret %s/%s already exists but is missing a non-empty %q key; refusing to overwrite a Secret this resource may not own", key.Namespace, key.Name, ref.Key)
+		return fmt.Errorf("client-secret Secret %s/%s is owned by this KeycloakClient but is missing a non-empty %q key", key.Namespace, key.Name, ref.Key)
 	case !apierrors.IsNotFound(getErr):
 		return fmt.Errorf("checking delivered client-secret Secret %s/%s: %w", key.Namespace, key.Name, getErr)
 	}
@@ -432,6 +441,18 @@ func (r *ClientReconciler) deliverClientSecret(ctx context.Context, kc ClientCli
 		return fmt.Errorf("delivering client secret to Secret %s/%s: %w", key.Namespace, key.Name, err)
 	}
 	return nil
+}
+
+// ownedBy reports whether secret carries a controller owner reference pointing at
+// this KeycloakClient (matched by UID), i.e. it is a Secret this CR delivered
+// rather than a foreign Secret that merely shares the name.
+func ownedBy(secret *corev1.Secret, kclient *keycloakv1alpha1.KeycloakClient) bool {
+	for _, ref := range secret.OwnerReferences {
+		if ref.UID == kclient.UID && ref.Kind == "KeycloakClient" {
+			return true
+		}
+	}
+	return false
 }
 
 // reconcileDelete runs the finalizer. Per the claim model the Keycloak client is

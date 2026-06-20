@@ -151,8 +151,14 @@ spec:
                 description: |-
                   Username optionally sets the Keycloak username. When omitted the controller
                   derives one (conventionally the email), so set it only to pin a specific
-                  username.
+                  username. It is immutable: the username is applied only at user creation, so
+                  editing it after the user exists would silently diverge the CR from Keycloak
+                  (the reconciler does not rename an existing user). Recreate the resource to
+                  change the pinned username.
                 type: string
+                x-kubernetes-validations:
+                - message: username is immutable
+                  rule: self == oldSelf
             required:
             - email
             - instanceRef
