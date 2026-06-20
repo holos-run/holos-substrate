@@ -90,11 +90,16 @@ docker buildx imagetools inspect quay.holos.localhost/holos/holos-paas:dev
 The [`.github/workflows/images.yaml`](.github/workflows/images.yaml) **Images**
 workflow builds and publishes both multi-arch images from GitHub Actions. It is
 **manual-only** (`workflow_dispatch` — never on push, pull request, or tag) and
-runs inside a `publish-images` GitHub Environment, so org policy (required
-reviewers, deployment branch/tag restrictions) gates every dispatch. It drives
-the same `make docker-buildx` / `make controller-docker-buildx` targets, so the
-build logic is single-sourced between local hosts and CI. Trigger it from the
-Actions tab or with `gh`:
+runs inside a `publish-images` GitHub Environment. Because the workflow builds
+the caller-supplied `ref` (it checks out `inputs.ref`, not the workflow run
+ref), **configure that Environment with required reviewers** — required
+reviewers are the control that gates an arbitrary `ref`, so every dispatch is
+approved by a human before the publish job runs. Environment branch/tag
+deployment policies constrain only the workflow run ref, not the `ref` checkout
+input, so they are not a sufficient boundary here. It drives the same `make
+docker-buildx` / `make controller-docker-buildx` targets, so the build logic is
+single-sourced between local hosts and CI. Trigger it from the Actions tab or
+with `gh`:
 
 ```bash
 gh workflow run images.yaml -f ref=main             # or a commit SHA / tag (v0.1.0)
