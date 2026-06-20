@@ -78,8 +78,12 @@ components are written in this phase — this is a design record only.**
   the holos-owned cross-namespace-reference grant. The Project's per-Project
   Keycloak CRs reference a centrally-managed `KeycloakInstance` in a platform
   namespace; that cross-namespace reference is authorized by a `security.holos.run`
-  `ReferenceGrant` placed in the instance's (referent) namespace — what the
-  Project's `ReferenceGrant` resource (below) now is.
+  `ReferenceGrant` placed in the instance's (referent) namespace. That grant is a
+  **platform-owned prerequisite created by the instance namespace's owner** — it is
+  **not** a resource the Project component renders (ADR-22's default-deny model
+  forbids a tenant authorizing its own access). The Gateway-API `ReferenceGrant`
+  the Project component **does** render (item 8 below) is a separate, coexisting
+  grant for route/backend object references.
 - [ADR-16 — Kargo-Driven Promotion with a Client-Side CLI Build-and-Publish
   (ORAS) Workflow](ADR-16.md): the promotion pipeline an Application's
   `Warehouse`/`Stage` participate in — a `repo_push` notifies a `Warehouse`,
@@ -233,67 +237,65 @@ manifests provision the identity half of its primitive-role model
    viewer → `member` + `read`, the ADR-19 worked example), the Quay end of the
    identity flow the Keycloak resources (items 9–11) produce. The Holos Controller
    ([ADR-18](ADR-18.md)) reconciles it.
-7. **`ReferenceGrant`(s)** — the grant(s) authorizing the cross-namespace
-   references the Project needs. **Two distinct grant kinds apply, and they
-   coexist** ([ADR-22](ADR-22.md)):
+7. **Gateway-API `ReferenceGrant`** — the grant authorizing whichever
+   cross-namespace **route/backend object** reference the Project needs (unchanged
+   from Revision 1). This is the only `ReferenceGrant` the Project component
+   **renders**. (The separate `security.holos.run` grant for the Keycloak →
+   `KeycloakInstance` reference is a **platform-owned prerequisite**, not a rendered
+   resource — see the note immediately below this list.) Two clarifications on the
+   Gateway-API mechanism, so this ADR records it correctly:
 
-   - **A `security.holos.run` `ReferenceGrant` for the Keycloak → `KeycloakInstance`
-     reference (this revision).** The Project's per-Project Keycloak CRs (items 9–11)
-     live in the Project Namespace and reference a centrally-managed
-     `KeycloakInstance` ([ADR-20](ADR-20.md)) in a platform namespace (e.g.
-     `keycloak`) — a cross-namespace CR-to-CR reference. Per the guard rail
-     ([ADR-22](ADR-22.md)), that reference is authorized by a **`security.holos.run`**
-     `ReferenceGrant` placed in the **instance's (referent) namespace**, with
-     `spec.from[]` naming the Project Namespace's `keycloak.holos.run` Kinds and
-     `spec.to[]` naming the local `KeycloakInstance`. This grant is created by the
-     platform owner of the `KeycloakInstance` namespace, **not** rendered into the
-     Project Namespace by the Project component — the referent-namespace placement
-     rule means the grant lives where the `KeycloakInstance` lives. An ungranted
-     reference is rejected by the Keycloak CR's reconciler (`Ready=False`, reason
-     `RefNotPermitted`), never silently honored. This is the holos-owned grant
-     ([ADR-22](ADR-22.md)), distinct from Gateway API's.
-   - **A Gateway-API `ReferenceGrant` for cross-namespace *route/backend* object
-     references (unchanged from Revision 1).** Two clarifications on that mechanism,
-     so this ADR records it correctly:
-     - **Route-to-Gateway attachment is not gated by `ReferenceGrant`.** Whether an
-       `HTTPRoute` may attach to the shared Gateway is governed by the listener's
-       `allowedRoutes` (today `namespaces: from: "All"` in
-       [`holos/components/istio-gateway/buildplan.cue`](../../holos/components/istio-gateway/buildplan.cue),
-       which the route-attachment placeholder in
-       [`holos/docs/placeholders.md`](../../holos/docs/placeholders.md) flags must
-       tighten to a label/namespace allow-list before tenant namespaces land). What a
-       `ReferenceGrant` *does* authorize is a cross-namespace object reference — an
-       `HTTPRoute`'s `backendRefs` pointing at a `Service` in another namespace, or a
-       listener's `certificateRefs` pointing at a `Secret` in another namespace (the
-       case the Gateway's own certificate comment in `istio-gateway/buildplan.cue`
-       calls out).
-     - **A `ReferenceGrant` lives in the *referent* (target) namespace — the
-       namespace that holds the object being referenced — not in the referrer's
-       namespace.** So the grant's namespace depends on the direction of the
-       cross-namespace reference, and the two reference kinds differ: an `HTTPRoute`'s
-       cross-namespace object reference is its `backendRefs` (e.g. a `Service`), so a
-       project route referencing a backend `Service` in `istio-gateways` needs the
-       grant **in `istio-gateways`**; a cross-namespace **TLS `Secret`** reference is
-       a *Gateway listener* `certificateRefs` concern (not an `HTTPRoute` field), so
-       if the shared Gateway in `istio-gateways` referenced a `Secret` in the Project
-       Namespace the grant would go **in the Project Namespace**. (The platform's
-       current shared Gateway keeps its certificate co-namespaced precisely to avoid
-       such a grant — the certificate comment in `istio-gateway/buildplan.cue`.) The
-       general rule holds either way: the grant lives where the referenced object
-       lives. This item is the per-project grant for whichever such reference the
-       Project actually needs, placed in the target namespace accordingly; the
-       **attachment** policy remains the listener's `allowedRoutes`, recorded here so
-       the two mechanisms are not conflated.
-
-   The same referent-namespace placement rule governs **both** grant kinds — the
-   `security.holos.run` grant lives in the `KeycloakInstance`'s namespace, the
-   Gateway-API grant lives in the referenced route/backend object's namespace — and
-   the two never substitute for each other (a holos CR-to-CR reference is **never**
-   authorized by Gateway API's grant, which governs only its fixed route/backend
-   kinds; [ADR-22](ADR-22.md)).
+   - **Route-to-Gateway attachment is not gated by `ReferenceGrant`.** Whether an
+     `HTTPRoute` may attach to the shared Gateway is governed by the listener's
+     `allowedRoutes` (today `namespaces: from: "All"` in
+     [`holos/components/istio-gateway/buildplan.cue`](../../holos/components/istio-gateway/buildplan.cue),
+     which the route-attachment placeholder in
+     [`holos/docs/placeholders.md`](../../holos/docs/placeholders.md) flags must
+     tighten to a label/namespace allow-list before tenant namespaces land). What a
+     `ReferenceGrant` *does* authorize is a cross-namespace object reference — an
+     `HTTPRoute`'s `backendRefs` pointing at a `Service` in another namespace, or a
+     listener's `certificateRefs` pointing at a `Secret` in another namespace (the
+     case the Gateway's own certificate comment in `istio-gateway/buildplan.cue`
+     calls out).
+   - **A `ReferenceGrant` lives in the *referent* (target) namespace — the
+     namespace that holds the object being referenced — not in the referrer's
+     namespace.** So the grant's namespace depends on the direction of the
+     cross-namespace reference, and the two reference kinds differ: an `HTTPRoute`'s
+     cross-namespace object reference is its `backendRefs` (e.g. a `Service`), so a
+     project route referencing a backend `Service` in `istio-gateways` needs the
+     grant **in `istio-gateways`**; a cross-namespace **TLS `Secret`** reference is
+     a *Gateway listener* `certificateRefs` concern (not an `HTTPRoute` field), so
+     if the shared Gateway in `istio-gateways` referenced a `Secret` in the Project
+     Namespace the grant would go **in the Project Namespace**. (The platform's
+     current shared Gateway keeps its certificate co-namespaced precisely to avoid
+     such a grant — the certificate comment in `istio-gateway/buildplan.cue`.) The
+     general rule holds either way: the grant lives where the referenced object
+     lives. This item is the per-project grant for whichever such reference the
+     Project actually needs, placed in the target namespace accordingly; the
+     **attachment** policy remains the listener's `allowedRoutes`, recorded here so
+     the two mechanisms are not conflated.
 8. **`HTTPRoute`** — the Project's route attaching to the shared Gateway (via the
    listener's `allowedRoutes`), exposing the Project's services through the
    platform ingress.
+
+> **Prerequisite (not a rendered resource): the `security.holos.run`
+> `ReferenceGrant` for the Keycloak → `KeycloakInstance` reference.** The
+> per-Project Keycloak CRs (items 9–11) live in the Project Namespace and reference
+> a centrally-managed `KeycloakInstance` ([ADR-20](ADR-20.md)) in a platform
+> namespace (e.g. `keycloak`) — a cross-namespace CR-to-CR reference. Per the guard
+> rail ([ADR-22](ADR-22.md)), that reference is authorized by a **`security.holos.run`**
+> `ReferenceGrant` placed in the **instance's (referent) namespace**, with
+> `spec.from[]` naming the Project Namespace's `keycloak.holos.run` Kinds and
+> `spec.to[]` naming the local `KeycloakInstance`. Because the grant lives in the
+> referent namespace and ADR-22's trust model is **default-deny — the platform owner
+> of the referent namespace grants access, a tenant cannot widen its own** — this
+> grant is **created by the `KeycloakInstance` namespace's platform owner, not
+> rendered by the Project component**. An ungranted reference is rejected by the
+> Keycloak CR's reconciler (`Ready=False`, reason `RefNotPermitted`), never silently
+> honored. This holos-owned grant and the Gateway-API grant (item 7) coexist and
+> never substitute for each other — a holos CR-to-CR reference is **never** authorized
+> by Gateway API's grant, which governs only its fixed route/backend kinds
+> ([ADR-22](ADR-22.md)).
 9. **`KeycloakGroup`** (`keycloak.holos.run`, [ADR-20](ADR-20.md)) — the per-Project
    nested role/custodian group tree. Reconciled by the Holos Controller, it creates
    `projects/<project>/roles/{owner,editor,viewer}` (the groups a person is a member
@@ -305,7 +307,9 @@ manifests provision the identity half of its primitive-role model
    that the consumer's existing `oidc-usermodel-client-role-mapper` emits into the
    `groups` claim. This CR is the **authoritative** owner of the role→claim binding
    ([ADR-20](ADR-20.md), *Claim value via a client role*). It references the central
-   `KeycloakInstance` via `instanceRef` (the cross-namespace grant, item 7).
+   `KeycloakInstance` via `instanceRef` (authorized by the platform-owned
+   `security.holos.run` grant — the prerequisite note above, not item 7's
+   Gateway-API grant).
 10. **`KeycloakUser`** (`keycloak.holos.run`, [ADR-20](ADR-20.md)) — pre-provisions
     the Project **owner** by email (`projects.<name>.owners`, e.g.
     `bob@example.com`) *only if necessary* and assigns initial group membership in
