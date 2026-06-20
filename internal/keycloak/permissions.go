@@ -119,6 +119,49 @@ func (c *Client) CreateGroupPolicy(ctx context.Context, permClientUUID string, p
 	return c.doCreateReturningBody(ctx, c.authzPath(permClientUUID, "/policy/group"), policy)
 }
 
+// authzNamed is the minimal shape of an Authorization Services policy or
+// permission returned by the search endpoints — just the id and name, enough to
+// resolve a UUID by name when a create returned 409 (already exists) without an id.
+type authzNamed struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// FindPolicyByName returns the UUID of the group policy whose name exactly matches
+// via GET .../authz/resource-server/policy?name=, or "" when none exists. Keycloak's
+// name filter is a substring match, so the exact name is selected from the results.
+// It lets the reconciler recover a policy's id after a 409 create so the delegation
+// can be pruned later by id.
+func (c *Client) FindPolicyByName(ctx context.Context, permClientUUID, name string) (string, error) {
+	return c.findAuthzByName(ctx, permClientUUID, "/policy", name)
+}
+
+// FindPermissionByName returns the UUID of the scope permission whose name exactly
+// matches via GET .../authz/resource-server/permission?name=, or "" when none
+// exists. It is the permission analog of FindPolicyByName.
+func (c *Client) FindPermissionByName(ctx context.Context, permClientUUID, name string) (string, error) {
+	return c.findAuthzByName(ctx, permClientUUID, "/permission", name)
+}
+
+// findAuthzByName queries an Authorization Services search endpoint (policy or
+// permission) by name and returns the id of the exact-name match, or "" when none
+// matches. Keycloak's name filter is a substring match, so it selects the entry
+// whose name equals name exactly.
+func (c *Client) findAuthzByName(ctx context.Context, permClientUUID, kindSuffix, name string) (string, error) {
+	q := url.Values{"name": {name}}
+	path := c.authzPath(permClientUUID, kindSuffix+"?"+q.Encode())
+	var results []authzNamed
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &results); err != nil {
+		return "", err
+	}
+	for _, r := range results {
+		if r.Name == name {
+			return r.ID, nil
+		}
+	}
+	return "", nil
+}
+
 // CreateScopePermission creates an FGAP v2 scope permission binding the given
 // scopes over the group resource to the custodian group policy via
 // POST .../authz/resource-server/permission/scope, and returns its UUID. This

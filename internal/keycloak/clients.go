@@ -374,3 +374,27 @@ func (c *Client) AssignClientRoleToGroup(ctx context.Context, groupID, clientUUI
 	path := c.adminPath("/groups/" + url.PathEscape(groupID) + "/role-mappings/clients/" + url.PathEscape(clientUUID))
 	return c.doJSON(ctx, http.MethodPost, path, []ClientRole{role}, nil)
 }
+
+// ListGroupClientRoles returns the client roles currently mapped to the group for
+// the given client via
+// GET /admin/realms/{realm}/groups/{groupId}/role-mappings/clients/{clientUUID},
+// so a reconciler can detect and prune client roles that are no longer desired
+// (reconciling conferral to the desired set rather than add-only).
+func (c *Client) ListGroupClientRoles(ctx context.Context, groupID, clientUUID string) ([]ClientRole, error) {
+	path := c.adminPath("/groups/" + url.PathEscape(groupID) + "/role-mappings/clients/" + url.PathEscape(clientUUID))
+	var roles []ClientRole
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &roles); err != nil {
+		return nil, err
+	}
+	return roles, nil
+}
+
+// RemoveClientRoleFromGroup unassigns the client role from the group via
+// DELETE /admin/realms/{realm}/groups/{groupId}/role-mappings/clients/{clientUUID}
+// with a body of one role representation. The role must carry its ID and Name. It
+// is the inverse of AssignClientRoleToGroup; Keycloak treats removing a role the
+// group does not hold as a 204 no-op, so the call is idempotent.
+func (c *Client) RemoveClientRoleFromGroup(ctx context.Context, groupID, clientUUID string, role ClientRole) error {
+	path := c.adminPath("/groups/" + url.PathEscape(groupID) + "/role-mappings/clients/" + url.PathEscape(clientUUID))
+	return c.doJSON(ctx, http.MethodDelete, path, []ClientRole{role}, nil)
+}

@@ -262,6 +262,38 @@ spec:
                   controller restarts; the finalizer deletes the Keycloak group only when
                   Created is true, never an adopted group.
                 type: boolean
+              groupID:
+                description: |-
+                  GroupID is the immutable Keycloak UUID of the group this CR provisioned or
+                  adopted. It is the durable ownership identity the claim model verifies: a
+                  Keycloak group path is reusable (a group can be deleted and a different one
+                  recreated at the same path out of band), but its UUID is not, so before
+                  reconciling an owned group or deleting it on finalization the controller
+                  confirms the group currently at the path still carries this UUID. A mismatch
+                  means the original group was replaced by a foreign group, which is treated as
+                  a Conflict (and never deleted) rather than silently seized.
+                type: string
+              managedClientRoles:
+                description: |-
+                  ManagedClientRoles records the client roles this CR has conferred on the
+                  group, each as "<clientId>/<role>", so a role dropped from spec.clientRoles
+                  is unassigned from the Keycloak group on the next reconcile rather than left
+                  active (the conferral is reconciled to the desired set, not add-only).
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: atomic
+              managedCustodians:
+                description: |-
+                  ManagedCustodians records the custodian group paths this CR has wired FGAP v2
+                  delegation for, so a custodian dropped from spec.custodians has its
+                  delegation policy and scope permission removed on the next reconcile rather
+                  than left able to manage membership (the delegation is reconciled to the
+                  desired set, not add-only).
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: atomic
               observedGeneration:
                 description: |-
                   ObservedGeneration is the most recent generation observed for this

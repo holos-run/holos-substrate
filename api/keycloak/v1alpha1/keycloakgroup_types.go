@@ -136,6 +136,37 @@ type KeycloakGroupStatus struct {
 	//
 	// +optional
 	Adopted bool `json:"adopted,omitempty"`
+
+	// GroupID is the immutable Keycloak UUID of the group this CR provisioned or
+	// adopted. It is the durable ownership identity the claim model verifies: a
+	// Keycloak group path is reusable (a group can be deleted and a different one
+	// recreated at the same path out of band), but its UUID is not, so before
+	// reconciling an owned group or deleting it on finalization the controller
+	// confirms the group currently at the path still carries this UUID. A mismatch
+	// means the original group was replaced by a foreign group, which is treated as
+	// a Conflict (and never deleted) rather than silently seized.
+	//
+	// +optional
+	GroupID string `json:"groupID,omitempty"`
+
+	// ManagedClientRoles records the client roles this CR has conferred on the
+	// group, each as "<clientId>/<role>", so a role dropped from spec.clientRoles
+	// is unassigned from the Keycloak group on the next reconcile rather than left
+	// active (the conferral is reconciled to the desired set, not add-only).
+	//
+	// +optional
+	// +listType=atomic
+	ManagedClientRoles []string `json:"managedClientRoles,omitempty"`
+
+	// ManagedCustodians records the custodian group paths this CR has wired FGAP v2
+	// delegation for, so a custodian dropped from spec.custodians has its
+	// delegation policy and scope permission removed on the next reconcile rather
+	// than left able to manage membership (the delegation is reconciled to the
+	// desired set, not add-only).
+	//
+	// +optional
+	// +listType=atomic
+	ManagedCustodians []string `json:"managedCustodians,omitempty"`
 }
 
 // +kubebuilder:object:root=true

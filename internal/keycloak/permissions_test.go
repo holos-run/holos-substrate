@@ -119,3 +119,39 @@ func TestDeleteScopePermissionIfExistsSwallowsNotFound(t *testing.T) {
 		t.Fatalf("DeleteScopePermissionIfExists should swallow 404, got %v", err)
 	}
 }
+
+func TestFindPolicyByName(t *testing.T) {
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodGet, wantPath: authzBase + "/policy",
+		status:   http.StatusOK,
+		respBody: `[{"id":"pol-1","name":"holos:custodian:a"},{"id":"pol-2","name":"holos:custodian:ab"}]`,
+	}
+	c, _ := newTestClient(t, h)
+
+	id, err := c.FindPolicyByName(context.Background(), "perm-uuid", "holos:custodian:a")
+	if err != nil {
+		t.Fatalf("FindPolicyByName: %v", err)
+	}
+	if id != "pol-1" {
+		t.Errorf("id = %q, want pol-1 (exact-name match, not the substring sibling)", id)
+	}
+	if h.gotQuery != "name=holos%3Acustodian%3Aa" {
+		t.Errorf("query = %q, want the name filter", h.gotQuery)
+	}
+}
+
+func TestFindPermissionByNameNotFound(t *testing.T) {
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodGet, wantPath: authzBase + "/permission",
+		status: http.StatusOK, respBody: `[]`,
+	}
+	c, _ := newTestClient(t, h)
+
+	id, err := c.FindPermissionByName(context.Background(), "perm-uuid", "holos:custodian-perm:x")
+	if err != nil {
+		t.Fatalf("FindPermissionByName: %v", err)
+	}
+	if id != "" {
+		t.Errorf("id = %q, want empty for no match", id)
+	}
+}

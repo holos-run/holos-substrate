@@ -32,6 +32,7 @@ import (
 	keycloakv1alpha1 "github.com/holos-run/holos-paas/api/keycloak/v1alpha1"
 	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
 	securityv1alpha1 "github.com/holos-run/holos-paas/api/security/v1alpha1"
+	keycloakcontroller "github.com/holos-run/holos-paas/internal/controller/keycloak"
 	quaycontroller "github.com/holos-run/holos-paas/internal/controller/quay"
 )
 
@@ -158,6 +159,26 @@ func main() {
 		Client: mgr.GetClient(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Repository")
+		os.Exit(1)
+	}
+
+	// Register the keycloak.holos.run KeycloakInstance and KeycloakGroup
+	// reconcilers (HOL-1346). Like the quay reconcilers they resolve the Keycloak
+	// admin credential from the controller's own namespace (POD_NAMESPACE /
+	// holos-controller default), so leaving Namespace empty lets SetupWithManager
+	// pick the env up. The KeycloakUser and KeycloakClient reconcilers are wired in
+	// HOL-1347.
+	if err := (&keycloakcontroller.InstanceReconciler{
+		Client: mgr.GetClient(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "KeycloakInstance")
+		os.Exit(1)
+	}
+
+	if err := (&keycloakcontroller.GroupReconciler{
+		Client: mgr.GetClient(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "KeycloakGroup")
 		os.Exit(1)
 	}
 
