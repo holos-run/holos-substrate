@@ -70,3 +70,11 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - security.holos.run
+  resources:
+  - referencegrants
+  verbs:
+  - get
+  - list
+  - watch
