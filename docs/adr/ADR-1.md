@@ -104,11 +104,18 @@ Project is rendered onto Kubernetes ([ADR-21](ADR-21.md)) under the identity mod
   custodian-approved-group-membership model.
 - **Membership flows to access via the OIDC `groups` claim.** Membership in a
   role group surfaces in the shared OIDC `groups` claim as the flat, project-prefixed
-  value `my-project-{owner,editor,viewer}` ([ADR-20](ADR-20.md) carries this as a
-  client role so the value is collision-safe across Projects). Those exact claim
-  values are what scopes per-Project access — Kubernetes RBAC `Group` subjects
-  ([ADR-3](ADR-3.md)), the Argo CD `AppProject` OIDC binding ([ADR-21](ADR-21.md)),
-  and the Quay `Organization.spec.syncedTeams[]` team mapping ([ADR-19](ADR-19.md)).
+  value `my-project-{owner,editor,viewer}`. [ADR-20](ADR-20.md) carries this value as
+  a **client role on the consumer's own client** (so it is collision-safe across
+  Projects, and because the `oidc-usermodel-client-role-mapper` is **per client**):
+  the value appears in a given relying party's token only when that role is bound on
+  **that** client and the client carries the role mapper. The worked example
+  ([ADR-21](ADR-21.md)) binds the **Quay client**, so `my-project-owner` reaches
+  Quay's token and scopes the `Organization.spec.syncedTeams[]` team mapping
+  ([ADR-19](ADR-19.md)); a different consumer (a project service's own client) gets
+  the value by binding the role on **its** client. Kubernetes RBAC `Group` subjects
+  ([ADR-3](ADR-3.md)) key on whatever group/claim values the cluster's OIDC
+  authenticator is configured to read — the same per-Project values, surfaced per
+  the consumer's client wiring ([ADR-20](ADR-20.md)).
 - **The boundary stays single and legible.** The Project remains the unit access is
   granted per (this ADR); ADR-20 only supplies *who provisions the groups and runs
   the custodian approval*, and ADR-3's authorization model — RBAC bindings with
