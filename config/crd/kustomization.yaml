@@ -5,3 +5,4 @@ kind: Kustomization
 resources:
   - bases/quay.holos.run_organizations.yaml
   - bases/quay.holos.run_repositories.yaml
+  - bases/security.holos.run_referencegrants.yaml

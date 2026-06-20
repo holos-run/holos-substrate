@@ -30,15 +30,18 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
+	securityv1alpha1 "github.com/holos-run/holos-paas/api/security/v1alpha1"
 	quaycontroller "github.com/holos-run/holos-paas/internal/controller/quay"
 )
 
 // RBAC the manager needs once the reconcilers land (HOL-1311, HOL-1312): full
-// control over the quay.holos.run resources and their status, read access to
-// the credential and webhook-URL Secrets the specs reference, and leader-election
-// + event-recording permissions. The markers live here so controller-gen emits
-// config/rbac/role.yaml; the reconcilers added in later phases use exactly these
-// verbs.
+// control over the quay.holos.run resources and their status, read-only access
+// to security.holos.run ReferenceGrants (declarative cross-namespace policy the
+// authorization helper lists — no reconciler, so get;list;watch only), read
+// access to the credential and webhook-URL Secrets the specs reference, and
+// leader-election + event-recording permissions. The markers live here so
+// controller-gen emits config/rbac/role.yaml; the reconcilers added in later
+// phases use exactly these verbs.
 //
 // Secrets are intentionally limited to get (not list/watch): the reconcilers
 // resolve only the specific credential/webhook-URL Secrets a CR names, via the
@@ -48,6 +51,7 @@ import (
 // +kubebuilder:rbac:groups=quay.holos.run,resources=organizations;repositories,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=quay.holos.run,resources=organizations/status;repositories/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=quay.holos.run,resources=organizations/finalizers;repositories/finalizers,verbs=update
+// +kubebuilder:rbac:groups=security.holos.run,resources=referencegrants,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
@@ -60,10 +64,14 @@ var (
 )
 
 func init() {
-	// Register the Kubernetes core types and the quay.holos.run API group so
-	// the manager's client and cache can serve both.
+	// Register the Kubernetes core types and the quay.holos.run and
+	// security.holos.run API groups so the manager's client and cache can serve
+	// all three. The security group's ReferenceGrant has no reconciler — it is
+	// declarative policy the authorization helper reads — but it must be in the
+	// scheme for the client to list it.
 	utilruntimeMust(clientgoscheme.AddToScheme(scheme))
 	utilruntimeMust(quayv1alpha1.AddToScheme(scheme))
+	utilruntimeMust(securityv1alpha1.AddToScheme(scheme))
 }
 
 func main() {
