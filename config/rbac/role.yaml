@@ -42,6 +42,41 @@ rules:
   - update
   - watch
 - apiGroups:
+  - keycloak.holos.run
+  resources:
+  - keycloakclients
+  - keycloakgroups
+  - keycloakinstances
+  - keycloakusers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - keycloak.holos.run
+  resources:
+  - keycloakclients/finalizers
+  - keycloakgroups/finalizers
+  - keycloakinstances/finalizers
+  - keycloakusers/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - keycloak.holos.run
+  resources:
+  - keycloakclients/status
+  - keycloakgroups/status
+  - keycloakinstances/status
+  - keycloakusers/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - quay.holos.run
   resources:
   - organizations
