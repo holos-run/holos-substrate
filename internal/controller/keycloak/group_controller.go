@@ -715,6 +715,16 @@ func (r *GroupReconciler) reconcileDelete(ctx context.Context, logger logr.Logge
 		return ctrl.Result{}, nil
 	}
 
+	// Nothing to clean up: the CR never provisioned or adopted a group and recorded
+	// no managed side effects (e.g. it was rejected for a reserved name, blocked on a
+	// missing/not-ready instance, a denied ReferenceGrant, or a missing credential).
+	// Drop the finalizer immediately rather than trying to resolve a Ready instance +
+	// credential, which would fail forever and strand the CR undeletable.
+	if !group.Status.Created && !group.Status.Adopted &&
+		len(group.Status.ManagedClientRoles) == 0 && len(group.Status.ManagedCustodians) == 0 {
+		return r.removeFinalizer(ctx, group)
+	}
+
 	// Both created and adopted groups need the credential to clean up in Keycloak
 	// (delete the group, or prune the roles/custodians off an adopted group), so
 	// resolve the instance and credential up front for either path.

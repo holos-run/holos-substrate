@@ -709,6 +709,47 @@ func TestGroupCreatedDeletePrunesCustodianFGAP(t *testing.T) {
 	}
 }
 
+func TestGroupDeleteUnprovisionedDropsFinalizer(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-group-stuckfinalizer"
+	makeNamespace(t, ctx, ns)
+	// Deliberately NO credential Secret and NO instance: the group can never be
+	// provisioned, so deletion must still succeed (no side effects to clean up).
+
+	group := &keycloakv1alpha1.KeycloakGroup{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "never-provisioned"},
+		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Path:        "projects/np/roles/owner",
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "absent"},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, group); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	fake := newFakeKeycloakClient()
+	r, _ := newGroupReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(group)
+	_, _ = reconcileGroup(ctx, r, key) // adds finalizer
+	_, _ = reconcileGroup(ctx, r, key) // InstanceNotReady (never Created/Adopted)
+
+	if err := shared.k8sClient.Delete(ctx, getGroup(t, ctx, key)); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	// The delete reconcile must drop the finalizer without needing an instance or
+	// credential, so the CR is actually removed rather than stuck forever.
+	if _, err := reconcileGroup(ctx, r, key); err != nil {
+		t.Fatalf("reconcile delete: %v", err)
+	}
+	got := &keycloakv1alpha1.KeycloakGroup{}
+	err := shared.k8sClient.Get(ctx, key, got)
+	if err == nil {
+		t.Errorf("CR should be gone (finalizer dropped), but it still exists with finalizers %v", got.Finalizers)
+	}
+}
+
 func TestGroupCreateRaceConflict(t *testing.T) {
 	if shared == nil {
 		t.Skip("envtest not provisioned")
