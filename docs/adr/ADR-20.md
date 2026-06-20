@@ -423,6 +423,23 @@ legibility; the web research confirms shallow nesting is the recommended idiom.
 The `authenticated` flat default group ([realm-config buildplan.cue](../../holos/components/keycloak/realm-config/buildplan.cue))
 is platform-owned and **untouched** — the nested project tree is additive.
 
+**The bare-leaf-name caveat — why the claim value comes from the client role, not
+the group name.** Each client's existing `oidc-group-membership-mapper` runs with
+`full.path: "false"`
+([realm-config buildplan.cue](../../holos/components/keycloak/realm-config/buildplan.cue)),
+which emits the **bare leaf** of *every* group a user belongs to. A member of
+`/projects/my-project/roles/owner` therefore also gets a generic **`owner`** value
+in the `groups` claim — which would collide across projects if relying parties keyed
+on it. This is precisely why the collision-safe primitive-role value is **not** the
+group name but the **client role `my-project-owner`** (the *Claim value* section
+below): consumers ([ADR-19](ADR-19.md) `syncedTeams[].oidcGroup`, Argo CD RBAC) key
+on the **project-prefixed client-role value**, never the bare leaf. The bare leaf
+(`owner`/`editor`/`viewer`) is an **accepted, ignored byproduct** of the existing
+group-membership mapper — it carries no authority because nothing the platform
+binds keys on it. (A future tightening could scope or drop the project subtree from
+the group-membership mapper, but that is not required for correctness and is left
+out of this design.)
+
 **Custodian delegation — FGAP v2 group scope.** The custodian mechanism is
 **Fine-Grained Admin Permissions v2** (`manage-members` / `manage-membership`
 permission scoped to a group; Keycloak ≥ 26.2, the platform runs 26.6.3): the
@@ -599,11 +616,24 @@ mirroring the platform's `quay-oidc` bootstrap.
 
 ### `KeycloakClientRole` and `KeycloakRealmRole` (AC #5)
 
-A `KeycloakClientRole` is the `owner`/`editor`/`viewer` triad scoped to one client;
-a `KeycloakRealmRole` carries a realm role and the **realm-role → client-role**
+A `KeycloakClientRole` is a single client role scoped to one client; a
+`KeycloakRealmRole` carries a realm role and the **realm-role → client-role**
 mapping (a Keycloak composite role) that lets a broad organizational role compose
 down onto a service. These are unchanged in intent from Revision 1, now bound to a
-`KeycloakInstance` and made concrete:
+`KeycloakInstance` and made concrete.
+
+**Single owner of the primitive-role client roles.** To avoid two Kinds claiming
+the same client role, ownership is **disjoint by construction**: the
+`my-project-<role>` client roles that back the project group-claim model — the
+`owner`/`editor`/`viewer` triad on the consumer client — are **created and claimed
+solely by `KeycloakGroup`** (it creates each role on every `clientRoleBindings`
+client and assigns it to the matching `roles/<role>` group, tracking it in
+`status`). A `KeycloakClientRole` is the **standalone** Kind for a client role that
+is **not** part of a group→claim binding (an ad-hoc, directly-granted role); it
+must **not** re-declare a role a `KeycloakGroup` owns (doing so is a `Conflict`
+under the same per-CR claim model). The two never co-own a role: the group owns the
+primitive triad it surfaces in the claim; `KeycloakClientRole` owns roles outside
+that flow.
 
 ```yaml
 apiVersion: keycloak.holos.run/v1alpha1
@@ -632,12 +662,13 @@ spec:
       role: editor
 ```
 
-When a project's `KeycloakGroup` already assigns `my-project-<role>` client roles
-to its `roles/<role>` groups, the standalone `KeycloakClientRole` is for ad-hoc,
-non-group role grants; `KeycloakRealmRole` is for the cross-service "carries a
-broad role" case. The composite realm-role → client-role mapping is a **Keycloak
-composite role** (not a protocol-mapper change), so it composes with — does not
-fork — the existing realm-role mapper that folds realm-role names into `groups`.
+Per the *single owner* rule above, the `my-project-<role>` triad is owned by
+`KeycloakGroup`; the standalone `KeycloakClientRole` is **only** for ad-hoc,
+non-group role grants outside that flow, and `KeycloakRealmRole` is for the
+cross-service "carries a broad role" case. The composite realm-role → client-role
+mapping is a **Keycloak composite role** (not a protocol-mapper change), so it
+composes with — does not fork — the existing realm-role mapper that folds
+realm-role names into `groups`.
 
 ### `KeycloakUser` — pre-provision by email + first-login auto-link (AC #5)
 
