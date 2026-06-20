@@ -160,38 +160,77 @@ The grant direction encodes a clear, asymmetric trust relationship:
 ### Why a holos-owned grant rather than Gateway API's
 
 The platform mints its **own** `security.holos.run` `ReferenceGrant` rather than
-reusing `gateway.networking.k8s.io`'s `ReferenceGrant`, because:
+reusing `gateway.networking.k8s.io`'s `ReferenceGrant`. The decisive reason is
+**API ownership and boundary**, not a claim that Gateway's grant is technically
+incapable:
 
-- **Gateway's grant governs a fixed set of kinds.** Gateway API's
-  `ReferenceGrant` is scoped to the Gateway/Route object-reference cases its
-  conformance defines (an `HTTPRoute` `backendRefs` → `Service`, a listener
-  `certificateRefs` → `Secret`, and the like). It is not a general-purpose
-  cross-namespace-reference authorizer for arbitrary kinds.
+- **Ownership and API boundary (the decisive reason).** A holos-owned grant keeps
+  the platform's cross-namespace-reference policy inside the `holos.run` API
+  surface — reconciled by the `holos-controller` ([ADR-18](ADR-18.md)), evolving
+  with the `holos.run` API groups, and free of any dependency on the Gateway API
+  being installed at all. Co-opting `gateway.networking.k8s.io`'s grant for
+  arbitrary `holos.run` CR-to-CR references would couple a core platform safety
+  primitive to the Gateway API's release cadence, conformance surface, and
+  installation, and would overload a grant the istio-gateway components already
+  use for their own legitimate route/backend/certificate cases.
+- **Intended scope and interpretation.** Gateway API's `ReferenceGrant` is the
+  authorization primitive **for cross-namespace references made by Gateway API
+  resources** — its `from`/`to` are interpreted by Gateway API controllers for
+  the Gateway/Route object-reference cases (an `HTTPRoute` `backendRefs` →
+  `Service`, a listener `certificateRefs` → `Secret`, and the like). While an
+  implementation *may* extend the kinds it honors, no controller interprets a
+  Gateway grant to authorize a `keycloak.holos.run` `User` → `KeycloakInstance`
+  reference; the `holos-controller` would have to teach itself the same grant
+  anyway. Owning the grant makes that interpretation explicit and unambiguous
+  rather than overloading another group's primitive.
 - **The platform needs CR-to-CR generality.** The references this convention must
   authorize are between **arbitrary `holos.run` custom resources** — e.g. a
   `keycloak.holos.run` `User`/`Group`/`Client` referencing a `KeycloakInstance`
   in another namespace, or any future `holos.run` CR referencing another. A
-  holos-owned grant generalizes the Gateway-API pattern to these CR-to-CR
-  references without overloading or co-opting the Gateway API's grant (which the
-  istio-gateway components legitimately use for their own route/backend cases).
-- **Ownership stays clean.** Keeping the grant in `security.holos.run` means the
-  platform's security convention is reconciled by the `holos-controller`
-  ([ADR-18](ADR-18.md)) and evolves with the `holos.run` API groups, rather than
-  being coupled to the Gateway API's release cadence and conformance surface.
+  holos-owned grant generalizes the Gateway-API From/To pattern to these CR-to-CR
+  references within the platform's own API group, where the platform controls the
+  semantics end to end.
 
 The two grants therefore **coexist**: Gateway API's `ReferenceGrant` governs
 route/backend/certificate references (the istio-gateway cases ADR-21 describes);
 `security.holos.run`'s `ReferenceGrant` governs `holos.run` CR-to-CR references.
 
-### Status reporting
+### Rich status reporting on all `holos.run` CRs
 
-A denied cross-namespace reference is **observable**: the referrer's reconciler
-surfaces it as a `Ready=False` status condition following the platform's rich
-status-reporting convention (the Gateway-API model — `Accepted`/`Programmed`/
-`Ready` conditions plus `observedGeneration`, as ADR-19 established and the new
-`AGENTS.md` status guard rail generalizes to all CRs). The referencing CR's
-status names the missing grant so an operator can see exactly which
-`ReferenceGrant` to create, and in which namespace.
+A denied cross-namespace reference must be **observable**, and observability is
+only useful if it is *uniform* across the platform's growing set of API groups.
+This ADR therefore makes a second, cross-cutting decision: **every `holos.run`
+custom resource reports rich status following the Gateway-API model** that
+`quay.holos.run` ([ADR-19](ADR-19.md)) already ships and the Holos Controller
+([ADR-18](ADR-18.md)) reconciles. Concretely, each CR's `status` carries:
+
+- a **`conditions[]`** slice of standard `metav1.Condition` (`+listType=map`,
+  `+listMapKey=type`, merge-patch on `type`) using the standard
+  **`Accepted`** (the spec was understood and claimed), **`Programmed`** (the
+  desired state was written to the backend — or, for a passive policy resource,
+  validated/accepted), and **`Ready`** (fully provisioned and usable) condition
+  types, with Kind-specific reasons defined once in a shared constants file;
+- a **`status.observedGeneration`** recording the last `spec` generation
+  reconciled; and
+- at least one **printer column surfacing `Ready`**.
+
+This is bundled into this ADR (rather than a separate record) because it is the
+same cross-cutting safety-convention concern as the `ReferenceGrant` — and
+because the grant's enforcement *depends* on it: the referrer's reconciler
+surfaces a denied reference as a **`Ready=False`** condition naming the missing
+grant, so an operator sees exactly which `ReferenceGrant` to create and in which
+namespace. Without a guaranteed status vocabulary, that rejection would be
+invisible.
+
+**How it applies to a passive policy resource like `ReferenceGrant`.** A
+`ReferenceGrant` reconciles nothing into an external system, so its `Programmed`
+condition reflects *acceptance/validation* of the grant (its `from`/`to` are
+well-formed and the referent objects, if named, are resolvable in-namespace)
+rather than a backend write; `Ready` reflects that the grant is in effect.
+Active CRs (`quay.holos.run`, future `keycloak.holos.run`) use the same three
+types with backend-write semantics for `Programmed`. The vocabulary is uniform;
+the precise per-Kind reasons are fixed by each Kind's later
+CRD-implementation issue.
 
 ## Decision
 
@@ -213,15 +252,26 @@ status names the missing grant so an operator can see exactly which
    the granted object from CRs in their own project namespaces; a cross-namespace
    reference with **no matching grant is rejected** by the referrer's reconciler
    (a `Ready=False` status condition), **never silently honored**.
-5. **A holos-owned grant is minted rather than reusing Gateway API's**, because
-   Gateway's grant governs only a fixed set of Gateway/Route kinds whereas the
-   `security.holos.run` grant generalizes the pattern to arbitrary `holos.run`
-   CR-to-CR references. The two grants coexist.
-6. **This convention is a guard rail for all current and future `holos.run`
+5. **A holos-owned grant is minted rather than reusing Gateway API's**, decided on
+   **API ownership and boundary** — keeping a core platform safety primitive in
+   the `holos.run` surface, free of any dependency on the Gateway API being
+   installed, and without overloading a grant istio-gateway already uses — rather
+   than on any claim that Gateway's grant is technically incapable. The
+   `security.holos.run` grant generalizes the From/To pattern to arbitrary
+   `holos.run` CR-to-CR references. The two grants coexist.
+6. **Every `holos.run` custom resource reports rich status following the
+   Gateway-API model:** a `status.conditions[]` of standard `metav1.Condition`
+   (`+listType=map`, `+listMapKey=type`) with `Accepted`/`Programmed`/`Ready`
+   types, `status.observedGeneration`, and a `Ready` printer column — the
+   `quay.holos.run` ([ADR-19](ADR-19.md)) shape, generalized to all CRs. This is
+   what makes a denied cross-namespace reference observable (`Ready=False`); a
+   passive policy resource like `ReferenceGrant` uses `Programmed` for
+   acceptance/validation rather than a backend write.
+7. **This convention is a guard rail for all current and future `holos.run`
    custom resources.** It is recorded in `AGENTS.md` under *Guard Rails* and
    referenced by the API-group ADRs ([ADR-20](ADR-20.md), [ADR-21](ADR-21.md))
    that consume cross-namespace references.
-7. **This phase fixes the convention only — no Go or CUE code.** The
+8. **This phase fixes the convention only — no Go or CUE code.** The
    `ReferenceGrant` schema here is illustrative; the field-level API, CEL
    validation, printer columns, and the reconciler land in later
    CRD-implementation issues.
@@ -243,6 +293,15 @@ status names the missing grant so an operator can see exactly which
   the `ReferenceGrant` CRD, and the grant-checking logic each referrer's
   reconciler runs are future work owned by the `holos-controller`
   ([ADR-18](ADR-18.md)). This ADR does not ship them.
+- **A uniform status contract every CR must meet.** Mandating
+  `Accepted`/`Programmed`/`Ready` + `observedGeneration` + a `Ready` printer
+  column on **all** `holos.run` CRs makes status legible and Argo-CD-health
+  friendly across groups, but it binds every future CRD (and any retrofit of an
+  existing one) to that shape — including passive policy resources, which must
+  give `Programmed`/`Ready` an acceptance/validation meaning rather than a
+  backend-write one. The `quay.holos.run` CRDs ([ADR-19](ADR-19.md)) already
+  conform; new groups inherit the contract from this ADR rather than re-deciding
+  it.
 - **Coexistence with Gateway API's grant must stay legible.** Two `ReferenceGrant`
   kinds now exist in the platform — Gateway API's (route/backend/certificate
   references) and `security.holos.run`'s (`holos.run` CR-to-CR references).
