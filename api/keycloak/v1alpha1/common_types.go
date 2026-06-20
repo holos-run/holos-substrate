@@ -47,9 +47,12 @@ const DefaultCredentialsSecretName = "holos-controller-keycloak-creds"
 type SecretReference struct {
 	// Name of the Secret holding the Keycloak admin credential. When omitted it
 	// defaults to holos-controller-keycloak-creds, resolved in the controller's
-	// holos-controller namespace.
+	// holos-controller namespace. An explicit empty string is rejected (MinLength)
+	// so it cannot bypass the default and leave the controller resolving an
+	// invalid Secret name.
 	//
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:default=holos-controller-keycloak-creds
 	Name string `json:"name,omitempty"`
 

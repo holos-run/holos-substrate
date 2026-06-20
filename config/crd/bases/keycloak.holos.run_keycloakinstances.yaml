@@ -104,7 +104,10 @@ spec:
                     description: |-
                       Name of the Secret holding the Keycloak admin credential. When omitted it
                       defaults to holos-controller-keycloak-creds, resolved in the controller's
-                      holos-controller namespace.
+                      holos-controller namespace. An explicit empty string is rejected (MinLength)
+                      so it cannot bypass the default and leave the controller resolving an
+                      invalid Secret name.
+                    minLength: 1
                     type: string
                 type: object
               realm:
@@ -123,7 +126,7 @@ spec:
                   this endpoint with the admin credential, so plaintext http is rejected at
                   admission rather than silently sending the credential in the clear.
                 minLength: 1
-                pattern: ^https://.+
+                pattern: ^https://[^/?#\s]+(:[0-9]+)?(/[^\s]*)?$
                 type: string
             required:
             - realm

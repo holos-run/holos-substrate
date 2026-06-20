@@ -44,9 +44,12 @@ type IdentityProviderLink struct {
 type KeycloakUserSpec struct {
 	// Email is the user's email address (e.g. bob@example.com). It is required
 	// and is the key the first-login auto-link matches on, so it must be the
-	// email the IdP asserts.
+	// email the IdP asserts. It is immutable: email is the user's durable
+	// identity, so changing it would retarget reconciliation and finalization to a
+	// different Keycloak user, risking cross-user mutation or deletion.
 	//
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="email is immutable"
 	Email string `json:"email"`
 
 	// Username optionally sets the Keycloak username. When omitted the controller
@@ -76,6 +79,17 @@ type KeycloakUserSpec struct {
 	//
 	// +optional
 	IdentityProviderLink *IdentityProviderLink `json:"identityProviderLink,omitempty"`
+
+	// Adopt opts in to taking ownership of a pre-existing Keycloak user of the
+	// same email (the claim model, mirroring ADR-19's Organization). Default
+	// false: a user this CR did not create and does not already own is a Conflict
+	// (Ready=False, reason Conflict) and is never silently seized — Keycloak realm
+	// users are a single global namespace while this CR is Kubernetes-namespaced.
+	// Set adopt: true to deliberately claim such a user. An adopted user is
+	// released, never deleted, on CR removal.
+	//
+	// +optional
+	Adopt bool `json:"adopt,omitempty"`
 }
 
 // KeycloakUserStatus defines the observed state of a KeycloakUser, following the

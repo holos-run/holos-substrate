@@ -45,12 +45,15 @@ func TestGroupVersion(t *testing.T) {
 // pointer and slice fields independently.
 func TestDeepCopyRoundTrip(t *testing.T) {
 	client := &KeycloakClient{
+		// ClientRef is the KeycloakClient's metadata.name (an object name), not the
+		// URL-shaped clientId — the reconciler derives the clientId from the
+		// referenced CR's spec.clientId (see ClientRoleReference).
 		Spec: KeycloakClientSpec{
 			ClientID:     "https://my-app.holos.localhost",
 			Type:         KeycloakClientTypeConfidential,
 			InstanceRef:  KeycloakInstanceReference{Name: "holos", Namespace: "holos-controller"},
 			RedirectURIs: []string{"https://my-app.holos.localhost/oauth2/callback"},
-			ClientRoles:  []ClientRoleReference{{ClientRef: "https://my-app.holos.localhost", Role: "editor"}},
+			ClientRoles:  []ClientRoleReference{{ClientRef: "my-app", Role: "editor"}},
 			SecretRef:    &ClientSecretReference{Name: "my-app-oidc", Key: "client_secret"},
 			CABundle:     []byte("-----BEGIN CERTIFICATE-----"),
 		},
@@ -70,7 +73,7 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 		Spec: KeycloakGroupSpec{
 			Path:        "projects/my-project/roles/owner",
 			InstanceRef: KeycloakInstanceReference{Name: "holos"},
-			ClientRoles: []ClientRoleReference{{ClientRef: "https://my-app.holos.localhost", Role: "owner"}},
+			ClientRoles: []ClientRoleReference{{ClientRef: "my-app", Role: "owner"}},
 			Custodians:  []CustodianReference{{Path: "projects/my-project/custodians/owner"}},
 		},
 	}

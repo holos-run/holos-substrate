@@ -83,6 +83,19 @@ type KeycloakGroupSpec struct {
 	// +optional
 	// +listType=atomic
 	Custodians []CustodianReference `json:"custodians,omitempty"`
+
+	// Adopt opts in to taking ownership of a pre-existing, externally-created
+	// Keycloak group at the same path (the claim model, mirroring ADR-19's
+	// Organization). Default false: a group this CR did not create and does not
+	// already own is a Conflict (Ready=False, reason Conflict) and is never
+	// silently seized — Keycloak realm groups are a single global namespace while
+	// this CR is Kubernetes-namespaced, so without this guard a namespaced tenant
+	// CR could take over a platform or another tenant's group by path. Set adopt:
+	// true to deliberately claim such a group. An adopted group is released (the
+	// finalizer drops without deleting) rather than deleted on CR removal.
+	//
+	// +optional
+	Adopt bool `json:"adopt,omitempty"`
 }
 
 // KeycloakGroupStatus defines the observed state of a KeycloakGroup, following
@@ -107,13 +120,22 @@ type KeycloakGroupStatus struct {
 
 	// Created is the durable ownership marker of the claim model (mirroring
 	// ADR-19): it records whether this CR created the Keycloak group (true) versus
-	// adopted a pre-existing one (false). It is the controller-managed owner
-	// record persisted on the resource's own status so it survives controller
-	// restarts; the finalizer deletes the Keycloak group only when Created is
-	// true, never an adopted group.
+	// adopted or has not yet provisioned one (false). It is the controller-managed
+	// owner record persisted on the resource's own status so it survives
+	// controller restarts; the finalizer deletes the Keycloak group only when
+	// Created is true, never an adopted group.
 	//
 	// +optional
 	Created bool `json:"created,omitempty"`
+
+	// Adopted records whether this CR adopted a pre-existing Keycloak group at the
+	// same path (spec.adopt: true) rather than creating it. An adopted group is
+	// released, never deleted, on CR removal — so adoption is non-destructive to a
+	// group the platform did not create. Created and Adopted are mutually
+	// exclusive outcomes of the claim model.
+	//
+	// +optional
+	Adopted bool `json:"adopted,omitempty"`
 }
 
 // +kubebuilder:object:root=true
