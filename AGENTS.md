@@ -81,6 +81,18 @@ components have been removed. Git history preserves them.
 - **How to apply:** Author the config as a CUE struct (a `let` binding or field), then set the consuming field to `yaml.Marshal(THAT_STRUCT)` (for a `.yaml`/`.yml` document) or `json.Marshal(THAT_STRUCT)` (for a `.json` document). Import `"encoding/yaml"` / `"encoding/json"` as needed. After editing, run `scripts/render` per the *CUE Component Rendering* guardrail.
 - **Reference:** `holos/components/argocd/controller/buildplan.cue` (`OIDC_CONFIG` → `yaml.Marshal`), `holos/components/keycloak/realm-config/buildplan.cue` (`REALM_CONFIG` → `json.Marshal`), `holos/components/quay/buildplan.cue` (`CONFIG` → `yaml.Marshal`).
 
+### Cross-namespace references between holos.run CRs need a ReferenceGrant (ADR-22)
+- **Rule:** Every cross-namespace reference between `holos.run` custom resources MUST be authorized by a `security.holos.run` `ReferenceGrant` placed in the **referent (target) namespace** — the namespace holding the object being referenced. The grant declares `spec.from[]` (group/kind/namespace of the authorized referrers) and `spec.to[]` (group/kind, optionally `name`, of the local objects that may be referenced), mirroring Gateway API's `ReferenceGrant` From/To shape. A cross-namespace reference with **no matching grant is rejected** by the referrer's reconciler (a `Ready=False` status condition) — never silently honored.
+- **Why:** Without an explicit grant, any namespace could reference any object in any other namespace — the confused-deputy / silent-cross-tenant-access hazard Gateway API's `ReferenceGrant` exists to prevent. The trust model is asymmetric and default-deny: the **platform owner** of the referent namespace grants access by creating the `ReferenceGrant` there; **platform users** then reference the granted object from CRs in their own (project) namespaces, and cannot widen their own access. A holos-owned grant (not Gateway API's `gateway.networking.k8s.io` `ReferenceGrant`, which governs only a fixed set of Gateway/Route kinds) generalizes the pattern to arbitrary `holos.run` CR-to-CR references (e.g. a `keycloak.holos.run` `User`/`Group`/`Client` referencing a `KeycloakInstance` in another namespace); the two grants coexist. `ReferenceGrant` itself takes **no** dependency on any external system — it is pure Kubernetes-native policy the referrers' reconcilers consult.
+- **How to apply:** When a `holos.run` CR must reference another `holos.run` CR in a different namespace, do **not** reference it directly and hope the controller's credential resolves it. Have the referent namespace's owner create a `security.holos.run` `ReferenceGrant` in that namespace authorizing the referrer's group/kind/namespace (`from`) to reference the local object (`to`). The referrer's reconciler checks for the grant and sets `Ready=False` naming the missing grant if absent. (The `security.holos.run` group/CRD and reconciler are future work per ADR-22 — this guard rail fixes the convention now so designs and CRDs follow it.)
+- **Reference:** [ADR-22](docs/adr/ADR-22.md) (the `security.holos.run` API group and the `ReferenceGrant` cross-namespace reference convention), [ADR-21](docs/adr/ADR-21.md) (the authoritative Gateway-API `ReferenceGrant` semantics — referent-namespace placement, object references vs. route attachment).
+
+### Rich Gateway-API status reporting on all holos.run CRs (ADR-22, ADR-19, ADR-18)
+- **Rule:** Every `holos.run` custom resource MUST report rich status following the Quay/Gateway-API model: a `status.conditions[]` slice of standard `metav1.Condition` (`+listType=map`, `+listMapKey=type`, merge-patch on `type`) with the standard `Accepted`/`Programmed`/`Ready` condition types, plus a `status.observedGeneration` recording the last `spec` generation reconciled, plus at least one `+kubebuilder:printcolumn` surfacing `Ready` (a column whose JSONPath selects `status.conditions[?(@.type=="Ready")].status` — see the `quay.holos.run` types for the exact marker). Define the condition types and reasons once (shared constants) rather than re-deriving per reconciler.
+- **Why:** Consistent, legible status is how an operator (and Argo CD's health assessment) tells a provisioned, usable resource from a stuck or rejected one — and it is how a rejected cross-namespace reference (the `ReferenceGrant` guard rail above) becomes observable (`Ready=False` naming the missing grant). `Accepted` (the spec was understood and claimed), `Programmed` (the desired state was written to the backend), and `Ready` (fully provisioned and usable) give a uniform, Gateway-API-aligned vocabulary across every group; `observedGeneration` distinguishes a reconciled spec from a freshly-edited one. The `quay.holos.run` Organization/Repository CRDs already ship exactly this shape (ADR-19), and it generalizes the established controller status approach (ADR-18) to **all** CRs.
+- **How to apply:** On each CR's `status`, add `Conditions []metav1.Condition` with the `+listType=map` / `+listMapKey=type` markers and `patchStrategy:"merge" patchMergeKey:"type"`, an `ObservedGeneration int64`, and a `+kubebuilder:printcolumn` surfacing `Ready` (and any Kind-specific columns). Use `Accepted`/`Programmed`/`Ready` as the standard types (adding Kind-specific types like the Repository's `WebhookConfigured` only when they add legibility), with named reasons defined once in a shared `conditions.go`. The reconciler sets `observedGeneration` and merges conditions on every reconcile.
+- **Reference:** [ADR-22](docs/adr/ADR-22.md) (mandates this for all CRs), [ADR-19](docs/adr/ADR-19.md) (the as-built precedent — *Status conditions (Gateway-API model)*, `api/quay/v1alpha1/organization_types.go` / `repository_types.go`, `internal/controller/quay/conditions.go`), [ADR-18](docs/adr/ADR-18.md) (the controller status model).
+
 ### Known Issues & Workarounds
 
 #### Quay auth: OIDC sole identity store, Keycloak SSO, no PKCE + team syncing on (HOL-1293/HOL-1317, ADR-15 Revision 4)
@@ -138,11 +150,14 @@ components have been removed. Git history preserves them.
   `Updates: ADR-15`; Revision 6 adds the Organization's `syncedTeams[]` —
   OIDC-synced Quay teams with org role + optional default repository permission,
   the GCP-style owner/editor/viewer primitive-role model), ADR-20 (the Keycloak API group CRDs, `Proposed`,
-  `Updates: ADR-3`), and ADR-21 (the Holos Project/Application components,
-  `Proposed`, `Updates: ADR-1`). The controller (`holos-controller` namespace)
+  `Updates: ADR-3`), ADR-21 (the Holos Project/Application components,
+  `Proposed`, `Updates: ADR-1`), and ADR-22 (the `security.holos.run` API group
+  and its `ReferenceGrant` cross-namespace reference convention, `Proposed`).
+  The controller (`holos-controller` namespace)
   and its Quay API group have **shipped** (HOL-1309..HOL-1313) — formerly the
-  "future Quay Resource Controller"; the Keycloak group and the
-  Project/Application self-service experience remain proposed.
+  "future Quay Resource Controller"; the Keycloak group, the
+  Project/Application self-service experience, and the `security.holos.run`
+  group remain proposed.
 - [docs/cli-guardrails.md](docs/cli-guardrails.md) — **binding guardrail** for
   the holos-paas CLI: every command, subcommand, and flag is added with Fisk
   (not Cobra), in `internal/cli`, following the `deploy` command as the
@@ -245,6 +260,19 @@ components have been removed. Git history preserves them.
   `encoding/yaml.Marshal()` / `encoding/json.Marshal()`, never a triple-quoted
   interpolated string. Precedents: argocd `OIDC_CONFIG`, keycloak
   `REALM_CONFIG`, quay `CONFIG`.
+- [*Cross-namespace references between holos.run CRs need a ReferenceGrant*](#cross-namespace-references-between-holosrun-crs-need-a-referencegrant-adr-22)
+  (Guard Rails, above) — **binding guardrail**: every cross-namespace reference
+  between `holos.run` custom resources MUST be authorized by a
+  `security.holos.run` `ReferenceGrant` in the referent (target) namespace;
+  an ungranted reference is rejected (`Ready=False`), never silently honored.
+  See [ADR-22](docs/adr/ADR-22.md).
+- [*Rich Gateway-API status reporting on all holos.run CRs*](#rich-gateway-api-status-reporting-on-all-holosrun-crs-adr-22-adr-19-adr-18)
+  (Guard Rails, above) — **binding guardrail**: every `holos.run` CR reports a
+  `status.conditions[]` slice of `metav1.Condition` (`+listType=map`,
+  `+listMapKey=type`) with `Accepted`/`Programmed`/`Ready` types plus
+  `status.observedGeneration` and a `Ready` printer column, the Quay/Gateway-API
+  model. See [ADR-22](docs/adr/ADR-22.md), [ADR-19](docs/adr/ADR-19.md),
+  [ADR-18](docs/adr/ADR-18.md).
 - [*Keycloak service-account naming (`svc-` prefix)*](#conventions) (Conventions,
   below) — Keycloak realm users that represent service accounts are named with
   an `svc-` prefix (e.g. `svc-quay-resource-controller`); human accounts are
