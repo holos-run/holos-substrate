@@ -737,9 +737,21 @@ func (r *GroupReconciler) reconcileDelete(ctx context.Context, logger logr.Logge
 
 	kc := r.NewClient(cred, instance.Spec.URL, instance.Spec.Realm, instance.Spec.CABundle)
 
-	// Resolve the group currently at the path. If it is gone there is nothing to
-	// clean up; if its UUID no longer matches status.GroupID, the original was
-	// replaced by a foreign group — release without touching it.
+	// The FGAP custodian delegation (resource/policy/permission) lives on the
+	// admin-permissions client, NOT on the role group, so deleting the role group
+	// does NOT cascade it. Prune the controller-added custodian delegation FIRST, on
+	// every delete path (created, adopted, gone, or replaced), so it never leaks —
+	// it is keyed by deterministic name + stored id, independent of the role group's
+	// current existence.
+	if err := r.pruneManagedCustodians(ctx, kc, group); err != nil {
+		r.Recorder.Event(group, corev1.EventTypeWarning, ReasonKeycloakError, err.Error())
+		return ctrl.Result{}, err
+	}
+
+	// Resolve the group currently at the path. If it is gone there is nothing more to
+	// clean up (its role mappings went with it); if its UUID no longer matches
+	// status.GroupID, the original was replaced by a foreign group — release without
+	// touching it (its role mappings, if any, belong to that foreign group).
 	current, getErr := kc.GetGroupByPath(ctx, group.Spec.Path)
 	recordKeycloakAPI(opGetGroupByPath, ignoreNotFound(getErr))
 	switch {
@@ -756,11 +768,11 @@ func (r *GroupReconciler) reconcileDelete(ctx context.Context, logger logr.Logge
 		return r.removeFinalizer(ctx, group)
 	}
 
-	// Adopted group → release: prune only the side effects this CR added (client
-	// roles + custodian delegation), never deleting the surviving group the platform
-	// did not create.
+	// Adopted group → release: prune the remaining side effect this CR added (the
+	// conferred client roles), never deleting the surviving group the platform did
+	// not create. (Custodians were already pruned above.)
 	if !group.Status.Created {
-		if err := r.pruneAllManaged(ctx, kc, group, current.ID); err != nil {
+		if err := r.pruneManagedClientRoles(ctx, kc, group, current.ID); err != nil {
 			r.Recorder.Event(group, corev1.EventTypeWarning, ReasonKeycloakError, err.Error())
 			return ctrl.Result{}, err
 		}
@@ -769,8 +781,9 @@ func (r *GroupReconciler) reconcileDelete(ctx context.Context, logger logr.Logge
 		return r.removeFinalizer(ctx, group)
 	}
 
-	// Created group → delete it; the delete cascades its role mappings and the FGAP
-	// objects scoped to it, so no separate prune is needed.
+	// Created group → delete it; the delete cascades its own role mappings (the FGAP
+	// custodian objects were pruned above, since the group delete does not cascade
+	// those).
 	delErr := kc.DeleteGroupByPathIfExists(ctx, group.Spec.Path)
 	recordKeycloakAPI(opDeleteGroup, delErr)
 	if delErr != nil {
@@ -784,15 +797,13 @@ func (r *GroupReconciler) reconcileDelete(ctx context.Context, logger logr.Logge
 	return r.removeFinalizer(ctx, group)
 }
 
-// pruneAllManaged revokes every side effect this CR added to an adopted group —
-// all conferred client roles (status.managedClientRoles) and all custodian
-// delegation (status.managedCustodians) — without deleting the group itself. It is
-// the adopted-release cleanup: the platform did not create the group, so the group
-// survives, but the access grants the controller layered on are removed so a
-// deleted CR leaves no stale privilege. It mutates status to clear the managed
-// sets; the caller persists status by removing the finalizer (which writes the CR).
-func (r *GroupReconciler) pruneAllManaged(ctx context.Context, kc GroupClient, group *keycloakv1alpha1.KeycloakGroup, groupID string) error {
-	// Revoke every managed client role.
+// pruneManagedClientRoles revokes every client role this CR conferred
+// (status.managedClientRoles) from the group identified by groupID, then clears the
+// managed-roles status. It is used on adopted release, where the surviving group is
+// not deleted so its role mappings must be removed explicitly. (For a created group
+// the group delete cascades its role mappings, so this is not called there.) The
+// caller persists the cleared status by removing the finalizer.
+func (r *GroupReconciler) pruneManagedClientRoles(ctx context.Context, kc GroupClient, group *keycloakv1alpha1.KeycloakGroup, groupID string) error {
 	for _, entry := range group.Status.ManagedClientRoles {
 		clientID, roleName, ok := splitManagedRole(entry)
 		if !ok {
@@ -821,41 +832,54 @@ func (r *GroupReconciler) pruneAllManaged(ctx context.Context, kc GroupClient, g
 		}
 	}
 	group.Status.ManagedClientRoles = nil
+	return nil
+}
 
-	// Revoke every custodian delegation. This needs the admin-permissions client.
-	if len(group.Status.ManagedCustodians) > 0 {
-		permClient, err := kc.FindClientByClientID(ctx, adminPermissionsClientID)
-		recordKeycloakAPI(opFindClientByClientID, err)
+// pruneManagedCustodians deletes every FGAP v2 custodian delegation this CR created
+// (status.managedCustodians — the scope permission + group policy on the
+// admin-permissions client), then clears the managed-custodians status. It is
+// group-independent: the FGAP objects live on the admin-permissions client, NOT on
+// the role group, so deleting the role group does not cascade them — they must be
+// pruned explicitly on EVERY delete path (created, adopted, gone, or replaced) or
+// they leak. The caller persists the cleared status by removing the finalizer.
+func (r *GroupReconciler) pruneManagedCustodians(ctx context.Context, kc GroupClient, group *keycloakv1alpha1.KeycloakGroup) error {
+	if len(group.Status.ManagedCustodians) == 0 {
+		return nil
+	}
+	permClient, err := kc.FindClientByClientID(ctx, adminPermissionsClientID)
+	recordKeycloakAPI(opFindClientByClientID, err)
+	if err != nil {
+		return fmt.Errorf("finding the %q client to revoke custodians on release: %w", adminPermissionsClientID, err)
+	}
+	if permClient == nil {
+		// The FGAP host client is gone; the delegation went with it. Nothing to prune.
+		group.Status.ManagedCustodians = nil
+		return nil
+	}
+	for _, mc := range parseManagedCustodians(group.Status.ManagedCustodians) {
+		permName := fmt.Sprintf("holos:custodian-perm:%s:%s", group.Spec.Path, mc.path)
+		permID, err := r.resolvePermissionID(ctx, kc, permClient.ID, permName, mc.permID, "")
 		if err != nil {
-			return fmt.Errorf("finding the %q client to revoke custodians on release: %w", adminPermissionsClientID, err)
+			return fmt.Errorf("resolving custodian permission id to revoke on release: %w", err)
 		}
-		if permClient != nil {
-			for _, mc := range parseManagedCustodians(group.Status.ManagedCustodians) {
-				permName := fmt.Sprintf("holos:custodian-perm:%s:%s", group.Spec.Path, mc.path)
-				permID, err := r.resolvePermissionID(ctx, kc, permClient.ID, permName, mc.permID, "")
-				if err != nil {
-					return fmt.Errorf("resolving custodian permission id to revoke on release: %w", err)
-				}
-				if permID != "" {
-					if err := kc.DeleteScopePermissionIfExists(ctx, permClient.ID, permID); err != nil {
-						recordKeycloakAPI(opDeleteScopePermission, err)
-						return fmt.Errorf("revoking custodian permission on release: %w", err)
-					}
-					recordKeycloakAPI(opDeleteScopePermission, nil)
-				}
-				policyName := fmt.Sprintf("holos:custodian:%s:%s", group.Spec.Path, mc.path)
-				policyID, err := r.resolvePolicyID(ctx, kc, permClient.ID, policyName, mc.policyID, "")
-				if err != nil {
-					return fmt.Errorf("resolving custodian policy id to revoke on release: %w", err)
-				}
-				if policyID != "" {
-					if err := kc.DeleteScopePermissionIfExists(ctx, permClient.ID, policyID); err != nil {
-						recordKeycloakAPI(opDeleteScopePermission, err)
-						return fmt.Errorf("revoking custodian policy on release: %w", err)
-					}
-					recordKeycloakAPI(opDeleteScopePermission, nil)
-				}
+		if permID != "" {
+			if err := kc.DeleteScopePermissionIfExists(ctx, permClient.ID, permID); err != nil {
+				recordKeycloakAPI(opDeleteScopePermission, err)
+				return fmt.Errorf("revoking custodian permission on release: %w", err)
 			}
+			recordKeycloakAPI(opDeleteScopePermission, nil)
+		}
+		policyName := fmt.Sprintf("holos:custodian:%s:%s", group.Spec.Path, mc.path)
+		policyID, err := r.resolvePolicyID(ctx, kc, permClient.ID, policyName, mc.policyID, "")
+		if err != nil {
+			return fmt.Errorf("resolving custodian policy id to revoke on release: %w", err)
+		}
+		if policyID != "" {
+			if err := kc.DeleteScopePermissionIfExists(ctx, permClient.ID, policyID); err != nil {
+				recordKeycloakAPI(opDeleteScopePermission, err)
+				return fmt.Errorf("revoking custodian policy on release: %w", err)
+			}
+			recordKeycloakAPI(opDeleteScopePermission, nil)
 		}
 	}
 	group.Status.ManagedCustodians = nil

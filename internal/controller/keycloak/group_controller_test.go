@@ -659,6 +659,56 @@ func TestGroupGroupIDBackfillPersisted(t *testing.T) {
 	}
 }
 
+func TestGroupCreatedDeletePrunesCustodianFGAP(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-group-createddelfgap"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	group := &keycloakv1alpha1.KeycloakGroup{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "createddelfgap"},
+		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Path:        "projects/cdf/roles/owner",
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Custodians:  []keycloakv1alpha1.CustodianReference{{Path: "projects/cdf/custodians/owner"}},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, group); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	fake := newFakeKeycloakClient("projects/cdf/custodians/owner")
+	fake.seedClient(adminPermissionsClientID, "perm-client-uuid")
+	r, _ := newGroupReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(group)
+	_, _ = reconcileGroup(ctx, r, key) // finalizer
+	if _, err := reconcileGroup(ctx, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if !getGroup(t, ctx, key).Status.Created {
+		t.Fatalf("group should be created-owned")
+	}
+
+	// Delete the created group: the group delete cascades its role mappings, but the
+	// FGAP custodian objects (on the admin-permissions client) are NOT cascaded and
+	// must be pruned explicitly.
+	if err := shared.k8sClient.Delete(ctx, getGroup(t, ctx, key)); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := reconcileGroup(ctx, r, key); err != nil {
+		t.Fatalf("reconcile delete: %v", err)
+	}
+	if fake.groupExists("projects/cdf/roles/owner") {
+		t.Errorf("created group should be deleted")
+	}
+	if len(fake.fgapDeletes) == 0 {
+		t.Errorf("created group's custodian FGAP delegation must be pruned on delete (not cascaded by group delete); calls = %v", fake.calls)
+	}
+}
+
 func TestGroupCreateRaceConflict(t *testing.T) {
 	if shared == nil {
 		t.Skip("envtest not provisioned")
