@@ -328,6 +328,44 @@ func TestEnsureGroupByPathToleratesConcurrentConflict(t *testing.T) {
 	}
 }
 
+func TestEnsureGroupByPathReResolvesWhenCreateReturnsNoID(t *testing.T) {
+	// A create that succeeds (2xx) but returns no Location header yields an empty
+	// id; EnsureGroupByPath must re-resolve the node by path so a follow-up child
+	// create never runs with an empty parentID.
+	resolveAfterCreate := false
+	routes := map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + adminPathPrefix + "/realms/holos/group-by-path/projects/p": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		},
+		"GET " + adminPathPrefix + "/realms/holos/group-by-path/projects": func(w http.ResponseWriter, _ *http.Request) {
+			if !resolveAfterCreate {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"id-projects"}`)
+		},
+		"POST " + groupsBase: func(w http.ResponseWriter, _ *http.Request) {
+			// 201 with NO Location header.
+			resolveAfterCreate = true
+			w.WriteHeader(http.StatusCreated)
+		},
+		"POST " + groupsBase + "/id-projects/children": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Location", "https://kc/admin/realms/holos/groups/id-p")
+			w.WriteHeader(http.StatusCreated)
+		},
+	}
+	c, _ := newTestClient(t, &muxHandler{t: t, routes: routes})
+
+	id, err := c.EnsureGroupByPath(context.Background(), "projects/p")
+	if err != nil {
+		t.Fatalf("EnsureGroupByPath: %v", err)
+	}
+	if id != "id-p" {
+		t.Errorf("leaf id = %q, want id-p (child created under the re-resolved parent)", id)
+	}
+}
+
 func TestEnsureGroupByPathEmptyPathRejected(t *testing.T) {
 	c, _ := newTestClient(t, &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){}})
 	if _, err := c.EnsureGroupByPath(context.Background(), "/"); err == nil {

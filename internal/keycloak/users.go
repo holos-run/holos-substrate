@@ -111,20 +111,56 @@ func (c *Client) RemoveUserFromGroupIfMember(ctx context.Context, userID, groupI
 // which is what lets a first broker login auto-link to this pre-provisioned user
 // rather than creating a duplicate (ADR-20). The link.IdentityProvider must
 // match provider. An already-present link is surfaced as an *APIError reporting
-// IsConflict; use CreateFederatedIdentityIfNotExists to treat that as success.
+// IsConflict; use CreateFederatedIdentityIfNotExists to treat a *matching*
+// existing link as success.
 func (c *Client) CreateFederatedIdentity(ctx context.Context, userID, provider string, link FederatedIdentity) error {
 	path := c.adminPath("/users/" + url.PathEscape(userID) + "/federated-identity/" + url.PathEscape(provider))
 	_, err := c.doCreate(ctx, path, link)
 	return err
 }
 
-// CreateFederatedIdentityIfNotExists creates the federated-identity link and
-// returns nil when it already exists, so the call is idempotent across
-// reconciler re-runs.
+// ListFederatedIdentities returns the user's existing federated-identity links
+// via GET /admin/realms/{realm}/users/{id}/federated-identity, so a reconciler
+// can tell whether a conflict on create means "already linked to the same
+// upstream account" (benign) or "linked to a different account" (drift).
+func (c *Client) ListFederatedIdentities(ctx context.Context, userID string) ([]FederatedIdentity, error) {
+	path := c.adminPath("/users/" + url.PathEscape(userID) + "/federated-identity")
+	var links []FederatedIdentity
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &links); err != nil {
+		return nil, err
+	}
+	return links, nil
+}
+
+// CreateFederatedIdentityIfNotExists creates the federated-identity link and,
+// on a 409 conflict, returns nil ONLY when an existing link for the same
+// provider already points at the same upstream userId — i.e. the desired state
+// already holds. A conflict where the provider is bound to a *different* userId
+// is surfaced (not swallowed), because silently reporting success would leave
+// the Keycloak user federated to the wrong external identity (the auto-link
+// would never reach the intended account). This makes the call idempotent
+// across re-runs without masking a mis-link.
 func (c *Client) CreateFederatedIdentityIfNotExists(ctx context.Context, userID, provider string, link FederatedIdentity) error {
 	err := c.CreateFederatedIdentity(ctx, userID, provider, link)
-	if IsConflict(err) {
-		return nil
+	if !IsConflict(err) {
+		return err
 	}
+	existing, lerr := c.ListFederatedIdentities(ctx, userID)
+	if lerr != nil {
+		return lerr
+	}
+	for _, e := range existing {
+		if e.IdentityProvider != provider {
+			continue
+		}
+		if e.UserID == link.UserID {
+			return nil // same upstream account already linked: desired state holds.
+		}
+		// Provider already bound to a DIFFERENT upstream account: surface the
+		// conflict rather than masking a mis-link.
+		return err
+	}
+	// 409 reported but no link for this provider is present: surface the conflict
+	// rather than silently succeeding.
 	return err
 }

@@ -100,7 +100,9 @@ func TestCreateScopePermissionConflict(t *testing.T) {
 }
 
 func TestDeleteScopePermission(t *testing.T) {
-	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: authzBase + "/permission/scope/perm-1", status: http.StatusNoContent}
+	// A scope permission is a policy in Keycloak's Authorization Services, so it
+	// is deleted via the generic /policy/{id} endpoint.
+	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: authzBase + "/policy/perm-1", status: http.StatusNoContent}
 	c, _ := newTestClient(t, h)
 
 	if err := c.DeleteScopePermission(context.Background(), "perm-uuid", "perm-1"); err != nil {
@@ -110,7 +112,7 @@ func TestDeleteScopePermission(t *testing.T) {
 }
 
 func TestDeleteScopePermissionIfExistsSwallowsNotFound(t *testing.T) {
-	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: authzBase + "/permission/scope/gone", status: http.StatusNotFound}
+	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: authzBase + "/policy/gone", status: http.StatusNotFound}
 	c, _ := newTestClient(t, h)
 
 	if err := c.DeleteScopePermissionIfExists(context.Background(), "perm-uuid", "gone"); err != nil {

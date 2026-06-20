@@ -162,12 +162,17 @@ func (c *Client) EnsureGroupByPath(ctx context.Context, path string) (string, er
 		}
 
 		// Create the missing node, tolerating a concurrent creator's 409 by
-		// re-resolving it.
+		// re-resolving it. Also re-resolve when the create succeeds but returns
+		// no id (a 2xx without a Location header), so a follow-up child create
+		// never runs with an empty parentID.
 		id, err := c.createGroupNode(ctx, i, parentID, seg)
 		if err != nil {
 			if !IsConflict(err) {
 				return "", err
 			}
+			id = ""
+		}
+		if id == "" {
 			g, gerr := c.GetGroupByPath(ctx, prefix)
 			if gerr != nil {
 				return "", gerr

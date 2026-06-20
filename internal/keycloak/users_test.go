@@ -2,6 +2,7 @@ package keycloak
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -144,16 +145,45 @@ func TestCreateFederatedIdentity(t *testing.T) {
 	}
 }
 
-func TestCreateFederatedIdentityIfNotExistsSwallowsConflict(t *testing.T) {
-	h := &recordingHandler{
-		t: t, wantMethod: http.MethodPost, wantPath: usersBase + "/u1/federated-identity/oidc",
-		status:   http.StatusConflict,
-		respBody: `{"errorMessage":"User is already linked"}`,
-	}
-	c, _ := newTestClient(t, h)
+func TestCreateFederatedIdentityIfNotExistsSwallowsMatchingConflict(t *testing.T) {
+	// The 409 is swallowed only after a GET confirms the existing link points at
+	// the SAME upstream userId — the desired state already holds.
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"POST " + usersBase + "/u1/federated-identity/oidc": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = io.WriteString(w, `{"errorMessage":"User is already linked"}`)
+		},
+		"GET " + usersBase + "/u1/federated-identity": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `[{"identityProvider":"oidc","userId":"sub-123","userName":"alice"}]`)
+		},
+	}}
+	c, _ := newTestClient(t, m)
 
 	link := FederatedIdentity{IdentityProvider: "oidc", UserID: "sub-123", UserName: "alice"}
 	if err := c.CreateFederatedIdentityIfNotExists(context.Background(), "u1", "oidc", link); err != nil {
-		t.Fatalf("CreateFederatedIdentityIfNotExists should swallow 409, got %v", err)
+		t.Fatalf("CreateFederatedIdentityIfNotExists should swallow a matching 409, got %v", err)
+	}
+}
+
+func TestCreateFederatedIdentityIfNotExistsSurfacesMismatchConflict(t *testing.T) {
+	// The provider is already bound to a DIFFERENT upstream userId: the conflict
+	// must surface, not be swallowed, so a mis-link is never reported as success.
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"POST " + usersBase + "/u1/federated-identity/oidc": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = io.WriteString(w, `{"errorMessage":"User is already linked"}`)
+		},
+		"GET " + usersBase + "/u1/federated-identity": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `[{"identityProvider":"oidc","userId":"DIFFERENT-sub","userName":"alice"}]`)
+		},
+	}}
+	c, _ := newTestClient(t, m)
+
+	link := FederatedIdentity{IdentityProvider: "oidc", UserID: "sub-123", UserName: "alice"}
+	err := c.CreateFederatedIdentityIfNotExists(context.Background(), "u1", "oidc", link)
+	if !IsConflict(err) {
+		t.Fatalf("expected the mismatch conflict to surface, got %v", err)
 	}
 }

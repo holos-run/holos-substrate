@@ -130,11 +130,15 @@ func (c *Client) CreateScopePermission(ctx context.Context, permClientUUID strin
 }
 
 // DeleteScopePermission deletes an FGAP v2 scope permission by its UUID via
-// DELETE .../authz/resource-server/permission/scope/{id}. A missing permission
-// is returned as an *APIError reporting IsNotFound; use
+// DELETE .../authz/resource-server/policy/{id}. In Keycloak's Authorization
+// Services a scope permission is a policy, and the generic policy endpoint
+// deletes any policy or permission by id (the type-specific
+// /permission/scope/{id} delete is not exposed); creation, by contrast, uses
+// the type-specific /permission/scope endpoint. A missing permission is
+// returned as an *APIError reporting IsNotFound; use
 // DeleteScopePermissionIfExists to treat that as success.
 func (c *Client) DeleteScopePermission(ctx context.Context, permClientUUID, permissionID string) error {
-	path := c.authzPath(permClientUUID, "/permission/scope/"+url.PathEscape(permissionID))
+	path := c.authzPath(permClientUUID, "/policy/"+url.PathEscape(permissionID))
 	return c.doJSON(ctx, http.MethodDelete, path, nil, nil)
 }
 
