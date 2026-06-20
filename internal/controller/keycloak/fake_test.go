@@ -99,6 +99,9 @@ type fakeKeycloakClient struct {
 	clientSecrets map[string]string
 	// deletedClients records each clientId DeleteClientByClientIDIfExists removed.
 	deletedClients []string
+	// createdClientAttrs records, per clientId, the attributes map passed to
+	// CreateClient, so a test asserts the PKCE attribute was programmed on create.
+	createdClientAttrs map[string]map[string]string
 
 	// createClientErr / updateClientErr, when non-nil, are returned by
 	// CreateClient / UpdateClientFields to simulate a Keycloak failure.
@@ -121,6 +124,7 @@ func newFakeKeycloakClient(existingGroups ...string) *fakeKeycloakClient {
 		createdClientRoles: map[string]map[string]bool{},
 		roleMappers:        map[string]bool{},
 		clientSecrets:      map[string]string{},
+		createdClientAttrs: map[string]map[string]string{},
 	}
 	for _, p := range existingGroups {
 		f.addGroup(p)
@@ -427,6 +431,14 @@ func (f *fakeKeycloakClient) CreateFederatedIdentityIfNotExists(ctx context.Cont
 	return nil
 }
 
+func (f *fakeKeycloakClient) DeleteFederatedIdentityIfExists(ctx context.Context, userID, provider string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("FederatedUnlink:" + userID + "/" + provider)
+	delete(f.federatedLinks, userID+"/"+provider)
+	return nil
+}
+
 // --- KeycloakClient reconciler seam ---
 
 func (f *fakeKeycloakClient) CreateClient(ctx context.Context, client keycloak.OIDCClient) (string, error) {
@@ -442,6 +454,13 @@ func (f *fakeKeycloakClient) CreateClient(ctx context.Context, client keycloak.O
 	f.nextGroupID++
 	id := "cli-" + strconv.Itoa(f.nextGroupID)
 	f.clients[client.ClientID] = id
+	if client.Attributes != nil {
+		attrs := map[string]string{}
+		for k, v := range client.Attributes {
+			attrs[k] = v
+		}
+		f.createdClientAttrs[client.ClientID] = attrs
+	}
 	return id, nil
 }
 
@@ -546,6 +565,14 @@ func (f *fakeKeycloakClient) mapperEnsured(clientUUID string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.roleMappers[clientUUID]
+}
+
+// createdClientPKCE returns the PKCE code-challenge attribute the client was
+// created with, or "" when none was set.
+func (f *fakeKeycloakClient) createdClientPKCE(clientID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.createdClientAttrs[clientID][keycloak.PKCECodeChallengeMethodAttr]
 }
 
 // compile-time assertions that the fake satisfies all four reconciler seams.

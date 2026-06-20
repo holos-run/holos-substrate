@@ -154,8 +154,8 @@ func (r *ClientReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 }
 
 // reconcileNormal performs the reserved-name guard, resolves the instance and
-// credential, then creates-or-updates the OIDC client and reconciles its roles,
-// mapper, and confidential secret delivery.
+// credential, then applies the claim model (create / adopt / conflict) before
+// converging the client's roles, mapper, and confidential secret delivery.
 func (r *ClientReconciler) reconcileNormal(ctx context.Context, logger logr.Logger, kclient *keycloakv1alpha1.KeycloakClient) (ctrl.Result, error) {
 	// Reserved-name guard (ADR-20): never manage a platform-reserved client.
 	if reservedClientIDs[kclient.Spec.ClientID] {
@@ -178,13 +178,90 @@ func (r *ClientReconciler) reconcileNormal(ctx context.Context, logger logr.Logg
 
 	kc := r.NewClient(cred, instance.Spec.URL, instance.Spec.Realm, instance.Spec.CABundle)
 
-	// Ensure the OIDC client exists (create when absent, converge managed fields
-	// when present), returning its UUID and whether this call created it.
-	clientUUID, created, err := r.ensureClient(ctx, kc, kclient)
+	// Claim model (ADR-20, mirroring ADR-19): because a Keycloak client lives in
+	// the realm's single global client namespace while this CR is namespaced, a
+	// client this CR did not create and does not already own must NOT be silently
+	// converged (which would seize and reconfigure another app's OIDC client).
+	// GET by clientId and branch on the ownership status + spec.adopt.
+	existing, findErr := kc.FindClientByClientID(ctx, kclient.Spec.ClientID)
+	recordKeycloakAPI(opFindClientByClientID, findErr)
+	if findErr != nil {
+		return r.fail(ctx, kclient, fmt.Errorf("finding Keycloak client %q: %w", kclient.Spec.ClientID, findErr))
+	}
+	if existing == nil {
+		return r.reconcileCreate(ctx, logger, kc, kclient)
+	}
+	return r.reconcileExisting(ctx, logger, kc, kclient, existing)
+}
+
+// reconcileCreate provisions the client when the clientId lookup reported it
+// absent. CreateClient tolerates a 409 (a concurrent actor created the same
+// clientId in the race window after the lookup): on that conflict the client is
+// re-resolved and re-evaluated against the claim model rather than seized.
+func (r *ClientReconciler) reconcileCreate(ctx context.Context, logger logr.Logger, kc ClientClient, kclient *keycloakv1alpha1.KeycloakClient) (ctrl.Result, error) {
+	uuid, err := kc.CreateClient(ctx, r.desiredClient(kclient))
+	recordKeycloakAPI(opCreateClient, ignoreConflict(err))
+	if keycloak.IsConflict(err) {
+		existing, findErr := kc.FindClientByClientID(ctx, kclient.Spec.ClientID)
+		recordKeycloakAPI(opFindClientByClientID, findErr)
+		if findErr != nil {
+			return r.fail(ctx, kclient, fmt.Errorf("re-resolving Keycloak client after create conflict for %q: %w", kclient.Spec.ClientID, findErr))
+		}
+		if existing == nil {
+			return r.fail(ctx, kclient, fmt.Errorf("conflict creating Keycloak client %q but no such client is present", kclient.Spec.ClientID))
+		}
+		return r.reconcileExisting(ctx, logger, kc, kclient, existing)
+	}
 	if err != nil {
-		return r.fail(ctx, kclient, err)
+		return r.fail(ctx, kclient, fmt.Errorf("creating Keycloak client %q: %w", kclient.Spec.ClientID, err))
+	}
+	kclient.Status.Created = true
+	kclient.Status.Adopted = false
+	kclient.Status.ClientUUID = uuid
+	return r.convergeThenSucceed(ctx, logger, kc, kclient, uuid, ReasonCreated,
+		fmt.Sprintf("created Keycloak client %q", kclient.Spec.ClientID))
+}
+
+// reconcileExisting handles a clientId that already exists in the realm. When
+// this CR already owns it (status.Created/Adopted) it verifies the immutable UUID
+// still matches status.ClientUUID — a mismatch means the original was deleted and
+// a foreign client recreated at the same clientId, a Conflict rather than a silent
+// seizure. Otherwise it adopts (spec.adopt) and converges, or records a terminal
+// Conflict without touching the foreign client.
+func (r *ClientReconciler) reconcileExisting(ctx context.Context, logger logr.Logger, kc ClientClient, kclient *keycloakv1alpha1.KeycloakClient, existing *keycloak.OIDCClient) (ctrl.Result, error) {
+	if kclient.Status.Created || kclient.Status.Adopted {
+		if kclient.Status.ClientUUID != "" && kclient.Status.ClientUUID != existing.ID {
+			message := fmt.Sprintf("Keycloak client %q now has UUID %q but this resource provisioned UUID %q; the client was replaced out of band and is not reconciled or deleted", kclient.Spec.ClientID, existing.ID, kclient.Status.ClientUUID)
+			return r.recordConflict(ctx, logger, kclient, message)
+		}
+		kclient.Status.ClientUUID = existing.ID
+		reason := ReasonCreated
+		if kclient.Status.Adopted {
+			reason = ReasonAdopted
+		}
+		return r.convergeThenSucceed(ctx, logger, kc, kclient, existing.ID, reason,
+			fmt.Sprintf("reconciled Keycloak client %q", kclient.Spec.ClientID))
 	}
 
+	if kclient.Spec.Adopt {
+		kclient.Status.Created = false
+		kclient.Status.Adopted = true
+		kclient.Status.ClientUUID = existing.ID
+		return r.convergeThenSucceed(ctx, logger, kc, kclient, existing.ID, ReasonAdopted,
+			fmt.Sprintf("adopted existing Keycloak client %q", kclient.Spec.ClientID))
+	}
+
+	message := fmt.Sprintf("Keycloak client %q already exists and was not created by this resource; set spec.adopt to claim it", kclient.Spec.ClientID)
+	return r.recordConflict(ctx, logger, kclient, message)
+}
+
+// convergeThenSucceed converges the managed client fields, roles, mapper, and
+// confidential secret delivery (in that order), then marks Ready. It is the
+// single funnel every claim-model success path runs.
+func (r *ClientReconciler) convergeThenSucceed(ctx context.Context, logger logr.Logger, kc ClientClient, kclient *keycloakv1alpha1.KeycloakClient, clientUUID, reason, message string) (ctrl.Result, error) {
+	if err := r.updateClient(ctx, kc, kclient, clientUUID); err != nil {
+		return r.fail(ctx, kclient, err)
+	}
 	if err := r.ensureClientRoles(ctx, kc, kclient, clientUUID); err != nil {
 		return r.fail(ctx, kclient, err)
 	}
@@ -194,74 +271,51 @@ func (r *ClientReconciler) reconcileNormal(ctx context.Context, logger logr.Logg
 	if err := r.deliverClientSecret(ctx, kc, kclient, clientUUID); err != nil {
 		return r.fail(ctx, kclient, err)
 	}
-
-	reason, message := ReasonReconciled, fmt.Sprintf("reconciled Keycloak client %q", kclient.Spec.ClientID)
-	if created {
-		reason = ReasonCreated
-		message = fmt.Sprintf("created Keycloak client %q", kclient.Spec.ClientID)
-	}
 	return r.succeed(ctx, logger, kclient, reason, message)
 }
 
-// ensureClient creates the OIDC client when absent or converges its managed
-// fields when present, returning the client UUID and whether this call created
-// it. The create tolerates a 409 (a concurrent actor created the same clientId)
-// by re-resolving and converging. Unlike the user/group claim model, the platform
-// owns its project clients by URL-named identity and a reserved-name guard, so an
-// existing client is converged in place rather than gated on spec.adopt.
-func (r *ClientReconciler) ensureClient(ctx context.Context, kc ClientClient, kclient *keycloakv1alpha1.KeycloakClient) (string, bool, error) {
-	existing, err := kc.FindClientByClientID(ctx, kclient.Spec.ClientID)
-	recordKeycloakAPI(opFindClientByClientID, err)
-	if err != nil {
-		return "", false, fmt.Errorf("finding Keycloak client %q: %w", kclient.Spec.ClientID, err)
+// recordConflict sets a terminal Conflict condition and emits a Warning, writing
+// status only on a change so an already-recorded conflict does not spin a loop.
+func (r *ClientReconciler) recordConflict(ctx context.Context, logger logr.Logger, kclient *keycloakv1alpha1.KeycloakClient, message string) (ctrl.Result, error) {
+	changed := setConflict(&kclient.Status.Conditions, message, kclient.Generation)
+	changed = changed || kclient.Status.ObservedGeneration != kclient.Generation
+	if !changed {
+		return ctrl.Result{}, nil
 	}
-	if existing == nil {
-		uuid, createErr := kc.CreateClient(ctx, r.desiredClient(kclient))
-		recordKeycloakAPI(opCreateClient, ignoreConflict(createErr))
-		if keycloak.IsConflict(createErr) {
-			// Lost the create race: re-resolve and converge the existing client.
-			existing, err = kc.FindClientByClientID(ctx, kclient.Spec.ClientID)
-			recordKeycloakAPI(opFindClientByClientID, err)
-			if err != nil {
-				return "", false, fmt.Errorf("re-resolving Keycloak client after create conflict for %q: %w", kclient.Spec.ClientID, err)
-			}
-			if existing == nil {
-				return "", false, fmt.Errorf("conflict creating Keycloak client %q but no such client is present", kclient.Spec.ClientID)
-			}
-			if err := r.updateClient(ctx, kc, kclient, existing.ID); err != nil {
-				return "", false, err
-			}
-			return existing.ID, false, nil
-		}
-		if createErr != nil {
-			return "", false, fmt.Errorf("creating Keycloak client %q: %w", kclient.Spec.ClientID, createErr)
-		}
-		return uuid, true, nil
+	r.Recorder.Event(kclient, corev1.EventTypeWarning, ReasonConflict, message)
+	logger.Info("KeycloakClient conflict", "clientId", kclient.Spec.ClientID)
+	if err := r.updateStatus(ctx, kclient); err != nil {
+		return ctrl.Result{}, err
 	}
-
-	// Existing client: converge the managed fields in place.
-	if err := r.updateClient(ctx, kc, kclient, existing.ID); err != nil {
-		return "", false, err
-	}
-	return existing.ID, false, nil
+	return ctrl.Result{}, nil
 }
 
-// desiredClient builds the OIDC client representation to create from the spec.
+// desiredClient builds the OIDC client representation to create from the spec. A
+// public client is created with the PKCE S256 attribute so its authorization-code
+// flow requires PKCE by default (the platform public-client guardrail,
+// keycloak-clients.md); a confidential client carries no PKCE attribute.
 func (r *ClientReconciler) desiredClient(kclient *keycloakv1alpha1.KeycloakClient) keycloak.OIDCClient {
-	return keycloak.OIDCClient{
+	public := kclient.Spec.Type == keycloakv1alpha1.KeycloakClientTypePublic
+	c := keycloak.OIDCClient{
 		ClientID:     kclient.Spec.ClientID,
 		Name:         kclient.Name,
 		Enabled:      true,
-		PublicClient: kclient.Spec.Type == keycloakv1alpha1.KeycloakClientTypePublic,
+		PublicClient: public,
 		RedirectURIs: kclient.Spec.RedirectURIs,
 		WebOrigins:   kclient.Spec.WebOrigins,
 	}
+	if public {
+		c.Attributes = map[string]string{keycloak.PKCECodeChallengeMethodAttr: keycloak.PKCEMethodS256}
+	}
+	return c
 }
 
 // updateClient converges the managed fields (type, redirect URIs, web origins,
-// enabled) of an existing client losslessly via UpdateClientFields, which
-// preserves every unmanaged ClientRepresentation key (protocol, PKCE attributes,
-// service-account flags, default scopes).
+// enabled, and — for a public client — the PKCE S256 attribute) of an existing
+// client losslessly via UpdateClientFields, which preserves every unmanaged
+// ClientRepresentation key (protocol, service-account flags, default scopes, and
+// any non-PKCE attributes). The PKCE attribute is merged (not a full attribute
+// replace) so it is enforced without clobbering unmanaged attributes.
 func (r *ClientReconciler) updateClient(ctx context.Context, kc ClientClient, kclient *keycloakv1alpha1.KeycloakClient, clientUUID string) error {
 	enabled := true
 	public := kclient.Spec.Type == keycloakv1alpha1.KeycloakClientTypePublic
@@ -272,6 +326,9 @@ func (r *ClientReconciler) updateClient(ctx context.Context, kc ClientClient, kc
 		PublicClient: &public,
 		RedirectURIs: &redirects,
 		WebOrigins:   &origins,
+	}
+	if public {
+		fields.Attributes = map[string]string{keycloak.PKCECodeChallengeMethodAttr: keycloak.PKCEMethodS256}
 	}
 	err := kc.UpdateClientFields(ctx, clientUUID, fields)
 	recordKeycloakAPI(opUpdateClient, err)
@@ -328,15 +385,25 @@ func (r *ClientReconciler) deliverClientSecret(ctx context.Context, kc ClientCli
 		return fmt.Errorf("confidential Keycloak client %q has no spec.secretRef to deliver its secret into", kclient.Spec.ClientID)
 	}
 
-	// Generate-once: if the delivered Secret already carries the key, leave it.
+	// Generate-once: if the delivered Secret already carries a non-empty value at
+	// the requested key, leave it untouched (the value must stay stable across
+	// reconciles per the Runtime Secret Handling guardrail). But a Secret that
+	// already exists WITHOUT the requested key is NOT delivered: creating it again
+	// returns AlreadyExists, which must not be mistaken for success — that would
+	// mark the client Ready while the consumer never received its secret. Surface
+	// that as an error so an operator resolves the collision (a foreign Secret
+	// occupying the name) rather than silently reporting a non-delivery as done.
 	key := types.NamespacedName{Namespace: kclient.Namespace, Name: ref.Name}
 	existing := &corev1.Secret{}
-	if err := r.APIReader.Get(ctx, key, existing); err == nil {
+	getErr := r.APIReader.Get(ctx, key, existing)
+	switch {
+	case getErr == nil:
 		if v, ok := existing.Data[ref.Key]; ok && len(v) > 0 {
 			return nil
 		}
-	} else if !apierrors.IsNotFound(err) {
-		return fmt.Errorf("checking delivered client-secret Secret %s/%s: %w", key.Namespace, key.Name, err)
+		return fmt.Errorf("client-secret Secret %s/%s already exists but is missing a non-empty %q key; refusing to overwrite a Secret this resource may not own", key.Namespace, key.Name, ref.Key)
+	case !apierrors.IsNotFound(getErr):
+		return fmt.Errorf("checking delivered client-secret Secret %s/%s: %w", key.Namespace, key.Name, getErr)
 	}
 
 	secret, err := kc.GetClientSecret(ctx, clientUUID)
@@ -357,19 +424,23 @@ func (r *ClientReconciler) deliverClientSecret(ctx context.Context, kc ClientCli
 		return fmt.Errorf("setting owner reference on delivered client-secret Secret: %w", err)
 	}
 	if err := r.Create(ctx, delivered); err != nil {
-		if apierrors.IsAlreadyExists(err) {
-			// Created concurrently between the get and the create; treat as delivered.
-			return nil
-		}
+		// AlreadyExists here means a Secret of that name appeared between the get
+		// above and this create. Since the get found no usable key, this Secret is
+		// not one this reconciler delivered — surface the collision rather than
+		// reporting a non-delivery as success.
 		return fmt.Errorf("delivering client secret to Secret %s/%s: %w", key.Namespace, key.Name, err)
 	}
 	return nil
 }
 
-// reconcileDelete runs the finalizer. The Keycloak client is deleted only when
-// this CR created it (status reason Created persisted via the Programmed
-// condition); a never-provisioned CR (rejected, blocked, missing credential)
-// drops the finalizer with no Keycloak cleanup. The delivered client-secret
+// reconcileDelete runs the finalizer. Per the claim model the Keycloak client is
+// deleted only when this CR CREATED it (status.Created); an adopted client is
+// released (the finalizer drops without deleting), so removing a CR that merely
+// claimed a pre-existing client never destroys it. A never-provisioned CR
+// (rejected, blocked, missing credential, or an unresolved Conflict) drops the
+// finalizer with no Keycloak cleanup. Before deleting, the client's current UUID
+// is verified against status.ClientUUID so a foreign client recreated at the same
+// clientId out of band is released, not deleted. The delivered client-secret
 // Secret is garbage-collected by its owner reference, so it needs no explicit
 // cleanup here.
 func (r *ClientReconciler) reconcileDelete(ctx context.Context, logger logr.Logger, kclient *keycloakv1alpha1.KeycloakClient) (ctrl.Result, error) {
@@ -377,15 +448,11 @@ func (r *ClientReconciler) reconcileDelete(ctx context.Context, logger logr.Logg
 		return ctrl.Result{}, nil
 	}
 
-	// Nothing to clean up when the client was never programmed into Keycloak (no
-	// Ready=True/Programmed=True ever reached). Drop the finalizer immediately
-	// rather than resolving an instance + credential that may never resolve.
-	if !clientProgrammed(kclient) {
-		return r.removeFinalizer(ctx, kclient)
-	}
-
-	// A reserved clientId is never managed, so it is never deleted on CR removal.
-	if reservedClientIDs[kclient.Spec.ClientID] {
+	// Only a client this CR created needs a Keycloak-side delete. An adopted or
+	// never-created client (rejected, blocked, conflict, or merely claimed) has no
+	// client this CR owns to delete — drop the finalizer immediately rather than
+	// resolving an instance + credential that may never resolve.
+	if !kclient.Status.Created {
 		return r.removeFinalizer(ctx, kclient)
 	}
 
@@ -405,6 +472,26 @@ func (r *ClientReconciler) reconcileDelete(ctx context.Context, logger logr.Logg
 
 	kc := r.NewClient(cred, instance.Spec.URL, instance.Spec.Realm, instance.Spec.CABundle)
 
+	// Verify the client currently at the clientId is still the one this CR created
+	// (UUID match) before deleting. If it is gone there is nothing to do; if its
+	// UUID no longer matches, a foreign client was recreated at the same clientId —
+	// release it without deletion rather than destroying another actor's client.
+	current, getErr := kc.FindClientByClientID(ctx, kclient.Spec.ClientID)
+	recordKeycloakAPI(opFindClientByClientID, getErr)
+	if getErr != nil {
+		r.Recorder.Event(kclient, corev1.EventTypeWarning, ReasonKeycloakError,
+			fmt.Sprintf("verifying Keycloak client %q before cleanup: %v", kclient.Spec.ClientID, getErr))
+		return ctrl.Result{}, fmt.Errorf("verifying Keycloak client %q before cleanup: %w", kclient.Spec.ClientID, getErr)
+	}
+	if current == nil {
+		return r.removeFinalizer(ctx, kclient)
+	}
+	if kclient.Status.ClientUUID != "" && current.ID != kclient.Status.ClientUUID {
+		r.Recorder.Event(kclient, corev1.EventTypeNormal, ReasonReleased,
+			fmt.Sprintf("released Keycloak client %q without changes (UUID %q no longer matches the provisioned UUID %q; replaced out of band)", kclient.Spec.ClientID, current.ID, kclient.Status.ClientUUID))
+		return r.removeFinalizer(ctx, kclient)
+	}
+
 	delErr := kc.DeleteClientByClientIDIfExists(ctx, kclient.Spec.ClientID)
 	recordKeycloakAPI(opDeleteClient, delErr)
 	if delErr != nil {
@@ -416,18 +503,6 @@ func (r *ClientReconciler) reconcileDelete(ctx context.Context, logger logr.Logg
 	r.Recorder.Event(kclient, corev1.EventTypeNormal, "Deleted",
 		fmt.Sprintf("deleted Keycloak client %q", kclient.Spec.ClientID))
 	return r.removeFinalizer(ctx, kclient)
-}
-
-// clientProgrammed reports whether the client has ever been programmed into
-// Keycloak (its Programmed condition is True), the signal that there is a
-// Keycloak-side client to delete on finalization.
-func clientProgrammed(kclient *keycloakv1alpha1.KeycloakClient) bool {
-	for _, c := range kclient.Status.Conditions {
-		if c.Type == ConditionProgrammed {
-			return c.Status == "True"
-		}
-	}
-	return false
 }
 
 // resolveInstance resolves the KeycloakInstance referenced by the client's

@@ -205,3 +205,16 @@ func TestDeleteUserIfExistsAbsentIsNil(t *testing.T) {
 		t.Fatalf("absent user must be a no-op success, got %v", err)
 	}
 }
+
+func TestDeleteFederatedIdentityIfExistsAbsentIsNil(t *testing.T) {
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodDelete,
+		wantPath: usersBase + "/u1/federated-identity/oidc",
+		status:   http.StatusNotFound,
+	}
+	c, _ := newTestClient(t, h)
+
+	if err := c.DeleteFederatedIdentityIfExists(context.Background(), "u1", "oidc"); err != nil {
+		t.Fatalf("absent link must be a no-op success, got %v", err)
+	}
+}

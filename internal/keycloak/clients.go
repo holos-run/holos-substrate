@@ -29,10 +29,17 @@ type ClientFields struct {
 	RedirectURIs *[]string
 	// WebOrigins, when non-nil, replaces the CORS web-origin list.
 	WebOrigins *[]string
+	// Attributes, when non-nil, MERGES the given attribute keys onto the client's
+	// existing attributes map (rather than replacing it), so a managed attribute
+	// such as the PKCE code-challenge method is set without clobbering unmanaged
+	// attributes Keycloak or another owner stored. Only the supplied keys are
+	// written.
+	Attributes map[string]string
 }
 
 // apply writes the set (non-nil) fields onto raw, leaving every other key
-// untouched.
+// untouched. Attributes are merged key-by-key onto the existing attributes map
+// so unmanaged attribute keys survive.
 func (f ClientFields) apply(raw RawClient) {
 	if f.Name != nil {
 		raw["name"] = *f.Name
@@ -48,6 +55,16 @@ func (f ClientFields) apply(raw RawClient) {
 	}
 	if f.WebOrigins != nil {
 		raw["webOrigins"] = *f.WebOrigins
+	}
+	if f.Attributes != nil {
+		attrs, _ := raw["attributes"].(map[string]any)
+		if attrs == nil {
+			attrs = map[string]any{}
+		}
+		for k, v := range f.Attributes {
+			attrs[k] = v
+		}
+		raw["attributes"] = attrs
 	}
 }
 
@@ -84,7 +101,20 @@ type OIDCClient struct {
 	RedirectURIs []string `json:"redirectUris,omitempty"`
 	// WebOrigins are the client's allowed CORS web origins.
 	WebOrigins []string `json:"webOrigins,omitempty"`
+	// Attributes carries the client's attribute map (e.g. the PKCE
+	// pkce.code.challenge.method). Set on create to program managed attributes;
+	// omitempty so an unset map is not sent.
+	Attributes map[string]string `json:"attributes,omitempty"`
 }
+
+// PKCECodeChallengeMethodAttr is the Keycloak client-attribute key holding the
+// PKCE code-challenge method (e.g. "S256"). The KeycloakClient reconciler sets it
+// to S256 on public clients so the authorization-code flow requires PKCE, per the
+// platform's public-client guardrail (keycloak-clients.md).
+const PKCECodeChallengeMethodAttr = "pkce.code.challenge.method"
+
+// PKCEMethodS256 is the SHA-256 PKCE code-challenge method value.
+const PKCEMethodS256 = "S256"
 
 // ProtocolMapper is the subset of a client protocol-mapper representation the
 // reconcilers read back and create.

@@ -242,6 +242,15 @@ spec:
                   type: string
                 type: array
                 x-kubernetes-list-type: set
+              managedIdentityProvider:
+                description: |-
+                  ManagedIdentityProvider records the IdP alias this CR created a
+                  federated-identity link to (spec.identityProviderLink.alias), so on CR
+                  removal an adopted user's release prunes exactly the link this CR added
+                  rather than leaving a stale federation behind. Empty when no managed link
+                  exists (no spec.identityProviderLink, or an email-only auto-link entry that
+                  is realm-flow-driven and not an Admin-API link this CR owns).
+                type: string
               observedGeneration:
                 description: |-
                   ObservedGeneration is the most recent generation observed for this

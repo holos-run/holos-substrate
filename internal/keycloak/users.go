@@ -151,6 +151,26 @@ func (c *Client) ListFederatedIdentities(ctx context.Context, userID string) ([]
 	return links, nil
 }
 
+// DeleteFederatedIdentity removes the user's link to an identity provider via
+// DELETE /admin/realms/{realm}/users/{id}/federated-identity/{provider}. A
+// not-present link is returned as an *APIError reporting IsNotFound; use
+// DeleteFederatedIdentityIfExists to treat that as success (the release path's
+// idempotent cleanup of a controller-added link).
+func (c *Client) DeleteFederatedIdentity(ctx context.Context, userID, provider string) error {
+	path := c.adminPath("/users/" + url.PathEscape(userID) + "/federated-identity/" + url.PathEscape(provider))
+	return c.doJSON(ctx, http.MethodDelete, path, nil, nil)
+}
+
+// DeleteFederatedIdentityIfExists removes the federated-identity link and returns
+// nil when it is already absent, so the cleanup is idempotent.
+func (c *Client) DeleteFederatedIdentityIfExists(ctx context.Context, userID, provider string) error {
+	err := c.DeleteFederatedIdentity(ctx, userID, provider)
+	if IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
 // CreateFederatedIdentityIfNotExists creates the federated-identity link and,
 // on a 409 conflict, returns nil ONLY when an existing link for the same
 // provider already points at the same upstream userId — i.e. the desired state

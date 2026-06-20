@@ -457,3 +457,58 @@ func TestDeleteClientByClientIDIfExistsAbsentIsNil(t *testing.T) {
 		t.Fatalf("absent client must be a no-op success, got %v", err)
 	}
 }
+
+func TestCreateClientSendsPKCEAttribute(t *testing.T) {
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodPost, wantPath: clientsBase,
+		status:   http.StatusCreated,
+		location: "https://kc/admin/realms/holos/clients/uuid-pkce",
+	}
+	c, _ := newTestClient(t, h)
+
+	_, err := c.CreateClient(context.Background(), OIDCClient{
+		ClientID:     "https://pub",
+		PublicClient: true,
+		Attributes:   map[string]string{PKCECodeChallengeMethodAttr: PKCEMethodS256},
+	})
+	if err != nil {
+		t.Fatalf("CreateClient: %v", err)
+	}
+	attrs, ok := h.gotBody["attributes"].(map[string]any)
+	if !ok || attrs[PKCECodeChallengeMethodAttr] != "S256" {
+		t.Errorf("body attributes = %v, want PKCE S256", h.gotBody["attributes"])
+	}
+}
+
+func TestUpdateClientFieldsMergesPKCEAttribute(t *testing.T) {
+	var putBody map[string]any
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + clientsBase + "/uuid-1": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"uuid-1","clientId":"https://pub","attributes":{"existing":"keep"}}`)
+		},
+		"PUT " + clientsBase + "/uuid-1": func(w http.ResponseWriter, req *http.Request) {
+			body, _ := io.ReadAll(req.Body)
+			putBody = decodeJSONObject(t, body)
+			w.WriteHeader(http.StatusNoContent)
+		},
+	}}
+	c, _ := newTestClient(t, m)
+
+	err := c.UpdateClientFields(context.Background(), "uuid-1", ClientFields{
+		Attributes: map[string]string{PKCECodeChallengeMethodAttr: PKCEMethodS256},
+	})
+	if err != nil {
+		t.Fatalf("UpdateClientFields: %v", err)
+	}
+	attrs, ok := putBody["attributes"].(map[string]any)
+	if !ok {
+		t.Fatalf("PUT body has no attributes map: %v", putBody)
+	}
+	if attrs["existing"] != "keep" {
+		t.Errorf("unmanaged attribute clobbered: %v", attrs)
+	}
+	if attrs[PKCECodeChallengeMethodAttr] != "S256" {
+		t.Errorf("PKCE attribute not merged: %v", attrs)
+	}
+}

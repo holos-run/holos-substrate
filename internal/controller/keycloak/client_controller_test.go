@@ -84,12 +84,12 @@ func TestClientReconcileCreatePublicWithRolesAndMapper(t *testing.T) {
 	assertEvent(t, recorder, ReasonCreated)
 }
 
-func TestClientReconcileUpdateExisting(t *testing.T) {
+func TestClientReconcileAdoptExisting(t *testing.T) {
 	if shared == nil {
 		t.Skip("envtest not provisioned")
 	}
 	ctx := context.Background()
-	const ns = "kc-client-update"
+	const ns = "kc-client-adopt"
 	makeNamespace(t, ctx, ns)
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
@@ -100,6 +100,7 @@ func TestClientReconcileUpdateExisting(t *testing.T) {
 			ClientID:    "https://existing.holos.localhost",
 			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
 			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Adopt:       true,
 		},
 	}
 	if err := shared.k8sClient.Create(ctx, kclient); err != nil {
@@ -114,11 +115,88 @@ func TestClientReconcileUpdateExisting(t *testing.T) {
 
 	got := getKClient(t, ctx, key)
 	status, reason, _ := conditionStatus(got.Status.Conditions, ConditionReady)
-	if status != metav1.ConditionTrue || reason != ReasonReconciled {
-		t.Errorf("Ready = (%v, %v), want (True, %s)", status, reason, ReasonReconciled)
+	if status != metav1.ConditionTrue || reason != ReasonAdopted {
+		t.Errorf("Ready = (%v, %v), want (True, %s)", status, reason, ReasonAdopted)
+	}
+	if got.Status.Created || !got.Status.Adopted {
+		t.Errorf("adopted client must be Adopted, not Created: Created=%v Adopted=%v", got.Status.Created, got.Status.Adopted)
 	}
 	if !fake.callsContain("UpdateClient:existing-uuid") {
-		t.Errorf("existing client was not converged via UpdateClientFields; calls = %v", fake.calls)
+		t.Errorf("adopted client was not converged via UpdateClientFields; calls = %v", fake.calls)
+	}
+}
+
+func TestClientReconcileConflictWithoutAdopt(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-client-conflict"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	kclient := &keycloakv1alpha1.KeycloakClient{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "foreign"},
+		Spec: keycloakv1alpha1.KeycloakClientSpec{
+			ClientID:    "https://foreign.holos.localhost",
+			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			// Adopt defaults false.
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, kclient); err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	fake := newFakeKeycloakClient()
+	fake.seedClient("https://foreign.holos.localhost", "foreign-uuid") // pre-existing, foreign
+	r, _ := newClientReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(kclient)
+	reconcileClientToSteady(t, ctx, r, key)
+
+	got := getKClient(t, ctx, key)
+	status, reason, _ := conditionStatus(got.Status.Conditions, ConditionReady)
+	if status != metav1.ConditionFalse || reason != ReasonConflict {
+		t.Errorf("Ready = (%v, %v), want (False, %s)", status, reason, ReasonConflict)
+	}
+	if got.Status.Created || got.Status.Adopted {
+		t.Errorf("conflict must not claim the client: Created=%v Adopted=%v", got.Status.Created, got.Status.Adopted)
+	}
+	if fake.callsContain("UpdateClient:foreign-uuid") {
+		t.Errorf("a conflicting, unadopted client must not be reconfigured")
+	}
+}
+
+func TestClientReconcilePublicSetsPKCE(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-client-pkce"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	kclient := &keycloakv1alpha1.KeycloakClient{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "pkce"},
+		Spec: keycloakv1alpha1.KeycloakClientSpec{
+			ClientID:    "https://pkce.holos.localhost",
+			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, kclient); err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	fake := newFakeKeycloakClient()
+	r, _ := newClientReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(kclient)
+	reconcileClientToSteady(t, ctx, r, key)
+
+	if got := fake.createdClientPKCE("https://pkce.holos.localhost"); got != "S256" {
+		t.Errorf("public client PKCE attribute = %q, want S256", got)
 	}
 }
 
@@ -179,6 +257,60 @@ func TestClientReconcileConfidentialSecretDelivery(t *testing.T) {
 	}
 	if got := string(again.Data["clientSecret"]); got != "rotated-out-of-band" {
 		t.Errorf("generate-once violated: clientSecret = %q, want the rotated value preserved", got)
+	}
+}
+
+func TestClientReconcileSecretCollisionMissingKeyFails(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-client-secret-collide"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	// A foreign Secret already occupies the target name but lacks the requested key.
+	createIgnoreExists(t, ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "collide-oidc"},
+		Data:       map[string][]byte{"unrelated": []byte("x")},
+	})
+
+	kclient := &keycloakv1alpha1.KeycloakClient{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "collide"},
+		Spec: keycloakv1alpha1.KeycloakClientSpec{
+			ClientID:    "https://collide.holos.localhost",
+			Type:        keycloakv1alpha1.KeycloakClientTypeConfidential,
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			SecretRef:   &keycloakv1alpha1.ClientSecretReference{Name: "collide-oidc", Key: "clientSecret"},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, kclient); err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	fake := newFakeKeycloakClient()
+	r, _ := newClientReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(kclient)
+	if _, err := reconcileClient(ctx, r, key); err != nil {
+		t.Fatalf("reconcile (finalizer): %v", err)
+	}
+	// The provision pass must fail (collision), not report success.
+	if _, err := reconcileClient(ctx, r, key); err == nil {
+		t.Fatalf("expected a reconcile error on secret-name collision, got nil")
+	}
+	got := getKClient(t, ctx, key)
+	status, reason, _ := conditionStatus(got.Status.Conditions, ConditionReady)
+	if status != metav1.ConditionFalse || reason != ReasonKeycloakError {
+		t.Errorf("Ready = (%v, %v), want (False, %s)", status, reason, ReasonKeycloakError)
+	}
+	// The foreign Secret must be left untouched.
+	foreign := &corev1.Secret{}
+	if err := shared.k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "collide-oidc"}, foreign); err != nil {
+		t.Fatalf("get foreign secret: %v", err)
+	}
+	if _, ok := foreign.Data["clientSecret"]; ok {
+		t.Errorf("foreign Secret must not be overwritten with the client secret")
 	}
 }
 

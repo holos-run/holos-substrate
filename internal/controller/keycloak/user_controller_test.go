@@ -89,6 +89,47 @@ func TestUserReconcileCreateAndMembershipAndLink(t *testing.T) {
 	assertEvent(t, recorder, ReasonCreated)
 }
 
+func TestUserReconcileEmailOnlyLinkSkipsAdminAPI(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-user-emaillink"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	user := &keycloakv1alpha1.KeycloakUser{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "emaillink"},
+		Spec: keycloakv1alpha1.KeycloakUserSpec{
+			Email:       "emaillink@example.com",
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			// userId omitted: email-only auto-link, left to the realm flow.
+			IdentityProviderLink: &keycloakv1alpha1.IdentityProviderLink{Alias: "corp-oidc"},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	fake := newFakeKeycloakClient()
+	r, _ := newUserReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(user)
+	reconcileUserToSteady(t, ctx, r, key)
+
+	got := getUser(t, ctx, key)
+	if fake.federated(got.Status.UserID, "corp-oidc") {
+		t.Errorf("email-only link must not pre-create an Admin-API federated identity; calls = %v", fake.calls)
+	}
+	if got.Status.ManagedIdentityProvider != "" {
+		t.Errorf("email-only link must not record a managed IdP provider, got %q", got.Status.ManagedIdentityProvider)
+	}
+	status, _, _ := conditionStatus(got.Status.Conditions, ConditionReady)
+	if status != metav1.ConditionTrue {
+		t.Errorf("Ready = %v, want True", status)
+	}
+}
+
 func TestUserReconcileReusePresentNoDuplicate(t *testing.T) {
 	if shared == nil {
 		t.Skip("envtest not provisioned")
@@ -347,10 +388,11 @@ func TestUserDelete(t *testing.T) {
 		user := &keycloakv1alpha1.KeycloakUser{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "del-adopted"},
 			Spec: keycloakv1alpha1.KeycloakUserSpec{
-				Email:       "del-adopted@example.com",
-				InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
-				Adopt:       true,
-				Groups:      []string{"projects/p/roles/owner"},
+				Email:                "del-adopted@example.com",
+				InstanceRef:          keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				Adopt:                true,
+				Groups:               []string{"projects/p/roles/owner"},
+				IdentityProviderLink: &keycloakv1alpha1.IdentityProviderLink{Alias: "corp-oidc", UserID: "sub-abc"},
 			},
 		}
 		if err := shared.k8sClient.Create(ctx, user); err != nil {
@@ -365,6 +407,9 @@ func TestUserDelete(t *testing.T) {
 		if !fake.memberOf(userID, groupID) {
 			t.Fatalf("adopted user not added to declared group")
 		}
+		if !fake.federated(userID, "corp-oidc") {
+			t.Fatalf("adopted user not linked to the declared IdP")
+		}
 
 		if err := shared.k8sClient.Delete(ctx, getUser(t, ctx, key)); err != nil {
 			t.Fatalf("delete: %v", err)
@@ -377,6 +422,9 @@ func TestUserDelete(t *testing.T) {
 		}
 		if fake.memberOf(userID, groupID) {
 			t.Errorf("controller-added membership was not pruned on release")
+		}
+		if fake.federated(userID, "corp-oidc") {
+			t.Errorf("controller-added IdP link was not pruned on release")
 		}
 	})
 }

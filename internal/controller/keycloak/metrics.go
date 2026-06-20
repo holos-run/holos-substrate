@@ -73,6 +73,7 @@ const (
 	opAddUserToGroup      = "add_user_to_group"
 	opRemoveUserFromGroup = "remove_user_from_group"
 	opCreateFederatedID   = "create_federated_identity"
+	opDeleteFederatedID   = "delete_federated_identity"
 
 	// KeycloakClient reconciler operations.
 	opCreateClient           = "create_client"

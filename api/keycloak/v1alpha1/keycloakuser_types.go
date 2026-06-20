@@ -144,6 +144,16 @@ type KeycloakUserStatus struct {
 	// +optional
 	// +listType=set
 	ManagedGroups []string `json:"managedGroups,omitempty"`
+
+	// ManagedIdentityProvider records the IdP alias this CR created a
+	// federated-identity link to (spec.identityProviderLink.alias), so on CR
+	// removal an adopted user's release prunes exactly the link this CR added
+	// rather than leaving a stale federation behind. Empty when no managed link
+	// exists (no spec.identityProviderLink, or an email-only auto-link entry that
+	// is realm-flow-driven and not an Admin-API link this CR owns).
+	//
+	// +optional
+	ManagedIdentityProvider string `json:"managedIdentityProvider,omitempty"`
 }
 
 // +kubebuilder:object:root=true

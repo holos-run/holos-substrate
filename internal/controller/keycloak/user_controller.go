@@ -59,6 +59,10 @@ type UserClient interface {
 	// existing link is treated as success; a link to a different upstream account
 	// is surfaced as an error.
 	CreateFederatedIdentityIfNotExists(ctx context.Context, userID, provider string, link keycloak.FederatedIdentity) error
+	// DeleteFederatedIdentityIfExists removes the user's link to an IdP, treating
+	// an already-absent link as success — the release path's cleanup of a link this
+	// CR added to an adopted user.
+	DeleteFederatedIdentityIfExists(ctx context.Context, userID, provider string) error
 }
 
 // UserClientFactory builds a UserClient from a resolved Keycloak credential, the
@@ -254,6 +258,7 @@ func (r *UserReconciler) userReplaced(ctx context.Context, logger logr.Logger, u
 func (r *UserReconciler) reconcileSideEffectsThenSucceed(ctx context.Context, logger logr.Logger, kc UserClient, user *keycloakv1alpha1.KeycloakUser, userID, reason, message string) (ctrl.Result, error) {
 	beforeUserID := user.Status.UserID
 	beforeGroups := append([]string(nil), user.Status.ManagedGroups...)
+	beforeIDP := user.Status.ManagedIdentityProvider
 
 	if err := r.reconcileMemberships(ctx, kc, user, userID); err != nil {
 		return r.fail(ctx, user, err)
@@ -262,7 +267,9 @@ func (r *UserReconciler) reconcileSideEffectsThenSucceed(ctx context.Context, lo
 		return r.fail(ctx, user, err)
 	}
 
-	extraChanged := beforeUserID != user.Status.UserID || !equalStrings(beforeGroups, user.Status.ManagedGroups)
+	extraChanged := beforeUserID != user.Status.UserID ||
+		!equalStrings(beforeGroups, user.Status.ManagedGroups) ||
+		beforeIDP != user.Status.ManagedIdentityProvider
 	return r.succeed(ctx, logger, user, reason, message, extraChanged)
 }
 
@@ -326,19 +333,32 @@ func (r *UserReconciler) reconcileMemberships(ctx context.Context, kc UserClient
 // spec.identityProviderLink exists on the user, so a first federated login
 // auto-links this pre-created record instead of creating a duplicate (ADR-20).
 //
-// Split of responsibility (ADR-20): this reconciler ensures only the per-user
-// federated-identity link/record. The first-broker-login flow that makes the
-// auto-link actually happen on login (Detect Existing Broker User + Automatically
-// Set Existing User + Trust Email) is realm configuration owned by the platform
-// realm config (keycloak-config-cli), NOT this CR.
+// Two link modes (ADR-20):
+//   - Subject-keyed link (identityProviderLink.userId set): the Keycloak
+//     federated-identity record requires the upstream subject ({userId}) as its
+//     key, so this CR creates the Admin-API link explicitly and records the
+//     provider in status.ManagedIdentityProvider so its release can prune it.
+//   - Email-only auto-link (userId omitted): there is no upstream subject to key a
+//     federated-identity record on yet — the link is established by the realm's
+//     first-broker-login flow (Detect Existing Broker User + Trust Email) on the
+//     user's first login, matched by the verified email. This reconciler does NOT
+//     pre-create an Admin-API link in that mode (it would require a subject and
+//     produce a broken/unusable link); it leaves the link to the realm flow and
+//     records no managed provider.
+//
+// Split of responsibility (ADR-20): even in the subject-keyed mode this reconciler
+// ensures only the per-user federated-identity record. The first-broker-login flow
+// that makes the auto-link actually happen on login is realm configuration owned by
+// the platform realm config (keycloak-config-cli), NOT this CR.
 func (r *UserReconciler) reconcileIdentityProviderLink(ctx context.Context, kc UserClient, user *keycloakv1alpha1.KeycloakUser, userID string) error {
 	link := user.Spec.IdentityProviderLink
-	if link == nil {
+	if link == nil || link.UserID == "" {
+		// No managed Admin-API link to ensure (no link, or an email-only auto-link
+		// left to the realm first-broker-login flow). Clear any previously-managed
+		// provider so a later switch to email-only mode does not strand a stale entry.
+		user.Status.ManagedIdentityProvider = ""
 		return nil
 	}
-	// When the upstream subject (userId) is omitted, the link is keyed by email via
-	// the first-broker-login auto-link flow; the federated-identity record still
-	// carries the username when provided.
 	fi := keycloak.FederatedIdentity{
 		IdentityProvider: link.Alias,
 		UserID:           link.UserID,
@@ -349,6 +369,7 @@ func (r *UserReconciler) reconcileIdentityProviderLink(ctx context.Context, kc U
 	if err != nil {
 		return fmt.Errorf("creating federated-identity link to %q for Keycloak user %q: %w", link.Alias, user.Spec.Email, err)
 	}
+	user.Status.ManagedIdentityProvider = link.Alias
 	return nil
 }
 
@@ -380,12 +401,15 @@ func (r *UserReconciler) reconcileDelete(ctx context.Context, logger logr.Logger
 		return ctrl.Result{}, nil
 	}
 
-	// Nothing needs Keycloak-side cleanup when the CR never created or adopted a
-	// user (rejected, blocked on a missing/not-ready instance, a denied
-	// ReferenceGrant, a missing credential, or an unresolved Conflict), OR when it
-	// adopted a user but added no memberships. Drop the finalizer immediately
-	// rather than resolving a Ready instance + credential that may never resolve.
-	if !user.Status.Created && len(user.Status.ManagedGroups) == 0 {
+	// Nothing needs Keycloak-side cleanup when the CR never created a user
+	// (rejected, blocked on a missing/not-ready instance, a denied ReferenceGrant,
+	// a missing credential, or an unresolved Conflict) AND it added no side effects
+	// to an adopted user — neither a managed membership nor a managed IdP link.
+	// Drop the finalizer immediately rather than resolving a Ready instance +
+	// credential that may never resolve. A created user always needs its delete, so
+	// it is never short-circuited here.
+	noManaged := len(user.Status.ManagedGroups) == 0 && user.Status.ManagedIdentityProvider == ""
+	if !user.Status.Created && noManaged {
 		return r.removeFinalizer(ctx, user)
 	}
 
@@ -421,15 +445,39 @@ func (r *UserReconciler) reconcileDelete(ctx context.Context, logger logr.Logger
 		return r.removeFinalizer(ctx, user)
 	}
 
-	// Adopted user → release: prune only the memberships this CR added, never
-	// deleting the surviving user the platform did not create.
+	// Adopted user → release: prune only the side effects this CR added (group
+	// memberships AND the federated-identity link), never deleting the surviving
+	// user the platform did not create.
 	if err := r.pruneManagedGroups(ctx, kc, user); err != nil {
 		r.Recorder.Event(user, corev1.EventTypeWarning, ReasonKeycloakError, err.Error())
 		return ctrl.Result{}, err
 	}
+	if err := r.pruneManagedIdentityProvider(ctx, kc, user); err != nil {
+		r.Recorder.Event(user, corev1.EventTypeWarning, ReasonKeycloakError, err.Error())
+		return ctrl.Result{}, err
+	}
 	r.Recorder.Event(user, corev1.EventTypeNormal, ReasonReleased,
-		fmt.Sprintf("released adopted Keycloak user %q (pruned controller-added memberships, user not deleted)", user.Spec.Email))
+		fmt.Sprintf("released adopted Keycloak user %q (pruned controller-added memberships and IdP link, user not deleted)", user.Spec.Email))
 	return r.removeFinalizer(ctx, user)
+}
+
+// pruneManagedIdentityProvider removes the federated-identity link this CR added
+// to an adopted user (status.managedIdentityProvider), then clears the managed
+// status. It is used on adopted release, where the surviving user is not deleted
+// so the link this CR created must be removed explicitly. An already-absent link
+// is treated as success.
+func (r *UserReconciler) pruneManagedIdentityProvider(ctx context.Context, kc UserClient, user *keycloakv1alpha1.KeycloakUser) error {
+	if user.Status.ManagedIdentityProvider == "" || user.Status.UserID == "" {
+		user.Status.ManagedIdentityProvider = ""
+		return nil
+	}
+	err := kc.DeleteFederatedIdentityIfExists(ctx, user.Status.UserID, user.Status.ManagedIdentityProvider)
+	recordKeycloakAPI(opDeleteFederatedID, err)
+	if err != nil {
+		return fmt.Errorf("revoking federated-identity link %q for Keycloak user %q on release: %w", user.Status.ManagedIdentityProvider, user.Spec.Email, err)
+	}
+	user.Status.ManagedIdentityProvider = ""
+	return nil
 }
 
 // pruneManagedGroups removes the user from every group this CR joined it to
