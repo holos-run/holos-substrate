@@ -11,6 +11,7 @@
 | Revision | Date       | Author      | Info           |
 | -------- | ---------- | ----------- | -------------- |
 | 1        | 2026-06-17 | @jeffmccune | Initial design |
+| 2        | 2026-06-20 | @jeffmccune | HOL-1340: record that a Project's rendered manifests also include the per-Project **`keycloak.holos.run`** resources ([ADR-20](ADR-20.md)) — the nested `roles`/`custodians` `KeycloakGroup` tree, the owner's `KeycloakUser`, and the `KeycloakClient`/client-role group→claim wiring — alongside the Quay `Organization` ([ADR-19](ADR-19.md)); retie the project `ReferenceGrant` to the **`security.holos.run`** grant ([ADR-22](ADR-22.md)) authorizing each Keycloak CR's cross-namespace reference to the central `KeycloakInstance`; record the **AC #2 decision** that the umbrella-Project logical concept needs **no new ADR** (ADR-1 + ADR-21 are its home); add the **end-to-end worked example** (`projects: "my-project": owners: "bob@example.com": _` → Keycloak groups → `groups` claim → Quay `syncedTeams`). Resolves ADR-20's "Relationship to Projects/Applications" open question consistently in both ADRs. Design record only. |
 
 ## Context and Problem Statement
 
@@ -60,7 +61,29 @@ components are written in this phase — this is a design record only.**
 - [ADR-19 — Quay API Group (`quay.holos.run`): Organization and Repository
   CRDs](ADR-19.md): the Quay `Organization` CR the Project component emits and
   the `Repository` CR the Application component emits. These components are the
-  rendered producers of the CRs ADR-19 specifies.
+  rendered producers of the CRs ADR-19 specifies. The Organization's
+  `spec.syncedTeams[]` binds the primitive-role OIDC group claim values
+  (`my-project-{owner,editor,viewer}`) to Quay teams **by name** — the Quay end of
+  the worked example below.
+- [ADR-20 — Keycloak API Group (`keycloak.holos.run`)](ADR-20.md): the per-Project
+  identity CRs the Project component emits alongside the Quay `Organization` — the
+  nested `projects/<project>/{roles,custodians}/{owner,editor,viewer}`
+  `KeycloakGroup` tree, the owner's `KeycloakUser` (pre-create-by-email +
+  first-login auto-link), and the `KeycloakClient`/client-role wiring that surfaces
+  the `my-project-<role>` values in the OIDC `groups` claim. ADR-20 names these as
+  "the identity resources a project's rendered manifests would emit"; this ADR
+  records that emission and resolves ADR-20's *Relationship to Projects/Applications*
+  open question.
+- [ADR-22 — The `security.holos.run` API Group and `ReferenceGrant`](ADR-22.md):
+  the holos-owned cross-namespace-reference grant. The Project's per-Project
+  Keycloak CRs reference a centrally-managed `KeycloakInstance` in a platform
+  namespace; that cross-namespace reference is authorized by a `security.holos.run`
+  `ReferenceGrant` placed in the instance's (referent) namespace. That grant is a
+  **platform-owned prerequisite created by the instance namespace's owner** — it is
+  **not** a resource the Project component renders (ADR-22's default-deny model
+  forbids a tenant authorizing its own access). The Gateway-API `ReferenceGrant`
+  the Project component **does** render (item 7 below) is a separate, coexisting
+  grant for route/backend object references.
 - [ADR-16 — Kargo-Driven Promotion with a Client-Side CLI Build-and-Publish
   (ORAS) Workflow](ADR-16.md): the promotion pipeline an Application's
   `Warehouse`/`Stage` participate in — a `repo_push` notifies a `Warehouse`,
@@ -117,8 +140,15 @@ map keyed by a stable name. A product engineer's entire self-service action is a
 
 ```cue
 // holos/projects/my-project.cue
-projects: "my-project": owners: "jeff@openinfrastructure.co": _
+projects: "my-project": owners: "bob@example.com": _
 ```
+
+The registration field is **`owners`** — a CUE map keyed by the owner's email
+(`projects.<name>.owners.<email>`), so a project may name one or several owners.
+A single-owner registration like `projects: "my-project": owners: "bob@example.com": _`
+is the common case; the worked example below threads exactly that one owner —
+`bob@example.com` — end to end. (Where prose refers to "the project `owner`" it
+means a member of this `owners` map; the field is plural to admit more than one.)
 
 **Applications** — `holos/apps/*.cue`:
 
@@ -141,15 +171,22 @@ field names trace to the `my-project` scaffold and the ADR-19 CRDs, but the
 components themselves are a later phase. This ADR records *which* resources each
 entry composes and *how* they fit together, not the CUE that emits them.
 
-### The Project component: 8 resources per `projects.<name>` entry
+### The Project component: project-level resources per `projects.<name>` entry
 
-One Project entry renders these **8** resources, all anchored on the Project's
+One Project entry renders the resources below, all anchored on the Project's
 Namespace as the security boundary. Two of them — the `AppProject` and the
 project-level `Application` — are Argo CD objects that, following the
 [`my-project` scaffold](../../holos/components/my-project/buildplan.cue), are
 **namespaced into `argocd`** alongside the Argo CD controller (their *destination*
-is the Project's Namespace); the rest belong to (or target) the Project's
-Namespace:
+is the Project's Namespace); the per-Project `keycloak.holos.run` CRs
+([ADR-20](ADR-20.md), items 9–11) live in the Project's Namespace and reference a
+centrally-managed `KeycloakInstance` in a platform namespace; the rest belong to
+(or target) the Project's Namespace.
+
+Items 1–8 are the original Kubernetes/Quay/gateway resources; items 9–11 are the
+**Keycloak (identity) resources** this revision adds so a Project's rendered
+manifests provision the identity half of its primitive-role model
+([ADR-20](ADR-20.md)) alongside the Quay half ([ADR-19](ADR-19.md)):
 
 1. **k8s `Namespace`** `my-project` — the Project's containment boundary. The
    Project component does **not** emit this `Namespace` inline (the
@@ -193,12 +230,21 @@ Namespace:
    (group-membership access control, [ADR-3](ADR-3.md)); the owners list comes
    straight from the one-line `projects.<name>.owners` registration.
 6. **Quay `Organization`** — the `quay.holos.run` `Organization` CR from
-   [ADR-19](ADR-19.md), naming the Project's Quay org, mapping its OIDC groups to
-   Quay teams/roles, and governing repository creation within it. The Holos
-   Controller ([ADR-18](ADR-18.md)) reconciles it.
-7. **`ReferenceGrant`** — the Gateway-API grant authorizing the cross-namespace
-   **object** references the Project needs. Two clarifications on the mechanism, so
-   this ADR records it correctly:
+   [ADR-19](ADR-19.md), naming the Project's Quay org and governing repository
+   creation within it. Its `spec.syncedTeams[]` maps the primitive-role OIDC group
+   claim values (`my-project-{owner,editor,viewer}`) to Quay teams **by name**
+   (owner → team `role: admin`; editor → `member` + `repositoryPermission: write`;
+   viewer → `member` + `read`, the ADR-19 worked example), the Quay end of the
+   identity flow the Keycloak resources (items 9–11) produce. The Holos Controller
+   ([ADR-18](ADR-18.md)) reconciles it.
+7. **Gateway-API `ReferenceGrant`** — the grant authorizing whichever
+   cross-namespace **route/backend object** reference the Project needs (unchanged
+   from Revision 1). This is the only `ReferenceGrant` the Project component
+   **renders**. (The separate `security.holos.run` grant for the Keycloak →
+   `KeycloakInstance` reference is a **platform-owned prerequisite**, not a rendered
+   resource — see the note immediately below this list.) Two clarifications on the
+   Gateway-API mechanism, so this ADR records it correctly:
+
    - **Route-to-Gateway attachment is not gated by `ReferenceGrant`.** Whether an
      `HTTPRoute` may attach to the shared Gateway is governed by the listener's
      `allowedRoutes` (today `namespaces: from: "All"` in
@@ -231,6 +277,59 @@ Namespace:
 8. **`HTTPRoute`** — the Project's route attaching to the shared Gateway (via the
    listener's `allowedRoutes`), exposing the Project's services through the
    platform ingress.
+
+> **Prerequisite (not a rendered resource): the `security.holos.run`
+> `ReferenceGrant` for the Keycloak → `KeycloakInstance` reference.** The
+> per-Project Keycloak CRs (items 9–11) live in the Project Namespace and reference
+> a centrally-managed `KeycloakInstance` ([ADR-20](ADR-20.md)) in a platform
+> namespace (e.g. `keycloak`) — a cross-namespace CR-to-CR reference. Per the guard
+> rail ([ADR-22](ADR-22.md)), that reference is authorized by a **`security.holos.run`**
+> `ReferenceGrant` placed in the **instance's (referent) namespace**, with
+> `spec.from[]` naming the Project Namespace's `keycloak.holos.run` Kinds and
+> `spec.to[]` naming the local `KeycloakInstance`. Because the grant lives in the
+> referent namespace and ADR-22's trust model is **default-deny — the platform owner
+> of the referent namespace grants access, a tenant cannot widen its own** — this
+> grant is **created by the `KeycloakInstance` namespace's platform owner, not
+> rendered by the Project component**. An ungranted reference is rejected by the
+> Keycloak CR's reconciler (`Ready=False`, reason `RefNotPermitted`), never silently
+> honored. This holos-owned grant and the Gateway-API grant (item 7) coexist and
+> never substitute for each other — a holos CR-to-CR reference is **never** authorized
+> by Gateway API's grant, which governs only its fixed route/backend kinds
+> ([ADR-22](ADR-22.md)).
+9. **`KeycloakGroup`** (`keycloak.holos.run`, [ADR-20](ADR-20.md)) — the per-Project
+   nested role/custodian group tree. Reconciled by the Holos Controller, it creates
+   `projects/<project>/roles/{owner,editor,viewer}` (the groups a person is a member
+   of to hold a primitive role) and `projects/<project>/custodians/{owner,editor,viewer}`
+   (whose members manage the matching `roles/*` group's membership via FGAP-v2
+   delegation). Its `clientRoleBindings` names the **consumer client** — the Quay
+   client `https://quay.holos.localhost` for the [ADR-19](ADR-19.md) `syncedTeams`
+   case — so each `roles/<role>` group carries the `my-project-<role>` client role
+   that the consumer's existing `oidc-usermodel-client-role-mapper` emits into the
+   `groups` claim. This CR is the **authoritative** owner of the role→claim binding
+   ([ADR-20](ADR-20.md), *Claim value via a client role*). It references the central
+   `KeycloakInstance` via `instanceRef` (authorized by the platform-owned
+   `security.holos.run` grant — the prerequisite note above, not item 7's
+   Gateway-API grant).
+10. **`KeycloakUser`** (`keycloak.holos.run`, [ADR-20](ADR-20.md)) — pre-provisions
+    the Project **owner** by email (`projects.<name>.owners`, e.g.
+    `bob@example.com`) *only if necessary* and assigns initial group membership in
+    `projects/<project>/roles/owner`, so the owner holds the role before first
+    login. The realm's first-broker-login flow **auto-links** Bob's federated login
+    to this pre-created record (platform realm/IdP config the `KeycloakRealmImport`
+    CR owns, **not** the Project component — [ADR-20](ADR-20.md), *KeycloakUser*).
+    References the `KeycloakInstance` via `instanceRef`. (Editors/viewers are
+    typically added by custodians post-hoc rather than pre-provisioned, so the
+    component renders a `KeycloakUser` for the registered owner(s); broader
+    membership flows through the custodian groups.)
+11. **`KeycloakClient`** (`keycloak.holos.run`, [ADR-20](ADR-20.md)) — *only when the
+    Project runs its own OIDC service whose token must carry the project roles*: a
+    per-project OIDC client named by its URL, with `emitProjectRolesInGroupsClaim`
+    wiring the per-client role mapper so the `my-project-<role>` value surfaces in
+    **that** client's token. **The ADR-19 Quay use case needs no project
+    `KeycloakClient`** — the consumer is the platform Quay client, whose mapper
+    already exists — so this resource is conditional, rendered per the project's
+    declared services. The role→consumer-client binding stays on the `KeycloakGroup`
+    (item 9) regardless. References the `KeycloakInstance` via `instanceRef`.
 
 ### The Application component: 11 resources per `apps.<name>` entry
 
@@ -325,8 +424,9 @@ Project is the security boundary (≈ a Kubernetes Namespace).
   `holos render platform` evaluates both collections together and resolves their
   cross-references as ordinary CUE unification), and names the ancestor/import
   wiring as the mechanism the component phase must establish — it is not free from
-  directory layout alone. Given that wiring: each `projects.<name>` renders the 8
-  project-level resources, each
+  directory layout alone. Given that wiring: each `projects.<name>` renders the
+  project-level resources (the eight Kubernetes/Quay/gateway resources plus the
+  per-Project `keycloak.holos.run` CRs), each
   `apps.<name>` renders the 11 application-level resources scoped to its project
   (workloads into the project's namespace, the Argo CD `Application` into `argocd`
   with that namespace as its destination), and the cross-references
@@ -367,7 +467,19 @@ GitOps rendered-manifest model and is explicit about the boundary:
 - **Isolation and access control per Project.** Isolation is the Namespace
   boundary; access control is the `AppProject` OIDC-group binding plus the owner
   `RoleBinding` ([ADR-3](ADR-3.md)) — access granted per Project, as ADR-1
-  requires.
+  requires. The Project's **GCP primitive roles** (`owner`/`editor`/`viewer`,
+  [ADR-1](ADR-1.md)) are realized in the identity system by the per-Project
+  `keycloak.holos.run` resources this revision adds (items 9–11): the
+  `projects/<project>/roles/*` Keycloak groups whose membership surfaces as the
+  `my-project-<role>` `groups`-claim value **on each consumer client that binds the
+  role and carries the per-client role mapper** ([ADR-20](ADR-20.md)). The worked
+  example wires the **Quay client**, so the value reaches Quay's token and scopes the
+  Quay teams ([ADR-19](ADR-19.md) `syncedTeams`); other consumers (the Argo CD
+  `AppProject` OIDC binding, a project-service's RBAC) surface the same per-Project
+  values through **their own** client-role binding + mapper, not automatically — each
+  is a `KeycloakGroup.clientRoleBindings` entry naming that consumer's client
+  ([ADR-20](ADR-20.md), *Claim value via a client role*). ADR-1's access-control
+  decision is unchanged; this ADR supplies its rendered realization.
 - **How the tenant is delivered.** Through the GitOps rendered-manifest model
   ([ADR-18](ADR-18.md)): a one-line collection entry renders the Project's
   resources, Argo CD syncs them, and the Holos Controller reconciles the
@@ -387,6 +499,124 @@ GitOps rendered-manifest model and is explicit about the boundary:
   unchanged by this ADR; the Project Namespace is where they would attach, but
   their enforcement is out of scope.
 
+### Decision: no new umbrella-Project ADR — ADR-1 + ADR-21 are its home
+
+A natural question this revision raises is whether the **overall umbrella
+"logical Project" concept** — the thing a one-line registration names, that now
+ties together a Namespace, a Kargo Project, an Argo CD AppProject/Application, a
+Quay `Organization`, and the per-Project `keycloak.holos.run` resources — warrants
+a **new, standalone ADR** of its own. **It does not.** The umbrella Project concept
+already has its ADR home, split cleanly across two existing ADRs that this phase
+**revises and cross-references** rather than supplanting:
+
+- **[ADR-1](ADR-1.md)** owns the **tenant model** — the Project *is* the GCP-model
+  tenant, the unit of ownership/isolation/access/quotas/chargeback. Its Revision 3
+  cross-references how the primitive roles are realized in the identity system.
+- **[ADR-21](ADR-21.md)** (this ADR) owns the **GitOps/Kubernetes realization** —
+  the Project ≈ Namespace mapping and the full rendered resource set (now including
+  the Keycloak resources), driven by the `holos/projects/*.cue` collection.
+
+Per [writing-adrs.md](writing-adrs.md) ("prefer revising the existing ADR over
+writing a new one for a minor decision"), creating a third ADR to restate what
+these two already cover would fragment the record and create drift. The decision
+recorded here is therefore explicit: **no new umbrella-Project ADR is created;
+ADR-1 and ADR-21 are revised and cross-referenced** (with [ADR-19](ADR-19.md) for
+the Quay half, [ADR-20](ADR-20.md) for the Keycloak half, and [ADR-3](ADR-3.md) for
+the authorization model) to keep the umbrella Project concept coherent in one place.
+This also resolves [ADR-20](ADR-20.md)'s open question *Relationship to
+Projects/Applications (ADR-21)* — its per-Project Keycloak CRs are emitted by **this**
+Project component, exactly as it emits the Quay `Organization`.
+
+### End-to-end worked example: from CUE registration to Quay teams
+
+This single example threads one registration —
+`projects: "my-project": owners: "bob@example.com": _`, i.e. the project
+`my-project` with a single owner `bob@example.com` — all the way from the one-line
+CUE entry through the Keycloak groups and the OIDC `groups` claim into the Quay
+`syncedTeams`. It is the canonical illustration that the Quay half
+([ADR-19](ADR-19.md)) and the Keycloak half ([ADR-20](ADR-20.md)) meet at the
+project-prefixed claim-name strings. (The Keycloak-CR field shapes are
+[ADR-20](ADR-20.md)'s; the Quay-team semantics are [ADR-19](ADR-19.md)'s — this
+example only joins them.)
+
+**1. Registration (one line).** A product engineer opens a pull request adding one
+entry to the projects collection:
+
+```cue
+// holos/projects/my-project.cue
+projects: "my-project": owners: "bob@example.com": _
+```
+
+**2. Keycloak role + custodian groups (`KeycloakGroup`).** Rendering the Project
+component emits a `KeycloakGroup` ([ADR-20](ADR-20.md)) that the Holos Controller
+reconciles into the shallow nested tree:
+
+```text
+projects/my-project/roles/{owner,editor,viewer}
+projects/my-project/custodians/{owner,editor,viewer}
+```
+
+Its `clientRoleBindings` names the **Quay client** `https://quay.holos.localhost`
+as the consumer (the [ADR-19](ADR-19.md) `syncedTeams` case needs **no** project
+`KeycloakClient`), so the controller assigns a `my-project-<role>` **client role on
+the Quay client** to each `roles/<role>` group.
+
+**3. Owner pre-provisioned + auto-linked (`KeycloakUser`).** The component emits a
+`KeycloakUser` for the registered owner `bob@example.com` that the controller
+pre-creates by email (only if necessary) and adds to
+`projects/my-project/roles/owner`. When Bob first signs in through the federated
+IdP, the realm's first-broker-login flow (`Detect Existing Broker User` +
+`Automatically Set Existing User` + `Trust Email`, platform realm/IdP config the
+`KeycloakRealmImport` CR owns — [ADR-20](ADR-20.md)) **auto-links** his login to
+this pre-created record instead of creating a duplicate.
+
+**4. Role-group → client-role → `groups` claim.** Bob is a member of
+`projects/my-project/roles/owner`, which carries the `my-project-owner` **Quay
+client role**. The Quay client's existing `oidc-usermodel-client-role-mapper`
+(`quay-client-roles`,
+[realm-config buildplan.cue](../../holos/components/keycloak/realm-config/buildplan.cue))
+emits that client role into Bob's `groups` claim as the flat value
+**`my-project-owner`** — with **no Quay-side or new-mapper change**
+([ADR-20](ADR-20.md), *Claim value via a client role*). (The bare-leaf `owner`
+value the group-membership mapper also emits is an accepted, ignored byproduct —
+nothing keys on it; [ADR-20](ADR-20.md).) Editor and viewer members get
+`my-project-editor` / `my-project-viewer` the same way.
+
+**5. `groups` claim → Quay `syncedTeams`.** The Project's Quay `Organization`
+([ADR-19](ADR-19.md)) maps those exact claim values to Quay teams **by name** —
+matching the ADR-19 worked example exactly (owner → org `role: admin`; editor →
+`member` + `repositoryPermission: write`; viewer → `member` + `read`):
+
+```yaml
+apiVersion: quay.holos.run/v1alpha1
+kind: Organization
+metadata:
+  name: my-project
+spec:
+  syncedTeams:
+    - name: my-project-owner       # the Quay team name
+      oidcGroup: my-project-owner  # the groups-claim value, by name only
+      role: admin                  # org admin: governance + full repo access
+    - name: my-project-editor
+      oidcGroup: my-project-editor
+      role: member
+      repositoryPermission: write  # push/pull repos in the org, no org admin
+    - name: my-project-viewer
+      oidcGroup: my-project-viewer
+      role: member
+      repositoryPermission: read   # pull repos in the org, read-only
+```
+
+With `FEATURE_TEAM_SYNCING` on, Quay syncs Bob (carrying `my-project-owner` in his
+`groups` claim) into the `my-project-owner` team, which has the org `admin` role —
+so Bob administers the `my-project` Quay org and its repositories. The chain is
+complete: **one line of CUE → Keycloak groups → client role → `groups` claim →
+Quay team membership and role**, with the Quay end identical to
+[ADR-19](ADR-19.md)'s `admin`/`member`(+`write`/`read`) semantics. (`creator` is the
+third available Quay team `role` in ADR-19's enum; this primitive-role example uses
+`admin`/`member`, reserving `creator` for projects that want a repo-creating team
+without full org admin.)
+
 ## Decision
 
 1. **The platform gains two Holos CUE components** — a **Project component** and
@@ -394,16 +624,31 @@ GitOps rendered-manifest model and is explicit about the boundary:
    `holos/projects/*.cue` and `holos/apps/*.cue`. A product engineer's
    self-service action is a **single pull-request entry**: `projects: "my-project":
    owners: …` or `apps: "my-app": project: "my-project"`.
-2. **One `projects.<name>` entry renders 8 project-level resources:** the
+2. **One `projects.<name>` entry renders the project-level resources** — the
+   original eight Kubernetes/Quay/gateway resources **plus** the per-Project
+   `keycloak.holos.run` identity resources ([ADR-20](ADR-20.md)): the
    registry-integrated k8s `Namespace` (ambient-enrolled, and wired for
    external-secrets — the store/controller wiring an open prerequisite), the Kargo
    `Project` (adopted via the namespace label), the Argo CD `AppProject` (OIDC-group
    access), the project-level Argo CD `Application`, the owner `RoleBinding`, the
-   Quay `Organization` ([ADR-19](ADR-19.md)), the `ReferenceGrant` (placed in the
-   target namespace of whichever cross-namespace object reference the Project needs
-   — e.g. `istio-gateways` when a project route's `backendRefs` point at a `Service`
-   there; not the route-attachment mechanism, which is the listener's
-   `allowedRoutes`), and the `HTTPRoute`.
+   Quay `Organization` ([ADR-19](ADR-19.md), its `syncedTeams[]` binding the
+   primitive-role claim values to Quay teams by name), the `KeycloakGroup`
+   (the `projects/<project>/{roles,custodians}/{owner,editor,viewer}` tree + the
+   `my-project-<role>` client-role group→claim binding), the owner's `KeycloakUser`
+   (pre-create-by-email + first-login auto-link), the **conditional** `KeycloakClient`
+   (only when the Project runs its own OIDC service — the ADR-19 Quay consumer needs
+   none), the Gateway-API `ReferenceGrant` (placed in the target namespace of
+   whichever cross-namespace route/backend object reference the Project needs — e.g.
+   `istio-gateways` when a project route's `backendRefs` point at a `Service` there;
+   not the route-attachment mechanism, which is the listener's `allowedRoutes`), and
+   the `HTTPRoute`. The Keycloak CRs' cross-namespace reference to the central
+   `KeycloakInstance` is authorized by a **`security.holos.run`** `ReferenceGrant`
+   ([ADR-22](ADR-22.md)) that the **platform owner of the `KeycloakInstance`
+   namespace creates** in that (referent) namespace — it is **not** a resource the
+   Project component renders, because ADR-22's default-deny trust model forbids a
+   tenant's own self-service registration from authorizing its access to the central
+   instance. The Project's Keycloak CRs reference the instance; the grant
+   that permits it lives with, and is owned by, the instance.
 3. **One `apps.<name>` entry renders 11 application-level resources** scoped to
    its Project (workloads into the Project's Namespace; the Kargo `Warehouse`/
    `Stage` into the Project's Kargo Project namespace; the Argo CD `Application`
@@ -428,13 +673,46 @@ GitOps rendered-manifest model and is explicit about the boundary:
    plan. The Project component **integrates with the central
    [`holos/namespaces.cue`](../../holos/namespaces.cue) registry and never emits a
    `Namespace` inline** (the [component guidelines](../../holos/docs/component-guidelines.md)).
-5. **This refines [ADR-1](ADR-1.md):** the `Project` tenant maps onto Kubernetes
+5. **A Project's rendered manifests include its per-Project `keycloak.holos.run`
+   resources** ([ADR-20](ADR-20.md)): the `KeycloakGroup` (the nested
+   `roles`/`custodians` tree + the `my-project-<role>` client-role group→claim
+   binding on the consumer client), the owner's `KeycloakUser`, and a **conditional**
+   `KeycloakClient` (only for a Project running its own OIDC service — the
+   [ADR-19](ADR-19.md) Quay consumer needs none). Each Keycloak CR references a
+   centrally-managed `KeycloakInstance` via `instanceRef`; that cross-namespace
+   reference is authorized by a **`security.holos.run`** `ReferenceGrant`
+   ([ADR-22](ADR-22.md)) the **instance namespace's platform owner** creates in that
+   (referent) namespace — **not** a resource this Project component renders (ADR-22's
+   default-deny model forbids a tenant authorizing its own access) — distinct from,
+   and coexisting with, the Gateway-API `ReferenceGrant` for route/backend
+   references. This **resolves [ADR-20](ADR-20.md)'s open question** *Relationship to
+   Projects/Applications (ADR-21)*: the Project component emits the per-Project
+   Keycloak CRs (the grant that permits their instance reference is the instance
+   owner's).
+6. **No new umbrella-Project ADR is created (AC #2).** The overall logical Project
+   concept already has its ADR home: **[ADR-1](ADR-1.md)** (the tenant model) and
+   **[ADR-21](ADR-21.md)** (its GitOps/Kubernetes realization). Per
+   [writing-adrs.md](writing-adrs.md), this phase **revises and cross-references**
+   those two (with [ADR-19](ADR-19.md)/[ADR-20](ADR-20.md)/[ADR-3](ADR-3.md)) rather
+   than fragmenting the record into a third ADR.
+7. **The end-to-end worked example is recorded here** (*End-to-end worked example:
+   from CUE registration to Quay teams*): `projects: "my-project": owners:
+   "bob@example.com": _` (project `my-project`, owner `bob@example.com`) →
+   `KeycloakGroup`s `projects/my-project/{roles,custodians}/*`
+   → `KeycloakUser` for Bob in `roles/owner` (first-login auto-link) → the
+   `my-project-owner` Quay **client role** → the `groups`-claim value
+   `my-project-owner` → the Quay `Organization.spec.syncedTeams[]` mapping
+   (owner → `admin`; editor → `member`+`write`; viewer → `member`+`read`), internally
+   consistent with [ADR-19](ADR-19.md)'s `admin`/`creator`/`member` team-role
+   semantics.
+8. **This refines [ADR-1](ADR-1.md):** the `Project` tenant maps onto Kubernetes
    via this Project component under the GitOps rendered-manifest model. It
    **resolves** ADR-1's namespace-mapping, isolation, and access-control deferrals
-   and **leaves open** whether a first-class `Project` CRD (with ADR-1's scope,
-   schema, and lifecycle) exists, the GCP folder/organization levels, and quota
-   enforcement.
-6. **This is a design record only — no CUE components are written in this phase.**
+   (the access-control half now including the identity realization of the primitive
+   roles via [ADR-20](ADR-20.md)) and **leaves open** whether a first-class `Project`
+   CRD (with ADR-1's scope, schema, and lifecycle) exists, the GCP
+   folder/organization levels, and quota enforcement.
+9. **This is a design record only — no CUE components are written in this phase.**
 
 ## Consequences
 
@@ -462,6 +740,18 @@ GitOps rendered-manifest model and is explicit about the boundary:
   components would add but that no `quay.holos.run` CR yet covers — the robots and
   the Argo CD/Kargo pull-credential Secrets — stay in the manual-stop-gap state
   ADR-19 describes.
+- **The identity half is designed but not yet reconciled.** The per-Project
+  `keycloak.holos.run` resources this revision adds are reconciled by the **same**
+  Holos Controller as a second API group ([ADR-20](ADR-20.md)), but that group is
+  `Proposed` — its CRDs and reconcilers are future implementation work
+  (HOL-1344). So a Project's Keycloak resources are part of the **designed**
+  rendered set, while today the `my-project` scaffold's OIDC groups are still
+  provisioned by hand and `syncedTeams` references them by name ([ADR-19](ADR-19.md)).
+  The worked example shows what converges **once** the Keycloak group ships; until
+  then the Quay half works against hand-provisioned groups, exactly as ADR-19
+  describes. Crucially, because the claim value is carried by a client role on the
+  **Quay client**, that day requires **no Quay-side change** — the existing
+  `quay-client-roles` mapper already emits it.
 - **ADR-1 is partially resolved, not closed.** This ADR answers ADR-1's
   namespace-mapping and access-control deferrals but intentionally leaves the
   first-class `Project` CRD question open, so ADR-1 remains a living record that a
