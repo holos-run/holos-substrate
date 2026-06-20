@@ -1,0 +1,149 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: referencegrants.security.holos.run
+spec:
+  group: security.holos.run
+  names:
+    categories:
+    - holos
+    kind: ReferenceGrant
+    listKind: ReferenceGrantList
+    plural: referencegrants
+    singular: referencegrant
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ReferenceGrant identifies kinds of resources in other namespaces that are
+          trusted to reference the specified kinds of resources in the same namespace as
+          the policy (ADR-22). It mirrors gateway.networking.k8s.io ReferenceGrant and,
+          like its upstream counterpart, is statusless declarative policy: it has no
+          dedicated reconciler and no status subresource — consuming controllers read it
+          via the internal/referencegrant authorization helper.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              Spec defines the desired state of the ReferenceGrant. It is required: a
+              grant with no spec authorizes nothing, and omitting it would let an empty
+              grant bypass the from/to MinItems validation, so the API server rejects a
+              ReferenceGrant without a spec.
+            properties:
+              from:
+                description: |-
+                  From describes the trusted namespaces and kinds that may reference objects
+                  matching To. At least one entry is required.
+                items:
+                  description: |-
+                    ReferenceGrantFrom describes trusted namespaces and kinds that may reference
+                    objects in the ReferenceGrant's own namespace. It mirrors the
+                    gateway.networking.k8s.io ReferenceGrantFrom shape: a referrer is permitted
+                    only if its group, kind, and namespace all match an entry here.
+                  properties:
+                    group:
+                      description: |-
+                        Group is the API group of the referrer. The empty string ("") matches the
+                        Kubernetes core API group. The group is matched exactly.
+                      maxLength: 253
+                      type: string
+                    kind:
+                      description: |-
+                        Kind is the kind of the referrer (e.g. KeycloakInstance). It is matched
+                        exactly and is required.
+                      maxLength: 63
+                      minLength: 1
+                      type: string
+                    namespace:
+                      description: |-
+                        Namespace is the namespace the referrer must live in. Unlike upstream
+                        Gateway API, the namespace is always required: a grant trusts a specific
+                        source namespace, never "any namespace".
+                      maxLength: 63
+                      minLength: 1
+                      type: string
+                  required:
+                  - group
+                  - kind
+                  - namespace
+                  type: object
+                maxItems: 16
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: atomic
+              to:
+                description: |-
+                  To describes the kinds, in this ReferenceGrant's own namespace, that the
+                  trusted referrers in From may reference. At least one entry is required.
+                items:
+                  description: |-
+                    ReferenceGrantTo describes the kinds of objects, in the ReferenceGrant's own
+                    namespace, that the trusted referrers in From may reference. It mirrors the
+                    gateway.networking.k8s.io ReferenceGrantTo shape: a target is permitted only
+                    if its group and kind match an entry here, and — when Name is set — its name
+                    matches too.
+                  properties:
+                    group:
+                      description: |-
+                        Group is the API group of the target. The empty string ("") matches the
+                        Kubernetes core API group. The group is matched exactly.
+                      maxLength: 253
+                      type: string
+                    kind:
+                      description: |-
+                        Kind is the kind of the target (e.g. Secret). It is matched exactly and is
+                        required.
+                      maxLength: 63
+                      minLength: 1
+                      type: string
+                    name:
+                      description: |-
+                        Name, when set, constrains the grant to a single named target object of
+                        the given group/kind. When omitted (nil), the grant applies to all objects
+                        of that group/kind in the namespace.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                  required:
+                  - group
+                  - kind
+                  type: object
+                maxItems: 16
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: atomic
+            required:
+            - from
+            - to
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources: {}
