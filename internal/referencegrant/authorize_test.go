@@ -119,6 +119,20 @@ func TestAllowed(t *testing.T) {
 			to:     defaultTo,
 			want:   false,
 		},
+		{
+			name:   "empty target namespace fails closed (no cluster-wide list)",
+			grants: []*securityv1alpha1.ReferenceGrant{grant("g", "team-b", matchingFrom, unconstrainedTo)},
+			from:   defaultFrom,
+			to:     ToRef{Group: "", Kind: "Secret", Namespace: "", Name: "kc-creds"},
+			want:   false,
+		},
+		{
+			name:   "empty referrer namespace fails closed",
+			grants: []*securityv1alpha1.ReferenceGrant{grant("g", "team-b", matchingFrom, unconstrainedTo)},
+			from:   FromRef{Group: "keycloak.holos.run", Kind: "KeycloakInstance", Namespace: ""},
+			to:     defaultTo,
+			want:   false,
+		},
 	}
 
 	for _, tt := range tests {

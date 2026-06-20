@@ -64,7 +64,17 @@ type ToRef struct {
 //
 // The list is read through the supplied client.Reader, so the caller controls
 // whether it is served from a cache or a live read.
+//
+// Both namespaces must be non-empty: an empty to.Namespace would make
+// client.InNamespace("") list ReferenceGrants cluster-wide (a grant in any
+// namespace could then authorize the reference), and an empty from.Namespace
+// could only match a malformed grant. Allowed fails closed (returns false, nil)
+// in either case rather than performing an unscoped list.
 func Allowed(ctx context.Context, c client.Reader, from FromRef, to ToRef) (bool, error) {
+	if from.Namespace == "" || to.Namespace == "" {
+		return false, nil
+	}
+
 	var grants securityv1alpha1.ReferenceGrantList
 	if err := c.List(ctx, &grants, client.InNamespace(to.Namespace)); err != nil {
 		return false, err
