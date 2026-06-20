@@ -49,13 +49,71 @@ in-cluster registry created by `scripts/local-k3d` (see
 [docs/local-cluster.md](docs/local-cluster.md)). Images pushed there are
 pullable by the k3d cluster, so `make docker-push` makes the image available
 to the deploy phase. `docker-push` uses `docker buildx build --push` so the
-cross-built `linux/arm64` image is published directly.
+cross-built single-`PLATFORM` image is published directly.
 
 Verify the image locally without the cluster:
 
 ```bash
 docker run --rm quay.holos.localhost/holos/holos-paas:dev --help
 ```
+
+### Multi-arch images
+
+`docker-build`/`docker-push` produce a single-`PLATFORM` image. To publish a
+multi-arch image — one OCI image index (manifest list) spanning both
+`linux/amd64` and `linux/arm64`, so it runs on amd64 and arm64 clusters alike
+(GKE, EKS) — use the `docker-buildx` targets:
+
+```bash
+make docker-buildx                 # build+push the multi-arch holos-paas index
+make controller-docker-buildx      # build+push the multi-arch holos-controller index
+```
+
+These are **push-only**: a multi-platform build cannot `--load` into the local
+Docker daemon (which stores a single architecture), so each emits its manifest
+list straight to the registry. Both targets share one
+`docker-container`-driver buildx builder (`docker-buildx-builder` bootstraps it
+idempotently; the controller target depends on the same builder), required
+because the default `docker` driver cannot emit a manifest list. No QEMU is
+needed — the `Dockerfile` pins the builder stage to `$BUILDPLATFORM` and the Go
+toolchain cross-compiles to each target arch. Override
+`MULTIARCH_PLATFORMS`/`CONTROLLER_MULTIARCH_PLATFORMS` to change the platform
+set, and `IMAGE_REPO`/`IMAGE_TAG` (or `CONTROLLER_IMAGE_REPO`/
+`CONTROLLER_IMAGE_TAG`) to publish elsewhere. Verify both platforms landed:
+
+```bash
+docker buildx imagetools inspect quay.holos.localhost/holos/holos-paas:dev
+```
+
+### Publishing images from CI
+
+The [`.github/workflows/images.yaml`](.github/workflows/images.yaml) **Images**
+workflow builds and publishes both multi-arch images from GitHub Actions. It is
+**manual-only** (`workflow_dispatch` — never on push, pull request, or tag) and
+runs inside a `publish-images` GitHub Environment, so org policy (required
+reviewers, deployment branch/tag restrictions) gates every dispatch. It drives
+the same `make docker-buildx` / `make controller-docker-buildx` targets, so the
+build logic is single-sourced between local hosts and CI. Trigger it from the
+Actions tab or with `gh`:
+
+```bash
+gh workflow run images.yaml -f ref=main             # or a commit SHA / tag (v0.1.0)
+gh workflow run images.yaml -f ref=v0.1.0 -f tag=v0.1.0
+```
+
+Inputs:
+
+- `ref` (required, default `main`) — the Git reference to build: a commit SHA,
+  a branch (`main` or `refs/heads/main`), or a tag (`v0.1.0` or
+  `refs/tags/v0.1.0`). Passed to `actions/checkout`.
+- `tag` (optional) — the image tag to publish; defaults to the short SHA of the
+  resolved ref when left blank.
+- `registry` (optional, default `ghcr.io`) — an allowlisted registry host;
+  authenticates with the built-in `GITHUB_TOKEN`.
+
+It publishes `ghcr.io/<owner>/holos-paas` and
+`ghcr.io/<owner>/holos-controller` (owner derived from the repository), each a
+multi-arch index covering `linux/amd64` and `linux/arm64`.
 
 ## Documentation
 

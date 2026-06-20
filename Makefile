@@ -63,7 +63,10 @@ publish: ## Render, Kustomize-package, and oras push the manifests artifact (set
 # The image targets use buildx so the builder stage runs on the native host
 # (BUILDPLATFORM) and the Go toolchain cross-compiles to $(PLATFORM) — no target
 # architecture emulation is required. docker-build loads the result into the
-# local Docker daemon; docker-push publishes it to the registry.
+# local Docker daemon; docker-push publishes it to the registry. Both build a
+# single-$(PLATFORM) image; for a multi-arch manifest list spanning
+# $(MULTIARCH_PLATFORMS) use the docker-buildx target below (and
+# controller-docker-buildx in Makefile.controller for the controller image).
 .PHONY: docker-build
 docker-build: ## Build the container image for $(PLATFORM) tagged $(IMAGE).
 	docker buildx build --platform $(PLATFORM) -t $(IMAGE) --load .
