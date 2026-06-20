@@ -160,7 +160,10 @@ controller-test: controller-fmt controller-vet envtest-tool ## Run controller, A
 
 # Image targets use buildx so the builder stage runs on the native host and the
 # Go toolchain cross-compiles to $(CONTROLLER_PLATFORM) — mirrors the holos-paas
-# docker-build/docker-push pattern but with the controller Dockerfile.
+# docker-build/docker-push pattern but with the controller Dockerfile. Both
+# build a single-$(CONTROLLER_PLATFORM) image; for a multi-arch manifest list
+# spanning $(CONTROLLER_MULTIARCH_PLATFORMS) use the controller-docker-buildx
+# target below.
 .PHONY: controller-docker-build
 controller-docker-build: ## Build the controller image for $(CONTROLLER_PLATFORM) tagged $(CONTROLLER_IMAGE).
 	docker buildx build --platform $(CONTROLLER_PLATFORM) -f Dockerfile.controller -t $(CONTROLLER_IMAGE) --load .
