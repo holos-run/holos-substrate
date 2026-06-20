@@ -98,8 +98,13 @@ type ReferenceGrant struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	// Spec defines the desired state of the ReferenceGrant.
-	Spec ReferenceGrantSpec `json:"spec,omitempty"`
+	// Spec defines the desired state of the ReferenceGrant. It is required: a
+	// grant with no spec authorizes nothing, and omitting it would let an empty
+	// grant bypass the from/to MinItems validation, so the API server rejects a
+	// ReferenceGrant without a spec.
+	//
+	// +kubebuilder:validation:Required
+	Spec ReferenceGrantSpec `json:"spec"`
 }
 
 // +kubebuilder:object:root=true

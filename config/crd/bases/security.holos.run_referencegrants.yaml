@@ -49,7 +49,11 @@ spec:
           metadata:
             type: object
           spec:
-            description: Spec defines the desired state of the ReferenceGrant.
+            description: |-
+              Spec defines the desired state of the ReferenceGrant. It is required: a
+              grant with no spec authorizes nothing, and omitting it would let an empty
+              grant bypass the from/to MinItems validation, so the API server rejects a
+              ReferenceGrant without a spec.
             properties:
               from:
                 description: |-
@@ -137,6 +141,8 @@ spec:
             - from
             - to
             type: object
+        required:
+        - spec
         type: object
     served: true
     storage: true

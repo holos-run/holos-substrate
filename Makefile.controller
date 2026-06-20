@@ -132,11 +132,11 @@ controller-undeploy: kustomize-tool ## Remove the controller install (keeps the 
 
 .PHONY: controller-fmt
 controller-fmt: ## Run go fmt against the controller, API, and internal sources.
-	go fmt ./cmd/holos-controller/... ./api/... ./internal/quay/... ./internal/controller/...
+	go fmt ./cmd/holos-controller/... ./api/... ./internal/quay/... ./internal/controller/... ./internal/referencegrant/...
 
 .PHONY: controller-vet
 controller-vet: ## Run go vet against the controller, API, and internal sources.
-	go vet ./cmd/holos-controller/... ./api/... ./internal/quay/... ./internal/controller/...
+	go vet ./cmd/holos-controller/... ./api/... ./internal/quay/... ./internal/controller/... ./internal/referencegrant/...
 
 .PHONY: controller-build
 controller-build: controller-fmt controller-vet ## Build the holos-controller binary.
@@ -156,7 +156,7 @@ controller-test: controller-fmt controller-vet envtest-tool ## Run controller, A
 		exit 1; \
 	fi; \
 	KUBEBUILDER_ASSETS="$$assets" \
-		go test -race ./api/... ./cmd/holos-controller/... ./internal/quay/... ./internal/controller/...
+		go test -race ./api/... ./cmd/holos-controller/... ./internal/quay/... ./internal/controller/... ./internal/referencegrant/...
 
 # Image targets use buildx so the builder stage runs on the native host and the
 # Go toolchain cross-compiles to $(CONTROLLER_PLATFORM) — mirrors the holos-paas
