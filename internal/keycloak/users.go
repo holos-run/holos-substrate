@@ -17,11 +17,14 @@ type User struct {
 	// Email is the user's email address — the key first-broker-login auto-links
 	// a federated identity to (ADR-20).
 	Email string `json:"email,omitempty"`
-	// Enabled reports whether the account may authenticate.
-	Enabled bool `json:"enabled,omitempty"`
+	// Enabled reports whether the account may authenticate. No omitempty: a
+	// desired false (a disabled account) must be sent rather than silently
+	// dropped on create/update.
+	Enabled bool `json:"enabled"`
 	// EmailVerified marks the email trusted, which (with the IdP's Trust Email
-	// flag) lets first-broker-login auto-link without a verification step.
-	EmailVerified bool `json:"emailVerified,omitempty"`
+	// flag) lets first-broker-login auto-link without a verification step. No
+	// omitempty so an explicit false is sent.
+	EmailVerified bool `json:"emailVerified"`
 }
 
 // FederatedIdentity is the link between a local user and an external identity

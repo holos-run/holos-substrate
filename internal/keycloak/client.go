@@ -365,6 +365,74 @@ func (c *Client) doCreate(ctx context.Context, path string, body any) (string, e
 	return idFromLocation(resp.Header.Get("Location")), nil
 }
 
+// doCreateReturningBody sends a POST whose success Keycloak signals with a 2xx
+// and the created resource's representation in the JSON body — the Authorization
+// Services endpoints (resource/policy/permission), which return the object
+// (carrying its id or _id) rather than a Location header. It returns the new
+// resource's id, preferring the body's id, then _id, then a Location header if
+// one is also present. A non-2xx response is an *APIError so callers branch on
+// IsConflict.
+func (c *Client) doCreateReturningBody(ctx context.Context, path string, body any) (string, error) {
+	token, err := c.accessToken(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return "", fmt.Errorf("keycloak: marshaling request body for POST %s: %w", path, err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(buf))
+	if err != nil {
+		return "", fmt.Errorf("keycloak: building request POST %s: %w", path, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("keycloak: POST %s: %w", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("keycloak: reading response body for POST %s: %w", path, err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", newAPIError(http.MethodPost, path, resp.StatusCode, respBody)
+	}
+
+	if id := idFromCreateBody(respBody); id != "" {
+		return id, nil
+	}
+	return idFromLocation(resp.Header.Get("Location")), nil
+}
+
+// idFromCreateBody extracts the created resource id from an Authorization
+// Services create response body, preferring id then _id (the resource endpoint
+// uses _id; policy/permission use id). It returns "" when the body is empty or
+// carries neither.
+func idFromCreateBody(body []byte) string {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return ""
+	}
+	var parsed struct {
+		ID    string `json:"id"`
+		Under string `json:"_id"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return ""
+	}
+	if parsed.ID != "" {
+		return parsed.ID
+	}
+	return parsed.Under
+}
+
 // idFromLocation extracts the trailing path segment (the created resource id)
 // from a Keycloak Admin API Location header. It returns "" when location is
 // empty or unparseable.

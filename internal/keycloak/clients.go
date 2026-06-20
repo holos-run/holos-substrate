@@ -26,10 +26,15 @@ type OIDCClient struct {
 	ClientID string `json:"clientId,omitempty"`
 	// Name is the client's display name.
 	Name string `json:"name,omitempty"`
-	// Enabled reports whether the client may be used.
-	Enabled bool `json:"enabled,omitempty"`
-	// PublicClient is true for a public client, false for confidential.
-	PublicClient bool `json:"publicClient,omitempty"`
+	// Enabled reports whether the client may be used. No omitempty: UpdateClient
+	// is a full PUT, so a desired false must be sent to disable a client rather
+	// than silently dropped.
+	Enabled bool `json:"enabled"`
+	// PublicClient is true for a public client, false for confidential. No
+	// omitempty: a confidential client needs publicClient:false on the wire, and
+	// the full-PUT update must be able to converge a public client to
+	// confidential.
+	PublicClient bool `json:"publicClient"`
 	// RedirectURIs are the client's allowed redirect URIs.
 	RedirectURIs []string `json:"redirectUris,omitempty"`
 	// WebOrigins are the client's allowed CORS web origins.
@@ -126,43 +131,115 @@ func (c *Client) CreateProtocolMapper(ctx context.Context, clientUUID string, ma
 	return err
 }
 
+// UpdateProtocolMapper replaces an existing mapper's definition via
+// PUT /admin/realms/{realm}/clients/{clientUUID}/protocol-mappers/models/{id}.
+// The mapper's ID must be set (the id of the mapper being updated).
+func (c *Client) UpdateProtocolMapper(ctx context.Context, clientUUID string, mapper ProtocolMapper) error {
+	path := c.adminPath("/clients/" + url.PathEscape(clientUUID) + "/protocol-mappers/models/" + url.PathEscape(mapper.ID))
+	return c.doJSON(ctx, http.MethodPut, path, mapper, nil)
+}
+
+// clientRoleMapperConfig builds the desired oidc-usermodel-client-role-mapper
+// config: the target client for client-role mapping, the claim name, and the
+// token-claim/multivalued flags — the platform's quay-client-roles shape
+// retargeted to clientID (ADR-20).
+func clientRoleMapperConfig(clientID, claimName string) map[string]string {
+	return map[string]string{
+		"usermodel.clientRoleMapping.clientId": clientID,
+		"claim.name":                           claimName,
+		"jsonType.label":                       "String",
+		"multivalued":                          "true",
+		"id.token.claim":                       "true",
+		"access.token.claim":                   "true",
+		"userinfo.token.claim":                 "true",
+	}
+}
+
+// mapperMatchesDesired reports whether an existing mapper already has the desired
+// type and every desired config key/value, so a converged mapper is left
+// untouched. Extra config keys Keycloak adds on its own are ignored; only the
+// keys the platform programs must match.
+func mapperMatchesDesired(existing ProtocolMapper, desiredType string, desiredConfig map[string]string) bool {
+	if existing.ProtocolMapper != desiredType {
+		return false
+	}
+	for k, v := range desiredConfig {
+		if existing.Config[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
 // EnsureClientRoleMapper idempotently ensures an oidc-usermodel-client-role-mapper
-// named name is present on the client, scoped to emit clientID's client roles
-// into the shared groups claim — the quay-client-roles shape retargeted to this
-// client (ADR-20). It no-ops when a mapper of that name already exists (checked
-// via ListProtocolMappers, and tolerating a concurrent creator's 409).
+// named name is present on the client AND configured to emit clientID's client
+// roles into the claimName claim — the quay-client-roles shape retargeted to
+// this client (ADR-20).
 //
-// The config mirrors the platform's quay-client-roles mapper: the target client
-// for client-role mapping, the claim name (groups), token-claim inclusion, and
-// multivalued string output.
+// It is desired-state aware rather than name-only: a same-named mapper whose
+// type or programmed config drifts (e.g. a stale or hand-edited mapper pointing
+// at the wrong clientId or claim) is PUT back to the desired definition rather
+// than left broken while reporting success. When no mapper of that name exists
+// it creates one, tolerating a concurrent creator's 409 by re-reading and
+// converging.
 func (c *Client) EnsureClientRoleMapper(ctx context.Context, clientUUID, name, clientID, claimName string) error {
+	desiredConfig := clientRoleMapperConfig(clientID, claimName)
 	mappers, err := c.ListProtocolMappers(ctx, clientUUID)
 	if err != nil {
 		return err
 	}
 	for _, m := range mappers {
-		if m.Name == name {
+		if m.Name != name {
+			continue
+		}
+		// A same-named mapper exists: leave it alone only when it already matches
+		// the desired type and config; otherwise PUT the corrected definition.
+		if mapperMatchesDesired(m, ProtocolMapperClientRole, desiredConfig) {
 			return nil
 		}
+		corrected := ProtocolMapper{
+			ID:             m.ID,
+			Name:           name,
+			Protocol:       "openid-connect",
+			ProtocolMapper: ProtocolMapperClientRole,
+			Config:         desiredConfig,
+		}
+		return c.UpdateProtocolMapper(ctx, clientUUID, corrected)
 	}
+
 	mapper := ProtocolMapper{
 		Name:           name,
 		Protocol:       "openid-connect",
 		ProtocolMapper: ProtocolMapperClientRole,
-		Config: map[string]string{
-			"usermodel.clientRoleMapping.clientId": clientID,
-			"claim.name":                           claimName,
-			"jsonType.label":                       "String",
-			"multivalued":                          "true",
-			"id.token.claim":                       "true",
-			"access.token.claim":                   "true",
-			"userinfo.token.claim":                 "true",
-		},
+		Config:         desiredConfig,
 	}
 	err = c.CreateProtocolMapper(ctx, clientUUID, mapper)
-	if IsConflict(err) {
-		return nil
+	if !IsConflict(err) {
+		return err
 	}
+	// A concurrent reconcile created it: re-read and converge if needed.
+	mappers, lerr := c.ListProtocolMappers(ctx, clientUUID)
+	if lerr != nil {
+		return lerr
+	}
+	for _, m := range mappers {
+		if m.Name != name {
+			continue
+		}
+		if mapperMatchesDesired(m, ProtocolMapperClientRole, desiredConfig) {
+			return nil
+		}
+		corrected := ProtocolMapper{
+			ID:             m.ID,
+			Name:           name,
+			Protocol:       "openid-connect",
+			ProtocolMapper: ProtocolMapperClientRole,
+			Config:         desiredConfig,
+		}
+		return c.UpdateProtocolMapper(ctx, clientUUID, corrected)
+	}
+	// The 409 was reported but no such mapper is present on re-read; surface the
+	// original conflict rather than silently succeeding.
 	return err
 }
 

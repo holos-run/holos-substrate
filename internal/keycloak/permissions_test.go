@@ -9,10 +9,13 @@ import (
 const authzBase = adminPathPrefix + "/realms/holos/clients/perm-uuid/authz/resource-server"
 
 func TestCreateGroupResource(t *testing.T) {
+	// The authz resource endpoint returns 201 with the ResourceRepresentation
+	// (carrying _id) in the BODY, not a Location header; the helper must read it
+	// from the body.
 	h := &recordingHandler{
 		t: t, wantMethod: http.MethodPost, wantPath: authzBase + "/resource",
 		status:   http.StatusCreated,
-		location: "https://kc/admin/realms/holos/clients/perm-uuid/authz/resource-server/resource/res-1",
+		respBody: `{"_id":"res-1","name":"/projects/my-project/roles/owner","type":"Groups"}`,
 	}
 	c, _ := newTestClient(t, h)
 
@@ -25,7 +28,7 @@ func TestCreateGroupResource(t *testing.T) {
 		t.Fatalf("CreateGroupResource: %v", err)
 	}
 	if id != "res-1" {
-		t.Errorf("id = %q, want res-1", id)
+		t.Errorf("id = %q, want res-1 (decoded from the body _id)", id)
 	}
 	if h.gotBody["type"] != "Groups" {
 		t.Errorf("type = %v, want defaulted Groups", h.gotBody["type"])
@@ -39,7 +42,7 @@ func TestCreateGroupPolicyDefaultsType(t *testing.T) {
 	h := &recordingHandler{
 		t: t, wantMethod: http.MethodPost, wantPath: authzBase + "/policy/group",
 		status:   http.StatusCreated,
-		location: "https://kc/.../policy/group/pol-1",
+		respBody: `{"id":"pol-1","name":"custodians-owner","type":"group"}`,
 	}
 	c, _ := newTestClient(t, h)
 
@@ -60,7 +63,7 @@ func TestCreateScopePermission(t *testing.T) {
 	h := &recordingHandler{
 		t: t, wantMethod: http.MethodPost, wantPath: authzBase + "/permission/scope",
 		status:   http.StatusCreated,
-		location: "https://kc/.../permission/scope/perm-1",
+		respBody: `{"id":"perm-1","name":"custodian-owner-manages-roles-owner"}`,
 	}
 	c, _ := newTestClient(t, h)
 

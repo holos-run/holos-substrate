@@ -93,16 +93,23 @@ func TestListProtocolMappers(t *testing.T) {
 	}
 }
 
-func TestEnsureClientRoleMapperNoOpsWhenPresent(t *testing.T) {
-	postHit := false
+func TestEnsureClientRoleMapperNoOpsWhenAlreadyConverged(t *testing.T) {
+	// An existing mapper that already matches the desired type and programmed
+	// config is left untouched: no POST and no PUT.
+	postHit, putHit := false, false
+	converged := `[{"id":"m1","name":"project-roles","protocolMapper":"oidc-usermodel-client-role-mapper","config":{"usermodel.clientRoleMapping.clientId":"https://app","claim.name":"groups","jsonType.label":"String","multivalued":"true","id.token.claim":"true","access.token.claim":"true","userinfo.token.claim":"true"}}]`
 	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
 		"GET " + clientsBase + "/uuid-1/protocol-mappers/models": func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			_, _ = io.WriteString(w, `[{"id":"m1","name":"project-roles"}]`)
+			_, _ = io.WriteString(w, converged)
 		},
 		"POST " + clientsBase + "/uuid-1/protocol-mappers/models": func(w http.ResponseWriter, _ *http.Request) {
 			postHit = true
 			w.WriteHeader(http.StatusCreated)
+		},
+		"PUT " + clientsBase + "/uuid-1/protocol-mappers/models/m1": func(w http.ResponseWriter, _ *http.Request) {
+			putHit = true
+			w.WriteHeader(http.StatusNoContent)
 		},
 	}}
 	c, _ := newTestClient(t, m)
@@ -110,8 +117,37 @@ func TestEnsureClientRoleMapperNoOpsWhenPresent(t *testing.T) {
 	if err := c.EnsureClientRoleMapper(context.Background(), "uuid-1", "project-roles", "https://app", "groups"); err != nil {
 		t.Fatalf("EnsureClientRoleMapper: %v", err)
 	}
-	if postHit {
-		t.Error("no POST should be issued when the mapper already exists")
+	if postHit || putHit {
+		t.Error("a converged mapper must be left untouched (no POST/PUT)")
+	}
+}
+
+func TestEnsureClientRoleMapperCorrectsDrift(t *testing.T) {
+	// A same-named mapper exists but points at the WRONG clientId: it must be PUT
+	// back to the desired definition, not left broken while reporting success.
+	var putBody map[string]any
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + clientsBase + "/uuid-1/protocol-mappers/models": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `[{"id":"m1","name":"project-roles","protocolMapper":"oidc-usermodel-client-role-mapper","config":{"usermodel.clientRoleMapping.clientId":"https://WRONG","claim.name":"groups"}}]`)
+		},
+		"PUT " + clientsBase + "/uuid-1/protocol-mappers/models/m1": func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			putBody = decodeJSONObject(t, body)
+			w.WriteHeader(http.StatusNoContent)
+		},
+	}}
+	c, _ := newTestClient(t, m)
+
+	if err := c.EnsureClientRoleMapper(context.Background(), "uuid-1", "project-roles", "https://app", "groups"); err != nil {
+		t.Fatalf("EnsureClientRoleMapper: %v", err)
+	}
+	if putBody == nil {
+		t.Fatal("a drifted mapper must be corrected via PUT")
+	}
+	cfg, ok := putBody["config"].(map[string]any)
+	if !ok || cfg["usermodel.clientRoleMapping.clientId"] != "https://app" {
+		t.Errorf("PUT config clientId = %v, want corrected to https://app", putBody["config"])
 	}
 }
 
@@ -149,10 +185,19 @@ func TestEnsureClientRoleMapperCreatesWhenAbsent(t *testing.T) {
 }
 
 func TestEnsureClientRoleMapperToleratesConflict(t *testing.T) {
+	// The create races a concurrent creator and 409s; the re-read then finds the
+	// now-present (and converged) mapper, so the call succeeds without a PUT.
+	getCalls := 0
+	converged := `[{"id":"m1","name":"project-roles","protocolMapper":"oidc-usermodel-client-role-mapper","config":{"usermodel.clientRoleMapping.clientId":"https://app","claim.name":"groups","jsonType.label":"String","multivalued":"true","id.token.claim":"true","access.token.claim":"true","userinfo.token.claim":"true"}}]`
 	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
 		"GET " + clientsBase + "/uuid-1/protocol-mappers/models": func(w http.ResponseWriter, _ *http.Request) {
+			getCalls++
 			w.WriteHeader(http.StatusOK)
-			_, _ = io.WriteString(w, `[]`)
+			if getCalls == 1 {
+				_, _ = io.WriteString(w, `[]`) // first list: not yet present
+				return
+			}
+			_, _ = io.WriteString(w, converged) // re-read after the 409
 		},
 		"POST " + clientsBase + "/uuid-1/protocol-mappers/models": func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusConflict)

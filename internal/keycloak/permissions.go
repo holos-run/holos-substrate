@@ -105,7 +105,7 @@ func (c *Client) CreateGroupResource(ctx context.Context, permClientUUID string,
 	if resource.Type == "" {
 		resource.Type = "Groups"
 	}
-	return c.doCreate(ctx, c.authzPath(permClientUUID, "/resource"), resource)
+	return c.doCreateReturningBody(ctx, c.authzPath(permClientUUID, "/resource"), resource)
 }
 
 // CreateGroupPolicy creates an FGAP v2 group policy naming the custodian
@@ -116,7 +116,7 @@ func (c *Client) CreateGroupPolicy(ctx context.Context, permClientUUID string, p
 	if policy.Type == "" {
 		policy.Type = "group"
 	}
-	return c.doCreate(ctx, c.authzPath(permClientUUID, "/policy/group"), policy)
+	return c.doCreateReturningBody(ctx, c.authzPath(permClientUUID, "/policy/group"), policy)
 }
 
 // CreateScopePermission creates an FGAP v2 scope permission binding the given
@@ -126,7 +126,7 @@ func (c *Client) CreateGroupPolicy(ctx context.Context, permClientUUID string, p
 // manage-members/manage-membership scope over a role group (ADR-20). An
 // already-existing permission is surfaced as an *APIError reporting IsConflict.
 func (c *Client) CreateScopePermission(ctx context.Context, permClientUUID string, permission ScopePermission) (string, error) {
-	return c.doCreate(ctx, c.authzPath(permClientUUID, "/permission/scope"), permission)
+	return c.doCreateReturningBody(ctx, c.authzPath(permClientUUID, "/permission/scope"), permission)
 }
 
 // DeleteScopePermission deletes an FGAP v2 scope permission by its UUID via
