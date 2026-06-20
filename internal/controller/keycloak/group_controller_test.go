@@ -750,6 +750,65 @@ func TestGroupDeleteUnprovisionedDropsFinalizer(t *testing.T) {
 	}
 }
 
+func TestGroupClientRolePartialFailureTracked(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-group-partialrole"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	createIgnoreExists(t, ctx, &keycloakv1alpha1.KeycloakClient{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "consumer"},
+		Spec: keycloakv1alpha1.KeycloakClientSpec{
+			ClientID:    "https://app.holos.localhost",
+			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+		},
+	})
+
+	group := &keycloakv1alpha1.KeycloakGroup{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "partialrole"},
+		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Path:        "projects/pf/roles/owner",
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			ClientRoles: []keycloakv1alpha1.ClientRoleReference{
+				{ClientRef: "consumer", Role: "pf-a"},
+				{ClientRef: "consumer", Role: "pf-fail"},
+			},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, group); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	fake := newFakeKeycloakClient()
+	fake.seedClient("https://app.holos.localhost", "client-uuid")
+	fake.seedClientRole("client-uuid", "pf-a", "role-a")
+	fake.seedClientRole("client-uuid", "pf-fail", "role-fail")
+	// Fail the assignment of the second role only.
+	fake.assignRoleErrFor = map[string]bool{"client-uuid/pf-fail": true}
+	r, _ := newGroupReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(group)
+	_, _ = reconcileGroup(ctx, r, key) // finalizer
+	if _, err := reconcileGroup(ctx, r, key); err == nil {
+		t.Fatalf("expected the second role assignment to fail")
+	}
+	// The first (successful) assignment must be recorded in status even though the
+	// reconcile failed, so a later release prunes it rather than leaking it.
+	got := getGroup(t, ctx, key)
+	found := false
+	for _, m := range got.Status.ManagedClientRoles {
+		if m == "https://app.holos.localhost/pf-a" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("status.managedClientRoles = %v, want it to include the successfully-assigned pf-a", got.Status.ManagedClientRoles)
+	}
+}
+
 func TestGroupCreateRaceConflict(t *testing.T) {
 	if shared == nil {
 		t.Skip("envtest not provisioned")

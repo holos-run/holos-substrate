@@ -57,6 +57,11 @@ type fakeKeycloakClient struct {
 	// (created=false) because a concurrent actor created it.
 	groupGetNotFoundOnce map[string]bool
 
+	// assignRoleErrFor, when an entry "<clientUUID>/<role>" is true, makes
+	// AssignClientRoleToGroup return an error for that role — used to simulate a
+	// partial failure where an earlier role assigns but a later one fails.
+	assignRoleErrFor map[string]bool
+
 	// ensureErr, when non-nil, is returned by EnsureGroupByPathCreated to simulate a
 	// create failure.
 	ensureErr error
@@ -191,6 +196,9 @@ func (f *fakeKeycloakClient) AssignClientRoleToGroup(ctx context.Context, groupI
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("AssignRole:" + groupID + "/" + clientUUID + "/" + role.Name)
+	if f.assignRoleErrFor[clientUUID+"/"+role.Name] {
+		return &keycloak.APIError{StatusCode: http.StatusInternalServerError, Method: http.MethodPost, Path: "role-mappings", Message: "simulated assign failure"}
+	}
 	f.roleAssignments[groupID+"/"+clientUUID+"/"+role.Name] = true
 	return nil
 }

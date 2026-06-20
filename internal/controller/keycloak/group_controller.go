@@ -3,6 +3,7 @@ package keycloak
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/go-logr/logr"
@@ -364,6 +365,38 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
+// stringSet is a small ordered-output set used to track managed-side-effect status
+// entries as each external mutation succeeds, so a mid-reconcile failure leaves the
+// status reflecting exactly what currently exists in Keycloak.
+type stringSet struct {
+	m map[string]bool
+}
+
+func newStringSet(items []string) *stringSet {
+	s := &stringSet{m: make(map[string]bool, len(items))}
+	for _, i := range items {
+		s.m[i] = true
+	}
+	return s
+}
+
+func (s *stringSet) add(item string)    { s.m[item] = true }
+func (s *stringSet) remove(item string) { delete(s.m, item) }
+
+// sorted returns the set's members in deterministic (sorted) order, or nil when
+// empty so the status field round-trips as omitempty.
+func (s *stringSet) sorted() []string {
+	if len(s.m) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(s.m))
+	for k := range s.m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // conferClientRoles reconciles the group's client-role assignments to the desired
 // set declared in spec.clientRoles: it assigns every declared (clientRef, role)
 // and unassigns any role this CR previously managed (recorded in
@@ -406,6 +439,16 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 		desiredKeys = append(desiredKeys, key)
 	}
 
+	// Track the managed set as a live set seeded from what is already recorded, and
+	// update it as each external side effect succeeds — adding a role the instant its
+	// assignment lands and removing a stale one the instant its unassign lands. This
+	// keeps status.managedClientRoles accurate even if a later step fails mid-loop:
+	// an early-return on failure leaves status reflecting exactly the roles currently
+	// bound, so a subsequent adopted-release prune (which trusts this set) does not
+	// miss an already-assigned role (the partial-failure leak).
+	managed := newStringSet(group.Status.ManagedClientRoles)
+	defer func() { group.Status.ManagedClientRoles = managed.sorted() }()
+
 	// Assign every desired role (idempotent on Keycloak's side).
 	for _, key := range desiredKeys {
 		t := desired[key]
@@ -414,16 +457,18 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 		if assignErr != nil {
 			return fmt.Errorf("assigning client role %q to Keycloak group %q: %w", t.role.Name, group.Spec.Path, assignErr)
 		}
+		managed.add(key)
 	}
 
 	// Prune roles this CR previously managed but that are no longer desired. Each
 	// stale entry is "<clientId>/<role>"; resolve the client and remove the role.
-	for _, prev := range group.Status.ManagedClientRoles {
+	for _, prev := range managed.sorted() {
 		if _, ok := desired[prev]; ok {
 			continue
 		}
 		clientID, roleName, ok := splitManagedRole(prev)
 		if !ok {
+			managed.remove(prev)
 			continue
 		}
 		oidc, err := kc.FindClientByClientID(ctx, clientID)
@@ -432,13 +477,15 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 			return fmt.Errorf("finding Keycloak client %q to prune role %q: %w", clientID, roleName, err)
 		}
 		if oidc == nil {
-			// The client is gone; the role mapping went with it. Nothing to prune.
+			// The client is gone; the role mapping went with it. Stop tracking it.
+			managed.remove(prev)
 			continue
 		}
 		role, err := kc.GetClientRole(ctx, oidc.ID, roleName)
 		recordKeycloakAPI(opGetClientRole, ignoreNotFound(err))
 		if keycloak.IsNotFound(err) {
 			// The role no longer exists; nothing to remove.
+			managed.remove(prev)
 			continue
 		}
 		if err != nil {
@@ -449,9 +496,8 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 		if rmErr != nil {
 			return fmt.Errorf("unassigning stale client role %q from Keycloak group %q: %w", roleName, group.Spec.Path, rmErr)
 		}
+		managed.remove(prev)
 	}
-
-	group.Status.ManagedClientRoles = desiredKeys
 	return nil
 }
 
@@ -509,6 +555,18 @@ const managedCustodianSep = "|"
 func (r *GroupReconciler) configureCustodians(ctx context.Context, kc GroupClient, group *keycloakv1alpha1.KeycloakGroup, groupID string) error {
 	prev := parseManagedCustodians(group.Status.ManagedCustodians)
 
+	// Track the managed custodian set live, seeded from what is already recorded, and
+	// persist it via defer — adding each custodian the instant its FGAP objects are
+	// created and removing each stale one the instant its objects are deleted. This
+	// keeps status.managedCustodians accurate even if a later custodian step fails
+	// mid-loop, so a subsequent adopted-release prune (which trusts this set) does not
+	// miss an already-created delegation (the partial-failure leak).
+	managed := map[string]managedCustodian{}
+	for k, v := range prev {
+		managed[k] = v
+	}
+	defer func() { group.Status.ManagedCustodians = serializeManagedCustodians(managed) }()
+
 	// When the spec declares custodians, ensure the delegation objects exist.
 	var permClient *keycloak.OIDCClient
 	if len(group.Spec.Custodians) > 0 || len(prev) > 0 {
@@ -522,14 +580,15 @@ func (r *GroupReconciler) configureCustodians(ctx context.Context, kc GroupClien
 				return fmt.Errorf("the %q client is not present; FGAP v2 must be enabled to configure custodians", adminPermissionsClientID)
 			}
 			// No spec custodians and the perm client is gone: nothing left to prune.
-			group.Status.ManagedCustodians = nil
+			for k := range managed {
+				delete(managed, k)
+			}
 			return nil
 		}
 		permClient = c
 	}
 
-	desired := map[string]managedCustodian{}
-	desiredOrder := make([]string, 0, len(group.Spec.Custodians))
+	desired := map[string]bool{}
 	if len(group.Spec.Custodians) > 0 {
 		resourceID, err := kc.CreateGroupResource(ctx, permClient.ID, keycloak.AuthzResource{
 			Name:   group.Spec.Path,
@@ -581,8 +640,10 @@ func (r *GroupReconciler) configureCustodians(ctx context.Context, kc GroupClien
 				return fmt.Errorf("resolving custodian permission id for Keycloak group %q: %w", group.Spec.Path, err)
 			}
 
-			desired[custodian.Path] = managedCustodian{path: custodian.Path, permID: permID, policyID: policyID}
-			desiredOrder = append(desiredOrder, custodian.Path)
+			// Record the custodian as managed the instant its objects exist, so a
+			// later custodian's failure does not strand this one untracked.
+			managed[custodian.Path] = managedCustodian{path: custodian.Path, permID: permID, policyID: policyID}
+			desired[custodian.Path] = true
 		}
 	}
 
@@ -591,9 +652,10 @@ func (r *GroupReconciler) configureCustodians(ctx context.Context, kc GroupClien
 	// through the generic policy-delete endpoint and tolerate an already-absent id.
 	// When a stored id is empty (a prior reconcile recorded it on a 409 before this
 	// fix), resolve it by its deterministic name first so the delegation is actually
-	// removed rather than silently leaked.
+	// removed rather than silently leaked. Each is dropped from the managed set only
+	// after its objects are deleted, so a mid-prune failure leaves the rest tracked.
 	for path, old := range prev {
-		if _, ok := desired[path]; ok {
+		if desired[path] {
 			continue
 		}
 		permName := fmt.Sprintf("holos:custodian-perm:%s:%s", group.Spec.Path, path)
@@ -620,9 +682,8 @@ func (r *GroupReconciler) configureCustodians(ctx context.Context, kc GroupClien
 				return fmt.Errorf("pruning custodian policy for Keycloak group %q: %w", group.Spec.Path, err)
 			}
 		}
+		delete(managed, path)
 	}
-
-	group.Status.ManagedCustodians = formatManagedCustodians(desired, desiredOrder)
 	return nil
 }
 
@@ -647,15 +708,21 @@ func parseManagedCustodians(entries []string) map[string]managedCustodian {
 	return out
 }
 
-// formatManagedCustodians encodes the desired custodians back to the
-// "path|permID|policyID" status slice, in the given path order for stable output.
-func formatManagedCustodians(desired map[string]managedCustodian, order []string) []string {
-	if len(order) == 0 {
+// serializeManagedCustodians encodes the managed custodian set back to the
+// "path|permID|policyID" status slice, sorted by path for stable, deterministic
+// output (and nil when empty so the omitempty status field round-trips cleanly).
+func serializeManagedCustodians(managed map[string]managedCustodian) []string {
+	if len(managed) == 0 {
 		return nil
 	}
-	out := make([]string, 0, len(order))
-	for _, path := range order {
-		mc := desired[path]
+	paths := make([]string, 0, len(managed))
+	for p := range managed {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		mc := managed[p]
 		out = append(out, strings.Join([]string{mc.path, mc.permID, mc.policyID}, managedCustodianSep))
 	}
 	return out
