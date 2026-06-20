@@ -415,3 +415,45 @@ func TestRemoveClientRoleFromGroup(t *testing.T) {
 		t.Errorf("array[0] = %v, want the role with id", h.gotArray[0])
 	}
 }
+
+func TestGetClientSecret(t *testing.T) {
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodGet,
+		wantPath: clientsBase + "/uuid-1/client-secret",
+		status:   http.StatusOK,
+		respBody: `{"type":"secret","value":"s3cr3t"}`,
+	}
+	c, _ := newTestClient(t, h)
+
+	secret, err := c.GetClientSecret(context.Background(), "uuid-1")
+	if err != nil {
+		t.Fatalf("GetClientSecret: %v", err)
+	}
+	if secret.Value != "s3cr3t" {
+		t.Errorf("value = %q, want s3cr3t", secret.Value)
+	}
+}
+
+func TestDeleteClient(t *testing.T) {
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodDelete,
+		wantPath: clientsBase + "/uuid-1",
+		status:   http.StatusNoContent,
+	}
+	c, _ := newTestClient(t, h)
+
+	if err := c.DeleteClient(context.Background(), "uuid-1"); err != nil {
+		t.Fatalf("DeleteClient: %v", err)
+	}
+}
+
+func TestDeleteClientByClientIDIfExistsAbsentIsNil(t *testing.T) {
+	// FindClientByClientID returns an empty array (no such client); the delete must
+	// be a no-op success.
+	h := &recordingHandler{t: t, wantMethod: http.MethodGet, wantPath: clientsBase, status: http.StatusOK, respBody: `[]`}
+	c, _ := newTestClient(t, h)
+
+	if err := c.DeleteClientByClientIDIfExists(context.Background(), "https://absent"); err != nil {
+		t.Fatalf("absent client must be a no-op success, got %v", err)
+	}
+}

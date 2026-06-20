@@ -144,6 +144,40 @@ func newGroupReconciler(fake *fakeKeycloakClient, namespace string) (*GroupRecon
 	return r, recorder
 }
 
+// newUserReconciler builds a UserReconciler wired to the envtest client and a
+// recording event recorder, injecting the supplied fake via a factory.
+func newUserReconciler(fake *fakeKeycloakClient, namespace string) (*UserReconciler, *record.FakeRecorder) {
+	recorder := record.NewFakeRecorder(64)
+	r := &UserReconciler{
+		Client:    shared.k8sClient,
+		APIReader: shared.k8sClient,
+		Recorder:  recorder,
+		Namespace: namespace,
+		NewClient: func(cred *keycloakCredential, url, realm string, caBundle []byte) UserClient {
+			fake.gotCABundle = caBundle
+			return fake
+		},
+	}
+	return r, recorder
+}
+
+// newClientReconciler builds a ClientReconciler wired to the envtest client and a
+// recording event recorder, injecting the supplied fake via a factory.
+func newClientReconciler(fake *fakeKeycloakClient, namespace string) (*ClientReconciler, *record.FakeRecorder) {
+	recorder := record.NewFakeRecorder(64)
+	r := &ClientReconciler{
+		Client:    shared.k8sClient,
+		APIReader: shared.k8sClient,
+		Recorder:  recorder,
+		Namespace: namespace,
+		NewClient: func(cred *keycloakCredential, url, realm string, caBundle []byte) ClientClient {
+			fake.gotCABundle = caBundle
+			return fake
+		},
+	}
+	return r, recorder
+}
+
 // reconcileInstance runs a single Reconcile pass for the named KeycloakInstance.
 func reconcileInstance(ctx context.Context, r *InstanceReconciler, key client.ObjectKey) (ctrl.Result, error) {
 	return r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
@@ -151,6 +185,16 @@ func reconcileInstance(ctx context.Context, r *InstanceReconciler, key client.Ob
 
 // reconcileGroup runs a single Reconcile pass for the named KeycloakGroup.
 func reconcileGroup(ctx context.Context, r *GroupReconciler, key client.ObjectKey) (ctrl.Result, error) {
+	return r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+}
+
+// reconcileUser runs a single Reconcile pass for the named KeycloakUser.
+func reconcileUser(ctx context.Context, r *UserReconciler, key client.ObjectKey) (ctrl.Result, error) {
+	return r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+}
+
+// reconcileClient runs a single Reconcile pass for the named KeycloakClient.
+func reconcileClient(ctx context.Context, r *ClientReconciler, key client.ObjectKey) (ctrl.Result, error) {
 	return r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 }
 

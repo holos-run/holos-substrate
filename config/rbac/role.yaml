@@ -16,6 +16,7 @@ rules:
   resources:
   - secrets
   verbs:
+  - create
   - get
 - apiGroups:
   - authentication.k8s.io

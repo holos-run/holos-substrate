@@ -143,6 +143,59 @@ func (c *Client) CreateClient(ctx context.Context, client OIDCClient) (string, e
 	return c.doCreate(ctx, c.adminPath("/clients"), client)
 }
 
+// ClientSecret is the subset of a Keycloak CredentialRepresentation returned by
+// the client-secret endpoint: the generated confidential-client secret value the
+// reconciler delivers to the consumer's Secret (ADR-20).
+type ClientSecret struct {
+	// Type is the credential type, e.g. "secret".
+	Type string `json:"type,omitempty"`
+	// Value is the generated client secret string.
+	Value string `json:"value,omitempty"`
+}
+
+// GetClientSecret fetches a confidential client's current secret via
+// GET /admin/realms/{realm}/clients/{clientUUID}/client-secret, returning the
+// generated secret value. Keycloak generates a secret for a confidential client
+// on creation, so the reconciler reads it back (rather than regenerating) to
+// deliver it generate-once to the consumer's Secret. A missing client is
+// returned as an *APIError reporting IsNotFound.
+func (c *Client) GetClientSecret(ctx context.Context, clientUUID string) (*ClientSecret, error) {
+	path := c.adminPath("/clients/" + url.PathEscape(clientUUID) + "/client-secret")
+	secret := &ClientSecret{}
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, secret); err != nil {
+		return nil, err
+	}
+	return secret, nil
+}
+
+// DeleteClient deletes the OIDC client identified by UUID via
+// DELETE /admin/realms/{realm}/clients/{clientUUID}. A missing client is
+// returned as an *APIError reporting IsNotFound; use
+// DeleteClientByClientIDIfExists to treat that as success (the finalizer's
+// idempotent cleanup).
+func (c *Client) DeleteClient(ctx context.Context, clientUUID string) error {
+	path := c.adminPath("/clients/" + url.PathEscape(clientUUID))
+	return c.doJSON(ctx, http.MethodDelete, path, nil, nil)
+}
+
+// DeleteClientByClientIDIfExists resolves the client by its clientId and deletes
+// it, returning nil when no such client exists — so the finalizer's cleanup is
+// idempotent across re-runs.
+func (c *Client) DeleteClientByClientIDIfExists(ctx context.Context, clientID string) error {
+	oidc, err := c.FindClientByClientID(ctx, clientID)
+	if err != nil {
+		return err
+	}
+	if oidc == nil {
+		return nil
+	}
+	err = c.DeleteClient(ctx, oidc.ID)
+	if IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
 // GetClientRaw fetches the full ClientRepresentation by UUID via
 // GET /admin/realms/{realm}/clients/{clientUUID} as an opaque RawClient, so a
 // caller can mutate only the managed fields and PUT it back without dropping the

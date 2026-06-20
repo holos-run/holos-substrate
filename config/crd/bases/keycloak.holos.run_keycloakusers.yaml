@@ -232,12 +232,30 @@ spec:
                   controller-managed owner record persisted on status; the finalizer deletes
                   the Keycloak user only when Created is true.
                 type: boolean
+              managedGroups:
+                description: |-
+                  ManagedGroups records the Keycloak group paths this CR has joined the user
+                  to, so a membership removed from spec.groups is actively revoked on the next
+                  reconcile (reconcile-to-desired-set rather than add-only) and an adopted
+                  user's release prunes exactly the memberships this CR added.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
               observedGeneration:
                 description: |-
                   ObservedGeneration is the most recent generation observed for this
                   KeycloakUser by the controller.
                 format: int64
                 type: integer
+              userID:
+                description: |-
+                  UserID is the Keycloak UUID of the user this CR owns or adopted. It is the
+                  durable handle the reconciler resolves group memberships and the IdP link
+                  against, and the finalizer deletes (when Created) — recorded so a re-run
+                  targets exactly the user this CR provisioned even if the email lookup were
+                  to drift.
+                type: string
             type: object
         type: object
     served: true

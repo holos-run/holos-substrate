@@ -74,17 +74,53 @@ type fakeKeycloakClient struct {
 	// gotCABundle records the caBundle the reconciler's factory was last invoked
 	// with, so a test asserts the instance's CABundle is threaded through.
 	gotCABundle []byte
+
+	// users maps an email to the synthetic user, modeling FindUserByEmail/CreateUser.
+	users map[string]*keycloak.User
+	// nextUserID is the monotonically-increasing source of synthetic user UUIDs.
+	nextUserID int
+	// createUserCount counts CreateUser calls, so a test asserts a present user is
+	// reused rather than duplicated (no second create).
+	createUserCount int
+	// groupMembers records each "<userID>/<groupID>" the reconciler joined, so a
+	// test asserts membership assignment and pruning.
+	groupMembers map[string]bool
+	// federatedLinks records each "<userID>/<provider>" link created, so a test
+	// asserts the IdP federated-identity link was made.
+	federatedLinks map[string]bool
+
+	// clientRolesByClient records, per "<clientUUID>", the set of role names
+	// created on that client, so a test asserts client-role convergence.
+	createdClientRoles map[string]map[string]bool
+	// roleMappers records each clientUUID the client-role mapper was ensured on.
+	roleMappers map[string]bool
+	// clientSecrets maps a clientUUID to the generated confidential secret value
+	// GetClientSecret returns.
+	clientSecrets map[string]string
+	// deletedClients records each clientId DeleteClientByClientIDIfExists removed.
+	deletedClients []string
+
+	// createClientErr / updateClientErr, when non-nil, are returned by
+	// CreateClient / UpdateClientFields to simulate a Keycloak failure.
+	createClientErr error
+	updateClientErr error
 }
 
 // newFakeKeycloakClient returns a reachable fake with the given pre-existing group
 // paths (each normalized and assigned a synthetic UUID).
 func newFakeKeycloakClient(existingGroups ...string) *fakeKeycloakClient {
 	f := &fakeKeycloakClient{
-		realmReachable:  true,
-		groups:          map[string]string{},
-		clients:         map[string]string{},
-		clientRoles:     map[string]string{},
-		roleAssignments: map[string]bool{},
+		realmReachable:     true,
+		groups:             map[string]string{},
+		clients:            map[string]string{},
+		clientRoles:        map[string]string{},
+		roleAssignments:    map[string]bool{},
+		users:              map[string]*keycloak.User{},
+		groupMembers:       map[string]bool{},
+		federatedLinks:     map[string]bool{},
+		createdClientRoles: map[string]map[string]bool{},
+		roleMappers:        map[string]bool{},
+		clientSecrets:      map[string]string{},
 	}
 	for _, p := range existingGroups {
 		f.addGroup(p)
@@ -324,8 +360,198 @@ func (f *fakeKeycloakClient) roleAssigned(groupID, clientUUID, role string) bool
 	return f.roleAssignments[groupID+"/"+clientUUID+"/"+role]
 }
 
-// compile-time assertions that the fake satisfies both reconciler seams.
+// --- KeycloakUser reconciler seam ---
+
+func (f *fakeKeycloakClient) FindUserByEmail(ctx context.Context, email string) (*keycloak.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("FindUser:" + email)
+	u, ok := f.users[email]
+	if !ok {
+		return nil, nil
+	}
+	cp := *u
+	return &cp, nil
+}
+
+func (f *fakeKeycloakClient) CreateUser(ctx context.Context, user keycloak.User) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("CreateUser:" + user.Email)
+	f.createUserCount++
+	if _, ok := f.users[user.Email]; ok {
+		return "", &keycloak.APIError{StatusCode: http.StatusConflict, Method: http.MethodPost, Path: "/users", Message: "user exists"}
+	}
+	f.nextUserID++
+	id := "usr-" + strconv.Itoa(f.nextUserID)
+	stored := user
+	stored.ID = id
+	f.users[user.Email] = &stored
+	return id, nil
+}
+
+func (f *fakeKeycloakClient) DeleteUserIfExists(ctx context.Context, userID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("DeleteUser:" + userID)
+	for email, u := range f.users {
+		if u.ID == userID {
+			delete(f.users, email)
+			break
+		}
+	}
+	return nil
+}
+
+func (f *fakeKeycloakClient) AddUserToGroup(ctx context.Context, userID, groupID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("AddMember:" + userID + "/" + groupID)
+	f.groupMembers[userID+"/"+groupID] = true
+	return nil
+}
+
+func (f *fakeKeycloakClient) RemoveUserFromGroupIfMember(ctx context.Context, userID, groupID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("RemoveMember:" + userID + "/" + groupID)
+	delete(f.groupMembers, userID+"/"+groupID)
+	return nil
+}
+
+func (f *fakeKeycloakClient) CreateFederatedIdentityIfNotExists(ctx context.Context, userID, provider string, link keycloak.FederatedIdentity) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("FederatedLink:" + userID + "/" + provider)
+	f.federatedLinks[userID+"/"+provider] = true
+	return nil
+}
+
+// --- KeycloakClient reconciler seam ---
+
+func (f *fakeKeycloakClient) CreateClient(ctx context.Context, client keycloak.OIDCClient) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("CreateClient:" + client.ClientID)
+	if f.createClientErr != nil {
+		return "", f.createClientErr
+	}
+	if _, ok := f.clients[client.ClientID]; ok {
+		return "", &keycloak.APIError{StatusCode: http.StatusConflict, Method: http.MethodPost, Path: "/clients", Message: "client exists"}
+	}
+	f.nextGroupID++
+	id := "cli-" + strconv.Itoa(f.nextGroupID)
+	f.clients[client.ClientID] = id
+	return id, nil
+}
+
+func (f *fakeKeycloakClient) UpdateClientFields(ctx context.Context, clientUUID string, fields keycloak.ClientFields) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("UpdateClient:" + clientUUID)
+	return f.updateClientErr
+}
+
+func (f *fakeKeycloakClient) DeleteClientByClientIDIfExists(ctx context.Context, clientID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("DeleteClient:" + clientID)
+	delete(f.clients, clientID)
+	f.deletedClients = append(f.deletedClients, clientID)
+	return nil
+}
+
+func (f *fakeKeycloakClient) CreateClientRoleIfNotExists(ctx context.Context, clientUUID string, role keycloak.ClientRole) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("CreateClientRole:" + clientUUID + "/" + role.Name)
+	if f.createdClientRoles[clientUUID] == nil {
+		f.createdClientRoles[clientUUID] = map[string]bool{}
+	}
+	f.createdClientRoles[clientUUID][role.Name] = true
+	return nil
+}
+
+func (f *fakeKeycloakClient) EnsureClientRoleMapper(ctx context.Context, clientUUID, name, clientID, claimName string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("EnsureMapper:" + clientUUID + "/" + name + "/" + clientID + "/" + claimName)
+	f.roleMappers[clientUUID] = true
+	return nil
+}
+
+func (f *fakeKeycloakClient) GetClientSecret(ctx context.Context, clientUUID string) (*keycloak.ClientSecret, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("GetClientSecret:" + clientUUID)
+	value := f.clientSecrets[clientUUID]
+	if value == "" {
+		value = "generated-secret-" + clientUUID
+	}
+	return &keycloak.ClientSecret{Type: "secret", Value: value}, nil
+}
+
+// --- user/client test inspection helpers ---
+
+// seedUser registers a user by email with a synthetic UUID so FindUserByEmail
+// resolves it, modeling a pre-existing Keycloak user.
+func (f *fakeKeycloakClient) seedUser(email string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextUserID++
+	id := "usr-" + strconv.Itoa(f.nextUserID)
+	f.users[email] = &keycloak.User{ID: id, Email: email, Username: email, Enabled: true}
+	return id
+}
+
+// userExists reports whether a user with the email currently exists.
+func (f *fakeKeycloakClient) userExists(email string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.users[email]
+	return ok
+}
+
+// memberOf reports whether userID is a member of groupID.
+func (f *fakeKeycloakClient) memberOf(userID, groupID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.groupMembers[userID+"/"+groupID]
+}
+
+// federated reports whether a federated-identity link exists for userID/provider.
+func (f *fakeKeycloakClient) federated(userID, provider string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.federatedLinks[userID+"/"+provider]
+}
+
+// clientExists reports whether an OIDC client with the clientId currently exists.
+func (f *fakeKeycloakClient) clientExists(clientID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.clients[clientID]
+	return ok
+}
+
+// clientRoleCreated reports whether role was created on the client UUID.
+func (f *fakeKeycloakClient) clientRoleCreated(clientUUID, role string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.createdClientRoles[clientUUID][role]
+}
+
+// mapperEnsured reports whether the client-role mapper was ensured on clientUUID.
+func (f *fakeKeycloakClient) mapperEnsured(clientUUID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.roleMappers[clientUUID]
+}
+
+// compile-time assertions that the fake satisfies all four reconciler seams.
 var (
 	_ InstanceClient = (*fakeKeycloakClient)(nil)
 	_ GroupClient    = (*fakeKeycloakClient)(nil)
+	_ UserClient     = (*fakeKeycloakClient)(nil)
+	_ ClientClient   = (*fakeKeycloakClient)(nil)
 )

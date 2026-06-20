@@ -126,6 +126,24 @@ type KeycloakUserStatus struct {
 	//
 	// +optional
 	Adopted bool `json:"adopted,omitempty"`
+
+	// UserID is the Keycloak UUID of the user this CR owns or adopted. It is the
+	// durable handle the reconciler resolves group memberships and the IdP link
+	// against, and the finalizer deletes (when Created) — recorded so a re-run
+	// targets exactly the user this CR provisioned even if the email lookup were
+	// to drift.
+	//
+	// +optional
+	UserID string `json:"userID,omitempty"`
+
+	// ManagedGroups records the Keycloak group paths this CR has joined the user
+	// to, so a membership removed from spec.groups is actively revoked on the next
+	// reconcile (reconcile-to-desired-set rather than add-only) and an adopted
+	// user's release prunes exactly the memberships this CR added.
+	//
+	// +optional
+	// +listType=set
+	ManagedGroups []string `json:"managedGroups,omitempty"`
 }
 
 // +kubebuilder:object:root=true
