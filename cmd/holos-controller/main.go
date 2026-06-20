@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	keycloakv1alpha1 "github.com/holos-run/holos-paas/api/keycloak/v1alpha1"
 	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
 	securityv1alpha1 "github.com/holos-run/holos-paas/api/security/v1alpha1"
 	quaycontroller "github.com/holos-run/holos-paas/internal/controller/quay"
@@ -51,6 +52,9 @@ import (
 // +kubebuilder:rbac:groups=quay.holos.run,resources=organizations;repositories,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=quay.holos.run,resources=organizations/status;repositories/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=quay.holos.run,resources=organizations/finalizers;repositories/finalizers,verbs=update
+// +kubebuilder:rbac:groups=keycloak.holos.run,resources=keycloakinstances;keycloakgroups;keycloakusers;keycloakclients,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=keycloak.holos.run,resources=keycloakinstances/status;keycloakgroups/status;keycloakusers/status;keycloakclients/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=keycloak.holos.run,resources=keycloakinstances/finalizers;keycloakgroups/finalizers;keycloakusers/finalizers;keycloakclients/finalizers,verbs=update
 // +kubebuilder:rbac:groups=security.holos.run,resources=referencegrants,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -64,13 +68,17 @@ var (
 )
 
 func init() {
-	// Register the Kubernetes core types and the quay.holos.run and
-	// security.holos.run API groups so the manager's client and cache can serve
-	// all three. The security group's ReferenceGrant has no reconciler — it is
-	// declarative policy the authorization helper reads — but it must be in the
-	// scheme for the client to list it.
+	// Register the Kubernetes core types and the quay.holos.run,
+	// keycloak.holos.run, and security.holos.run API groups so the manager's
+	// client and cache can serve all of them. The keycloak.holos.run group is
+	// registered-but-unreconciled in this phase (HOL-1344) — its reconcilers land
+	// in later phases (HOL-1346, HOL-1347) — so the CRDs install and the binary
+	// compiles with the group in the scheme. The security group's ReferenceGrant
+	// has no reconciler — it is declarative policy the authorization helper reads —
+	// but it must be in the scheme for the client to list it.
 	utilruntimeMust(clientgoscheme.AddToScheme(scheme))
 	utilruntimeMust(quayv1alpha1.AddToScheme(scheme))
+	utilruntimeMust(keycloakv1alpha1.AddToScheme(scheme))
 	utilruntimeMust(securityv1alpha1.AddToScheme(scheme))
 }
 

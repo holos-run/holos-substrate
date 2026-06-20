@@ -1,0 +1,162 @@
+package v1alpha1
+
+import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// KeycloakClientType is the OIDC client type: a public client (SPA/CLI, no
+// secret, PKCE) or a confidential client (authenticated by a delivered secret).
+// It mirrors the public (argocd/kargo) vs confidential (quay) distinction in
+// the platform realm (keycloak-clients.md).
+//
+// +kubebuilder:validation:Enum=public;confidential
+type KeycloakClientType string
+
+const (
+	// KeycloakClientTypePublic is a public OIDC client (no client secret, PKCE).
+	KeycloakClientTypePublic KeycloakClientType = "public"
+	// KeycloakClientTypeConfidential is a confidential OIDC client authenticated
+	// by a delivered client secret.
+	KeycloakClientTypeConfidential KeycloakClientType = "confidential"
+)
+
+// ClientSecretReference names where a confidential client's generated client
+// secret is delivered. The reconciler writes a generate-once, create-if-absent
+// Secret in the resource's own namespace per the secret-handling guardrail — it
+// is never committed, mirroring the platform's quay-oidc bootstrap. It is
+// distinct from the spec-level credentialsSecretRef (the admin credential): this
+// points at the per-client delivered secret.
+type ClientSecretReference struct {
+	// Name of the Secret in the resource's namespace to deliver the client secret
+	// into.
+	//
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Key within the Secret to write the client secret under.
+	//
+	// +kubebuilder:validation:MinLength=1
+	Key string `json:"key"`
+}
+
+// KeycloakClientSpec defines the desired state of a KeycloakClient: one project
+// OIDC client named by its URL, its redirect/web-origin configuration, the
+// client roles it defines, the group→groups-claim mapping (via client roles),
+// and — for a confidential client — where to deliver the generated secret
+// (ADR-20).
+//
+// The group→groups-claim mechanism (ADR-20): because Keycloak's Group
+// Membership mapper cannot synthesize an arbitrary claim value from a path, a
+// role group carries a client-role assignment (see ClientRoles) and the existing
+// oidc-usermodel-client-role-mapper emits the role name into the shared groups
+// claim (repo precedent in holos/components/keycloak/realm-config/buildplan.cue).
+type KeycloakClientSpec struct {
+	// ClientID is the Keycloak client ID, named by its URL (e.g.
+	// https://quay.holos.localhost). It is immutable: it is the client's durable
+	// identity in the realm's global client namespace, so the ownership claim and
+	// the finalizer always target exactly the client this CR provisioned.
+	//
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="clientId is immutable"
+	ClientID string `json:"clientId"`
+
+	// Type is the OIDC client type, public or confidential.
+	Type KeycloakClientType `json:"type"`
+
+	// InstanceRef references the KeycloakInstance this client is provisioned in. A
+	// cross-namespace reference (Namespace set to a different namespace) is gated
+	// by a security.holos.run ReferenceGrant in the instance's namespace.
+	InstanceRef KeycloakInstanceReference `json:"instanceRef"`
+
+	// RedirectURIs are the allowed OAuth2 redirect URIs for the client.
+	//
+	// +optional
+	// +listType=set
+	RedirectURIs []string `json:"redirectUris,omitempty"`
+
+	// WebOrigins are the allowed CORS web origins for the client.
+	//
+	// +optional
+	// +listType=set
+	WebOrigins []string `json:"webOrigins,omitempty"`
+
+	// ClientRoles optionally lists the client roles defined on this client — the
+	// primitive owner/editor/viewer triad scoped to this one client. A role group
+	// (KeycloakGroup) assigns one of these, and the per-client
+	// oidc-usermodel-client-role-mapper emits the role name into the shared groups
+	// claim (the group→claim mechanism, ADR-20). Each entry's ClientRef is this
+	// client's own clientId.
+	//
+	// +optional
+	// +listType=atomic
+	ClientRoles []ClientRoleReference `json:"clientRoles,omitempty"`
+
+	// SecretRef optionally names where a confidential client's generated secret is
+	// delivered (a generate-once Secret in this resource's namespace). It applies
+	// only to confidential clients; a public client carries no secret.
+	//
+	// +optional
+	SecretRef *ClientSecretReference `json:"secretRef,omitempty"`
+
+	// CABundle carries PEM-encoded x509 CA certificates the controller trusts in
+	// addition to its system store when reaching the Keycloak admin API for this
+	// client. Its semantics and serialization are the shared "CABundle convention"
+	// documented once in common_types.go: an empty value uses the controller pod's
+	// system trust store unchanged. It is the trust anchor for an in-cluster
+	// Keycloak signed by the platform's local CA.
+	//
+	// +optional
+	CABundle []byte `json:"caBundle,omitempty"`
+}
+
+// KeycloakClientStatus defines the observed state of a KeycloakClient, following
+// the Gateway-API status convention.
+type KeycloakClientStatus struct {
+	// Conditions represent the latest available observations of the client's
+	// state.
+	//
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	// +patchStrategy=merge
+	// +patchMergeKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
+
+	// ObservedGeneration is the most recent generation observed for this
+	// KeycloakClient by the controller.
+	//
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Namespaced,categories={holos,keycloak}
+// +kubebuilder:printcolumn:name="ClientID",type=string,JSONPath=`.spec.clientId`
+// +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+
+// KeycloakClient is the Schema for the keycloakclients API. It manages one
+// project OIDC client named by its URL and the group→groups-claim mapping via
+// client roles (ADR-20).
+type KeycloakClient struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   KeycloakClientSpec   `json:"spec,omitempty"`
+	Status KeycloakClientStatus `json:"status,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+
+// KeycloakClientList contains a list of KeycloakClient.
+type KeycloakClientList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []KeycloakClient `json:"items"`
+}
+
+func init() {
+	SchemeBuilder.Register(&KeycloakClient{}, &KeycloakClientList{})
+}

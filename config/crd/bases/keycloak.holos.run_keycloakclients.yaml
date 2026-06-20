@@ -1,0 +1,270 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: keycloakclients.keycloak.holos.run
+spec:
+  group: keycloak.holos.run
+  names:
+    categories:
+    - holos
+    - keycloak
+    kind: KeycloakClient
+    listKind: KeycloakClientList
+    plural: keycloakclients
+    singular: keycloakclient
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.clientId
+      name: ClientID
+      type: string
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          KeycloakClient is the Schema for the keycloakclients API. It manages one
+          project OIDC client named by its URL and the group→groups-claim mapping via
+          client roles (ADR-20).
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              KeycloakClientSpec defines the desired state of a KeycloakClient: one project
+              OIDC client named by its URL, its redirect/web-origin configuration, the
+              client roles it defines, the group→groups-claim mapping (via client roles),
+              and — for a confidential client — where to deliver the generated secret
+              (ADR-20).
+
+              The group→groups-claim mechanism (ADR-20): because Keycloak's Group
+              Membership mapper cannot synthesize an arbitrary claim value from a path, a
+              role group carries a client-role assignment (see ClientRoles) and the existing
+              oidc-usermodel-client-role-mapper emits the role name into the shared groups
+              claim (repo precedent in holos/components/keycloak/realm-config/buildplan.cue).
+            properties:
+              caBundle:
+                description: |-
+                  CABundle carries PEM-encoded x509 CA certificates the controller trusts in
+                  addition to its system store when reaching the Keycloak admin API for this
+                  client. Its semantics and serialization are the shared "CABundle convention"
+                  documented once in common_types.go: an empty value uses the controller pod's
+                  system trust store unchanged. It is the trust anchor for an in-cluster
+                  Keycloak signed by the platform's local CA.
+                format: byte
+                type: string
+              clientId:
+                description: |-
+                  ClientID is the Keycloak client ID, named by its URL (e.g.
+                  https://quay.holos.localhost). It is immutable: it is the client's durable
+                  identity in the realm's global client namespace, so the ownership claim and
+                  the finalizer always target exactly the client this CR provisioned.
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: clientId is immutable
+                  rule: self == oldSelf
+              clientRoles:
+                description: |-
+                  ClientRoles optionally lists the client roles defined on this client — the
+                  primitive owner/editor/viewer triad scoped to this one client. A role group
+                  (KeycloakGroup) assigns one of these, and the per-client
+                  oidc-usermodel-client-role-mapper emits the role name into the shared groups
+                  claim (the group→claim mechanism, ADR-20). Each entry's ClientRef is this
+                  client's own clientId.
+                items:
+                  description: |-
+                    ClientRoleReference names a client role a group confers on its members: the
+                    role named by Role scoped to the KeycloakClient named by ClientRef. A member
+                    of a group carrying this reference holds that client role, which reaches the
+                    owning client's own token via that client's per-client client-role mapper
+                    (ADR-20). It is shared by KeycloakGroup (the roles a group confers) and
+                    KeycloakClient (the roles a client defines).
+                  properties:
+                    clientRef:
+                      description: ClientRef is the name of the KeycloakClient resource
+                        the role is scoped to.
+                      minLength: 1
+                      type: string
+                    role:
+                      description: |-
+                        Role is the client role name (e.g. owner, editor, viewer — the primitive
+                        triad).
+                      minLength: 1
+                      type: string
+                  required:
+                  - clientRef
+                  - role
+                  type: object
+                type: array
+                x-kubernetes-list-type: atomic
+              instanceRef:
+                description: |-
+                  InstanceRef references the KeycloakInstance this client is provisioned in. A
+                  cross-namespace reference (Namespace set to a different namespace) is gated
+                  by a security.holos.run ReferenceGrant in the instance's namespace.
+                properties:
+                  name:
+                    description: Name of the KeycloakInstance resource to target.
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace of the KeycloakInstance. When omitted the instance is resolved
+                      in the referring resource's own namespace. When set to a different
+                      namespace, the cross-namespace reference must be authorized by a
+                      security.holos.run ReferenceGrant in the target namespace.
+                    type: string
+                required:
+                - name
+                type: object
+              redirectUris:
+                description: RedirectURIs are the allowed OAuth2 redirect URIs for
+                  the client.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
+              secretRef:
+                description: |-
+                  SecretRef optionally names where a confidential client's generated secret is
+                  delivered (a generate-once Secret in this resource's namespace). It applies
+                  only to confidential clients; a public client carries no secret.
+                properties:
+                  key:
+                    description: Key within the Secret to write the client secret
+                      under.
+                    minLength: 1
+                    type: string
+                  name:
+                    description: |-
+                      Name of the Secret in the resource's namespace to deliver the client secret
+                      into.
+                    minLength: 1
+                    type: string
+                required:
+                - key
+                - name
+                type: object
+              type:
+                description: Type is the OIDC client type, public or confidential.
+                enum:
+                - public
+                - confidential
+                type: string
+              webOrigins:
+                description: WebOrigins are the allowed CORS web origins for the client.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
+            required:
+            - clientId
+            - instanceRef
+            - type
+            type: object
+          status:
+            description: |-
+              KeycloakClientStatus defines the observed state of a KeycloakClient, following
+              the Gateway-API status convention.
+            properties:
+              conditions:
+                description: |-
+                  Conditions represent the latest available observations of the client's
+                  state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the most recent generation observed for this
+                  KeycloakClient by the controller.
+                format: int64
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
