@@ -220,8 +220,10 @@ let APPLICATION_RESOURCE = {
 // logical project's owner/editor/viewer OIDC groups map to three synced teams.
 // OIDC groups are referenced BY NAME ONLY (the oidcGroup string) — no Keycloak
 // dependency: the Quay API group imports no IdP type, and these
-// my-project-{owner,editor,viewer} groups are future Keycloak work (ADR-20/ADR-21),
-// referenced here as data before they exist.
+// my-project-{owner,editor,viewer} groups are now DESIGNED as keycloak.holos.run
+// resources (ADR-20 Rev 2's KeycloakGroup/KeycloakUser/KeycloakClient, ADR-21 Rev 2's
+// per-Project rendering and worked example) but their CRD/controller IMPLEMENTATION is
+// still future, so today they are referenced here as data before they exist.
 //
 // The two enums are distinct (ADR-19 "Two distinct Quay concepts"): `role` is the
 // team's ORG role (admin | creator | member), `repositoryPermission` is an
