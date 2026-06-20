@@ -782,13 +782,18 @@ func (r *GroupReconciler) reconcileDelete(ctx context.Context, logger logr.Logge
 		return ctrl.Result{}, nil
 	}
 
-	// Nothing to clean up: the CR never provisioned or adopted a group and recorded
-	// no managed side effects (e.g. it was rejected for a reserved name, blocked on a
-	// missing/not-ready instance, a denied ReferenceGrant, or a missing credential).
-	// Drop the finalizer immediately rather than trying to resolve a Ready instance +
-	// credential, which would fail forever and strand the CR undeletable.
-	if !group.Status.Created && !group.Status.Adopted &&
-		len(group.Status.ManagedClientRoles) == 0 && len(group.Status.ManagedCustodians) == 0 {
+	// Drop the finalizer immediately whenever there is no Keycloak-side cleanup to
+	// do, rather than resolving a Ready instance + credential (which would fail
+	// forever and strand the CR undeletable). Nothing needs cleanup when:
+	//   - the CR never created or adopted a group (rejected for a reserved name,
+	//     blocked on a missing/not-ready instance, a denied ReferenceGrant, or a
+	//     missing credential), OR
+	//   - the CR adopted a group but added no side effects (no managed roles or
+	//     custodians) — release is a no-op since an adopted group is never deleted.
+	// A created group always needs its delete (and any custodian prune), so it is
+	// never short-circuited here.
+	noManaged := len(group.Status.ManagedClientRoles) == 0 && len(group.Status.ManagedCustodians) == 0
+	if !group.Status.Created && noManaged {
 		return r.removeFinalizer(ctx, group)
 	}
 

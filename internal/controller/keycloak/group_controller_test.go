@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	keycloakv1alpha1 "github.com/holos-run/holos-paas/api/keycloak/v1alpha1"
@@ -656,6 +657,57 @@ func TestGroupGroupIDBackfillPersisted(t *testing.T) {
 	}
 	if gid := getGroup(t, ctx, key).Status.GroupID; gid == "" {
 		t.Errorf("GroupID should have been backfilled and persisted on a steady-state reconcile")
+	}
+}
+
+func TestGroupAdoptedNoSideEffectsDeleteDropsFinalizer(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-group-adoptnoop"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	group := &keycloakv1alpha1.KeycloakGroup{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "adoptnoop"},
+		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Path:        "projects/an/roles/owner",
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Adopt:       true,
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, group); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	fake := newFakeKeycloakClient("projects/an/roles/owner") // pre-exists → adopted, no roles/custodians
+	r, _ := newGroupReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(group)
+	_, _ = reconcileGroup(ctx, r, key) // finalizer
+	if _, err := reconcileGroup(ctx, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if !getGroup(t, ctx, key).Status.Adopted {
+		t.Fatalf("expected adopted")
+	}
+
+	// Now make the instance unresolvable (delete it), then delete the CR. Release is
+	// a no-op (no managed side effects), so the finalizer must drop without needing
+	// the instance/credential.
+	inst := &keycloakv1alpha1.KeycloakInstance{}
+	_ = shared.k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "kc"}, inst)
+	_ = shared.k8sClient.Delete(ctx, inst)
+
+	if err := shared.k8sClient.Delete(ctx, getGroup(t, ctx, key)); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := reconcileGroup(ctx, r, key); err != nil {
+		t.Fatalf("reconcile delete: %v", err)
+	}
+	got := &keycloakv1alpha1.KeycloakGroup{}
+	if err := shared.k8sClient.Get(ctx, key, got); err == nil {
+		t.Errorf("adopted no-op CR should be gone, still has finalizers %v", got.Finalizers)
 	}
 }
 
