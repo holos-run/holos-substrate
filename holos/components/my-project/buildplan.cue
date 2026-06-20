@@ -254,7 +254,7 @@ let ORGANIZATION_RESOURCE = {
 			{
 				name:                 "my-project-editor"
 				oidcGroup:            "my-project-editor"
-				role:                 "member"
+				role:                 "creator"
 				repositoryPermission: "write"
 			},
 			{
