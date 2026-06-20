@@ -81,8 +81,14 @@ spec:
                     KeycloakClient (the roles a client defines).
                   properties:
                     clientRef:
-                      description: ClientRef is the name of the KeycloakClient resource
-                        the role is scoped to.
+                      description: |-
+                        ClientRef is the metadata.name of the KeycloakClient resource the role is
+                        scoped to — a Kubernetes object name, not the client's URL-shaped clientId.
+                        The reconciler resolves the named KeycloakClient CR in the referring
+                        resource's namespace and derives the Keycloak clientId from its
+                        spec.clientId, mirroring how a Repository resolves its OrganizationRef to an
+                        Organization's spec.name (api/quay/v1alpha1). This keeps the reference a
+                        valid object name even though the underlying Keycloak clientId is a URL.
                       minLength: 1
                       type: string
                     role:

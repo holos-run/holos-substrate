@@ -19,9 +19,12 @@ type KeycloakInstanceSpec struct {
 	// URL is the Keycloak base/API URL the controller reaches the admin API at
 	// (e.g. https://keycloak-service:8443 for the in-cluster instance, or an
 	// external https URL for an out-of-cluster or remote-cluster target). It is
-	// required.
+	// required and must be an absolute https URL: the controller authenticates to
+	// this endpoint with the admin credential, so plaintext http is rejected at
+	// admission rather than silently sending the credential in the clear.
 	//
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^https://.+`
 	URL string `json:"url"`
 
 	// Realm is the Keycloak realm this instance targets (e.g. holos). It is

@@ -97,7 +97,8 @@ spec:
                   (KeycloakGroup) assigns one of these, and the per-client
                   oidc-usermodel-client-role-mapper emits the role name into the shared groups
                   claim (the group→claim mechanism, ADR-20). Each entry's ClientRef is this
-                  client's own clientId.
+                  KeycloakClient's own metadata.name (the object name, not the URL-shaped
+                  clientId — see ClientRoleReference).
                 items:
                   description: |-
                     ClientRoleReference names a client role a group confers on its members: the
@@ -108,8 +109,14 @@ spec:
                     KeycloakClient (the roles a client defines).
                   properties:
                     clientRef:
-                      description: ClientRef is the name of the KeycloakClient resource
-                        the role is scoped to.
+                      description: |-
+                        ClientRef is the metadata.name of the KeycloakClient resource the role is
+                        scoped to — a Kubernetes object name, not the client's URL-shaped clientId.
+                        The reconciler resolves the named KeycloakClient CR in the referring
+                        resource's namespace and derives the Keycloak clientId from its
+                        spec.clientId, mirroring how a Repository resolves its OrganizationRef to an
+                        Organization's spec.name (api/quay/v1alpha1). This keeps the reference a
+                        valid object name even though the underlying Keycloak clientId is a URL.
                       minLength: 1
                       type: string
                     role:
@@ -153,9 +160,11 @@ spec:
                 x-kubernetes-list-type: set
               secretRef:
                 description: |-
-                  SecretRef optionally names where a confidential client's generated secret is
-                  delivered (a generate-once Secret in this resource's namespace). It applies
-                  only to confidential clients; a public client carries no secret.
+                  SecretRef names where a confidential client's generated secret is delivered
+                  (a generate-once Secret in this resource's namespace). It is required for a
+                  confidential client and forbidden for a public client (a public client
+                  carries no secret) — enforced by a CEL validation on this spec, so the
+                  type/secretRef pair is always consistent at admission.
                 properties:
                   key:
                     description: Key within the Secret to write the client secret
@@ -189,6 +198,10 @@ spec:
             - instanceRef
             - type
             type: object
+            x-kubernetes-validations:
+            - message: secretRef is required for a confidential client and forbidden
+                for a public client
+              rule: 'self.type == ''confidential'' ? has(self.secretRef) : !has(self.secretRef)'
           status:
             description: |-
               KeycloakClientStatus defines the observed state of a KeycloakClient, following

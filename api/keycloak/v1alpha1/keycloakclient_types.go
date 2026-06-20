@@ -50,6 +50,8 @@ type ClientSecretReference struct {
 // role group carries a client-role assignment (see ClientRoles) and the existing
 // oidc-usermodel-client-role-mapper emits the role name into the shared groups
 // claim (repo precedent in holos/components/keycloak/realm-config/buildplan.cue).
+//
+// +kubebuilder:validation:XValidation:rule="self.type == 'confidential' ? has(self.secretRef) : !has(self.secretRef)",message="secretRef is required for a confidential client and forbidden for a public client"
 type KeycloakClientSpec struct {
 	// ClientID is the Keycloak client ID, named by its URL (e.g.
 	// https://quay.holos.localhost). It is immutable: it is the client's durable
@@ -85,15 +87,18 @@ type KeycloakClientSpec struct {
 	// (KeycloakGroup) assigns one of these, and the per-client
 	// oidc-usermodel-client-role-mapper emits the role name into the shared groups
 	// claim (the group→claim mechanism, ADR-20). Each entry's ClientRef is this
-	// client's own clientId.
+	// KeycloakClient's own metadata.name (the object name, not the URL-shaped
+	// clientId — see ClientRoleReference).
 	//
 	// +optional
 	// +listType=atomic
 	ClientRoles []ClientRoleReference `json:"clientRoles,omitempty"`
 
-	// SecretRef optionally names where a confidential client's generated secret is
-	// delivered (a generate-once Secret in this resource's namespace). It applies
-	// only to confidential clients; a public client carries no secret.
+	// SecretRef names where a confidential client's generated secret is delivered
+	// (a generate-once Secret in this resource's namespace). It is required for a
+	// confidential client and forbidden for a public client (a public client
+	// carries no secret) — enforced by a CEL validation on this spec, so the
+	// type/secretRef pair is always consistent at admission.
 	//
 	// +optional
 	SecretRef *ClientSecretReference `json:"secretRef,omitempty"`

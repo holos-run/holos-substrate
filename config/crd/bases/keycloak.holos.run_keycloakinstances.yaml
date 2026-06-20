@@ -119,8 +119,11 @@ spec:
                   URL is the Keycloak base/API URL the controller reaches the admin API at
                   (e.g. https://keycloak-service:8443 for the in-cluster instance, or an
                   external https URL for an out-of-cluster or remote-cluster target). It is
-                  required.
+                  required and must be an absolute https URL: the controller authenticates to
+                  this endpoint with the admin credential, so plaintext http is rejected at
+                  admission rather than silently sending the credential in the clear.
                 minLength: 1
+                pattern: ^https://.+
                 type: string
             required:
             - realm

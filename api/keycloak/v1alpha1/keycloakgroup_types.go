@@ -11,7 +11,13 @@ import (
 // (ADR-20). It is shared by KeycloakGroup (the roles a group confers) and
 // KeycloakClient (the roles a client defines).
 type ClientRoleReference struct {
-	// ClientRef is the name of the KeycloakClient resource the role is scoped to.
+	// ClientRef is the metadata.name of the KeycloakClient resource the role is
+	// scoped to — a Kubernetes object name, not the client's URL-shaped clientId.
+	// The reconciler resolves the named KeycloakClient CR in the referring
+	// resource's namespace and derives the Keycloak clientId from its
+	// spec.clientId, mirroring how a Repository resolves its OrganizationRef to an
+	// Organization's spec.name (api/quay/v1alpha1). This keeps the reference a
+	// valid object name even though the underlying Keycloak clientId is a URL.
 	//
 	// +kubebuilder:validation:MinLength=1
 	ClientRef string `json:"clientRef"`
