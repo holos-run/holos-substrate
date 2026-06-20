@@ -18,7 +18,7 @@ spec:
   - name: my-project-editor
     oidcGroup: my-project-editor
     repositoryPermission: write
-    role: member
+    role: creator
   - name: my-project-viewer
     oidcGroup: my-project-viewer
     repositoryPermission: read
