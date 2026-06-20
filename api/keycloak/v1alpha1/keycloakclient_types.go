@@ -67,7 +67,12 @@ type KeycloakClientSpec struct {
 
 	// InstanceRef references the KeycloakInstance this client is provisioned in. A
 	// cross-namespace reference (Namespace set to a different namespace) is gated
-	// by a security.holos.run ReferenceGrant in the instance's namespace.
+	// by a security.holos.run ReferenceGrant in the instance's namespace. It is
+	// immutable: retargeting a provisioned client to another instance would create
+	// a second OIDC client in the new realm and orphan the original (the finalizer
+	// can no longer reach it), so the target realm is fixed for the client's life.
+	//
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="instanceRef is immutable"
 	InstanceRef KeycloakInstanceReference `json:"instanceRef"`
 
 	// RedirectURIs are the allowed OAuth2 redirect URIs for the client.

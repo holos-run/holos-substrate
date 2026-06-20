@@ -68,9 +68,10 @@ type ClientClient interface {
 	// UpdateClientFields applies only the set (non-nil) managed fields to the
 	// client losslessly (fetch-merge-PUT), never clobbering unmanaged keys.
 	UpdateClientFields(ctx context.Context, clientUUID string, fields keycloak.ClientFields) error
-	// DeleteClientByClientIDIfExists deletes the client by clientId, treating an
-	// already-absent client as success (the finalizer's idempotent cleanup).
-	DeleteClientByClientIDIfExists(ctx context.Context, clientID string) error
+	// DeleteClient deletes the client by its immutable UUID. The finalizer deletes
+	// by the verified UUID (not by clientId) so a foreign client recreated at the
+	// same clientId between verification and deletion is never deleted.
+	DeleteClient(ctx context.Context, clientUUID string) error
 
 	// CreateClientRoleIfNotExists creates a client role on the client, treating an
 	// already-existing role as success (idempotent).
@@ -492,9 +493,13 @@ func (r *ClientReconciler) reconcileDelete(ctx context.Context, logger logr.Logg
 		return r.removeFinalizer(ctx, kclient)
 	}
 
-	delErr := kc.DeleteClientByClientIDIfExists(ctx, kclient.Spec.ClientID)
-	recordKeycloakAPI(opDeleteClient, delErr)
-	if delErr != nil {
+	// Delete by the verified UUID, not the clientId: a fresh by-clientId lookup
+	// here would reopen the TOCTOU window where a foreign client recreated at the
+	// same clientId between the verification above and the delete could be deleted.
+	// An already-absent UUID (a concurrent delete won) is treated as success.
+	delErr := kc.DeleteClient(ctx, current.ID)
+	recordKeycloakAPI(opDeleteClient, ignoreNotFound(delErr))
+	if delErr != nil && !keycloak.IsNotFound(delErr) {
 		r.Recorder.Event(kclient, corev1.EventTypeWarning, ReasonKeycloakError,
 			fmt.Sprintf("deleting Keycloak client %q: %v", kclient.Spec.ClientID, delErr))
 		return ctrl.Result{}, fmt.Errorf("deleting Keycloak client %q: %w", kclient.Spec.ClientID, delErr)

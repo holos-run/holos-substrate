@@ -61,7 +61,12 @@ type KeycloakUserSpec struct {
 
 	// InstanceRef references the KeycloakInstance this user is provisioned in. A
 	// cross-namespace reference (Namespace set to a different namespace) is gated
-	// by a security.holos.run ReferenceGrant in the instance's namespace.
+	// by a security.holos.run ReferenceGrant in the instance's namespace. It is
+	// immutable: retargeting a provisioned user to another instance would create a
+	// second Keycloak user in the new realm and orphan the original (the finalizer
+	// can no longer reach it), so the target realm is fixed for the user's life.
+	//
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="instanceRef is immutable"
 	InstanceRef KeycloakInstanceReference `json:"instanceRef"`
 
 	// Groups optionally lists the Keycloak group paths the user joins (e.g.

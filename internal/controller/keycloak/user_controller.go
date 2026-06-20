@@ -352,13 +352,33 @@ func (r *UserReconciler) reconcileMemberships(ctx context.Context, kc UserClient
 // the platform realm config (keycloak-config-cli), NOT this CR.
 func (r *UserReconciler) reconcileIdentityProviderLink(ctx context.Context, kc UserClient, user *keycloakv1alpha1.KeycloakUser, userID string) error {
 	link := user.Spec.IdentityProviderLink
-	if link == nil || link.UserID == "" {
-		// No managed Admin-API link to ensure (no link, or an email-only auto-link
-		// left to the realm first-broker-login flow). Clear any previously-managed
-		// provider so a later switch to email-only mode does not strand a stale entry.
+
+	// Determine the provider this CR should now manage an Admin-API link for: only
+	// a subject-keyed link (userId set) is managed; a removed link or an email-only
+	// auto-link (userId omitted, realm-flow-driven) manages none.
+	desiredProvider := ""
+	if link != nil && link.UserID != "" {
+		desiredProvider = link.Alias
+	}
+
+	// Reconcile-to-desired-set: if this CR previously managed a link to a different
+	// provider (or to none now), delete that stale link before recording the new
+	// state — otherwise removing/switching identityProviderLink would leave a stale
+	// federated identity that still grants IdP login and that finalization no longer
+	// knows to prune.
+	if prev := user.Status.ManagedIdentityProvider; prev != "" && prev != desiredProvider {
+		rmErr := kc.DeleteFederatedIdentityIfExists(ctx, userID, prev)
+		recordKeycloakAPI(opDeleteFederatedID, rmErr)
+		if rmErr != nil {
+			return fmt.Errorf("removing stale federated-identity link %q for Keycloak user %q: %w", prev, user.Spec.Email, rmErr)
+		}
 		user.Status.ManagedIdentityProvider = ""
+	}
+
+	if desiredProvider == "" {
 		return nil
 	}
+
 	fi := keycloak.FederatedIdentity{
 		IdentityProvider: link.Alias,
 		UserID:           link.UserID,

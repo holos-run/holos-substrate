@@ -471,13 +471,18 @@ func (f *fakeKeycloakClient) UpdateClientFields(ctx context.Context, clientUUID 
 	return f.updateClientErr
 }
 
-func (f *fakeKeycloakClient) DeleteClientByClientIDIfExists(ctx context.Context, clientID string) error {
+func (f *fakeKeycloakClient) DeleteClient(ctx context.Context, clientUUID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.record("DeleteClient:" + clientID)
-	delete(f.clients, clientID)
-	f.deletedClients = append(f.deletedClients, clientID)
-	return nil
+	f.record("DeleteClient:" + clientUUID)
+	for clientID, id := range f.clients {
+		if id == clientUUID {
+			delete(f.clients, clientID)
+			f.deletedClients = append(f.deletedClients, clientID)
+			return nil
+		}
+	}
+	return notFoundErr("/clients/" + clientUUID)
 }
 
 func (f *fakeKeycloakClient) CreateClientRoleIfNotExists(ctx context.Context, clientUUID string, role keycloak.ClientRole) error {

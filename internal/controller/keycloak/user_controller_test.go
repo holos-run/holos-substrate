@@ -266,6 +266,59 @@ func TestUserReconcileMembershipPrune(t *testing.T) {
 	}
 }
 
+func TestUserReconcileIdentityProviderLinkRemovalPrunes(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-user-idp-prune"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	user := &keycloakv1alpha1.KeycloakUser{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "eve"},
+		Spec: keycloakv1alpha1.KeycloakUserSpec{
+			Email:                "eve@example.com",
+			InstanceRef:          keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			IdentityProviderLink: &keycloakv1alpha1.IdentityProviderLink{Alias: "corp-oidc", UserID: "sub-eve"},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	fake := newFakeKeycloakClient()
+	r, _ := newUserReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(user)
+	reconcileUserToSteady(t, ctx, r, key)
+
+	got := getUser(t, ctx, key)
+	if !fake.federated(got.Status.UserID, "corp-oidc") {
+		t.Fatalf("IdP link not created initially")
+	}
+	if got.Status.ManagedIdentityProvider != "corp-oidc" {
+		t.Fatalf("managed IdP provider not recorded, got %q", got.Status.ManagedIdentityProvider)
+	}
+
+	// Remove the IdP link from the spec; the next reconcile must delete the stale
+	// federated identity and clear the managed status.
+	got.Spec.IdentityProviderLink = nil
+	if err := shared.k8sClient.Update(ctx, got); err != nil {
+		t.Fatalf("update user spec: %v", err)
+	}
+	if _, err := reconcileUser(ctx, r, key); err != nil {
+		t.Fatalf("reconcile (prune link): %v", err)
+	}
+	if fake.federated(got.Status.UserID, "corp-oidc") {
+		t.Errorf("stale IdP link was not pruned after removal from spec")
+	}
+	after := getUser(t, ctx, key)
+	if after.Status.ManagedIdentityProvider != "" {
+		t.Errorf("managed IdP provider not cleared, got %q", after.Status.ManagedIdentityProvider)
+	}
+}
+
 func TestUserReconcileReferenceGrant(t *testing.T) {
 	if shared == nil {
 		t.Skip("envtest not provisioned")

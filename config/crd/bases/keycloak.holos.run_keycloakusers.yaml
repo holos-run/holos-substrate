@@ -125,7 +125,10 @@ spec:
                 description: |-
                   InstanceRef references the KeycloakInstance this user is provisioned in. A
                   cross-namespace reference (Namespace set to a different namespace) is gated
-                  by a security.holos.run ReferenceGrant in the instance's namespace.
+                  by a security.holos.run ReferenceGrant in the instance's namespace. It is
+                  immutable: retargeting a provisioned user to another instance would create a
+                  second Keycloak user in the new realm and orphan the original (the finalizer
+                  can no longer reach it), so the target realm is fixed for the user's life.
                 properties:
                   name:
                     description: Name of the KeycloakInstance resource to target.
@@ -141,6 +144,9 @@ spec:
                 required:
                 - name
                 type: object
+                x-kubernetes-validations:
+                - message: instanceRef is immutable
+                  rule: self == oldSelf
               username:
                 description: |-
                   Username optionally sets the Keycloak username. When omitted the controller
