@@ -88,8 +88,12 @@ docker buildx imagetools inspect quay.holos.localhost/holos/holos-paas:dev
 ### Publishing images from CI
 
 The [`.github/workflows/images.yaml`](.github/workflows/images.yaml) **Images**
-workflow builds and publishes both multi-arch images from GitHub Actions. It is
-**manual-only** (`workflow_dispatch` — never on push, pull request, or tag) and
+workflow builds and publishes the multi-arch images from GitHub Actions. Each
+image is a **discrete job** (sharing the reusable
+[`build-image.yaml`](.github/workflows/build-image.yaml) workflow), so the
+`image` input lets you publish `holos-paas` only, `holos-controller` only, or
+both — building one never forces the other. It is **manual-only**
+(`workflow_dispatch` — never on push, pull request, or tag) and each build job
 runs inside a `publish-images` GitHub Environment. Because the workflow builds
 the caller-supplied `ref` (it checks out `inputs.ref`, not the workflow run
 ref), **configure that Environment with required reviewers** — required
@@ -102,12 +106,16 @@ single-sourced between local hosts and CI. Trigger it from the Actions tab or
 with `gh`:
 
 ```bash
-gh workflow run images.yaml -f ref=main             # or a commit SHA / tag (v0.1.0)
+gh workflow run images.yaml -f ref=main                                  # both images
+gh workflow run images.yaml -f image=holos-controller -f ref=main        # one image only
 gh workflow run images.yaml -f ref=v0.1.0 -f tag=v0.1.0
 ```
 
 Inputs:
 
+- `image` (required, default `both`) — which image(s) to build: `both`,
+  `holos-paas`, or `holos-controller`. Each runs as its own job; select one to
+  skip building the other.
 - `ref` (required, default `main`) — the Git reference to build: a commit SHA,
   a branch (`main` or `refs/heads/main`), or a tag (`v0.1.0` or
   `refs/tags/v0.1.0`). Passed to `actions/checkout`.
@@ -116,7 +124,7 @@ Inputs:
 - `registry` (optional, default `ghcr.io`) — an allowlisted registry host;
   authenticates with the built-in `GITHUB_TOKEN`.
 
-It publishes `ghcr.io/<owner>/holos-paas` and
+It publishes the selected image(s) to `ghcr.io/<owner>/holos-paas` and/or
 `ghcr.io/<owner>/holos-controller` (owner derived from the repository), each a
 multi-arch index covering `linux/amd64` and `linux/arm64`.
 

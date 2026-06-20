@@ -1,6 +1,6 @@
 name: Images
 
-# Manual-only multi-arch image build/publish.
+# Manual-only multi-arch image build/publish dispatcher.
 #
 # This workflow is deliberately NOT triggered on push, pull_request, or tags:
 # ci.yaml owns the automatic, registry-free build/test path, while this
@@ -8,22 +8,29 @@ name: Images
 # (or `gh workflow run`) against a caller-supplied Git ref. Keep the trigger as
 # workflow_dispatch only.
 #
-# Security model:
+# Discrete per-image jobs. Each image is built by its own job that calls the
+# reusable build-image.yaml workflow. The `image` input selects which to run, so
+# you can publish holos-paas only, holos-controller only, or both — building one
+# never forces the other. The shared build/publish/validation logic lives once
+# in build-image.yaml.
+#
+# Security model (enforced in build-image.yaml, which is resolved from this same
+# trusted commit — not from the caller-supplied `ref`):
 #
 #  * Admission control. Building a caller-supplied `ref` (a SHA/branch/tag) is
 #    the explicit purpose of this workflow, so the checkout source cannot be
 #    pinned to `github.ref`. The boundary instead is the `publish-images`
-#    GitHub Environment the build job runs in: configure it with REQUIRED
+#    GitHub Environment each build job runs in: configure it with REQUIRED
 #    REVIEWERS so every dispatch — whatever `ref` it names — is approved by a
 #    human before the publish job runs (Settings -> Environments). Environment
-#    *branch/tag deployment policies* gate only the workflow run ref, NOT this
+#    *branch/tag deployment policies* gate only the workflow run ref, NOT the
 #    checkout input, so required reviewers (not a branch policy) are the control
 #    that covers an arbitrary `ref`. `workflow_dispatch` alone only gates on
 #    write access, which is not a strong enough boundary for image publishing.
-#  * Token confinement. The job authenticates with the built-in GITHUB_TOKEN,
-#    so the `registry` input is constrained to an allowlist (a `type: choice`,
-#    re-checked in the validate step) — the token is never sent to an arbitrary
-#    caller-supplied host.
+#  * Token confinement. The build job authenticates with the built-in
+#    GITHUB_TOKEN, so the `registry` input is constrained to an allowlist (a
+#    `type: choice` here, re-checked in build-image.yaml) — the token is never
+#    sent to an arbitrary caller-supplied host.
 #  * Injection. All dispatch inputs reach shell steps via `env:` (never
 #    interpolated into `run:` script bodies), are rejected if they contain
 #    CR/LF, and the `tag` input is validated against the Docker tag grammar
@@ -32,6 +39,17 @@ name: Images
 on:
   workflow_dispatch:
     inputs:
+      image:
+        description: >-
+          Which image(s) to build and publish. Each image is a discrete job;
+          select one to avoid building the other.
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - holos-paas
+          - holos-controller
       ref:
         description: >-
           Git reference to build: a commit SHA, a branch (main or
@@ -51,10 +69,10 @@ on:
         description: >-
           Registry host to publish to. Must be one of the allowlisted hosts
           (currently only ghcr.io). The host is restricted by an explicit
-          allowlist below because the job authenticates with the built-in
+          allowlist because the job authenticates with the built-in
           GITHUB_TOKEN — sending that token to an arbitrary caller-supplied
           host would leak it, so a future Quay/other target is added by
-          extending REGISTRY_ALLOWLIST (a one-line change), not by accepting
+          extending the allowlist (a one-line change), not by accepting
           free-form input.
         required: false
         default: ghcr.io
@@ -62,158 +80,39 @@ on:
         options:
           - ghcr.io
 
-# Minimal default permissions; the build job widens to packages: write below.
+# Minimal default permissions; each calling job widens to packages: write via
+# the reusable workflow's own permissions block (capped by these).
 permissions:
   contents: read
+  packages: write
 
 jobs:
-  images:
-    name: Build and publish ${{ matrix.image }}
-    runs-on: ubuntu-latest
-    # Gate package publishing behind a GitHub Environment so org policy
-    # (required reviewers, deployment branch/tag restrictions) governs which
-    # refs may be published — workflow_dispatch alone is not a sufficient
-    # boundary. The environment may be created with no protection rules to keep
-    # the workflow functional, then hardened in repo settings without touching
-    # this file.
-    environment: publish-images
+  holos-paas:
+    if: ${{ inputs.image == 'holos-paas' || inputs.image == 'both' }}
+    uses: ./.github/workflows/build-image.yaml
     permissions:
       contents: read
-      # Required to push image packages to ghcr.io with GITHUB_TOKEN.
       packages: write
-    strategy:
-      fail-fast: false
-      # One matrix entry per image. Each carries the make target plus the two
-      # make variables that point that target at the dispatched registry/repo.
-      # Both builds run in parallel; both must be covered.
-      matrix:
-        include:
-          - image: holos-paas
-            make_target: docker-buildx
-            repo_var: IMAGE_REPO
-            tag_var: IMAGE_TAG
-          - image: holos-controller
-            make_target: controller-docker-buildx
-            repo_var: CONTROLLER_IMAGE_REPO
-            tag_var: CONTROLLER_IMAGE_TAG
-    steps:
-      # Pinned to the full commit SHA of v4.3.1 for supply-chain hardening
-      # (matches ci.yaml). Checks out the dispatched ref so the build reflects
-      # exactly that commit/branch/tag.
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          ref: ${{ inputs.ref }}
+    with:
+      image: holos-paas
+      make_target: docker-buildx
+      repo_var: IMAGE_REPO
+      tag_var: IMAGE_TAG
+      ref: ${{ inputs.ref }}
+      tag: ${{ inputs.tag }}
+      registry: ${{ inputs.registry }}
 
-      # Validate the dispatch inputs once, up front, before any value reaches a
-      # build/push command. `registry` and `tag` arrive from an untrusted
-      # workflow_dispatch input, so they are surfaced via `env:` (never
-      # interpolated into the script body) and checked here; anything that does
-      # not pass fails the run rather than flowing into a shell command, a
-      # `docker login`, or a `$GITHUB_ENV` record. Validated values are
-      # re-exported to $GITHUB_ENV so later steps consume vetted, quoted shell
-      # variables instead of raw `${{ inputs.* }}` interpolation.
-      #
-      # REGISTRY_ALLOWLIST is the trusted set of hosts the GITHUB_TOKEN may be
-      # sent to. The `registry` input is already a `type: choice` constrained
-      # to this same set, so this is defense-in-depth; extend both to add a new
-      # target. Never accept a free-form registry host here — the login step
-      # sends GITHUB_TOKEN to whatever host wins, so an arbitrary value would
-      # leak the token.
-      - name: Validate and resolve inputs
-        id: meta
-        env:
-          IN_REGISTRY: ${{ inputs.registry }}
-          IN_TAG: ${{ inputs.tag }}
-          REGISTRY_ALLOWLIST: |
-            ghcr.io
-        run: |
-          set -euo pipefail
-          # Reject any value carrying a CR or LF before pattern-matching: grep
-          # is line-oriented, so a multi-line value with a benign first line
-          # could otherwise slip past `^...$` and then inject extra records
-          # when written to $GITHUB_ENV / $GITHUB_OUTPUT. `case` matches the
-          # whole string (newlines included), closing that vector.
-          case "${IN_REGISTRY}${IN_TAG}" in
-            *[$'\n\r']*)
-              echo "::error::inputs must not contain newline characters" >&2
-              exit 1
-              ;;
-          esac
-          # Registry host must be one of the allowlisted trusted hosts — the
-          # GITHUB_TOKEN is only ever sent to this value at login.
-          if ! grep -Fxq "${IN_REGISTRY}" <<<"${REGISTRY_ALLOWLIST}"; then
-            echo "::error::Registry '${IN_REGISTRY}' is not in the allowlist" >&2
-            exit 1
-          fi
-          # Docker tag grammar: [A-Za-z0-9_][A-Za-z0-9_.-]{0,127}. An empty tag
-          # is allowed here and resolved to the short SHA below.
-          if [ -n "${IN_TAG}" ] \
-            && ! printf '%s' "${IN_TAG}" \
-              | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'; then
-            echo "::error::Invalid image tag: '${IN_TAG}'" >&2
-            exit 1
-          fi
-          tag="${IN_TAG}"
-          if [ -z "${tag}" ]; then
-            tag="$(git rev-parse --short HEAD)"
-          fi
-          # Re-export the vetted values for downstream steps. printf (not echo)
-          # writes them so no value is re-interpreted by the shell. Both values
-          # are now guaranteed single-line and pattern-clean.
-          {
-            printf 'REGISTRY=%s\n' "${IN_REGISTRY}"
-            printf 'IMAGE_TAG_RESOLVED=%s\n' "${tag}"
-          } >> "${GITHUB_ENV}"
-          printf 'tag=%s\n' "${tag}" >> "${GITHUB_OUTPUT}"
-
-      # Provision a docker-container-driver buildx builder — the CI equivalent
-      # of HOL-1333's docker-buildx-builder make target. The make target's own
-      # bootstrap is a compatible no-op against this builder (buildx uses the
-      # active builder set up here). No QEMU (docker/setup-qemu-action) is
-      # needed: both Dockerfiles pin the builder stage to $BUILDPLATFORM and
-      # cross-compile via the Go toolchain to the target arch, so amd64 and
-      # arm64 outputs are produced without emulating the target architecture.
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-
-      # Authenticate to the registry. ghcr.io needs no extra secrets: the
-      # built-in GITHUB_TOKEN plus packages: write is sufficient. REGISTRY is
-      # the validated host exported above.
-      - name: Log in to registry
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Drive the build through the multi-arch make target (HOL-1333) so the
-      # buildx invocation stays single-sourced between local hosts and CI. The
-      # target is push-only (a manifest list cannot be --load-ed into the local
-      # daemon) and emits a multi-arch (linux/amd64 + linux/arm64) OCI image
-      # index to the registry. All dynamic values come from env (validated
-      # REGISTRY/IMAGE_TAG_RESOLVED, the trusted github context, and the
-      # static matrix entries), quoted, so nothing is interpolated into the
-      # script body.
-      - name: Build and push ${{ matrix.image }}
-        env:
-          MAKE_TARGET: ${{ matrix.make_target }}
-          REPO_VAR: ${{ matrix.repo_var }}
-          TAG_VAR: ${{ matrix.tag_var }}
-          OWNER: ${{ github.repository_owner }}
-          IMAGE: ${{ matrix.image }}
-        run: |
-          set -euo pipefail
-          make "${MAKE_TARGET}" \
-            "${REPO_VAR}=${REGISTRY}/${OWNER}/${IMAGE}" \
-            "${TAG_VAR}=${IMAGE_TAG_RESOLVED}"
-
-      # Surface both platforms in the run log as a published-artifact sanity
-      # check (the image index should list linux/amd64 and linux/arm64).
-      - name: Inspect published image
-        env:
-          OWNER: ${{ github.repository_owner }}
-          IMAGE: ${{ matrix.image }}
-        run: |
-          set -euo pipefail
-          docker buildx imagetools inspect \
-            "${REGISTRY}/${OWNER}/${IMAGE}:${IMAGE_TAG_RESOLVED}"
+  holos-controller:
+    if: ${{ inputs.image == 'holos-controller' || inputs.image == 'both' }}
+    uses: ./.github/workflows/build-image.yaml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      image: holos-controller
+      make_target: controller-docker-buildx
+      repo_var: CONTROLLER_IMAGE_REPO
+      tag_var: CONTROLLER_IMAGE_TAG
+      ref: ${{ inputs.ref }}
+      tag: ${{ inputs.tag }}
+      registry: ${{ inputs.registry }}

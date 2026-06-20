@@ -44,10 +44,14 @@ docker-buildx-builder` bootstraps it; no QEMU, the Go toolchain cross-compiles
 from `$BUILDPLATFORM`). The single-`PLATFORM` `docker-build`/`docker-push`
 targets remain for local-cluster use. The manual
 [`.github/workflows/images.yaml`](.github/workflows/images.yaml) **Images**
-workflow (HOL-1334) publishes both multi-arch images from CI — `workflow_dispatch`
-only (never on push/PR/tag), gated behind a `publish-images` GitHub Environment,
-taking `ref`/`tag` inputs and pushing to `ghcr.io/<owner>/holos-{paas,controller}`.
-It drives the same buildx make targets, so the build logic is single-sourced.
+workflow (HOL-1334) publishes the multi-arch images from CI — `workflow_dispatch`
+only (never on push/PR/tag), with each image a **discrete job** (an `image`
+input selects `both`/`holos-paas`/`holos-controller`, so one builds without the
+other) sharing the reusable
+[`build-image.yaml`](.github/workflows/build-image.yaml) workflow, gated behind a
+`publish-images` GitHub Environment, taking `ref`/`tag` inputs and pushing to
+`ghcr.io/<owner>/holos-{paas,controller}`. It drives the same buildx make
+targets, so the build logic is single-sourced.
 See [README.md](README.md) (*Container image* → *Multi-arch images* /
 *Publishing images from CI*).
 
