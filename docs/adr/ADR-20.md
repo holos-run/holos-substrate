@@ -376,8 +376,10 @@ spec:
   # shallow nested tree projects/<project>/{roles,custodians}/{owner,editor,viewer}.
   project: my-project
   # The primitive roles to provision (the GCP triad). Each role group is bound to
-  # a client role on the project's KeycloakClient so membership surfaces as the
-  # flat groups-claim value (see "claim value" below).
+  # a client role my-project-<role> on the CONSUMER's client (the Quay client
+  # https://quay.holos.localhost for the ADR-19 syncedTeams case) so membership
+  # surfaces as the flat groups-claim value in that consumer's token — the mapper
+  # is per-client (see "claim value" below).
   roles: [owner, editor, viewer]
   # Custodian delegation: members of custodians/<role> manage membership of
   # roles/<role>, via FGAP v2 manage-members/manage-membership scoped to the
@@ -449,17 +451,43 @@ synthesize that value**: with `full.path: "false"` it emits the leaf (`owner`);
 with `"true"` it emits the path (`/projects/my-project/roles/owner`); neither is
 `my-project-owner`.
 
-**Decision — carry the value as a client role.** Each `roles/<role>` group is
-assigned a **client role** named `my-project-<role>` on the project's
-`KeycloakClient`, and the realm's existing **`oidc-usermodel-client-role-mapper`**
-folds that client-role **name** into the shared `groups` claim — exactly the
-mechanism the `quay` client already uses (`quay-client-roles` mapper,
-`usermodel.clientRoleMapping.clientId: https://quay.holos.localhost`, writing
-client-role names into `claim.name: groups`; see
-[realm-config buildplan.cue](../../holos/components/keycloak/realm-config/buildplan.cue)).
-A member of `roles/owner` thereby holds the `my-project-owner` client role (via
-Keycloak's group → role assignment), and login surfaces `my-project-owner` in the
-`groups` claim. The group is the join point; the client role is the claim value.
+**Decision — carry the value as a client role on the *client whose token must
+carry it*.** The `oidc-usermodel-client-role-mapper` is **per client**: it folds
+into the `groups` claim only the roles of the **one** client named by its
+`usermodel.clientRoleMapping.clientId`. The platform's precedent mapper —
+`quay-client-roles` — is scoped to `usermodel.clientRoleMapping.clientId:
+https://quay.holos.localhost`
+([realm-config buildplan.cue](../../holos/components/keycloak/realm-config/buildplan.cue)),
+so it emits **only the Quay client's** client roles into Quay's token. A client
+role on a *different* (project) client would surface in **that** client's token,
+**not** in Quay's. The mechanism must therefore assign the role on the **client
+whose token the consumer reads**:
+
+- **For the Quay use case** (`syncedTeams[].oidcGroup` reads Quay's token): each
+  `roles/<role>` group is assigned a **client role `my-project-<role>` on the Quay
+  client `https://quay.holos.localhost`** — the client the existing
+  `quay-client-roles` mapper already serves. A member of `roles/owner` thereby
+  holds the `my-project-owner` Quay-client role (via Keycloak's group → role
+  assignment), and the already-deployed `quay-client-roles` mapper emits
+  `my-project-owner` into Quay's `groups` claim with **no Quay-side or new-mapper
+  change**. This is the join the "no Quay-side change" consequence rests on.
+- **For a project's own service** (its token must carry its own role): the role is
+  assigned on the project's own `KeycloakClient`, and that client's reconciler
+  ensures an `oidc-usermodel-client-role-mapper` scoped to **its own** `clientId`
+  is present (the `quay-client-roles` shape, retargeted) so the role surfaces in
+  **that** client's token.
+
+The group is the join point; the client role is the claim value; **which client**
+the role lives on is dictated by **which client's token must carry it** — assigning
+it on the wrong client is exactly the mistake the per-client mapper scope makes
+easy. (Where the platform `quay` client is the consumer, the controller assigns a
+*Quay-client* role, which means the controller touches a client-role namespace on
+the platform-owned `quay` client. That client role is itself a controller-claimed,
+project-prefixed name `my-project-<role>` — distinct from the **reserved**
+platform Quay client roles `platform-admin`/`project-admin` — and is governed by
+the same per-CR claim model in *Ownership / disjointness* below; the `quay`
+*client* object stays config-cli's, only project-prefixed client roles on it are
+controller-claimed.)
 
 **Rejected alternatives.**
 
@@ -511,11 +539,18 @@ spec:
     - https://my-app.holos.localhost
   # The groups-claim mapping: membership in projects/<project>/roles/<role>
   # surfaces as the claim value my-project-<role>. Realized by assigning the
-  # my-project-<role> CLIENT ROLE (on this client) to the roles/<role> group and
-  # letting the realm oidc-usermodel-client-role-mapper emit the role name into
-  # the shared groups claim (see "claim value" above).
+  # my-project-<role> CLIENT ROLE — on the client whose TOKEN must carry it (this
+  # client for its own token; the Quay client https://quay.holos.localhost for the
+  # ADR-19 syncedTeams consumer) — to the roles/<role> group, and letting that
+  # client's oidc-usermodel-client-role-mapper emit the role name into the shared
+  # groups claim (see "claim value" above). The mapper is PER CLIENT, so the role
+  # must live on the consumer's client, not necessarily this one.
   groupClaim:
     project: my-project          # produces my-project-owner / -editor / -viewer
+    # The client whose token must carry the value (default: this client). For the
+    # ADR-19 Quay consumer, the Quay client whose quay-client-roles mapper already
+    # emits client roles into Quay's groups claim.
+    consumerClientId: https://quay.holos.localhost
   # For a confidential client, where to deliver the generated secret — a
   # generate-once, create-if-absent Secret per secret-handling.md, never committed.
   secretRef:
@@ -590,9 +625,14 @@ fork — the existing realm-role mapper that folds realm-role names into `groups
 ### `KeycloakUser` — pre-provision by email + first-login auto-link (AC #5)
 
 A `KeycloakUser` pre-provisions a person **by email** *only if necessary* (e.g. to
-assign group membership before that person's first login), and configures the
-realm/IdP so the person's **first federated login auto-links** the existing
-record rather than creating a duplicate:
+assign group membership before that person's first login) and assigns that
+person's **group membership**. It does **not** itself configure the realm or IdP:
+the **first-login auto-link** that links the federated login to the pre-created
+record (rather than creating a duplicate) is **realm/IdP configuration the
+platform `keycloak-config-cli` owns** and the CR **assumes is present** (see *What
+the CR owns* vs *What the platform must provide* below). The CR's surface is the
+per-user pre-create + membership; the auto-link behavior is a documented
+prerequisite, not CR state:
 
 ```yaml
 apiVersion: keycloak.holos.run/v1alpha1
@@ -690,6 +730,12 @@ mechanisms enforce disjointness:
     ID — reserving the display string `quay` alone would miss the real client and
     leave a bypass;
   - **realm roles**: `platform-owner`, `platform-editor`, `platform-viewer`;
+  - **client roles on a platform client**: the `quay` client's own
+    `platform-admin`/`project-admin` (a controller-claimed *project-prefixed*
+    client role like `my-project-owner` on that same `quay` client is permitted —
+    only the platform's own client-role *names* are reserved, so the claim-value
+    mechanism above can assign project roles on the consumer client without
+    colliding with platform roles);
   - **groups**: `authenticated` (the realm default group);
   - **users**: the seeded superusers `svc-quay-resource-controller` and
     `quay-admin`.
@@ -795,13 +841,18 @@ which is the observability ADR-22's grant model depends on.
    realization of the `Updates: ADR-3` change — the platform now provisions the
    groups and delegates the custodian approval; ADR-3's RBAC authorization model is
    unchanged.
-5. **The role-group's `groups`-claim value is carried by a client role**: each
-   `roles/<role>` group is assigned the `my-project-<role>` client role on the
-   project's `KeycloakClient`, and the realm's existing
-   `oidc-usermodel-client-role-mapper` (the `quay-client-roles` precedent) emits the
-   role name into the shared `groups` claim. The **full-path Group Membership
-   mapper** (emits a path, not the flat value) and a **script mapper** (disabled by
-   default, an avoidable security/operational liability) are **rejected**.
+5. **The role-group's `groups`-claim value is carried by a client role on the
+   client whose token must carry it**: because the `oidc-usermodel-client-role-mapper`
+   is **per client**, each `roles/<role>` group is assigned the `my-project-<role>`
+   client role on the **consumer's** client — the **Quay client
+   `https://quay.holos.localhost`** for the [ADR-19](ADR-19.md) `syncedTeams` case,
+   whose existing `quay-client-roles` mapper already emits client roles into Quay's
+   `groups` claim — or on the project's own client when its own token must carry the
+   value. Assigning the role on the wrong client (e.g. only on the project client
+   when Quay is the consumer) would **not** surface it in Quay's token. The
+   **full-path Group Membership mapper** (emits a path, not the flat value) and a
+   **script mapper** (disabled by default, an avoidable security/operational
+   liability) are **rejected**.
 6. **`KeycloakClient` manages a per-project OIDC client named by its URL**
    (`clientId: https://my-app.holos.localhost`, the platform convention), wires the
    `groups`-claim mapper, and delivers a confidential client's secret into the
@@ -843,8 +894,10 @@ which is the observability ADR-22's grant model depends on.
   (`projects/<project>/roles/{owner,editor,viewer}`), the custodian delegation, and
   the client-role mechanism that surfaces `my-project-{owner,editor,viewer}` in the
   `groups` claim. The two halves meet at those exact claim-name strings — no
-  cross-group Go import — so once these CRDs ship, ADR-19's `syncedTeams` binds the
-  Keycloak groups to Quay teams with **no Quay-side change**.
+  cross-group Go import — and because the value is carried by a client role on the
+  **Quay client** (the one whose already-deployed `quay-client-roles` mapper feeds
+  Quay's token), once these CRDs ship ADR-19's `syncedTeams` binds the Keycloak
+  groups to Quay teams with **no Quay-side or new-mapper change**.
 - **A second controller API group, sharing the binary and conventions.** The
   controller gains a sibling reconciler set, reusing ADR-19's `caBundle`,
   `credentialsSecretRef`, claim-model, status, and metrics conventions — so the
