@@ -6,6 +6,51 @@ import (
 	"net/url"
 )
 
+// RawClient is a Keycloak ClientRepresentation kept as an opaque field map so a
+// read-modify-write preserves every field the controller does not manage —
+// protocol, clientAuthenticatorType, attributes (including PKCE config), service
+// account / flow flags, default scopes, and anything else Keycloak or another
+// owner set. The typed OIDCClient is a lossy view sufficient for create and for
+// reading the handful of fields the controller keys on; a full PUT update must
+// go through RawClient to avoid clobbering unmanaged fields.
+type RawClient map[string]any
+
+// ClientFields are the client fields the controller manages on an update. Only
+// the non-nil fields are applied onto a fetched RawClient, so an update touches
+// exactly the desired keys and leaves the rest of the representation intact.
+type ClientFields struct {
+	// Name, when non-nil, sets the client's display name.
+	Name *string
+	// Enabled, when non-nil, sets the enabled flag.
+	Enabled *bool
+	// PublicClient, when non-nil, sets public (true) vs confidential (false).
+	PublicClient *bool
+	// RedirectURIs, when non-nil, replaces the redirect URI list.
+	RedirectURIs *[]string
+	// WebOrigins, when non-nil, replaces the CORS web-origin list.
+	WebOrigins *[]string
+}
+
+// apply writes the set (non-nil) fields onto raw, leaving every other key
+// untouched.
+func (f ClientFields) apply(raw RawClient) {
+	if f.Name != nil {
+		raw["name"] = *f.Name
+	}
+	if f.Enabled != nil {
+		raw["enabled"] = *f.Enabled
+	}
+	if f.PublicClient != nil {
+		raw["publicClient"] = *f.PublicClient
+	}
+	if f.RedirectURIs != nil {
+		raw["redirectUris"] = *f.RedirectURIs
+	}
+	if f.WebOrigins != nil {
+		raw["webOrigins"] = *f.WebOrigins
+	}
+}
+
 // ProtocolMapperClientRole is the Keycloak protocol-mapper type that folds a
 // client's client-role names into a token claim. The platform uses it (as
 // quay-client-roles) to emit the my-project-<role> client roles into the shared
@@ -98,13 +143,43 @@ func (c *Client) CreateClient(ctx context.Context, client OIDCClient) (string, e
 	return c.doCreate(ctx, c.adminPath("/clients"), client)
 }
 
-// UpdateClient applies the client representation to an existing client via
-// PUT /admin/realms/{realm}/clients/{clientUUID}, where clientUUID is the
-// client's id (not its clientId). Keycloak's PUT is a full update; callers pass
-// the desired representation (typically read, mutated, written back).
-func (c *Client) UpdateClient(ctx context.Context, clientUUID string, client OIDCClient) error {
+// GetClientRaw fetches the full ClientRepresentation by UUID via
+// GET /admin/realms/{realm}/clients/{clientUUID} as an opaque RawClient, so a
+// caller can mutate only the managed fields and PUT it back without dropping the
+// rest. A missing client is returned as an *APIError reporting IsNotFound.
+func (c *Client) GetClientRaw(ctx context.Context, clientUUID string) (RawClient, error) {
 	path := c.adminPath("/clients/" + url.PathEscape(clientUUID))
-	return c.doJSON(ctx, http.MethodPut, path, client, nil)
+	raw := RawClient{}
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &raw); err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
+// UpdateClientRaw replaces the client via PUT /admin/realms/{realm}/clients/{clientUUID}
+// with the given full ClientRepresentation. Keycloak's PUT is a full update, so
+// raw must be a complete representation (typically one fetched by GetClientRaw
+// and then mutated) — not a sparse subset — otherwise unmanaged fields would be
+// dropped. Prefer UpdateClientFields, which does the fetch-merge-PUT safely.
+func (c *Client) UpdateClientRaw(ctx context.Context, clientUUID string, raw RawClient) error {
+	path := c.adminPath("/clients/" + url.PathEscape(clientUUID))
+	return c.doJSON(ctx, http.MethodPut, path, raw, nil)
+}
+
+// UpdateClientFields applies only the set (non-nil) fields of f to the client,
+// losslessly: it fetches the current full representation via GetClientRaw,
+// overwrites just the managed keys, and PUTs the merged representation back. This
+// is the safe update path — it never drops Keycloak ClientRepresentation fields
+// the controller does not manage (protocol, clientAuthenticatorType, attributes
+// such as PKCE config, service-account/flow flags, default scopes), which a full
+// PUT of the lossy OIDCClient subset would clobber.
+func (c *Client) UpdateClientFields(ctx context.Context, clientUUID string, f ClientFields) error {
+	raw, err := c.GetClientRaw(ctx, clientUUID)
+	if err != nil {
+		return err
+	}
+	f.apply(raw)
+	return c.UpdateClientRaw(ctx, clientUUID, raw)
 }
 
 // ListProtocolMappers returns the client's protocol mappers via

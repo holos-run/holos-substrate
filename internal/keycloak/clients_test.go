@@ -63,16 +63,87 @@ func TestCreateClient(t *testing.T) {
 	}
 }
 
-func TestUpdateClient(t *testing.T) {
-	h := &recordingHandler{t: t, wantMethod: http.MethodPut, wantPath: clientsBase + "/uuid-1", status: http.StatusNoContent}
+func TestUpdateClientFieldsPreservesUnmanagedFields(t *testing.T) {
+	// The lossless update path fetches the full representation, overwrites only
+	// the set managed fields, and PUTs it back — unmanaged fields (protocol,
+	// attributes/PKCE, service-account flags) must survive the round-trip.
+	var putBody map[string]any
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + clientsBase + "/uuid-1": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"uuid-1","clientId":"https://app","name":"Old","enabled":true,"publicClient":false,"protocol":"openid-connect","clientAuthenticatorType":"client-secret","serviceAccountsEnabled":true,"attributes":{"pkce.code.challenge.method":"S256"}}`)
+		},
+		"PUT " + clientsBase + "/uuid-1": func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			putBody = decodeJSONObject(t, body)
+			w.WriteHeader(http.StatusNoContent)
+		},
+	}}
+	c, _ := newTestClient(t, m)
+
+	newName := "App"
+	if err := c.UpdateClientFields(context.Background(), "uuid-1", ClientFields{Name: &newName}); err != nil {
+		t.Fatalf("UpdateClientFields: %v", err)
+	}
+	if putBody["name"] != "App" {
+		t.Errorf("name = %v, want the managed override App", putBody["name"])
+	}
+	// Unmanaged fields must be preserved verbatim.
+	if putBody["protocol"] != "openid-connect" {
+		t.Errorf("protocol = %v, want preserved openid-connect", putBody["protocol"])
+	}
+	if putBody["clientAuthenticatorType"] != "client-secret" {
+		t.Errorf("clientAuthenticatorType = %v, want preserved", putBody["clientAuthenticatorType"])
+	}
+	if putBody["serviceAccountsEnabled"] != true {
+		t.Errorf("serviceAccountsEnabled = %v, want preserved true", putBody["serviceAccountsEnabled"])
+	}
+	attrs, ok := putBody["attributes"].(map[string]any)
+	if !ok || attrs["pkce.code.challenge.method"] != "S256" {
+		t.Errorf("attributes = %v, want preserved PKCE config", putBody["attributes"])
+	}
+}
+
+func TestUpdateClientFieldsOnlyTouchesSetFields(t *testing.T) {
+	// A nil field must not appear as an override; the fetched value stays.
+	var putBody map[string]any
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + clientsBase + "/uuid-1": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"uuid-1","clientId":"https://app","enabled":true,"publicClient":true}`)
+		},
+		"PUT " + clientsBase + "/uuid-1": func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			putBody = decodeJSONObject(t, body)
+			w.WriteHeader(http.StatusNoContent)
+		},
+	}}
+	c, _ := newTestClient(t, m)
+
+	// Only flip publicClient to false (converge public -> confidential); leave
+	// enabled untouched.
+	confidential := false
+	if err := c.UpdateClientFields(context.Background(), "uuid-1", ClientFields{PublicClient: &confidential}); err != nil {
+		t.Fatalf("UpdateClientFields: %v", err)
+	}
+	if putBody["publicClient"] != false {
+		t.Errorf("publicClient = %v, want overridden false", putBody["publicClient"])
+	}
+	if putBody["enabled"] != true {
+		t.Errorf("enabled = %v, want the fetched true preserved (not reset)", putBody["enabled"])
+	}
+}
+
+func TestGetClientRawNotFound(t *testing.T) {
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodGet, wantPath: clientsBase + "/missing",
+		status:   http.StatusNotFound,
+		respBody: `{"error":"Could not find client"}`,
+	}
 	c, _ := newTestClient(t, h)
 
-	if err := c.UpdateClient(context.Background(), "uuid-1", OIDCClient{ClientID: "https://app", Name: "App"}); err != nil {
-		t.Fatalf("UpdateClient: %v", err)
-	}
-	assertCommonRequest(t, h, true)
-	if h.gotBody["name"] != "App" {
-		t.Errorf("body name = %v, want App", h.gotBody["name"])
+	if _, err := c.GetClientRaw(context.Background(), "missing"); !IsNotFound(err) {
+		t.Fatalf("expected IsNotFound, got %v", err)
 	}
 }
 
