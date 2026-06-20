@@ -36,6 +36,21 @@ Dockerfile                 # two-stage cross-compile → distroless runtime
 holos/                     # Holos CUE deployment configuration and policy
 ```
 
+Both service images (`holos-paas`, `holos-controller`) have multi-arch `make`
+targets — `make docker-buildx` / `make controller-docker-buildx` (HOL-1333) —
+that build and push a single OCI image index spanning `linux/amd64` and
+`linux/arm64` via a shared `docker-container` buildx builder (`make
+docker-buildx-builder` bootstraps it; no QEMU, the Go toolchain cross-compiles
+from `$BUILDPLATFORM`). The single-`PLATFORM` `docker-build`/`docker-push`
+targets remain for local-cluster use. The manual
+[`.github/workflows/images.yaml`](.github/workflows/images.yaml) **Images**
+workflow (HOL-1334) publishes both multi-arch images from CI — `workflow_dispatch`
+only (never on push/PR/tag), gated behind a `publish-images` GitHub Environment,
+taking `ref`/`tag` inputs and pushing to `ghcr.io/<owner>/holos-{paas,controller}`.
+It drives the same buildx make targets, so the build logic is single-sourced.
+See [README.md](README.md) (*Container image* → *Multi-arch images* /
+*Publishing images from CI*).
+
 The earlier NATS event-driven deployment pipeline — the **webhook receiver**
 ([ADR-9](docs/adr/ADR-9.md)), the **webhook subscriber**
 ([ADR-10](docs/adr/ADR-10.md)), and the deployer/render-task path
