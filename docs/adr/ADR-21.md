@@ -82,7 +82,7 @@ components are written in this phase — this is a design record only.**
   **platform-owned prerequisite created by the instance namespace's owner** — it is
   **not** a resource the Project component renders (ADR-22's default-deny model
   forbids a tenant authorizing its own access). The Gateway-API `ReferenceGrant`
-  the Project component **does** render (item 8 below) is a separate, coexisting
+  the Project component **does** render (item 7 below) is a separate, coexisting
   grant for route/backend object references.
 - [ADR-16 — Kargo-Driven Promotion with a Client-Side CLI Build-and-Publish
   (ORAS) Workflow](ADR-16.md): the promotion pipeline an Application's
@@ -647,7 +647,7 @@ without full org admin.)
    namespace creates** in that (referent) namespace — it is **not** a resource the
    Project component renders, because ADR-22's default-deny trust model forbids a
    tenant's own self-service registration from authorizing its access to the central
-   instance (item 7). The Project's Keycloak CRs reference the instance; the grant
+   instance. The Project's Keycloak CRs reference the instance; the grant
    that permits it lives with, and is owned by, the instance.
 3. **One `apps.<name>` entry renders 11 application-level resources** scoped to
    its Project (workloads into the Project's Namespace; the Kargo `Warehouse`/
