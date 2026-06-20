@@ -195,6 +195,58 @@ func TestEnsureGroupByPathFastPathWhenPresent(t *testing.T) {
 	}
 }
 
+func TestEnsureGroupByPathCreatedReportsFreshness(t *testing.T) {
+	// Leaf already present: created must be false (fast path).
+	mExists := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + adminPathPrefix + "/realms/holos/group-by-path/projects/p/roles/owner": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"g-owner"}`)
+		},
+	}}
+	c, _ := newTestClient(t, mExists)
+	id, created, err := c.EnsureGroupByPathCreated(context.Background(), "projects/p/roles/owner")
+	if err != nil {
+		t.Fatalf("EnsureGroupByPathCreated: %v", err)
+	}
+	if id != "g-owner" || created {
+		t.Errorf("got (id=%q, created=%v), want (g-owner, false) for a pre-existing leaf", id, created)
+	}
+
+	// Leaf raced (409 on create): created must be false even though we attempted it.
+	routes := map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + adminPathPrefix + "/realms/holos/group-by-path/owner": func(w http.ResponseWriter, r *http.Request) {
+			// First lookup 404 (full path), then resolve after the conflict.
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"raced-owner"}`)
+		},
+	}
+	// Full-path lookup 404s so the walk begins.
+	routes["GET "+adminPathPrefix+"/realms/holos/group-by-path/owner"] = func() func(http.ResponseWriter, *http.Request) {
+		calls := 0
+		return func(w http.ResponseWriter, _ *http.Request) {
+			calls++
+			if calls == 1 {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"raced-owner"}`)
+		}
+	}()
+	routes["POST "+groupsBase] = func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, `{"errorMessage":"Top level group named owner already exists."}`)
+	}
+	c2, _ := newTestClient(t, &muxHandler{t: t, routes: routes})
+	id, created, err = c2.EnsureGroupByPathCreated(context.Background(), "owner")
+	if err != nil {
+		t.Fatalf("EnsureGroupByPathCreated (race): %v", err)
+	}
+	if id != "raced-owner" || created {
+		t.Errorf("got (id=%q, created=%v), want (raced-owner, false) for a 409 race", id, created)
+	}
+}
+
 func TestEnsureGroupByPathCreatesMissingTree(t *testing.T) {
 	// Nothing exists: the full path 404s, each prefix 404s, then top-level
 	// "projects" is created and each remaining segment is created as a child.

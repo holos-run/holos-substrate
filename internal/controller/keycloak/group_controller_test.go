@@ -659,6 +659,118 @@ func TestGroupGroupIDBackfillPersisted(t *testing.T) {
 	}
 }
 
+func TestGroupCreateRaceConflict(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-group-race"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	group := &keycloakv1alpha1.KeycloakGroup{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "race"},
+		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Path:        "projects/race/roles/owner",
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, group); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// The group does NOT exist at the initial GET, but a concurrent actor created it
+	// just before our ensure: the fake reports it pre-existing (created=false).
+	fake := newFakeKeycloakClient("projects/race/roles/owner")
+	// Force the initial GetGroupByPath to report NotFound so reconcileCreate runs,
+	// then EnsureGroupByPathCreated finds it already present (created=false).
+	fake.groupGetNotFoundOnce = map[string]bool{"/projects/race/roles/owner": true}
+	r, _ := newGroupReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(group)
+	_, _ = reconcileGroup(ctx, r, key) // finalizer
+	if _, err := reconcileGroup(ctx, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	got := getGroup(t, ctx, key)
+	status, reason, _ := conditionStatus(got.Status.Conditions, ConditionReady)
+	if status != metav1.ConditionFalse || reason != ReasonConflict {
+		t.Errorf("Ready = (%v, %v), want (False, %s) for a lost create race with adopt=false", status, reason, ReasonConflict)
+	}
+	if got.Status.Created {
+		t.Errorf("must not claim ownership of a group won by a create race")
+	}
+}
+
+func TestGroupAdoptedDeletePrunesManaged(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-group-adoptprune"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	createIgnoreExists(t, ctx, &keycloakv1alpha1.KeycloakClient{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "consumer"},
+		Spec: keycloakv1alpha1.KeycloakClientSpec{
+			ClientID:    "https://app.holos.localhost",
+			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+		},
+	})
+
+	group := &keycloakv1alpha1.KeycloakGroup{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "adoptprune"},
+		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Path:        "projects/ap/roles/owner",
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Adopt:       true,
+			ClientRoles: []keycloakv1alpha1.ClientRoleReference{{ClientRef: "consumer", Role: "ap-owner"}},
+			Custodians:  []keycloakv1alpha1.CustodianReference{{Path: "projects/ap/custodians/owner"}},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, group); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	fake := newFakeKeycloakClient("projects/ap/roles/owner", "projects/ap/custodians/owner") // role group pre-exists → adopted
+	fake.seedClient("https://app.holos.localhost", "client-uuid")
+	fake.seedClientRole("client-uuid", "ap-owner", "role-owner")
+	fake.seedClient(adminPermissionsClientID, "perm-client-uuid")
+	r, _ := newGroupReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(group)
+	_, _ = reconcileGroup(ctx, r, key) // finalizer
+	if _, err := reconcileGroup(ctx, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	got := getGroup(t, ctx, key)
+	if !got.Status.Adopted {
+		t.Fatalf("expected adopted; got %+v", got.Status)
+	}
+	gid := got.Status.GroupID
+	if !fake.roleAssigned(gid, "client-uuid", "ap-owner") {
+		t.Fatalf("role should be assigned on the adopted group; calls = %v", fake.calls)
+	}
+
+	// Delete the CR: the adopted group must survive, but its controller-added role
+	// and custodian delegation must be pruned.
+	if err := shared.k8sClient.Delete(ctx, getGroup(t, ctx, key)); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := reconcileGroup(ctx, r, key); err != nil {
+		t.Fatalf("reconcile delete: %v", err)
+	}
+	if !fake.groupExists("projects/ap/roles/owner") {
+		t.Errorf("adopted group must not be deleted")
+	}
+	if fake.roleAssigned(gid, "client-uuid", "ap-owner") {
+		t.Errorf("controller-added role must be revoked on adopted release; calls = %v", fake.calls)
+	}
+	if len(fake.fgapDeletes) == 0 {
+		t.Errorf("controller-added custodian delegation must be pruned on adopted release")
+	}
+}
+
 func TestGroupInstanceNotReady(t *testing.T) {
 	if shared == nil {
 		t.Skip("envtest not provisioned")

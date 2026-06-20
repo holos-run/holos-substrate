@@ -50,7 +50,14 @@ type fakeKeycloakClient struct {
 	fgapPermissions []string
 	fgapDeletes     []string
 
-	// ensureErr, when non-nil, is returned by EnsureGroupByPath to simulate a
+	// groupGetNotFoundOnce, when an entry is true for a normalized path, makes the
+	// next GetGroupByPath for that path report NotFound exactly once (then the entry
+	// is cleared). It simulates the create-race window: the reconciler's initial GET
+	// 404s, but EnsureGroupByPathCreated then finds the group already present
+	// (created=false) because a concurrent actor created it.
+	groupGetNotFoundOnce map[string]bool
+
+	// ensureErr, when non-nil, is returned by EnsureGroupByPathCreated to simulate a
 	// create failure.
 	ensureErr error
 	// deleteErr, when non-nil, is returned by DeleteGroupByPathIfExists.
@@ -122,6 +129,10 @@ func (f *fakeKeycloakClient) GetGroupByPath(ctx context.Context, path string) (*
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("Get:" + normPath(path))
+	if f.groupGetNotFoundOnce[normPath(path)] {
+		delete(f.groupGetNotFoundOnce, normPath(path))
+		return nil, notFoundErr(path)
+	}
 	id, ok := f.groups[normPath(path)]
 	if !ok {
 		return nil, notFoundErr(path)
@@ -129,17 +140,18 @@ func (f *fakeKeycloakClient) GetGroupByPath(ctx context.Context, path string) (*
 	return &keycloak.Group{ID: id, Path: normPath(path)}, nil
 }
 
-func (f *fakeKeycloakClient) EnsureGroupByPath(ctx context.Context, path string) (string, error) {
+func (f *fakeKeycloakClient) EnsureGroupByPathCreated(ctx context.Context, path string) (string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("Ensure:" + normPath(path))
 	if f.ensureErr != nil {
-		return "", f.ensureErr
+		return "", false, f.ensureErr
 	}
 	if id, ok := f.groups[normPath(path)]; ok {
-		return id, nil
+		// Already present: not created by this call (the race / pre-exists case).
+		return id, false, nil
 	}
-	return f.addGroup(path), nil
+	return f.addGroup(path), true, nil
 }
 
 func (f *fakeKeycloakClient) DeleteGroupByPathIfExists(ctx context.Context, path string) error {

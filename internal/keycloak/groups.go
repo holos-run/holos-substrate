@@ -136,29 +136,47 @@ func (c *Client) DeleteGroupByPathIfExists(ctx context.Context, path string) err
 // reconcile won the race) is treated as benign: the now-existing node is
 // re-resolved and the walk continues.
 func (c *Client) EnsureGroupByPath(ctx context.Context, path string) (string, error) {
+	id, _, err := c.EnsureGroupByPathCreated(ctx, path)
+	return id, err
+}
+
+// EnsureGroupByPathCreated is EnsureGroupByPath that also reports whether the LEAF
+// group was freshly created by this call (created=true) versus already present
+// (created=false). It lets a caller distinguish "I created this group" from "this
+// group already existed" — the signal a claim-model reconciler needs to avoid
+// silently seizing a group another actor created in the race window between a
+// not-found check and the create. Ancestors are still ensured idempotently; only
+// the leaf's freshness is reported.
+//
+// created is true only when the leaf's own create returned a clean 201 (no prior
+// existence, no 409 conflict). A leaf that already existed at entry, or whose
+// create lost a 409 race, reports created=false.
+func (c *Client) EnsureGroupByPathCreated(ctx context.Context, path string) (string, bool, error) {
 	normalized := normalizePath(path)
 	if normalized == "" {
-		return "", &APIError{StatusCode: http.StatusBadRequest, Method: http.MethodPost, Path: "groups", Message: "empty group path"}
+		return "", false, &APIError{StatusCode: http.StatusBadRequest, Method: http.MethodPost, Path: "groups", Message: "empty group path"}
 	}
 
-	// Fast path: the whole path already exists.
+	// Fast path: the whole path already exists — the leaf was not created here.
 	if g, err := c.GetGroupByPath(ctx, normalized); err == nil {
-		return g.ID, nil
+		return g.ID, false, nil
 	} else if !IsNotFound(err) {
-		return "", err
+		return "", false, err
 	}
 
 	segments := strings.Split(strings.TrimPrefix(normalized, "/"), "/")
 	var parentID string
 	var prefix string
+	leafCreated := false
 	for i, seg := range segments {
 		prefix += "/" + seg
+		isLeaf := i == len(segments)-1
 		// Is this node already present? Resolve it and descend.
 		if g, err := c.GetGroupByPath(ctx, prefix); err == nil {
 			parentID = g.ID
 			continue
 		} else if !IsNotFound(err) {
-			return "", err
+			return "", false, err
 		}
 
 		// Create the missing node, tolerating a concurrent creator's 409 by
@@ -166,22 +184,27 @@ func (c *Client) EnsureGroupByPath(ctx context.Context, path string) (string, er
 		// no id (a 2xx without a Location header), so a follow-up child create
 		// never runs with an empty parentID.
 		id, err := c.createGroupNode(ctx, i, parentID, seg)
-		if err != nil {
-			if !IsConflict(err) {
-				return "", err
+		switch {
+		case err == nil:
+			if isLeaf {
+				leafCreated = true
 			}
+		case IsConflict(err):
+			// A concurrent actor created this node in the race window. It is not ours.
 			id = ""
+		default:
+			return "", false, err
 		}
 		if id == "" {
 			g, gerr := c.GetGroupByPath(ctx, prefix)
 			if gerr != nil {
-				return "", gerr
+				return "", false, gerr
 			}
 			id = g.ID
 		}
 		parentID = id
 	}
-	return parentID, nil
+	return parentID, leafCreated, nil
 }
 
 // createGroupNode creates one segment of a path walk: a top-level group when it

@@ -58,10 +58,12 @@ type GroupClient interface {
 	// GetGroupByPath fetches the group at the given full path; a missing group
 	// returns an error for which keycloak.IsNotFound reports true.
 	GetGroupByPath(ctx context.Context, path string) (*keycloak.Group, error)
-	// EnsureGroupByPath idempotently ensures every node along the path exists and
-	// returns the leaf group's UUID. It is the create path: a 409 from a concurrent
-	// creator is treated as benign.
-	EnsureGroupByPath(ctx context.Context, path string) (string, error)
+	// EnsureGroupByPathCreated idempotently ensures every node along the path exists
+	// and returns the leaf group's UUID plus whether the leaf was freshly created by
+	// this call (false when it already existed or a concurrent creator won a 409
+	// race). The created flag is the claim-model signal that lets the reconciler
+	// avoid seizing a group another actor created in the race window.
+	EnsureGroupByPathCreated(ctx context.Context, path string) (string, bool, error)
 	// DeleteGroupByPathIfExists deletes the group at the path, treating an
 	// already-absent group as success (idempotent) — the finalizer's cleanup.
 	DeleteGroupByPathIfExists(ctx context.Context, path string) error
@@ -215,14 +217,24 @@ func (r *GroupReconciler) reconcileNormal(ctx context.Context, logger logr.Logge
 	}
 }
 
-// reconcileCreate creates the nested group (idempotent ensure-by-path), records
-// ownership (status.Created and the immutable status.GroupID), then reconciles
-// roles and custodians.
+// reconcileCreate provisions the nested group when the initial GET reported it
+// absent. EnsureGroupByPathCreated reports whether THIS call created the leaf: a
+// clean create records ownership (status.Created + the immutable status.GroupID)
+// and reconciles roles/custodians. If the leaf already existed — a concurrent
+// actor won the create race in the window after the not-found GET —
+// EnsureGroupByPathCreated returns created=false, and the group is re-evaluated
+// against the claim model (reconcileExisting: adopt or Conflict) rather than being
+// silently seized despite spec.adopt=false.
 func (r *GroupReconciler) reconcileCreate(ctx context.Context, logger logr.Logger, kc GroupClient, instance *keycloakv1alpha1.KeycloakInstance, group *keycloakv1alpha1.KeycloakGroup) (ctrl.Result, error) {
-	groupID, err := kc.EnsureGroupByPath(ctx, group.Spec.Path)
+	groupID, created, err := kc.EnsureGroupByPathCreated(ctx, group.Spec.Path)
 	recordKeycloakAPI(opEnsureGroupByPath, err)
 	if err != nil {
 		return r.fail(ctx, group, fmt.Errorf("creating Keycloak group %q: %w", group.Spec.Path, err))
+	}
+	if !created {
+		// Lost the create race: the group now exists but this CR did not create it.
+		// Re-evaluate against the claim model rather than claiming ownership.
+		return r.reconcileExisting(ctx, logger, kc, instance, group)
 	}
 	group.Status.Created = true
 	group.Status.Adopted = false
@@ -688,26 +700,24 @@ func (r *GroupReconciler) resolvePermissionID(ctx context.Context, kc GroupClien
 	return id, err
 }
 
-// reconcileDelete runs the finalizer. Per the claim model the Keycloak group is
-// deleted only when this CR created it (status.Created); an adopted group is
-// released (the finalizer drops without deleting), so removing a CR that merely
-// claimed a pre-existing group never destroys it. A Keycloak error during delete
-// fails the reconcile and requeues, so the finalizer is not removed until cleanup
-// succeeds.
+// reconcileDelete runs the finalizer. Per the claim model the Keycloak group
+// itself is deleted only when this CR created it (status.Created); an adopted group
+// is released (the finalizer drops without deleting the group), so removing a CR
+// that merely claimed a pre-existing group never destroys it. In BOTH cases the
+// reconciler first revokes the side effects this CR added — the conferred client
+// roles and FGAP custodian delegation — so deleting the CR does not leave stale
+// privileges behind: a created group's delete cascades them, but an adopted group's
+// release must prune them explicitly (it does not delete the surviving group). A
+// Keycloak error during cleanup fails the reconcile and requeues, so the finalizer
+// is not removed until cleanup succeeds.
 func (r *GroupReconciler) reconcileDelete(ctx context.Context, logger logr.Logger, group *keycloakv1alpha1.KeycloakGroup) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(group, groupFinalizer) {
 		return ctrl.Result{}, nil
 	}
 
-	// Adopted group (or one never created by this CR) → release, do not delete. No
-	// credential or instance resolution is needed: the controller does not touch
-	// Keycloak, it only relinquishes its claim.
-	if !group.Status.Created {
-		r.Recorder.Event(group, corev1.EventTypeNormal, ReasonReleased,
-			fmt.Sprintf("released Keycloak group %q without deleting (adopted, not created by this resource)", group.Spec.Path))
-		return r.removeFinalizer(ctx, group)
-	}
-
+	// Both created and adopted groups need the credential to clean up in Keycloak
+	// (delete the group, or prune the roles/custodians off an adopted group), so
+	// resolve the instance and credential up front for either path.
 	instance, result, err := r.resolveInstance(ctx, group)
 	if instance == nil {
 		// The instance is unresolvable (missing, not ready, or reference denied).
@@ -727,12 +737,9 @@ func (r *GroupReconciler) reconcileDelete(ctx context.Context, logger logr.Logge
 
 	kc := r.NewClient(cred, instance.Spec.URL, instance.Spec.Realm, instance.Spec.CABundle)
 
-	// Verify the group currently at the path is still the one this CR created
-	// before deleting it. If it is gone, there is nothing to delete; if its UUID no
-	// longer matches status.GroupID, the original was replaced by a foreign group at
-	// the same path — release the finalizer without deleting, so a recreate by
-	// another actor is not destroyed (the same race quay's controller closes with
-	// its ownership marker).
+	// Resolve the group currently at the path. If it is gone there is nothing to
+	// clean up; if its UUID no longer matches status.GroupID, the original was
+	// replaced by a foreign group — release without touching it.
 	current, getErr := kc.GetGroupByPath(ctx, group.Spec.Path)
 	recordKeycloakAPI(opGetGroupByPath, ignoreNotFound(getErr))
 	switch {
@@ -740,15 +747,30 @@ func (r *GroupReconciler) reconcileDelete(ctx context.Context, logger logr.Logge
 		return r.removeFinalizer(ctx, group)
 	case getErr != nil:
 		r.Recorder.Event(group, corev1.EventTypeWarning, ReasonKeycloakError,
-			fmt.Sprintf("verifying Keycloak group %q before delete: %v", group.Spec.Path, getErr))
-		return ctrl.Result{}, fmt.Errorf("verifying Keycloak group %q before delete: %w", group.Spec.Path, getErr)
+			fmt.Sprintf("verifying Keycloak group %q before cleanup: %v", group.Spec.Path, getErr))
+		return ctrl.Result{}, fmt.Errorf("verifying Keycloak group %q before cleanup: %w", group.Spec.Path, getErr)
 	}
 	if group.Status.GroupID != "" && current.ID != group.Status.GroupID {
 		r.Recorder.Event(group, corev1.EventTypeNormal, ReasonReleased,
-			fmt.Sprintf("released Keycloak group %q without deleting (UUID %q no longer matches the created UUID %q; recreated by another actor)", group.Spec.Path, current.ID, group.Status.GroupID))
+			fmt.Sprintf("released Keycloak group %q without changes (UUID %q no longer matches the claimed UUID %q; replaced by another actor)", group.Spec.Path, current.ID, group.Status.GroupID))
 		return r.removeFinalizer(ctx, group)
 	}
 
+	// Adopted group → release: prune only the side effects this CR added (client
+	// roles + custodian delegation), never deleting the surviving group the platform
+	// did not create.
+	if !group.Status.Created {
+		if err := r.pruneAllManaged(ctx, kc, group, current.ID); err != nil {
+			r.Recorder.Event(group, corev1.EventTypeWarning, ReasonKeycloakError, err.Error())
+			return ctrl.Result{}, err
+		}
+		r.Recorder.Event(group, corev1.EventTypeNormal, ReasonReleased,
+			fmt.Sprintf("released adopted Keycloak group %q (pruned controller-added roles and custodians, group not deleted)", group.Spec.Path))
+		return r.removeFinalizer(ctx, group)
+	}
+
+	// Created group → delete it; the delete cascades its role mappings and the FGAP
+	// objects scoped to it, so no separate prune is needed.
 	delErr := kc.DeleteGroupByPathIfExists(ctx, group.Spec.Path)
 	recordKeycloakAPI(opDeleteGroup, delErr)
 	if delErr != nil {
@@ -760,6 +782,84 @@ func (r *GroupReconciler) reconcileDelete(ctx context.Context, logger logr.Logge
 	r.Recorder.Event(group, corev1.EventTypeNormal, "Deleted",
 		fmt.Sprintf("deleted Keycloak group %q", group.Spec.Path))
 	return r.removeFinalizer(ctx, group)
+}
+
+// pruneAllManaged revokes every side effect this CR added to an adopted group —
+// all conferred client roles (status.managedClientRoles) and all custodian
+// delegation (status.managedCustodians) — without deleting the group itself. It is
+// the adopted-release cleanup: the platform did not create the group, so the group
+// survives, but the access grants the controller layered on are removed so a
+// deleted CR leaves no stale privilege. It mutates status to clear the managed
+// sets; the caller persists status by removing the finalizer (which writes the CR).
+func (r *GroupReconciler) pruneAllManaged(ctx context.Context, kc GroupClient, group *keycloakv1alpha1.KeycloakGroup, groupID string) error {
+	// Revoke every managed client role.
+	for _, entry := range group.Status.ManagedClientRoles {
+		clientID, roleName, ok := splitManagedRole(entry)
+		if !ok {
+			continue
+		}
+		oidc, err := kc.FindClientByClientID(ctx, clientID)
+		recordKeycloakAPI(opFindClientByClientID, err)
+		if err != nil {
+			return fmt.Errorf("finding Keycloak client %q to revoke role %q on release: %w", clientID, roleName, err)
+		}
+		if oidc == nil {
+			continue
+		}
+		role, err := kc.GetClientRole(ctx, oidc.ID, roleName)
+		recordKeycloakAPI(opGetClientRole, ignoreNotFound(err))
+		if keycloak.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("getting client role %q to revoke on release: %w", roleName, err)
+		}
+		rmErr := kc.RemoveClientRoleFromGroup(ctx, groupID, oidc.ID, *role)
+		recordKeycloakAPI(opRemoveClientRole, rmErr)
+		if rmErr != nil {
+			return fmt.Errorf("revoking client role %q from Keycloak group %q on release: %w", roleName, group.Spec.Path, rmErr)
+		}
+	}
+	group.Status.ManagedClientRoles = nil
+
+	// Revoke every custodian delegation. This needs the admin-permissions client.
+	if len(group.Status.ManagedCustodians) > 0 {
+		permClient, err := kc.FindClientByClientID(ctx, adminPermissionsClientID)
+		recordKeycloakAPI(opFindClientByClientID, err)
+		if err != nil {
+			return fmt.Errorf("finding the %q client to revoke custodians on release: %w", adminPermissionsClientID, err)
+		}
+		if permClient != nil {
+			for _, mc := range parseManagedCustodians(group.Status.ManagedCustodians) {
+				permName := fmt.Sprintf("holos:custodian-perm:%s:%s", group.Spec.Path, mc.path)
+				permID, err := r.resolvePermissionID(ctx, kc, permClient.ID, permName, mc.permID, "")
+				if err != nil {
+					return fmt.Errorf("resolving custodian permission id to revoke on release: %w", err)
+				}
+				if permID != "" {
+					if err := kc.DeleteScopePermissionIfExists(ctx, permClient.ID, permID); err != nil {
+						recordKeycloakAPI(opDeleteScopePermission, err)
+						return fmt.Errorf("revoking custodian permission on release: %w", err)
+					}
+					recordKeycloakAPI(opDeleteScopePermission, nil)
+				}
+				policyName := fmt.Sprintf("holos:custodian:%s:%s", group.Spec.Path, mc.path)
+				policyID, err := r.resolvePolicyID(ctx, kc, permClient.ID, policyName, mc.policyID, "")
+				if err != nil {
+					return fmt.Errorf("resolving custodian policy id to revoke on release: %w", err)
+				}
+				if policyID != "" {
+					if err := kc.DeleteScopePermissionIfExists(ctx, permClient.ID, policyID); err != nil {
+						recordKeycloakAPI(opDeleteScopePermission, err)
+						return fmt.Errorf("revoking custodian policy on release: %w", err)
+					}
+					recordKeycloakAPI(opDeleteScopePermission, nil)
+				}
+			}
+		}
+	}
+	group.Status.ManagedCustodians = nil
+	return nil
 }
 
 // resolveInstance resolves the KeycloakInstance referenced by the group's
