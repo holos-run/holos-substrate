@@ -268,9 +268,10 @@ CRD-implementation issue.
    passive policy resource like `ReferenceGrant` uses `Programmed` for
    acceptance/validation rather than a backend write.
 7. **This convention is a guard rail for all current and future `holos.run`
-   custom resources.** It is recorded in `AGENTS.md` under *Guard Rails* and
-   referenced by the API-group ADRs ([ADR-20](ADR-20.md), [ADR-21](ADR-21.md))
-   that consume cross-namespace references.
+   custom resources.** It is recorded in `AGENTS.md` under *Guard Rails*; the
+   API-group ADRs that consume cross-namespace references
+   ([ADR-20](ADR-20.md), [ADR-21](ADR-21.md)) will reference it as they are
+   revised to adopt the convention (a later phase of this work updates ADR-20).
 8. **This phase fixes the convention only — no Go or CUE code.** The
    `ReferenceGrant` schema here is illustrative; the field-level API, CEL
    validation, printer columns, and the reconciler land in later
