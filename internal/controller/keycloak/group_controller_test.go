@@ -384,6 +384,189 @@ func TestGroupDelete(t *testing.T) {
 	})
 }
 
+func TestGroupClientRolePrune(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-group-roleprune"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	createIgnoreExists(t, ctx, &keycloakv1alpha1.KeycloakClient{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "consumer"},
+		Spec: keycloakv1alpha1.KeycloakClientSpec{
+			ClientID:    "https://app.holos.localhost",
+			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+		},
+	})
+
+	group := &keycloakv1alpha1.KeycloakGroup{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "roleprune"},
+		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Path:        "projects/rp/roles/owner",
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			ClientRoles: []keycloakv1alpha1.ClientRoleReference{
+				{ClientRef: "consumer", Role: "rp-owner"},
+				{ClientRef: "consumer", Role: "rp-extra"},
+			},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, group); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	fake := newFakeKeycloakClient()
+	fake.seedClient("https://app.holos.localhost", "client-uuid")
+	fake.seedClientRole("client-uuid", "rp-owner", "role-owner")
+	fake.seedClientRole("client-uuid", "rp-extra", "role-extra")
+	r, _ := newGroupReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(group)
+	_, _ = reconcileGroup(ctx, r, key) // finalizer
+	if _, err := reconcileGroup(ctx, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	gid := getGroup(t, ctx, key).Status.GroupID
+	if !fake.roleAssigned(gid, "client-uuid", "rp-owner") || !fake.roleAssigned(gid, "client-uuid", "rp-extra") {
+		t.Fatalf("both roles should be assigned initially; calls = %v", fake.calls)
+	}
+
+	// Drop rp-extra from the spec; the next reconcile must unassign it.
+	got := getGroup(t, ctx, key)
+	got.Spec.ClientRoles = []keycloakv1alpha1.ClientRoleReference{{ClientRef: "consumer", Role: "rp-owner"}}
+	if err := shared.k8sClient.Update(ctx, got); err != nil {
+		t.Fatalf("update spec: %v", err)
+	}
+	if _, err := reconcileGroup(ctx, r, key); err != nil {
+		t.Fatalf("reconcile after drop: %v", err)
+	}
+	if fake.roleAssigned(gid, "client-uuid", "rp-extra") {
+		t.Errorf("rp-extra should have been pruned; calls = %v", fake.calls)
+	}
+	if !fake.roleAssigned(gid, "client-uuid", "rp-owner") {
+		t.Errorf("rp-owner should remain assigned")
+	}
+	if mcr := getGroup(t, ctx, key).Status.ManagedClientRoles; len(mcr) != 1 || mcr[0] != "https://app.holos.localhost/rp-owner" {
+		t.Errorf("status.managedClientRoles = %v, want only the owner role", mcr)
+	}
+}
+
+func TestGroupCustodianPrune(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-group-custprune"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	group := &keycloakv1alpha1.KeycloakGroup{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "custprune"},
+		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Path:        "projects/cp/roles/owner",
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Custodians: []keycloakv1alpha1.CustodianReference{
+				{Path: "projects/cp/custodians/owner"},
+			},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, group); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	fake := newFakeKeycloakClient("projects/cp/custodians/owner")
+	fake.seedClient(adminPermissionsClientID, "perm-client-uuid")
+	r, _ := newGroupReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(group)
+	_, _ = reconcileGroup(ctx, r, key) // finalizer
+	if _, err := reconcileGroup(ctx, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(getGroup(t, ctx, key).Status.ManagedCustodians) != 1 {
+		t.Fatalf("expected one managed custodian; got %v", getGroup(t, ctx, key).Status.ManagedCustodians)
+	}
+
+	// Drop all custodians; the next reconcile must delete the FGAP policy + perm.
+	got := getGroup(t, ctx, key)
+	got.Spec.Custodians = nil
+	if err := shared.k8sClient.Update(ctx, got); err != nil {
+		t.Fatalf("update spec: %v", err)
+	}
+	if _, err := reconcileGroup(ctx, r, key); err != nil {
+		t.Fatalf("reconcile after drop: %v", err)
+	}
+	if len(fake.fgapDeletes) == 0 {
+		t.Errorf("dropped custodian should have triggered FGAP deletes; calls = %v", fake.calls)
+	}
+	if mc := getGroup(t, ctx, key).Status.ManagedCustodians; len(mc) != 0 {
+		t.Errorf("status.managedCustodians = %v, want empty after prune", mc)
+	}
+}
+
+func TestGroupReplacedOutOfBand(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-group-replaced"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	group := &keycloakv1alpha1.KeycloakGroup{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "replaced"},
+		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Path:        "projects/rep/roles/owner",
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, group); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	fake := newFakeKeycloakClient()
+	r, _ := newGroupReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(group)
+	_, _ = reconcileGroup(ctx, r, key) // finalizer
+	if _, err := reconcileGroup(ctx, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	origID := getGroup(t, ctx, key).Status.GroupID
+	if origID == "" {
+		t.Fatalf("expected a recorded GroupID")
+	}
+
+	// Simulate an out-of-band replace: delete and recreate the group at the same
+	// path so it gets a new UUID.
+	if err := fake.DeleteGroupByPathIfExists(ctx, "projects/rep/roles/owner"); err != nil {
+		t.Fatalf("seed delete: %v", err)
+	}
+	newID := fake.addGroup("projects/rep/roles/owner")
+	if newID == origID {
+		t.Fatalf("recreated group should have a different UUID")
+	}
+
+	if _, err := reconcileGroup(ctx, r, key); err != nil {
+		t.Fatalf("reconcile after replace: %v", err)
+	}
+	got := getGroup(t, ctx, key)
+	status, reason, _ := conditionStatus(got.Status.Conditions, ConditionReady)
+	if status != metav1.ConditionFalse || reason != ReasonConflict {
+		t.Errorf("Ready = (%v, %v), want (False, %s) for an out-of-band replacement", status, reason, ReasonConflict)
+	}
+
+	// On delete, the replaced (foreign) group must be released, not deleted.
+	if err := shared.k8sClient.Delete(ctx, getGroup(t, ctx, key)); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := reconcileGroup(ctx, r, key); err != nil {
+		t.Fatalf("reconcile delete: %v", err)
+	}
+	if !fake.groupExists("projects/rep/roles/owner") {
+		t.Errorf("the foreign replacement group must not be deleted")
+	}
+}
+
 func TestGroupInstanceNotReady(t *testing.T) {
 	if shared == nil {
 		t.Skip("envtest not provisioned")

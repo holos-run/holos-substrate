@@ -32,6 +32,15 @@ import (
 // internal/controller/quay's constant of the same name.
 const requeueImmediately = time.Millisecond
 
+// requeueDependency is the backoff used when a reconcile cannot proceed because a
+// declarative dependency is not yet satisfied — the referenced KeycloakInstance is
+// absent or not Ready, or a cross-namespace ReferenceGrant is missing. It is a
+// modest periodic re-check (not the negligible requeueImmediately, which would
+// hot-loop an absent dependency) that backstops the watch-driven recovery
+// SetupWithManager wires: a change to the instance or grant re-enqueues the
+// dependent group promptly, and this requeue covers anything not watched.
+const requeueDependency = 30 * time.Second
+
 // Condition types surfaced on keycloak.holos.run resource status. They re-export
 // the vocabulary the API package declares (keycloakv1alpha1.ConditionAccepted /
 // ConditionProgrammed / ConditionReady) so this controller package draws from one
@@ -85,6 +94,11 @@ const (
 	// e.g. authenticated or a platform-* group). It is a controller-layer guard
 	// with no API-package counterpart.
 	ReasonReserved = "Reserved"
+	// ReasonReleased marks an adopted or out-of-band-replaced Keycloak group
+	// released on CR removal (the finalizer dropped without deleting) — adoption
+	// and the recreate-at-same-path race are both non-destructive. It is a
+	// controller-layer reason with no API-package counterpart.
+	ReasonReleased = "Released"
 	// ReasonInstanceNotReady marks a condition False because the referenced
 	// KeycloakInstance does not exist or has not reported Ready. The dependent
 	// reconciler requeues until the instance is provisioned, mirroring quay's

@@ -48,6 +48,7 @@ type fakeKeycloakClient struct {
 	fgapResources   []string
 	fgapPolicies    []string
 	fgapPermissions []string
+	fgapDeletes     []string
 
 	// ensureErr, when non-nil, is returned by EnsureGroupByPath to simulate a
 	// create failure.
@@ -182,6 +183,28 @@ func (f *fakeKeycloakClient) AssignClientRoleToGroup(ctx context.Context, groupI
 	return nil
 }
 
+func (f *fakeKeycloakClient) ListGroupClientRoles(ctx context.Context, groupID, clientUUID string) ([]keycloak.ClientRole, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("ListGroupRoles:" + groupID + "/" + clientUUID)
+	var out []keycloak.ClientRole
+	prefix := groupID + "/" + clientUUID + "/"
+	for k, ok := range f.roleAssignments {
+		if ok && strings.HasPrefix(k, prefix) {
+			out = append(out, keycloak.ClientRole{Name: k[len(prefix):]})
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeKeycloakClient) RemoveClientRoleFromGroup(ctx context.Context, groupID, clientUUID string, role keycloak.ClientRole) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("RemoveRole:" + groupID + "/" + clientUUID + "/" + role.Name)
+	delete(f.roleAssignments, groupID+"/"+clientUUID+"/"+role.Name)
+	return nil
+}
+
 func (f *fakeKeycloakClient) CreateGroupResource(ctx context.Context, permClientUUID string, resource keycloak.AuthzResource) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -204,6 +227,14 @@ func (f *fakeKeycloakClient) CreateScopePermission(ctx context.Context, permClie
 	f.record("FGAPPermission:" + permission.Name)
 	f.fgapPermissions = append(f.fgapPermissions, permission.Name)
 	return "perm-" + permission.Name, nil
+}
+
+func (f *fakeKeycloakClient) DeleteScopePermissionIfExists(ctx context.Context, permClientUUID, permissionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("FGAPDelete:" + permissionID)
+	f.fgapDeletes = append(f.fgapDeletes, permissionID)
+	return nil
 }
 
 // seedClient registers an OIDC client (clientId → UUID) so FindClientByClientID

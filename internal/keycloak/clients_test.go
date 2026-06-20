@@ -375,3 +375,43 @@ func TestAssignClientRoleToGroup(t *testing.T) {
 		t.Errorf("array[0] = %v, want the role with id/name", h.gotArray[0])
 	}
 }
+
+func TestListGroupClientRoles(t *testing.T) {
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodGet,
+		wantPath: adminPathPrefix + "/realms/holos/groups/g-owner/role-mappings/clients/uuid-1",
+		status:   http.StatusOK,
+		respBody: `[{"id":"r1","name":"my-project-owner"},{"id":"r2","name":"my-project-editor"}]`,
+	}
+	c, _ := newTestClient(t, h)
+
+	roles, err := c.ListGroupClientRoles(context.Background(), "g-owner", "uuid-1")
+	if err != nil {
+		t.Fatalf("ListGroupClientRoles: %v", err)
+	}
+	assertCommonRequest(t, h, false)
+	if len(roles) != 2 || roles[0].Name != "my-project-owner" || roles[1].Name != "my-project-editor" {
+		t.Errorf("roles = %+v", roles)
+	}
+}
+
+func TestRemoveClientRoleFromGroup(t *testing.T) {
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodDelete,
+		wantPath: adminPathPrefix + "/realms/holos/groups/g-owner/role-mappings/clients/uuid-1",
+		status:   http.StatusNoContent,
+	}
+	c, _ := newTestClient(t, h)
+
+	role := ClientRole{ID: "r1", Name: "my-project-owner"}
+	if err := c.RemoveClientRoleFromGroup(context.Background(), "g-owner", "uuid-1", role); err != nil {
+		t.Fatalf("RemoveClientRoleFromGroup: %v", err)
+	}
+	if len(h.gotArray) != 1 {
+		t.Fatalf("body should be a one-element array, got %v", h.gotArray)
+	}
+	first, ok := h.gotArray[0].(map[string]any)
+	if !ok || first["id"] != "r1" {
+		t.Errorf("array[0] = %v, want the role with id", h.gotArray[0])
+	}
+}
