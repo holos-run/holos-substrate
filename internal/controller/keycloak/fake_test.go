@@ -229,6 +229,30 @@ func (f *fakeKeycloakClient) CreateScopePermission(ctx context.Context, permClie
 	return "perm-" + permission.Name, nil
 }
 
+func (f *fakeKeycloakClient) FindPolicyByName(ctx context.Context, permClientUUID, name string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("FindPolicy:" + name)
+	for _, p := range f.fgapPolicies {
+		if p == name {
+			return "pol-" + name, nil
+		}
+	}
+	return "", nil
+}
+
+func (f *fakeKeycloakClient) FindPermissionByName(ctx context.Context, permClientUUID, name string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("FindPermission:" + name)
+	for _, p := range f.fgapPermissions {
+		if p == name {
+			return "perm-" + name, nil
+		}
+	}
+	return "", nil
+}
+
 func (f *fakeKeycloakClient) DeleteScopePermissionIfExists(ctx context.Context, permClientUUID, permissionID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

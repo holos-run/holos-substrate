@@ -567,6 +567,98 @@ func TestGroupReplacedOutOfBand(t *testing.T) {
 	}
 }
 
+func TestGroupAdoptedReplacedOutOfBand(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-group-adopt-replaced"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	group := &keycloakv1alpha1.KeycloakGroup{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "adopt-replaced"},
+		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Path:        "projects/areplaced/roles/owner",
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Adopt:       true,
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, group); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	fake := newFakeKeycloakClient("projects/areplaced/roles/owner") // pre-exists → adopted
+	r, _ := newGroupReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(group)
+	_, _ = reconcileGroup(ctx, r, key) // finalizer
+	if _, err := reconcileGroup(ctx, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if g := getGroup(t, ctx, key); !g.Status.Adopted || g.Status.GroupID == "" {
+		t.Fatalf("expected adopted with a recorded GroupID; got %+v", g.Status)
+	}
+
+	// Replace the adopted group out of band (new UUID at the same path).
+	if err := fake.DeleteGroupByPathIfExists(ctx, "projects/areplaced/roles/owner"); err != nil {
+		t.Fatalf("seed delete: %v", err)
+	}
+	fake.addGroup("projects/areplaced/roles/owner")
+
+	if _, err := reconcileGroup(ctx, r, key); err != nil {
+		t.Fatalf("reconcile after replace: %v", err)
+	}
+	got := getGroup(t, ctx, key)
+	status, reason, _ := conditionStatus(got.Status.Conditions, ConditionReady)
+	if status != metav1.ConditionFalse || reason != ReasonConflict {
+		t.Errorf("Ready = (%v, %v), want (False, %s) for an out-of-band replacement of an adopted group", status, reason, ReasonConflict)
+	}
+}
+
+func TestGroupGroupIDBackfillPersisted(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-group-backfill"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	group := &keycloakv1alpha1.KeycloakGroup{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "backfill"},
+		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Path:        "projects/bf/roles/owner",
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, group); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Seed the group as already existing in Keycloak and mark the CR as Created with
+	// an EMPTY GroupID and Ready already True — the steady-state object whose
+	// ownership id needs backfilling.
+	fake := newFakeKeycloakClient("projects/bf/roles/owner")
+	r, _ := newGroupReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(group)
+	_, _ = reconcileGroup(ctx, r, key) // finalizer
+	got := getGroup(t, ctx, key)
+	markReady(&got.Status.Conditions, ReasonCreated, "preexisting", got.Generation)
+	got.Status.ObservedGeneration = got.Generation
+	got.Status.Created = true
+	got.Status.GroupID = ""
+	if err := shared.k8sClient.Status().Update(ctx, got); err != nil {
+		t.Fatalf("seed status: %v", err)
+	}
+
+	if _, err := reconcileGroup(ctx, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if gid := getGroup(t, ctx, key).Status.GroupID; gid == "" {
+		t.Errorf("GroupID should have been backfilled and persisted on a steady-state reconcile")
+	}
+}
+
 func TestGroupInstanceNotReady(t *testing.T) {
 	if shared == nil {
 		t.Skip("envtest not provisioned")

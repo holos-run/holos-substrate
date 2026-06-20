@@ -95,6 +95,13 @@ type GroupClient interface {
 	// the group resource to the custodian group policy, returning its UUID. An
 	// already-existing permission reports IsConflict.
 	CreateScopePermission(ctx context.Context, permClientUUID string, permission keycloak.ScopePermission) (string, error)
+	// FindPolicyByName returns the UUID of the group policy with the exact name, or
+	// "" when none exists — used to recover a policy's id after a 409 create so it
+	// can be pruned later by id.
+	FindPolicyByName(ctx context.Context, permClientUUID, name string) (string, error)
+	// FindPermissionByName returns the UUID of the scope permission with the exact
+	// name, or "" when none exists — the permission analog of FindPolicyByName.
+	FindPermissionByName(ctx context.Context, permClientUUID, name string) (string, error)
 	// DeleteScopePermissionIfExists deletes an FGAP v2 scope permission or group
 	// policy by its UUID (Keycloak's generic policy endpoint deletes either),
 	// treating an already-absent object as success — used to prune the delegation
@@ -236,15 +243,21 @@ func (r *GroupReconciler) reconcileExisting(ctx context.Context, logger logr.Log
 		return r.fail(ctx, group, err)
 	}
 
-	// Already owned by this CR: a prior reconcile created it. Confirm the group at
-	// the path is still the one we created (UUID match) before reconciling it.
-	if group.Status.Created {
+	// Already claimed by this CR (created or adopted): confirm the group at the path
+	// is still the same object (UUID match) before reconciling it. The check applies
+	// to both outcomes — an adopted group can be deleted and a foreign one recreated
+	// at the same path just as a created one can, and reconciling roles/custodians
+	// onto the replacement would be a silent seizure.
+	if group.Status.Created || group.Status.Adopted {
 		if group.Status.GroupID != "" && group.Status.GroupID != groupID {
 			return r.groupReplaced(ctx, logger, group, groupID)
 		}
 		group.Status.GroupID = groupID
-		return r.reconcileMembershipThenSucceed(ctx, logger, kc, instance, group, groupID, ReasonCreated,
-			fmt.Sprintf("reconciled Keycloak group %q", group.Spec.Path))
+		reason, message := ReasonCreated, fmt.Sprintf("reconciled Keycloak group %q", group.Spec.Path)
+		if group.Status.Adopted {
+			reason = ReasonAdopted
+		}
+		return r.reconcileMembershipThenSucceed(ctx, logger, kc, instance, group, groupID, reason, message)
 	}
 
 	if group.Spec.Adopt {
@@ -304,13 +317,39 @@ func (r *GroupReconciler) resolveGroupID(ctx context.Context, kc GroupClient, gr
 // the spec is actively unassigned in Keycloak so a downgrade in Kubernetes does
 // not leave a stale privilege active.
 func (r *GroupReconciler) reconcileMembershipThenSucceed(ctx context.Context, logger logr.Logger, kc GroupClient, instance *keycloakv1alpha1.KeycloakInstance, group *keycloakv1alpha1.KeycloakGroup, groupID, reason, message string) (ctrl.Result, error) {
+	// Snapshot the ownership/managed-set status fields before reconciling so a
+	// change to any of them (e.g. a GroupID backfill on an already-current object,
+	// or a pruned role/custodian) is persisted even when Ready and observedGeneration
+	// are unchanged — without this, succeed() would skip the write on a steady-state
+	// reconcile and lose the ownership/managed-set record.
+	beforeGroupID := group.Status.GroupID
+	beforeRoles := append([]string(nil), group.Status.ManagedClientRoles...)
+	beforeCustodians := append([]string(nil), group.Status.ManagedCustodians...)
+
 	if err := r.conferClientRoles(ctx, kc, group, groupID); err != nil {
 		return r.fail(ctx, group, err)
 	}
 	if err := r.configureCustodians(ctx, kc, group, groupID); err != nil {
 		return r.fail(ctx, group, err)
 	}
-	return r.succeed(ctx, logger, group, reason, message)
+
+	extraChanged := beforeGroupID != group.Status.GroupID ||
+		!equalStrings(beforeRoles, group.Status.ManagedClientRoles) ||
+		!equalStrings(beforeCustodians, group.Status.ManagedCustodians)
+	return r.succeed(ctx, logger, group, reason, message, extraChanged)
+}
+
+// equalStrings reports whether two string slices are element-wise equal.
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // conferClientRoles reconciles the group's client-role assignments to the desired
@@ -507,9 +546,16 @@ func (r *GroupReconciler) configureCustodians(ctx context.Context, kc GroupClien
 			if err != nil && !keycloak.IsConflict(err) {
 				return fmt.Errorf("creating custodian policy for Keycloak group %q: %w", group.Spec.Path, err)
 			}
+			// On a 409 (already exists) the create returns no id; resolve it by name
+			// so status records a real, prunable UUID rather than an empty string.
+			policyID, err = r.resolvePolicyID(ctx, kc, permClient.ID, policyName, policyID, prev[custodian.Path].policyID)
+			if err != nil {
+				return fmt.Errorf("resolving custodian policy id for Keycloak group %q: %w", group.Spec.Path, err)
+			}
 
+			permName := fmt.Sprintf("holos:custodian-perm:%s:%s", group.Spec.Path, custodian.Path)
 			permID, permErr := kc.CreateScopePermission(ctx, permClient.ID, keycloak.ScopePermission{
-				Name:      fmt.Sprintf("holos:custodian-perm:%s:%s", group.Spec.Path, custodian.Path),
+				Name:      permName,
 				Resources: []string{idOrName(resourceID, group.Spec.Path)},
 				Scopes:    []string{keycloak.ScopeManageMembers, keycloak.ScopeManageMembership},
 				Policies:  []string{idOrName(policyID, policyName)},
@@ -518,19 +564,12 @@ func (r *GroupReconciler) configureCustodians(ctx context.Context, kc GroupClien
 			if permErr != nil && !keycloak.IsConflict(permErr) {
 				return fmt.Errorf("binding custodian permission for Keycloak group %q: %w", group.Spec.Path, permErr)
 			}
-
-			mc := managedCustodian{path: custodian.Path, permID: permID, policyID: policyID}
-			// Preserve previously-captured ids across a later reconcile whose create
-			// returned a 409 (empty id) — the prune needs them to delete by id.
-			if old, ok := prev[custodian.Path]; ok {
-				if mc.permID == "" {
-					mc.permID = old.permID
-				}
-				if mc.policyID == "" {
-					mc.policyID = old.policyID
-				}
+			permID, err = r.resolvePermissionID(ctx, kc, permClient.ID, permName, permID, prev[custodian.Path].permID)
+			if err != nil {
+				return fmt.Errorf("resolving custodian permission id for Keycloak group %q: %w", group.Spec.Path, err)
 			}
-			desired[custodian.Path] = mc
+
+			desired[custodian.Path] = managedCustodian{path: custodian.Path, permID: permID, policyID: policyID}
 			desiredOrder = append(desiredOrder, custodian.Path)
 		}
 	}
@@ -538,19 +577,32 @@ func (r *GroupReconciler) configureCustodians(ctx context.Context, kc GroupClien
 	// Prune the delegation for custodians no longer desired: delete the scope
 	// permission first (it references the policy), then the group policy. Both go
 	// through the generic policy-delete endpoint and tolerate an already-absent id.
+	// When a stored id is empty (a prior reconcile recorded it on a 409 before this
+	// fix), resolve it by its deterministic name first so the delegation is actually
+	// removed rather than silently leaked.
 	for path, old := range prev {
 		if _, ok := desired[path]; ok {
 			continue
 		}
-		if old.permID != "" {
-			err := kc.DeleteScopePermissionIfExists(ctx, permClient.ID, old.permID)
+		permName := fmt.Sprintf("holos:custodian-perm:%s:%s", group.Spec.Path, path)
+		permID, err := r.resolvePermissionID(ctx, kc, permClient.ID, permName, old.permID, "")
+		if err != nil {
+			return fmt.Errorf("resolving stale custodian permission id for Keycloak group %q: %w", group.Spec.Path, err)
+		}
+		if permID != "" {
+			err := kc.DeleteScopePermissionIfExists(ctx, permClient.ID, permID)
 			recordKeycloakAPI(opDeleteScopePermission, err)
 			if err != nil {
 				return fmt.Errorf("pruning custodian permission for Keycloak group %q: %w", group.Spec.Path, err)
 			}
 		}
-		if old.policyID != "" {
-			err := kc.DeleteScopePermissionIfExists(ctx, permClient.ID, old.policyID)
+		policyName := fmt.Sprintf("holos:custodian:%s:%s", group.Spec.Path, path)
+		policyID, err := r.resolvePolicyID(ctx, kc, permClient.ID, policyName, old.policyID, "")
+		if err != nil {
+			return fmt.Errorf("resolving stale custodian policy id for Keycloak group %q: %w", group.Spec.Path, err)
+		}
+		if policyID != "" {
+			err := kc.DeleteScopePermissionIfExists(ctx, permClient.ID, policyID)
 			recordKeycloakAPI(opDeleteScopePermission, err)
 			if err != nil {
 				return fmt.Errorf("pruning custodian policy for Keycloak group %q: %w", group.Spec.Path, err)
@@ -605,6 +657,35 @@ func idOrName(id, name string) string {
 		return id
 	}
 	return name
+}
+
+// resolvePolicyID returns a non-empty policy UUID. createdID is what the create
+// returned (empty on a 409); priorID is the UUID stored from a previous reconcile.
+// When both are empty it looks the policy up by name via the search endpoint, so a
+// status entry always records a real, prunable id rather than an empty string.
+func (r *GroupReconciler) resolvePolicyID(ctx context.Context, kc GroupClient, permClientUUID, name, createdID, priorID string) (string, error) {
+	if createdID != "" {
+		return createdID, nil
+	}
+	if priorID != "" {
+		return priorID, nil
+	}
+	id, err := kc.FindPolicyByName(ctx, permClientUUID, name)
+	recordKeycloakAPI(opFindAuthz, err)
+	return id, err
+}
+
+// resolvePermissionID is the scope-permission analog of resolvePolicyID.
+func (r *GroupReconciler) resolvePermissionID(ctx context.Context, kc GroupClient, permClientUUID, name, createdID, priorID string) (string, error) {
+	if createdID != "" {
+		return createdID, nil
+	}
+	if priorID != "" {
+		return priorID, nil
+	}
+	id, err := kc.FindPermissionByName(ctx, permClientUUID, name)
+	recordKeycloakAPI(opFindAuthz, err)
+	return id, err
 }
 
 // reconcileDelete runs the finalizer. Per the claim model the Keycloak group is
@@ -778,10 +859,15 @@ func isReservedGroupPath(path string) (bool, string) {
 }
 
 // succeed stamps Ready/Programmed/Accepted true, emits a Normal event, and writes
-// status only when something actually changed.
-func (r *GroupReconciler) succeed(ctx context.Context, logger logr.Logger, group *keycloakv1alpha1.KeycloakGroup, reason, message string) (ctrl.Result, error) {
+// status only when something actually changed — a condition flipped,
+// observedGeneration advanced, or extraChanged is set. extraChanged is load-bearing
+// for the ownership/managed-set status fields (GroupID, ManagedClientRoles,
+// ManagedCustodians): a backfill or prune that does not flip Ready or bump the
+// generation must still be persisted, otherwise the round-1 ownership/pruning fixes
+// would be silently dropped on an already-current object.
+func (r *GroupReconciler) succeed(ctx context.Context, logger logr.Logger, group *keycloakv1alpha1.KeycloakGroup, reason, message string, extraChanged bool) (ctrl.Result, error) {
 	changed := markReady(&group.Status.Conditions, reason, message, group.Generation)
-	changed = changed || group.Status.ObservedGeneration != group.Generation
+	changed = changed || extraChanged || group.Status.ObservedGeneration != group.Generation
 	if !changed {
 		return ctrl.Result{}, nil
 	}

@@ -61,6 +61,7 @@ const (
 	opCreateGroupResource   = "create_group_resource"
 	opCreateGroupPolicy     = "create_group_policy"
 	opCreateScopePermission = "create_scope_permission"
+	opFindAuthz             = "find_authz"
 	opDeleteScopePermission = "delete_scope_permission"
 )
 
