@@ -15,8 +15,11 @@
 // enabled: true) on a clean cluster; this Job layers the platform's roles,
 // the authenticated default group, and the Argo CD OIDC client onto it and
 // keeps them converged thereafter.  The two never fight: the import file below
-// carries realm: "holos" only — no enabled or identity-provider fields that
-// would contend with the KeycloakRealmImport CR.
+// carries realm: "holos" only — no enabled field — so it does not contend with
+// the KeycloakRealmImport CR, which owns enabled.  HOL-1369: this Job now also
+// owns the holos realm's identityProviders[] (the esso OIDC broker), so the IdP's
+// confidential clientSecret is injected at runtime; the KeycloakRealmImport
+// declares NO identityProviders, so there is still no contention.
 //
 // The keycloak Namespace is registered in the central namespaces registry
 // (holos/namespaces.cue) with _ambient: true — never emitted by components.
@@ -247,14 +250,55 @@ let CONTROLLER_REALM_MGMT_ROLES = [
 	"query-clients",
 ]
 
+// HOL-1369: the esso OIDC identity provider brokered into the holos realm.  The
+// esso realm (HOL-1368, the sibling realm-esso-config component) models an
+// upstream Enterprise SSO; this IdP makes the holos realm authenticate users
+// against it.  ESSO_IDP_ALIAS is the broker alias — the {provider} path segment
+// in the broker endpoint https://auth.holos.internal/realms/holos/broker/esso/endpoint
+// the esso confidential client registers as its redirect URI — and the alias the
+// project component's KeycloakUser identityProviderLink references (HOL-1369
+// repoints it from the placeholder "holos" to "esso").
+let ESSO_IDP_ALIAS = "esso"
+
+// The esso realm's issuer base; the IdP discovers its OIDC endpoints from
+// .well-known under it.  Served at this URL by the shared Keycloak CR + HTTPRoute
+// (no new route is added — HOL-1368).
+let ESSO_ISSUER_URL = "https://auth.holos.internal/realms/esso"
+
+// The clientId the holos realm's broker authenticates AS at the esso realm — the
+// holos realm's own issuer URL, by Keycloak's broker convention.  It MUST equal
+// the confidential client the esso realm-config component declares
+// (realm-esso-config ESSO_IDP_CLIENT_ID), so both sides of the broker agree.
+let ESSO_IDP_CLIENT_ID = "https://auth.holos.internal/realms/holos"
+
+// ESSO_IDP_OIDC_SECRET is the Secret carrying the shared esso broker client
+// secret.  It is generated ONCE by the esso realm-config component's
+// ESSO_BOOTSTRAP Job (realm-esso-config, HOL-1368) into the keycloak namespace —
+// the SINGLE SOURCE of the client secret; this holos-side IdP reads the SAME
+// Secret name + key so both sides of the broker authenticate with one value.  Do
+// not rename without updating realm-esso-config to match.  keycloak-config-cli
+// substitutes $(env:ESSO_IDP_CLIENT_SECRET) into the IdP at import time from the
+// ESSO_IDP_CLIENT_SECRET_ENV env var (CONFIG_JOB below).
+let ESSO_IDP_OIDC_SECRET = "esso-idp-oidc"
+let ESSO_IDP_OIDC_SECRET_KEY = "client_secret"
+let ESSO_IDP_CLIENT_SECRET_ENV = "ESSO_IDP_CLIENT_SECRET"
+
+// HOL-1369: the first-broker-login flow alias the esso IdP points at.  This is a
+// CUSTOM (builtIn: false) flow, NOT Keycloak's built-in "first broker login" — see
+// the long comment on authenticationFlows below for why redefining the built-in
+// fails under keycloak-config-cli.
+let FIRST_BROKER_LOGIN_FLOW = "first broker login auto-link"
+let USER_CREATION_OR_LINKING_FLOW = "User creation or linking auto-link"
+
 // REALM_CONFIG is the keycloak-config-cli import document, marshalled to JSON
 // in the ConfigMap below.  Authored in CUE so it stays reviewable and validated
 // (encoding/json renders it deterministically — stable key order, no manual
 // JSON to drift).
 //
-// Scope discipline: realm carries only "realm: holos" — no enabled or
-// identity-provider fields — so it layers onto the realm shell the instance
-// component's KeycloakRealmImport bootstraps without contending with it.
+// Scope discipline: realm carries only "realm: holos" — no enabled field — so it
+// layers onto the realm shell the instance component's KeycloakRealmImport
+// bootstraps without contending with it (the import owns enabled; HOL-1369 this
+// Job owns identityProviders[], which the import does not declare).
 // keycloak-config-cli's default import.managed.* behavior is "no-delete" for
 // objects it does not declare, so this never purges realm state it doesn't own
 // (full-realm purge is deliberately NOT enabled).
@@ -625,52 +669,78 @@ let REALM_CONFIG = {
 		// keycloak-config-cli convention for service-account role assignment.
 	}]
 
-	// HOL-1348: the first-broker-login flow configured for AUTO-LINK, so a
+	// HOL-1348/HOL-1369: a first-broker-login flow configured for AUTO-LINK, so a
 	// pre-provisioned KeycloakUser (a record the controller creates by email,
 	// e.g. bob@example.com) is linked to its federated identity on the user's
 	// FIRST login through an upstream IdP — rather than Keycloak creating a
 	// duplicate account or prompting the user to manually link.  This is the
 	// realm half of the auto-link mechanism ADR-20's KeycloakUser relies on; the
-	// IdP half (trustEmail: true and firstBrokerLoginFlowAlias pointing at this
-	// flow) is set on the identityProvider when one is introduced and is owned by
-	// the IdP definition, NOT here — this component keeps the ADR-20 scope
-	// discipline (realm: "holos" only; no enabled/identity-provider fields, which
-	// the instance component's KeycloakRealmImport owns).
+	// IdP half (trustEmail: true and firstBrokerLoginFlowAlias) is set on the
+	// esso identityProvider in identityProviders[] below.
 	//
-	// Mechanism: the built-in "first broker login" flow's "Handle Existing
-	// Account" subflow defaults to the interactive Confirm-link + Verify-by-Email
-	// executions.  This redefinition replaces that subflow's executions with
-	// Detect Existing Broker User (idpCreateUserIfUnique, ALTERNATIVE — links
-	// when a unique existing user matches) followed by Automatically Set Existing
-	// User (idp-auto-link, ALTERNATIVE — sets the matched user as the
-	// authenticated account with no prompt).  Combined with an IdP that trusts
-	// email, a login whose asserted email matches a pre-provisioned user
-	// auto-links silently.
+	// Why a CUSTOM flow, not a redefinition of the built-in "first broker login"
+	// (HOL-1369 fixes the earlier HOL-1348 failure):
+	// keycloak-config-cli REFUSES to add executions to a built-in flow.  Keycloak
+	// 26.x's built-in "first broker login" → "User creation or linking" subflow
+	// contains idp-create-user-if-unique + a "Handle Existing Account" subflow,
+	// but NO idp-auto-link execution (DefaultAuthenticationFlows.firstBrokerLoginFlow).
+	// When a builtIn: true flow's import differs, config-cli takes the
+	// updateBuiltInFlow path (it never recreates a built-in flow — recreateTopLevelFlow
+	// throws "Deletion or creation of built-in flows is not possible") and then
+	// looks each imported execution up in the STORED built-in flow by authenticator
+	// (ExecutionFlowRepository.getExecutionsByAuthFlow → filter providerId == authenticator).
+	// idp-auto-link is absent from the stored built-in subflow, so the lookup is
+	// empty and config-cli throws "Cannot find stored execution by authenticator
+	// 'idp-auto-link' in top-level flow 'User creation or linking'" — the failure
+	// this issue fixes.  (The message says "top-level flow" because config-cli
+	// reuses the topLevelFlowAlias variable name when configuring a subflow's
+	// executions; the flow is the topLevel: false subflow.)
+	//
+	// The fix: declare a brand-new CUSTOM top-level flow (builtIn: false) with its
+	// own custom subflow and unique aliases (FIRST_BROKER_LOGIN_FLOW /
+	// USER_CREATION_OR_LINKING_FLOW — distinct from the built-in names so config-cli
+	// does not match the built-in entries), then point the esso IdP's
+	// firstBrokerLoginFlowAlias at it (identityProviders[] below).  Because the flow
+	// is not built-in, config-cli CREATES it — executions and all, including
+	// idp-auto-link — via createTopLevelFlow/createExecutionsAndExecutionFlows, and
+	// converges it idempotently on every apply.  The built-in "first broker login"
+	// is left untouched.
+	//
+	// Subflow shape required by config-cli (AuthenticationFlowUtil.getSubFlow):
+	// the parent execution references the subflow by flowAlias + authenticatorFlow:
+	// true, and the subflow's executions live in a SEPARATE authenticationFlows[]
+	// entry whose alias matches and topLevel: false.
+	//
+	// Executions: idp-review-profile (REQUIRED) keeps the profile-review step on a
+	// genuinely new federated user; then the custom subflow runs Detect Existing
+	// Broker User (idp-create-user-if-unique, ALTERNATIVE — links when a unique
+	// existing user matches) followed by Automatically Set Existing User
+	// (idp-auto-link, ALTERNATIVE — sets the matched user as the authenticated
+	// account with NO prompt).  Combined with the esso IdP's trustEmail: true, a
+	// login whose asserted email matches a pre-provisioned user auto-links silently.
 	//
 	// Authored as a CUE struct on REALM_CONFIG, which is json.Marshal'd into the
-	// import ConfigMap below — so this is a marshalled struct, never a
-	// hand-written JSON blob (the "No raw inline YAML/JSON in CUE" guardrail).
-	// keycloak-config-cli reconciles authenticationFlows by alias, converging the
-	// built-in flow to these executions on every apply.
+	// import ConfigMap below — a marshalled struct, never a hand-written JSON blob
+	// (the "No raw inline YAML/JSON in CUE" guardrail).
 	authenticationFlows: [{
-		alias:       "first broker login"
-		description: "Auto-link a federated login to a pre-provisioned user of the same (IdP-trusted) email (HOL-1348/ADR-20)."
+		alias:       FIRST_BROKER_LOGIN_FLOW
+		description: "First broker login with silent auto-link to a pre-provisioned user of the same (IdP-trusted) email (HOL-1348/HOL-1369/ADR-20)."
 		providerId:  "basic-flow"
 		topLevel:    true
-		builtIn:     true
+		builtIn:     false
 		authenticationExecutions: [
 			{
-				// Review profile stays user-decided (the built-in default) so a
-				// genuinely new federated user can still complete their profile.
-				authenticator:      "idp-review-profile"
-				requirement:        "REQUIRED"
-				priority:           10
-				authenticatorFlow:  false
-				userSetupAllowed:   false
+				// Review profile stays user-decided so a genuinely new federated
+				// user can still complete their profile.
+				authenticator:     "idp-review-profile"
+				requirement:       "REQUIRED"
+				priority:          10
+				authenticatorFlow: false
+				userSetupAllowed:  false
 			},
 			{
-				// The Handle Existing Account subflow, redefined to auto-link.
-				flowAlias:         "User creation or linking"
+				// The custom "Handle Existing Account" subflow that auto-links.
+				flowAlias:         USER_CREATION_OR_LINKING_FLOW
 				requirement:       "REQUIRED"
 				priority:          20
 				authenticatorFlow: true
@@ -678,11 +748,11 @@ let REALM_CONFIG = {
 			},
 		]
 	}, {
-		alias:       "User creation or linking"
-		description: "Detect an existing broker user and set it automatically (auto-link), no manual confirmation (HOL-1348)."
+		alias:       USER_CREATION_OR_LINKING_FLOW
+		description: "Detect an existing broker user and set it automatically (auto-link), no manual confirmation (HOL-1348/HOL-1369)."
 		providerId:  "basic-flow"
 		topLevel:    false
-		builtIn:     true
+		builtIn:     false
 		authenticationExecutions: [
 			{
 				// Detect Existing Broker User: find a unique local user matching
@@ -705,6 +775,66 @@ let REALM_CONFIG = {
 				userSetupAllowed:  false
 			},
 		]
+	}]
+
+	// HOL-1369: the esso OIDC identity provider.  This is the holos-realm half of
+	// the brokering: the holos realm authenticates users against the esso realm
+	// (HOL-1368) over OIDC.  trustEmail: true lets the auto-link flow above match a
+	// federated login to a pre-provisioned holos user by the esso-asserted (and
+	// esso-verified) email; firstBrokerLoginFlowAlias points at the custom auto-link
+	// flow so that match links silently.
+	//
+	// Ownership / scope discipline: this IdP is a holos-realm object, so it lives
+	// here in the holos realm-config Job (NOT the esso realm-config component, which
+	// is scoped to realm: "esso").  HOL-1369 moves identityProviders[] ownership to
+	// this Job (so the IdP's clientSecret is injected at runtime via
+	// $(env:ESSO_IDP_CLIENT_SECRET)); the operator's KeycloakRealmImport still owns
+	// the realm's enabled flag and declares NO identityProviders, so the two
+	// reconciliation paths do not contend (see AGENTS.md "Keycloak Configuration as
+	// Code").
+	//
+	// The client secret is the shared esso broker secret — generated ONCE by the
+	// esso realm-config component's ESSO_BOOTSTRAP Job (the single source) and read
+	// here from the SAME esso-idp-oidc Secret (CONFIG_JOB below), substituted at
+	// import time by keycloak-config-cli's $(env:...) expansion, so no secret is
+	// committed.  The clientId is the holos realm's issuer URL, matching the
+	// confidential client the esso realm registered for this broker.
+	//
+	// config carries OIDC endpoints discovered from the esso realm's
+	// .well-known/openid-configuration.  validateSignature: "true" — the broker
+	// verifies the esso-issued ID token's signature against the esso realm's JWKS
+	// (useJwksUrl: "true" fetches the keys from jwksUrl rather than pinning them),
+	// the secure posture for an OIDC IdP.  Both sides are the same Keycloak
+	// instance, so the JWKS fetch is an in-cluster call through the Gateway.
+	identityProviders: [{
+		alias:                     ESSO_IDP_ALIAS
+		displayName:               "Enterprise SSO (esso)"
+		providerId:                "oidc"
+		enabled:                   true
+		trustEmail:                true
+		storeToken:                false
+		addReadTokenRoleOnCreate:  false
+		linkOnly:                  false
+		firstBrokerLoginFlowAlias: FIRST_BROKER_LOGIN_FLOW
+		config: {
+			// Discover the OIDC endpoints from the esso realm's well-known document.
+			// keycloak-config-cli passes this through to Keycloak's OIDC IdP, which
+			// resolves authorizationUrl/tokenUrl/userInfoUrl/jwksUrl/issuer from it.
+			discoveryEndpoint: "\(ESSO_ISSUER_URL)/.well-known/openid-configuration"
+			issuer:            ESSO_ISSUER_URL
+			authorizationUrl:  "\(ESSO_ISSUER_URL)/protocol/openid-connect/auth"
+			tokenUrl:          "\(ESSO_ISSUER_URL)/protocol/openid-connect/token"
+			userInfoUrl:       "\(ESSO_ISSUER_URL)/protocol/openid-connect/userinfo"
+			jwksUrl:           "\(ESSO_ISSUER_URL)/protocol/openid-connect/certs"
+			logoutUrl:         "\(ESSO_ISSUER_URL)/protocol/openid-connect/logout"
+			useJwksUrl:        "true"
+			validateSignature: "true"
+			clientId:          ESSO_IDP_CLIENT_ID
+			clientSecret:      "$(env:\(ESSO_IDP_CLIENT_SECRET_ENV))"
+			clientAuthMethod:  "client_secret_post"
+			syncMode:          "IMPORT"
+			defaultScope:      "openid profile email"
+		}
 	}]
 }
 
@@ -870,6 +1000,23 @@ let CONFIG_JOB = {
 							valueFrom: secretKeyRef: {
 								name: CONTROLLER_CLIENT_SECRET
 								key:  CONTROLLER_CLIENT_SECRET_KEY
+							}
+						},
+						// HOL-1369: the shared esso broker client secret.
+						// keycloak-config-cli substitutes $(env:ESSO_IDP_CLIENT_SECRET)
+						// into the esso identityProvider's clientSecret at import time.
+						// The Secret is generated ONCE by the esso realm-config
+						// component's ESSO_BOOTSTRAP Job (realm-esso-config, HOL-1368) —
+						// the single source of the broker secret — and never rotated, so
+						// the value stays stable across reconciles.  The secretKeyRef holds
+						// this Job's pod pending until that Secret exists (the same
+						// level-triggered convergence the Quay/controller secrets rely on),
+						// so no explicit ordering between the two components' Jobs is needed.
+						{
+							name: ESSO_IDP_CLIENT_SECRET_ENV
+							valueFrom: secretKeyRef: {
+								name: ESSO_IDP_OIDC_SECRET
+								key:  ESSO_IDP_OIDC_SECRET_KEY
 							}
 						},
 						// Tolerate the apply-script gate polling before the

@@ -713,7 +713,7 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 					email:       EMAIL
 					instanceRef: INSTANCE_REF
 					groups: ["projects/\(NAME)/roles/owner"]
-					identityProviderLink: alias: "holos"
+					identityProviderLink: alias: "esso"
 					// adopt: true — a Keycloak user is realm-GLOBAL by email, but
 					// these KeycloakUser CRs are per-PROJECT (each project emits one
 					// for its owner).  The same human owning two projects yields two

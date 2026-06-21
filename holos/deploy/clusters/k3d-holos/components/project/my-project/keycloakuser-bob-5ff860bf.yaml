@@ -11,7 +11,7 @@ spec:
   groups:
   - projects/my-project/roles/owner
   identityProviderLink:
-    alias: holos
+    alias: esso
   instanceRef:
     name: holos-keycloak
     namespace: keycloak
