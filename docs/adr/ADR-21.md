@@ -134,7 +134,7 @@ components** (the per-phase revision rows track what landed).
 > body.** The Design, *Decision*, and *worked example* below were written as a
 > design record in Revisions 1–3 and describe the **intended** shape. Where they
 > conflict with the shipped components, the as-built reality (and the Revision 4
-> row + *Consequences*) **supersede** them on three points:
+> row + *Consequences*) **supersede** them on four points:
 >
 > 1. **Control namespace is the bare `<name>`, not `prod-<name>`.** Every passage
 >    below that places the project-scoped control-plane CRs (the Quay
@@ -157,7 +157,7 @@ components** (the per-phase revision rows track what landed).
 >    Application component). The authoritative as-built inventory is the [authoring
 >    guide](../../holos/docs/project-and-application-templates.md).
 >
- 4. **The project `KeycloakClient` is rendered *unconditionally*.** The Design
+> 4. **The project `KeycloakClient` is rendered *unconditionally*.** The Design
 >    below describes it as conditional ("only when the Project runs its own OIDC
 >    service"); as built the Project component always emits the project
 >    `KeycloakClient` (`https://<name>.holos.localhost`), which carries the
