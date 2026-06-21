@@ -2,6 +2,7 @@ package keycloak
 
 import (
 	"context"
+	"strconv"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1045,9 +1046,10 @@ func TestGroupConfersRoleOnNamedReservedClient(t *testing.T) {
 	fake := newFakeKeycloakClient()
 	// The Quay client exists (config-cli owns it), but the project role does NOT —
 	// the group reconciler must create it before assigning, since no KeycloakClient
-	// CR creates roles on the reserved client.
+	// CR creates roles on the reserved client. Deliberately do NOT seed the role, so
+	// this exercises the create-then-get path (the fake's CreateClientRoleIfNotExists
+	// makes GetClientRole resolve afterward).
 	fake.seedClient(quayClientID, "quay-uuid")
-	fake.seedClientRole("quay-uuid", "my-project-owner", "role-uuid")
 	r, recorder := newGroupReconciler(fake, ns)
 
 	key := client.ObjectKeyFromObject(group)
@@ -1127,5 +1129,68 @@ func TestGroupReservedRoleOnReservedClientRejected(t *testing.T) {
 	if fake.callsContain("CreateClientRole:quay-uuid/platform-admin") ||
 		fake.roleAssigned("grp-1", "quay-uuid", "platform-admin") {
 		t.Errorf("reserved-role guard must reject before any Keycloak write; calls = %v", fake.calls)
+	}
+}
+
+// TestGroupDirectClientRoleGuards covers the bounds on the direct clientId path
+// (HOL-1350 review round 1, the privilege-escalation guard): a KeycloakGroup that
+// names a clientId directly may target ONLY the allowlisted Quay client, and only
+// with its own project-prefixed role name. Naming any other client (e.g.
+// realm-management) or another project's role is refused before any Keycloak write.
+func TestGroupDirectClientRoleGuards(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-group-directguard"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	cases := []struct {
+		name     string
+		clientID string
+		role     string
+	}{
+		{"non-allowlisted client", "realm-management", "my-project-realm-admin"},
+		{"another reserved client", "argocd", "my-project-owner"},
+		{"cross-project role on quay", "https://quay.holos.localhost", "other-project-owner"},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			group := &keycloakv1alpha1.KeycloakGroup{
+				ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "directguard-" + strconv.Itoa(i)},
+				Spec: keycloakv1alpha1.KeycloakGroupSpec{
+					Path:        "projects/my-project/roles/owner",
+					InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+					ClientRoles: []keycloakv1alpha1.ClientRoleReference{
+						{ClientID: tc.clientID, Role: tc.role},
+					},
+				},
+			}
+			if err := shared.k8sClient.Create(ctx, group); err != nil {
+				t.Fatalf("create group: %v", err)
+			}
+			fake := newFakeKeycloakClient()
+			// Seed every candidate client so the guard — not a missing-client error —
+			// is what rejects.
+			fake.seedClient(tc.clientID, "target-uuid")
+			r, _ := newGroupReconciler(fake, ns)
+			key := client.ObjectKeyFromObject(group)
+			_, _ = reconcileGroup(ctx, r, key) // finalizer
+			if _, err := reconcileGroup(ctx, r, key); err == nil {
+				t.Fatalf("expected the direct-client guard to fail the reconcile")
+			}
+			got := getGroup(t, ctx, key)
+			status, reason, _ := conditionStatus(got.Status.Conditions, ConditionReady)
+			if status != metav1.ConditionFalse || reason != ReasonKeycloakError {
+				t.Errorf("Ready = (%v, %v), want (False, %s)", status, reason, ReasonKeycloakError)
+			}
+			// The guard must reject before any role create/assign.
+			if fake.callsContain("CreateClientRole:target-uuid/"+tc.role) ||
+				fake.roleAssigned("grp-1", "target-uuid", tc.role) {
+				t.Errorf("direct-client guard must reject before any Keycloak write; calls = %v", fake.calls)
+			}
+		})
 	}
 }

@@ -430,14 +430,19 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 		if err != nil {
 			return err
 		}
-		// Reserved-client guard (ADR-20 "Claim value via a client role"): a group
-		// MAY confer a project-prefixed client role on a platform-reserved client
-		// (the Quay use case) but MUST NOT touch the platform's own reserved client
-		// roles on it — the client OBJECT stays config-cli's, only project-prefixed
-		// roles on it are controller-claimed. A reserved role name on a reserved
-		// client is refused before any Keycloak write.
-		if reservedClientIDs[clientID] && reservedClientRoleNames[ref.Role] {
-			return fmt.Errorf("client role %q on reserved client %q is platform-reserved and cannot be conferred by a KeycloakGroup", ref.Role, clientID)
+		// The direct clientId path (the Quay use case) is the only path that may name
+		// a client with no same-namespace KeycloakClient CR — including platform
+		// clients. It is tightly bounded so it cannot be turned into a privilege-
+		// escalation primitive (e.g. minting realm-admin on realm-management, or
+		// another project's role): the target must be on the allowlist of permitted
+		// reserved consumer clients AND the role must be this group's own project-
+		// prefixed name. The clientRef path is bounded by the same-namespace CR claim
+		// model and needs no extra check here.
+		directTarget := ref.ClientID != ""
+		if directTarget {
+			if err := validateDirectClientRole(group.Spec.Path, clientID, ref.Role); err != nil {
+				return err
+			}
 		}
 		oidc, err := kc.FindClientByClientID(ctx, clientID)
 		recordKeycloakAPI(opFindClientByClientID, err)
@@ -447,14 +452,19 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 		if oidc == nil {
 			return fmt.Errorf("no Keycloak client %q (from %s) exists", clientID, clientRefDescription(ref))
 		}
-		// Ensure the conferred role exists on the target client before assigning it.
-		// For a project's own KeycloakClient the client reconciler also creates it,
-		// but for a named reserved client (the Quay use case) no KeycloakClient CR
-		// exists to create it — so the group reconciler must (idempotent).
-		createRoleErr := kc.CreateClientRoleIfNotExists(ctx, oidc.ID, keycloak.ClientRole{Name: ref.Role})
-		recordKeycloakAPI(opCreateClientRole, createRoleErr)
-		if createRoleErr != nil {
-			return fmt.Errorf("ensuring client role %q on Keycloak client %q: %w", ref.Role, clientID, createRoleErr)
+		// Ensure the conferred role exists ONLY on the direct path. For a named
+		// reserved client (the Quay use case) no KeycloakClient CR exists to create
+		// the role, so the group reconciler creates it (idempotent). For a clientRef
+		// target the referenced KeycloakClient's own reconciler owns its role
+		// vocabulary (spec.clientRoles); the group must NOT silently expand it, so the
+		// role is resolved get-only and a missing role is a hard error the operator
+		// fixes by declaring it on the KeycloakClient.
+		if directTarget {
+			createRoleErr := kc.CreateClientRoleIfNotExists(ctx, oidc.ID, keycloak.ClientRole{Name: ref.Role})
+			recordKeycloakAPI(opCreateClientRole, createRoleErr)
+			if createRoleErr != nil {
+				return fmt.Errorf("ensuring client role %q on Keycloak client %q: %w", ref.Role, clientID, createRoleErr)
+			}
 		}
 		role, err := kc.GetClientRole(ctx, oidc.ID, ref.Role)
 		recordKeycloakAPI(opGetClientRole, err)
@@ -537,6 +547,49 @@ func splitManagedRole(key string) (clientID, role string, ok bool) {
 		return "", "", false
 	}
 	return key[:idx], key[idx+1:], true
+}
+
+// validateDirectClientRole bounds the direct clientId path (clientRoles[].clientId)
+// so it cannot be used to escalate privilege (ADR-20 "Claim value via a client
+// role", "Ownership / disjointness"). It enforces three constraints, refused
+// before any Keycloak write:
+//  1. the target clientId is on the directClientRoleTargets allowlist (only the
+//     platform Quay client) — naming any other client directly (e.g.
+//     realm-management, argocd) is rejected, so the path cannot reach a privileged
+//     client;
+//  2. the role name is not one of the platform's own reserved client-role names
+//     (platform-admin/project-admin), so a platform role binding is never
+//     overwritten;
+//  3. the role name is this group's OWN project-prefixed name (derived from the
+//     group path projects/<project>/...), so a group cannot mint another project's
+//     Quay role (e.g. other-project-owner).
+func validateDirectClientRole(groupPath, clientID, role string) error {
+	if !directClientRoleTargets[clientID] {
+		return fmt.Errorf("clientId %q may not be named directly by a KeycloakGroup clientRoles entry; only the platform Quay client is a permitted direct target (use a same-namespace KeycloakClient and clientRef for other clients)", clientID)
+	}
+	if reservedClientRoleNames[role] {
+		return fmt.Errorf("client role %q on reserved client %q is platform-reserved and cannot be conferred by a KeycloakGroup", role, clientID)
+	}
+	project := projectFromGroupPath(groupPath)
+	if project == "" {
+		return fmt.Errorf("cannot confer a role on reserved client %q from group path %q: it is not a projects/<project>/... path, so no project prefix can be enforced", clientID, groupPath)
+	}
+	if !strings.HasPrefix(role, project+"-") {
+		return fmt.Errorf("client role %q on reserved client %q must be prefixed with this group's project %q (expected %q-…) so a group cannot confer another project's role", role, clientID, project, project)
+	}
+	return nil
+}
+
+// projectFromGroupPath extracts <project> from a group path of the form
+// projects/<project>/... (any leading/trailing slashes tolerated). It returns ""
+// when the path is not in that shape, so the caller can refuse the direct path
+// rather than enforce an empty prefix.
+func projectFromGroupPath(path string) string {
+	segs := strings.Split(strings.Trim(path, "/"), "/")
+	if len(segs) >= 2 && segs[0] == "projects" && segs[1] != "" {
+		return segs[1]
+	}
+	return ""
 }
 
 // clientRefDescription renders a human-readable description of which field named

@@ -74,6 +74,20 @@ var reservedClientRoleNames = map[string]bool{
 	"project-admin":  true,
 }
 
+// directClientRoleTargets are the clientIds a KeycloakGroup may name DIRECTLY (via
+// clientRoles[].clientId, bypassing same-namespace KeycloakClient CR resolution).
+// It is a tight allowlist: only the platform Quay client — the ADR-20 "Quay use
+// case" consumer whose token the controller must fold project roles into, and for
+// which no tenant KeycloakClient CR exists or may exist. Naming any other clientId
+// directly (e.g. realm-management, argocd, kargo, or an arbitrary client) is
+// refused, so the direct path cannot reach a privileged client like
+// realm-management to mint realm-admin. A non-reserved consumer client must use a
+// same-namespace KeycloakClient CR via clientRef instead, which the claim model
+// already bounds.
+var directClientRoleTargets = map[string]bool{
+	"https://quay.holos.localhost": true,
+}
+
 // ClientClient is the seam the KeycloakClient reconciler drives Keycloak through.
 // It is the subset of internal/keycloak.Client's client, client-role,
 // protocol-mapper, and client-secret operations the reconciler needs, named as an

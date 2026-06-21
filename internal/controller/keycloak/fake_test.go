@@ -521,6 +521,15 @@ func (f *fakeKeycloakClient) CreateClientRoleIfNotExists(ctx context.Context, cl
 		f.createdClientRoles[clientUUID] = map[string]bool{}
 	}
 	f.createdClientRoles[clientUUID][role.Name] = true
+	// Register the role so a subsequent GetClientRole resolves it — modeling
+	// Keycloak's create-then-readable behavior, so a test that does NOT pre-seed the
+	// role still exercises the group reconciler's create-then-get path. Assign a
+	// synthetic UUID only when the role is not already present (idempotent).
+	key := clientUUID + "/" + role.Name
+	if _, ok := f.clientRoles[key]; !ok {
+		f.nextGroupID++
+		f.clientRoles[key] = "role-" + strconv.Itoa(f.nextGroupID)
+	}
 	return nil
 }
 
