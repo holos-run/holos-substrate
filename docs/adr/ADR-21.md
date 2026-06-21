@@ -130,6 +130,37 @@ components** (the per-phase revision rows track what landed).
 
 ## Design
 
+> **As-built correction (Revision 4, HOL-1358) — read this before the Design
+> body.** The Design, *Decision*, and *worked example* below were written as a
+> design record in Revisions 1–3 and describe the **intended** shape. Where they
+> conflict with the shipped components, the as-built reality (and the Revision 4
+> row + *Consequences*) **supersede** them on three points:
+>
+> 1. **Control namespace is the bare `<name>`, not `prod-<name>`.** Every passage
+>    below that places the project-scoped control-plane CRs (the Quay
+>    `Organization`, the `keycloak.holos.run` CRs, the adopted Kargo `Project`
+>    namespace) in `prod-<name>`, or names the Kargo `Project` `prod-<name>`, is
+>    superseded: they land in the **bare `<name>`** namespace (the
+>    `validateDirectClientRole` guard, HOL-1350 — see *Consequences*).
+> 2. **The editor Quay team is `role: creator` + `repositoryPermission: write`**,
+>    not `member` + `write`. The worked-example YAML and prose below that say
+>    `member`/`write` for editor are superseded by the rendered
+>    `organization-my-project.yaml` (owner → `admin`; editor → `creator` + write;
+>    viewer → `member` + read).
+> 3. **The shipped components emit a *subset* of the listed resources.** The
+>    project-level Gateway-API `ReferenceGrant` (Project item 7) and `HTTPRoute`
+>    (item 8), the app `ExternalSecret` (Application item 8), the blue-green
+>    progressive-delivery pipeline (Application item 4 — today a single
+>    `argocd-update` hard cutover), and the app `Repository`'s `repo_push` webhook
+>    registration are **deferred and not rendered today**. The app-level
+>    `HTTPRoute` and the per-app Quay `Repository` **are** rendered (by the
+>    Application component). The authoritative as-built inventory is the [authoring
+>    guide](../../holos/docs/project-and-application-templates.md).
+>
+> The body is retained for the design rationale; treat its resource placement,
+> editor mapping, and "all 11 resources rendered" claims as design-time intent
+> corrected by the three points above.
+
 ### The GCP containment model, mapped to Kubernetes
 
 [ADR-1](ADR-1.md) adopts the **GCP resource hierarchy**: resources live in a
@@ -353,8 +384,7 @@ buildplans
 
 One Project entry renders the resources below, all anchored on the Project's
 Namespace as the security boundary. Two of them — the `AppProject` and the
-project-level `Application` — are Argo CD objects that, following the
-the former bespoke `my-project` scaffold, are
+project-level `Application` — are Argo CD objects that, following the former bespoke `my-project` scaffold, are
 **namespaced into `argocd`** alongside the Argo CD controller (their *destination*
 is the Project's Namespace); the per-Project `keycloak.holos.run` CRs
 ([ADR-20](ADR-20.md), items 9–11) live in the Project's Namespace and reference a
@@ -394,8 +424,7 @@ manifests provision the identity half of its primitive-role model
    same-named Namespace; that Namespace carries the
    `kargo.akuity.io/project: "true"` adoption label (and the
    `kargo.akuity.io/keep-namespace` annotation) in the registry so the Kargo
-   Project controller **adopts** it rather than refusing or deleting it. As in the
-   the former bespoke `my-project` scaffold, the
+   Project controller **adopts** it rather than refusing or deleting it. As in the former bespoke `my-project` scaffold, the
    Kargo `Project` brings its namespaced **`ProjectConfig`** (the auto-promotion
    policy and the native Quay webhook **receiver**) and the generate-once
    receiver-token bootstrap `Job` — project-level Kargo wiring shared by every
@@ -416,8 +445,8 @@ manifests provision the identity half of its primitive-role model
    [ADR-19](ADR-19.md), naming the Project's Quay org and governing repository
    creation within it. Its `spec.syncedTeams[]` maps the primitive-role OIDC group
    claim values (`my-project-{owner,editor,viewer}`) to Quay teams **by name**
-   (owner → team `role: admin`; editor → `member` + `repositoryPermission: write`;
-   viewer → `member` + `read`, the ADR-19 worked example), the Quay end of the
+   (owner → team `role: admin`; editor → `role: creator` + `repositoryPermission: write`;
+   viewer → `role: member` + `read`, the as-built example), the Quay end of the
    identity flow the Keycloak resources (items 9–11) produce. The Holos Controller
    ([ADR-18](ADR-18.md)) reconciles it.
 7. **Gateway-API `ReferenceGrant`** — the grant authorizing whichever
@@ -520,7 +549,7 @@ One Application entry renders these **11** resources. The Kargo `Warehouse` and
 `Stage` are namespaced into the Project's Kargo Project namespace (the Project's
 Namespace, per the single-namespace shape); the Argo CD `Application` is
 namespaced into `argocd` (its `destination` is the Project's Namespace,
-following the the former bespoke `my-project` scaffold);
+following the former bespoke `my-project` scaffold);
 the `Deployment`/`Service`/`ExternalSecret`/`ConfigMap`/`ServiceAccount`/
 `RoleBinding` workload objects are rendered **into the Namespace of the Project
 named by `apps.<name>.project`**. The Kargo control plane these resources plug
@@ -769,8 +798,9 @@ nothing keys on it; [ADR-20](ADR-20.md).) Editor and viewer members get
 
 **5. `groups` claim → Quay `syncedTeams`.** The Project's Quay `Organization`
 ([ADR-19](ADR-19.md)) maps those exact claim values to Quay teams **by name** —
-matching the ADR-19 worked example exactly (owner → org `role: admin`; editor →
-`member` + `repositoryPermission: write`; viewer → `member` + `read`):
+matching the as-built rendered `organization-my-project.yaml` (owner → org
+`role: admin`; editor → `role: creator` + `repositoryPermission: write`; viewer →
+`role: member` + `repositoryPermission: read`):
 
 ```yaml
 apiVersion: quay.holos.run/v1alpha1
@@ -784,8 +814,8 @@ spec:
       role: admin                  # org admin: governance + full repo access
     - name: my-project-editor
       oidcGroup: my-project-editor
-      role: member
-      repositoryPermission: write  # push/pull repos in the org, no org admin
+      role: creator                # create repos in the org, no org admin
+      repositoryPermission: write  # push/pull repos in the org
     - name: my-project-viewer
       oidcGroup: my-project-viewer
       role: member
@@ -834,17 +864,20 @@ without full org admin.)
    tenant's own self-service registration from authorizing its access to the central
    instance. The Project's Keycloak CRs reference the instance; the grant
    that permits it lives with, and is owned by, the instance.
-3. **One `apps.<name>` entry renders 11 application-level resources** scoped to
+3. **One `apps.<name>` entry renders the application-level resources** scoped to
    its Project (workloads into the Project's Namespace; the Kargo `Warehouse`/
    `Stage` into the Project's Kargo Project namespace; the Argo CD `Application`
-   into `argocd` with the Project's Namespace as its `destination`): the Quay
-   `Repository` ([ADR-19](ADR-19.md)), the Kargo `Warehouse` (linked to the
-   Repository, driven by the `repo_push` webhook into the Project's `ProjectConfig`
-   receiver), the Kargo `Stage`, the Kargo blue-green progressive-delivery pipeline
-   (the `Stage`'s promotion-template configuration), the Argo CD `Application`, the
-   `Deployment`, `Service`, `ExternalSecret`, `ConfigMap`, `ServiceAccount`, and
-   `RoleBinding`. The shared Kargo `Project`/`ProjectConfig`/receiver-token
-   wiring is the **Project** component's, not re-emitted per app.
+   into `argocd` with the Project's Namespace as its `destination`). **As built**
+   (see the Design banner), the Application component renders the Quay `Repository`
+   ([ADR-19](ADR-19.md)) (no `repo_push` webhook registration — the `Warehouse`
+   polls as the fallback), the Kargo `Warehouse`, the Kargo `Stage` (a single
+   `argocd-update` step — **no** blue-green progressive-delivery pipeline), the
+   Argo CD `Application`, the `Deployment`, `Service`, **`HTTPRoute`**, `ConfigMap`,
+   `ServiceAccount`, and `RoleBinding`, plus the app `KeycloakClient`. The app
+   **`ExternalSecret`** the original design listed is **not** rendered (the
+   external-secrets prerequisite is deferred — *Consequences*). The shared Kargo
+   `Project`/`ProjectConfig`/receiver-token wiring is the **Project** component's,
+   not re-emitted per app.
 4. **Applications are unified under their Project by GCP-model containment:**
    `apps.<name>.project` binds an app to a Project, the Project is realized as its
    Namespace security boundary (the `my-project` single-namespace shape, where the
@@ -887,7 +920,7 @@ without full org admin.)
    → `KeycloakUser` for Bob in `roles/owner` (first-login auto-link) → the
    `my-project-owner` Quay **client role** → the `groups`-claim value
    `my-project-owner` → the Quay `Organization.spec.syncedTeams[]` mapping
-   (owner → `admin`; editor → `member`+`write`; viewer → `member`+`read`), internally
+   (owner → `admin`; editor → `creator`+`write`; viewer → `member`+`read`), internally
    consistent with [ADR-19](ADR-19.md)'s `admin`/`creator`/`member` team-role
    semantics.
 8. **This refines [ADR-1](ADR-1.md):** the `Project` tenant maps onto Kubernetes

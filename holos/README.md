@@ -907,8 +907,10 @@ script deletes the prior `my-project-quay-webhook-bootstrap` Job so each run
 re-generates the token idempotently, and gates that Job's completion, the Kargo
 Project's adoption of the `my-project` namespace, and the Organization reaching
 Ready. The Application stays `Unknown`/`Missing` until the first
-`my-project-config` artifact is published **and** the Quay repo is provisioned by
-hand — expected scaffolding.
+`my-project-config` artifact is published **and** the project's config Quay repo
+(`my-project-config`, **not** modeled by a `Repository` CR — only the app's
+`my-app-config` repo is, emitted by the Application component) plus the push robot
+and pull-credential Secrets are provisioned by hand — expected scaffolding.
 
 **Toward self-service `ProjectRequest`.** Everything above is what a future
 self-service `ProjectRequest` API would generate per tenant: a namespace, a
@@ -918,7 +920,10 @@ hand-authored reference instance that proves the shape end-to-end before that
 generator exists.
 
 **Verifying the scaffold, and the end-to-end contract it will satisfy.** The
-scaffold (Kargo pipeline, Application, Quay repo + webhook) is verifiable today;
+scaffold (Kargo pipeline, Application, the app's emitted Quay `Repository` CR) is
+verifiable today; the app `Repository`'s `repo_push` **webhook registration** is
+**omitted** in the current phase (the `Warehouse` polls the config repo as the
+fallback) until the Kargo receiver URL is published into a referenceable Secret;
 the publish step that drives the full push → webhook → Warehouse Freight →
 Stage promotion → Application sync loop is **future work**, because a clean
 sync needs a **project-scoped** `my-project-config` artifact and `scripts/publish`
