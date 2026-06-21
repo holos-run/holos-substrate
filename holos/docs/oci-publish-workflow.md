@@ -347,12 +347,14 @@ creates Freight → Stage promotion sets the Argo CD Application `targetRevision
 ## Downstream: the `my-project` delivery scaffold
 
 The `echo` spike above wires the pipeline for the platform's permanent
-smoke-test workload. The
-[`my-project`](../components/my-project/buildplan.cue) component
+smoke-test workload. `my-project`
 ([holos/README.md → The `my-project` delivery scaffold](../README.md#the-my-project-delivery-scaffold))
-is the **project-shaped** instance of the same pattern — the reference for a
-future self-service `ProjectRequest` — and differs from the echo spike in two
-ways that simplify the operator workflow:
+— as of HOL-1357 a one-line project registration ([`projects/my-project.cue`](../projects/my-project.cue))
+rendered by the collection-driven [`components/project/`](../components/project/buildplan.cue)
+component (the bespoke `components/my-project` was deleted) — is the
+**project-shaped** instance of the same pattern, the reference for a future
+self-service `ProjectRequest`, and differs from the echo spike in two ways that
+simplify the operator workflow:
 
 - **One component, one namespace.** The Kargo `Project`, `ProjectConfig`,
   `Warehouse`, and `Stage` all live in the single `my-project` component, and

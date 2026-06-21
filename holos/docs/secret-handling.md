@@ -71,7 +71,8 @@ does not read, the AC is wrong — use the correct key and remove the named one.
 ## Precedents in this repo
 
 - **Quay webhook receiver token** —
-  `holos/components/my-project/buildplan.cue` (`WEBHOOK_BOOTSTRAP_SCRIPT`): a
+  `holos/components/project/buildplan.cue` (`WEBHOOK_BOOTSTRAP_SCRIPT`, the
+  collection-driven Project component that as of HOL-1357 renders my-project): a
   create-if-absent Job generates the receiver's shared token under the single
   `secret` key the Kargo quay receiver reads.
 - **Quay OIDC client secret** — `holos/components/keycloak/realm-config/`

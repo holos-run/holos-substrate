@@ -33,7 +33,8 @@ rather than reconciled by ArgoCD.
 > **hand-authored** Argo CD `Application`s the Kargo delivery pipelines own —
 > `echo` ([`components/kargo-echo/`](../components/kargo-echo/buildplan.cue))
 > and `my-project`
-> ([`components/my-project/`](../components/my-project/buildplan.cue), see
+> (rendered by [`components/project/`](../components/project/buildplan.cue) from
+> the `projects` collection as of HOL-1357, see
 > [holos/README.md → The `my-project` delivery scaffold](../README.md#the-my-project-delivery-scaffold)).
 > Those Applications carry an **OCI** source pointing at a rendered-manifests
 > artifact and are reconciled by ArgoCD today (once their artifact is

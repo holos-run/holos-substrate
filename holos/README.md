@@ -822,11 +822,17 @@ promotes them through its Project/Warehouse/Stage resources.
 
 ### The `my-project` delivery scaffold
 
-[`components/my-project/`](components/my-project/buildplan.cue) is the Layer 3
-sample-application delivery scaffold (HOL-1268). It is a single component that
-lays down everything one project needs to receive Kargo-driven OCI delivery
-([ADR-16](../docs/adr/ADR-16.md)), authored by hand today and the template for
-a future self-service `ProjectRequest` (below). Its rendered resources are:
+`my-project` is the Layer 3 sample-application delivery scaffold (HOL-1268). As
+of HOL-1357 it is no longer a bespoke component: it is a one-line project
+registration ([`projects/my-project.cue`](projects/my-project.cue)) plus a
+one-line app registration ([`apps/my-app.cue`](apps/my-app.cue)), rendered by the
+collection-driven [`components/project/`](components/project/buildplan.cue) and
+[`components/application/`](components/application/buildplan.cue) components — the
+generalization of the formerly hand-authored scaffold (the bespoke
+`components/my-project` was deleted). It lays down everything one project needs to
+receive Kargo-driven OCI delivery ([ADR-16](../docs/adr/ADR-16.md)) and is the
+template for a future self-service `ProjectRequest` (below). Its rendered
+resources are:
 
 - a **Namespace** (`my-project`) — registered centrally in
   [`namespaces.cue`](namespaces.cue), **not** emitted by the component (per
