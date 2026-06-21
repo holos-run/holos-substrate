@@ -54,14 +54,23 @@ type KeycloakUserSpec struct {
 
 	// Username optionally sets the Keycloak username. When omitted the controller
 	// derives one (conventionally the email), so set it only to pin a specific
-	// username.
+	// username. It is immutable: the username is applied only at user creation, so
+	// editing it after the user exists would silently diverge the CR from Keycloak
+	// (the reconciler does not rename an existing user). Recreate the resource to
+	// change the pinned username.
 	//
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="username is immutable"
 	Username string `json:"username,omitempty"`
 
 	// InstanceRef references the KeycloakInstance this user is provisioned in. A
 	// cross-namespace reference (Namespace set to a different namespace) is gated
-	// by a security.holos.run ReferenceGrant in the instance's namespace.
+	// by a security.holos.run ReferenceGrant in the instance's namespace. It is
+	// immutable: retargeting a provisioned user to another instance would create a
+	// second Keycloak user in the new realm and orphan the original (the finalizer
+	// can no longer reach it), so the target realm is fixed for the user's life.
+	//
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="instanceRef is immutable"
 	InstanceRef KeycloakInstanceReference `json:"instanceRef"`
 
 	// Groups optionally lists the Keycloak group paths the user joins (e.g.
@@ -126,6 +135,39 @@ type KeycloakUserStatus struct {
 	//
 	// +optional
 	Adopted bool `json:"adopted,omitempty"`
+
+	// UserID is the Keycloak UUID of the user this CR owns or adopted. It is the
+	// durable handle the reconciler resolves group memberships and the IdP link
+	// against, and the finalizer deletes (when Created) — recorded so a re-run
+	// targets exactly the user this CR provisioned even if the email lookup were
+	// to drift.
+	//
+	// +optional
+	UserID string `json:"userID,omitempty"`
+
+	// ManagedGroups records the group memberships this CR has joined the user to,
+	// each entry encoded as "<groupPath>|<groupUUID>", so a membership removed from
+	// spec.groups is actively revoked on the next reconcile (reconcile-to-desired-set
+	// rather than add-only) and an adopted user's release prunes exactly the
+	// memberships this CR added. The UUID pins the membership so a group recreated at
+	// the same path out of band is not pruned as if it were the controller-added one.
+	// The controller manages these entries; do not hand-edit them.
+	//
+	// +optional
+	// +listType=set
+	ManagedGroups []string `json:"managedGroups,omitempty"`
+
+	// ManagedIdentityProvider records the federated-identity link this CR created,
+	// encoded as "<alias>|<upstreamUserId>" (the IdP alias and the upstream subject
+	// from spec.identityProviderLink), so on switch or CR removal the prune deletes
+	// exactly the link this CR added — and only when the current link still points
+	// at that subject, never a link recreated out of band to a different subject.
+	// Empty when no managed link exists (no spec.identityProviderLink, or an
+	// email-only auto-link entry that is realm-flow-driven and not an Admin-API link
+	// this CR owns). The controller manages this value; do not hand-edit it.
+	//
+	// +optional
+	ManagedIdentityProvider string `json:"managedIdentityProvider,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -78,6 +78,25 @@ func (c *Client) CreateUser(ctx context.Context, user User) (string, error) {
 	return c.doCreate(ctx, c.adminPath("/users"), user)
 }
 
+// DeleteUser deletes the user identified by id via
+// DELETE /admin/realms/{realm}/users/{id}. A missing user is returned as an
+// *APIError reporting IsNotFound; use DeleteUserIfExists to treat that as
+// success (the finalizer's idempotent cleanup).
+func (c *Client) DeleteUser(ctx context.Context, userID string) error {
+	path := c.adminPath("/users/" + url.PathEscape(userID))
+	return c.doJSON(ctx, http.MethodDelete, path, nil, nil)
+}
+
+// DeleteUserIfExists deletes the user and returns nil when it is already
+// absent, so the finalizer's cleanup is idempotent across re-runs.
+func (c *Client) DeleteUserIfExists(ctx context.Context, userID string) error {
+	err := c.DeleteUser(ctx, userID)
+	if IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
 // AddUserToGroup adds the user to the group via
 // PUT /admin/realms/{realm}/users/{id}/groups/{groupId}. Keycloak's PUT is
 // idempotent — adding a user already in the group is a 204 — so no *IfNotExists
@@ -130,6 +149,26 @@ func (c *Client) ListFederatedIdentities(ctx context.Context, userID string) ([]
 		return nil, err
 	}
 	return links, nil
+}
+
+// DeleteFederatedIdentity removes the user's link to an identity provider via
+// DELETE /admin/realms/{realm}/users/{id}/federated-identity/{provider}. A
+// not-present link is returned as an *APIError reporting IsNotFound; use
+// DeleteFederatedIdentityIfExists to treat that as success (the release path's
+// idempotent cleanup of a controller-added link).
+func (c *Client) DeleteFederatedIdentity(ctx context.Context, userID, provider string) error {
+	path := c.adminPath("/users/" + url.PathEscape(userID) + "/federated-identity/" + url.PathEscape(provider))
+	return c.doJSON(ctx, http.MethodDelete, path, nil, nil)
+}
+
+// DeleteFederatedIdentityIfExists removes the federated-identity link and returns
+// nil when it is already absent, so the cleanup is idempotent.
+func (c *Client) DeleteFederatedIdentityIfExists(ctx context.Context, userID, provider string) error {
+	err := c.DeleteFederatedIdentity(ctx, userID, provider)
+	if IsNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 // CreateFederatedIdentityIfNotExists creates the federated-identity link and,

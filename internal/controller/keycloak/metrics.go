@@ -20,7 +20,7 @@ import (
 // there is no separate wiring step in main.go.
 //
 // Label cardinality is kept bounded on purpose: kind is one of a small fixed set
-// ("instance"/"group"), outcome is "success"/"error", and operation is a fixed
+// ("instance"/"group"/"user"/"client"), outcome is "success"/"error", and operation is a fixed
 // set of Keycloak client verbs. None are derived from user input, so these
 // counters cannot blow up the time-series count. The metric namespace
 // (holos_controller) is intentionally shared with internal/controller/quay so all
@@ -39,6 +39,8 @@ const metricsNamespace = "holos_controller"
 const (
 	kindInstance = "instance"
 	kindGroup    = "group"
+	kindUser     = "user"
+	kindClient   = "client"
 )
 
 // Outcome label values shared by the reconcile and Keycloak-API counters.
@@ -63,6 +65,24 @@ const (
 	opCreateScopePermission = "create_scope_permission"
 	opFindAuthz             = "find_authz"
 	opDeleteScopePermission = "delete_scope_permission"
+
+	// KeycloakUser reconciler operations.
+	opFindUserByEmail     = "find_user_by_email"
+	opCreateUser          = "create_user"
+	opDeleteUser          = "delete_user"
+	opAddUserToGroup      = "add_user_to_group"
+	opRemoveUserFromGroup = "remove_user_from_group"
+	opCreateFederatedID   = "create_federated_identity"
+	opDeleteFederatedID   = "delete_federated_identity"
+	opListFederatedIDs    = "list_federated_identities"
+
+	// KeycloakClient reconciler operations.
+	opCreateClient           = "create_client"
+	opUpdateClient           = "update_client"
+	opDeleteClient           = "delete_client"
+	opGetClientSecret        = "get_client_secret"
+	opCreateClientRole       = "create_client_role"
+	opEnsureClientRoleMapper = "ensure_client_role_mapper"
 )
 
 var (

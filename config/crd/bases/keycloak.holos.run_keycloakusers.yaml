@@ -125,7 +125,10 @@ spec:
                 description: |-
                   InstanceRef references the KeycloakInstance this user is provisioned in. A
                   cross-namespace reference (Namespace set to a different namespace) is gated
-                  by a security.holos.run ReferenceGrant in the instance's namespace.
+                  by a security.holos.run ReferenceGrant in the instance's namespace. It is
+                  immutable: retargeting a provisioned user to another instance would create a
+                  second Keycloak user in the new realm and orphan the original (the finalizer
+                  can no longer reach it), so the target realm is fixed for the user's life.
                 properties:
                   name:
                     description: Name of the KeycloakInstance resource to target.
@@ -141,12 +144,21 @@ spec:
                 required:
                 - name
                 type: object
+                x-kubernetes-validations:
+                - message: instanceRef is immutable
+                  rule: self == oldSelf
               username:
                 description: |-
                   Username optionally sets the Keycloak username. When omitted the controller
                   derives one (conventionally the email), so set it only to pin a specific
-                  username.
+                  username. It is immutable: the username is applied only at user creation, so
+                  editing it after the user exists would silently diverge the CR from Keycloak
+                  (the reconciler does not rename an existing user). Recreate the resource to
+                  change the pinned username.
                 type: string
+                x-kubernetes-validations:
+                - message: username is immutable
+                  rule: self == oldSelf
             required:
             - email
             - instanceRef
@@ -232,12 +244,44 @@ spec:
                   controller-managed owner record persisted on status; the finalizer deletes
                   the Keycloak user only when Created is true.
                 type: boolean
+              managedGroups:
+                description: |-
+                  ManagedGroups records the group memberships this CR has joined the user to,
+                  each entry encoded as "<groupPath>|<groupUUID>", so a membership removed from
+                  spec.groups is actively revoked on the next reconcile (reconcile-to-desired-set
+                  rather than add-only) and an adopted user's release prunes exactly the
+                  memberships this CR added. The UUID pins the membership so a group recreated at
+                  the same path out of band is not pruned as if it were the controller-added one.
+                  The controller manages these entries; do not hand-edit them.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
+              managedIdentityProvider:
+                description: |-
+                  ManagedIdentityProvider records the federated-identity link this CR created,
+                  encoded as "<alias>|<upstreamUserId>" (the IdP alias and the upstream subject
+                  from spec.identityProviderLink), so on switch or CR removal the prune deletes
+                  exactly the link this CR added — and only when the current link still points
+                  at that subject, never a link recreated out of band to a different subject.
+                  Empty when no managed link exists (no spec.identityProviderLink, or an
+                  email-only auto-link entry that is realm-flow-driven and not an Admin-API link
+                  this CR owns). The controller manages this value; do not hand-edit it.
+                type: string
               observedGeneration:
                 description: |-
                   ObservedGeneration is the most recent generation observed for this
                   KeycloakUser by the controller.
                 format: int64
                 type: integer
+              userID:
+                description: |-
+                  UserID is the Keycloak UUID of the user this CR owns or adopted. It is the
+                  durable handle the reconciler resolves group memberships and the IdP link
+                  against, and the finalizer deletes (when Created) — recorded so a re-run
+                  targets exactly the user this CR provisioned even if the email lookup were
+                  to drift.
+                type: string
             type: object
         type: object
     served: true

@@ -29,10 +29,23 @@ type ClientFields struct {
 	RedirectURIs *[]string
 	// WebOrigins, when non-nil, replaces the CORS web-origin list.
 	WebOrigins *[]string
+	// Attributes, when non-nil, MERGES the given attribute keys onto the client's
+	// existing attributes map (rather than replacing it), so a managed attribute
+	// such as the PKCE code-challenge method is set without clobbering unmanaged
+	// attributes Keycloak or another owner stored. Only the supplied keys are
+	// written.
+	Attributes map[string]string
+	// RemoveAttributes lists attribute keys to DELETE from the client's existing
+	// attributes map, so a managed attribute (e.g. the PKCE code-challenge method on
+	// a client converging to no-PKCE) is actively cleared rather than left stale by
+	// the merge-only Attributes path. Removing a key already absent is a no-op. A
+	// key present in both Attributes and RemoveAttributes is set (Attributes wins).
+	RemoveAttributes []string
 }
 
 // apply writes the set (non-nil) fields onto raw, leaving every other key
-// untouched.
+// untouched. Attributes are merged key-by-key onto the existing attributes map
+// so unmanaged attribute keys survive.
 func (f ClientFields) apply(raw RawClient) {
 	if f.Name != nil {
 		raw["name"] = *f.Name
@@ -48,6 +61,19 @@ func (f ClientFields) apply(raw RawClient) {
 	}
 	if f.WebOrigins != nil {
 		raw["webOrigins"] = *f.WebOrigins
+	}
+	if f.Attributes != nil || len(f.RemoveAttributes) > 0 {
+		attrs, _ := raw["attributes"].(map[string]any)
+		if attrs == nil {
+			attrs = map[string]any{}
+		}
+		for _, k := range f.RemoveAttributes {
+			delete(attrs, k)
+		}
+		for k, v := range f.Attributes {
+			attrs[k] = v
+		}
+		raw["attributes"] = attrs
 	}
 }
 
@@ -84,7 +110,20 @@ type OIDCClient struct {
 	RedirectURIs []string `json:"redirectUris,omitempty"`
 	// WebOrigins are the client's allowed CORS web origins.
 	WebOrigins []string `json:"webOrigins,omitempty"`
+	// Attributes carries the client's attribute map (e.g. the PKCE
+	// pkce.code.challenge.method). Set on create to program managed attributes;
+	// omitempty so an unset map is not sent.
+	Attributes map[string]string `json:"attributes,omitempty"`
 }
+
+// PKCECodeChallengeMethodAttr is the Keycloak client-attribute key holding the
+// PKCE code-challenge method (e.g. "S256"). The KeycloakClient reconciler sets it
+// to S256 on public clients so the authorization-code flow requires PKCE, per the
+// platform's public-client guardrail (keycloak-clients.md).
+const PKCECodeChallengeMethodAttr = "pkce.code.challenge.method"
+
+// PKCEMethodS256 is the SHA-256 PKCE code-challenge method value.
+const PKCEMethodS256 = "S256"
 
 // ProtocolMapper is the subset of a client protocol-mapper representation the
 // reconcilers read back and create.
@@ -141,6 +180,59 @@ func (c *Client) FindClientByClientID(ctx context.Context, clientID string) (*OI
 // IsConflict.
 func (c *Client) CreateClient(ctx context.Context, client OIDCClient) (string, error) {
 	return c.doCreate(ctx, c.adminPath("/clients"), client)
+}
+
+// ClientSecret is the subset of a Keycloak CredentialRepresentation returned by
+// the client-secret endpoint: the generated confidential-client secret value the
+// reconciler delivers to the consumer's Secret (ADR-20).
+type ClientSecret struct {
+	// Type is the credential type, e.g. "secret".
+	Type string `json:"type,omitempty"`
+	// Value is the generated client secret string.
+	Value string `json:"value,omitempty"`
+}
+
+// GetClientSecret fetches a confidential client's current secret via
+// GET /admin/realms/{realm}/clients/{clientUUID}/client-secret, returning the
+// generated secret value. Keycloak generates a secret for a confidential client
+// on creation, so the reconciler reads it back (rather than regenerating) to
+// deliver it generate-once to the consumer's Secret. A missing client is
+// returned as an *APIError reporting IsNotFound.
+func (c *Client) GetClientSecret(ctx context.Context, clientUUID string) (*ClientSecret, error) {
+	path := c.adminPath("/clients/" + url.PathEscape(clientUUID) + "/client-secret")
+	secret := &ClientSecret{}
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, secret); err != nil {
+		return nil, err
+	}
+	return secret, nil
+}
+
+// DeleteClient deletes the OIDC client identified by UUID via
+// DELETE /admin/realms/{realm}/clients/{clientUUID}. A missing client is
+// returned as an *APIError reporting IsNotFound; use
+// DeleteClientByClientIDIfExists to treat that as success (the finalizer's
+// idempotent cleanup).
+func (c *Client) DeleteClient(ctx context.Context, clientUUID string) error {
+	path := c.adminPath("/clients/" + url.PathEscape(clientUUID))
+	return c.doJSON(ctx, http.MethodDelete, path, nil, nil)
+}
+
+// DeleteClientByClientIDIfExists resolves the client by its clientId and deletes
+// it, returning nil when no such client exists — so the finalizer's cleanup is
+// idempotent across re-runs.
+func (c *Client) DeleteClientByClientIDIfExists(ctx context.Context, clientID string) error {
+	oidc, err := c.FindClientByClientID(ctx, clientID)
+	if err != nil {
+		return err
+	}
+	if oidc == nil {
+		return nil
+	}
+	err = c.DeleteClient(ctx, oidc.ID)
+	if IsNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 // GetClientRaw fetches the full ClientRepresentation by UUID via

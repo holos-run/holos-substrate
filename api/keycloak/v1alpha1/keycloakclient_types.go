@@ -62,12 +62,24 @@ type KeycloakClientSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="clientId is immutable"
 	ClientID string `json:"clientId"`
 
-	// Type is the OIDC client type, public or confidential.
+	// Type is the OIDC client type, public or confidential. It is immutable: a
+	// public<->confidential transition would strand the per-client artifacts keyed
+	// to the prior type (a confidential->public edit would orphan the delivered
+	// client-secret Secret; a public->confidential edit would need a freshly
+	// generated secret and a redirect/PKCE re-evaluation), so the type is fixed for
+	// the client's life — recreate the resource to change it.
+	//
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="type is immutable"
 	Type KeycloakClientType `json:"type"`
 
 	// InstanceRef references the KeycloakInstance this client is provisioned in. A
 	// cross-namespace reference (Namespace set to a different namespace) is gated
-	// by a security.holos.run ReferenceGrant in the instance's namespace.
+	// by a security.holos.run ReferenceGrant in the instance's namespace. It is
+	// immutable: retargeting a provisioned client to another instance would create
+	// a second OIDC client in the new realm and orphan the original (the finalizer
+	// can no longer reach it), so the target realm is fixed for the client's life.
+	//
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="instanceRef is immutable"
 	InstanceRef KeycloakInstanceReference `json:"instanceRef"`
 
 	// RedirectURIs are the allowed OAuth2 redirect URIs for the client.
@@ -112,6 +124,18 @@ type KeycloakClientSpec struct {
 	//
 	// +optional
 	CABundle []byte `json:"caBundle,omitempty"`
+
+	// Adopt opts in to taking ownership of a pre-existing Keycloak client of the
+	// same clientId (the claim model, mirroring ADR-19's Organization). Default
+	// false: because a Keycloak client lives in the realm's single global client
+	// namespace while this CR is Kubernetes-namespaced, a client this CR did not
+	// create and does not already own is a Conflict (Ready=False, reason Conflict)
+	// and is never silently seized or reconfigured. Set adopt: true to deliberately
+	// claim and converge such a client. An adopted client is released, never
+	// deleted, on CR removal.
+	//
+	// +optional
+	Adopt bool `json:"adopt,omitempty"`
 }
 
 // KeycloakClientStatus defines the observed state of a KeycloakClient, following
@@ -132,6 +156,30 @@ type KeycloakClientStatus struct {
 	//
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Created records whether this CR created the Keycloak client (true) versus
+	// adopted a pre-existing client of the same clientId (false). The finalizer
+	// deletes the Keycloak client only when Created is true; an adopted client is
+	// released, never deleted.
+	//
+	// +optional
+	Created bool `json:"created,omitempty"`
+
+	// Adopted records whether this CR adopted a pre-existing Keycloak client of
+	// the same clientId rather than creating it. An adopted client is released,
+	// never deleted, on CR removal.
+	//
+	// +optional
+	Adopted bool `json:"adopted,omitempty"`
+
+	// ClientUUID is the Keycloak UUID of the client this CR owns or adopted. It is
+	// the immutable handle the reconciler converges roles/mapper/secret against and
+	// the finalizer verifies before deleting — recorded so a re-run targets exactly
+	// the client this CR provisioned, and a UUID mismatch (the client was replaced
+	// out of band at the same clientId) is a Conflict rather than a silent seizure.
+	//
+	// +optional
+	ClientUUID string `json:"clientUUID,omitempty"`
 }
 
 // +kubebuilder:object:root=true

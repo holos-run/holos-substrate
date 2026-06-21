@@ -74,17 +74,62 @@ type fakeKeycloakClient struct {
 	// gotCABundle records the caBundle the reconciler's factory was last invoked
 	// with, so a test asserts the instance's CABundle is threaded through.
 	gotCABundle []byte
+
+	// users maps an email to the synthetic user, modeling FindUserByEmail/CreateUser.
+	users map[string]*keycloak.User
+	// nextUserID is the monotonically-increasing source of synthetic user UUIDs.
+	nextUserID int
+	// createUserCount counts CreateUser calls, so a test asserts a present user is
+	// reused rather than duplicated (no second create).
+	createUserCount int
+	// groupMembers records each "<userID>/<groupID>" the reconciler joined, so a
+	// test asserts membership assignment and pruning.
+	groupMembers map[string]bool
+	// federatedLinks records, per "<userID>/<provider>", the upstream subject
+	// (userId) of the link created, so a test asserts the link was made and that the
+	// subject-verified prune respects an out-of-band recreated link.
+	federatedLinks map[string]string
+	// lastUpdateFields records, per clientUUID, the most recent ClientFields passed
+	// to UpdateClientFields, so a test asserts PKCE set/removal on update.
+	lastUpdateFields map[string]keycloak.ClientFields
+
+	// clientRolesByClient records, per "<clientUUID>", the set of role names
+	// created on that client, so a test asserts client-role convergence.
+	createdClientRoles map[string]map[string]bool
+	// roleMappers records each clientUUID the client-role mapper was ensured on.
+	roleMappers map[string]bool
+	// clientSecrets maps a clientUUID to the generated confidential secret value
+	// GetClientSecret returns.
+	clientSecrets map[string]string
+	// deletedClients records each clientId DeleteClientByClientIDIfExists removed.
+	deletedClients []string
+	// createdClientAttrs records, per clientId, the attributes map passed to
+	// CreateClient, so a test asserts the PKCE attribute was programmed on create.
+	createdClientAttrs map[string]map[string]string
+
+	// createClientErr / updateClientErr, when non-nil, are returned by
+	// CreateClient / UpdateClientFields to simulate a Keycloak failure.
+	createClientErr error
+	updateClientErr error
 }
 
 // newFakeKeycloakClient returns a reachable fake with the given pre-existing group
 // paths (each normalized and assigned a synthetic UUID).
 func newFakeKeycloakClient(existingGroups ...string) *fakeKeycloakClient {
 	f := &fakeKeycloakClient{
-		realmReachable:  true,
-		groups:          map[string]string{},
-		clients:         map[string]string{},
-		clientRoles:     map[string]string{},
-		roleAssignments: map[string]bool{},
+		realmReachable:     true,
+		groups:             map[string]string{},
+		clients:            map[string]string{},
+		clientRoles:        map[string]string{},
+		roleAssignments:    map[string]bool{},
+		users:              map[string]*keycloak.User{},
+		groupMembers:       map[string]bool{},
+		federatedLinks:     map[string]string{},
+		createdClientRoles: map[string]map[string]bool{},
+		roleMappers:        map[string]bool{},
+		clientSecrets:      map[string]string{},
+		createdClientAttrs: map[string]map[string]string{},
+		lastUpdateFields:   map[string]keycloak.ClientFields{},
 	}
 	for _, p := range existingGroups {
 		f.addGroup(p)
@@ -324,8 +369,271 @@ func (f *fakeKeycloakClient) roleAssigned(groupID, clientUUID, role string) bool
 	return f.roleAssignments[groupID+"/"+clientUUID+"/"+role]
 }
 
-// compile-time assertions that the fake satisfies both reconciler seams.
+// --- KeycloakUser reconciler seam ---
+
+func (f *fakeKeycloakClient) FindUserByEmail(ctx context.Context, email string) (*keycloak.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("FindUser:" + email)
+	u, ok := f.users[email]
+	if !ok {
+		return nil, nil
+	}
+	cp := *u
+	return &cp, nil
+}
+
+func (f *fakeKeycloakClient) CreateUser(ctx context.Context, user keycloak.User) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("CreateUser:" + user.Email)
+	f.createUserCount++
+	if _, ok := f.users[user.Email]; ok {
+		return "", &keycloak.APIError{StatusCode: http.StatusConflict, Method: http.MethodPost, Path: "/users", Message: "user exists"}
+	}
+	f.nextUserID++
+	id := "usr-" + strconv.Itoa(f.nextUserID)
+	stored := user
+	stored.ID = id
+	f.users[user.Email] = &stored
+	return id, nil
+}
+
+func (f *fakeKeycloakClient) DeleteUserIfExists(ctx context.Context, userID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("DeleteUser:" + userID)
+	for email, u := range f.users {
+		if u.ID == userID {
+			delete(f.users, email)
+			break
+		}
+	}
+	return nil
+}
+
+func (f *fakeKeycloakClient) AddUserToGroup(ctx context.Context, userID, groupID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("AddMember:" + userID + "/" + groupID)
+	f.groupMembers[userID+"/"+groupID] = true
+	return nil
+}
+
+func (f *fakeKeycloakClient) RemoveUserFromGroupIfMember(ctx context.Context, userID, groupID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("RemoveMember:" + userID + "/" + groupID)
+	delete(f.groupMembers, userID+"/"+groupID)
+	return nil
+}
+
+func (f *fakeKeycloakClient) CreateFederatedIdentityIfNotExists(ctx context.Context, userID, provider string, link keycloak.FederatedIdentity) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("FederatedLink:" + userID + "/" + provider)
+	f.federatedLinks[userID+"/"+provider] = link.UserID
+	return nil
+}
+
+func (f *fakeKeycloakClient) DeleteFederatedIdentityIfExists(ctx context.Context, userID, provider string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("FederatedUnlink:" + userID + "/" + provider)
+	delete(f.federatedLinks, userID+"/"+provider)
+	return nil
+}
+
+func (f *fakeKeycloakClient) ListFederatedIdentities(ctx context.Context, userID string) ([]keycloak.FederatedIdentity, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("ListFederated:" + userID)
+	var out []keycloak.FederatedIdentity
+	prefix := userID + "/"
+	for k, subject := range f.federatedLinks {
+		if strings.HasPrefix(k, prefix) {
+			out = append(out, keycloak.FederatedIdentity{IdentityProvider: k[len(prefix):], UserID: subject})
+		}
+	}
+	return out, nil
+}
+
+// setFederatedSubject seeds/overrides the upstream subject of a link, simulating
+// an out-of-band recreation to a different subject.
+func (f *fakeKeycloakClient) setFederatedSubject(userID, provider, subject string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.federatedLinks[userID+"/"+provider] = subject
+}
+
+// --- KeycloakClient reconciler seam ---
+
+func (f *fakeKeycloakClient) CreateClient(ctx context.Context, client keycloak.OIDCClient) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("CreateClient:" + client.ClientID)
+	if f.createClientErr != nil {
+		return "", f.createClientErr
+	}
+	if _, ok := f.clients[client.ClientID]; ok {
+		return "", &keycloak.APIError{StatusCode: http.StatusConflict, Method: http.MethodPost, Path: "/clients", Message: "client exists"}
+	}
+	f.nextGroupID++
+	id := "cli-" + strconv.Itoa(f.nextGroupID)
+	f.clients[client.ClientID] = id
+	if client.Attributes != nil {
+		attrs := map[string]string{}
+		for k, v := range client.Attributes {
+			attrs[k] = v
+		}
+		f.createdClientAttrs[client.ClientID] = attrs
+	}
+	return id, nil
+}
+
+func (f *fakeKeycloakClient) UpdateClientFields(ctx context.Context, clientUUID string, fields keycloak.ClientFields) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("UpdateClient:" + clientUUID)
+	f.lastUpdateFields[clientUUID] = fields
+	return f.updateClientErr
+}
+
+func (f *fakeKeycloakClient) DeleteClient(ctx context.Context, clientUUID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("DeleteClient:" + clientUUID)
+	for clientID, id := range f.clients {
+		if id == clientUUID {
+			delete(f.clients, clientID)
+			f.deletedClients = append(f.deletedClients, clientID)
+			return nil
+		}
+	}
+	return notFoundErr("/clients/" + clientUUID)
+}
+
+func (f *fakeKeycloakClient) CreateClientRoleIfNotExists(ctx context.Context, clientUUID string, role keycloak.ClientRole) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("CreateClientRole:" + clientUUID + "/" + role.Name)
+	if f.createdClientRoles[clientUUID] == nil {
+		f.createdClientRoles[clientUUID] = map[string]bool{}
+	}
+	f.createdClientRoles[clientUUID][role.Name] = true
+	return nil
+}
+
+func (f *fakeKeycloakClient) EnsureClientRoleMapper(ctx context.Context, clientUUID, name, clientID, claimName string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("EnsureMapper:" + clientUUID + "/" + name + "/" + clientID + "/" + claimName)
+	f.roleMappers[clientUUID] = true
+	return nil
+}
+
+func (f *fakeKeycloakClient) GetClientSecret(ctx context.Context, clientUUID string) (*keycloak.ClientSecret, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("GetClientSecret:" + clientUUID)
+	value := f.clientSecrets[clientUUID]
+	if value == "" {
+		value = "generated-secret-" + clientUUID
+	}
+	return &keycloak.ClientSecret{Type: "secret", Value: value}, nil
+}
+
+// --- user/client test inspection helpers ---
+
+// seedUser registers a user by email with a synthetic UUID so FindUserByEmail
+// resolves it, modeling a pre-existing Keycloak user.
+func (f *fakeKeycloakClient) seedUser(email string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextUserID++
+	id := "usr-" + strconv.Itoa(f.nextUserID)
+	f.users[email] = &keycloak.User{ID: id, Email: email, Username: email, Enabled: true}
+	return id
+}
+
+// userExists reports whether a user with the email currently exists.
+func (f *fakeKeycloakClient) userExists(email string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.users[email]
+	return ok
+}
+
+// memberOf reports whether userID is a member of groupID.
+func (f *fakeKeycloakClient) memberOf(userID, groupID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.groupMembers[userID+"/"+groupID]
+}
+
+// federated reports whether a federated-identity link exists for userID/provider.
+func (f *fakeKeycloakClient) federated(userID, provider string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.federatedLinks[userID+"/"+provider]
+	return ok
+}
+
+// updatePKCECleared reports whether the last UpdateClientFields for clientUUID
+// requested removal of the PKCE code-challenge attribute.
+func (f *fakeKeycloakClient) updatePKCECleared(clientUUID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, k := range f.lastUpdateFields[clientUUID].RemoveAttributes {
+		if k == keycloak.PKCECodeChallengeMethodAttr {
+			return true
+		}
+	}
+	return false
+}
+
+// updatePKCESet reports the PKCE attribute value the last UpdateClientFields for
+// clientUUID set, or "" when none.
+func (f *fakeKeycloakClient) updatePKCESet(clientUUID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastUpdateFields[clientUUID].Attributes[keycloak.PKCECodeChallengeMethodAttr]
+}
+
+// clientExists reports whether an OIDC client with the clientId currently exists.
+func (f *fakeKeycloakClient) clientExists(clientID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.clients[clientID]
+	return ok
+}
+
+// clientRoleCreated reports whether role was created on the client UUID.
+func (f *fakeKeycloakClient) clientRoleCreated(clientUUID, role string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.createdClientRoles[clientUUID][role]
+}
+
+// mapperEnsured reports whether the client-role mapper was ensured on clientUUID.
+func (f *fakeKeycloakClient) mapperEnsured(clientUUID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.roleMappers[clientUUID]
+}
+
+// createdClientPKCE returns the PKCE code-challenge attribute the client was
+// created with, or "" when none was set.
+func (f *fakeKeycloakClient) createdClientPKCE(clientID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.createdClientAttrs[clientID][keycloak.PKCECodeChallengeMethodAttr]
+}
+
+// compile-time assertions that the fake satisfies all four reconciler seams.
 var (
 	_ InstanceClient = (*fakeKeycloakClient)(nil)
 	_ GroupClient    = (*fakeKeycloakClient)(nil)
+	_ UserClient     = (*fakeKeycloakClient)(nil)
+	_ ClientClient   = (*fakeKeycloakClient)(nil)
 )

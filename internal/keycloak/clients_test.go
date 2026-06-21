@@ -415,3 +415,133 @@ func TestRemoveClientRoleFromGroup(t *testing.T) {
 		t.Errorf("array[0] = %v, want the role with id", h.gotArray[0])
 	}
 }
+
+func TestGetClientSecret(t *testing.T) {
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodGet,
+		wantPath: clientsBase + "/uuid-1/client-secret",
+		status:   http.StatusOK,
+		respBody: `{"type":"secret","value":"s3cr3t"}`,
+	}
+	c, _ := newTestClient(t, h)
+
+	secret, err := c.GetClientSecret(context.Background(), "uuid-1")
+	if err != nil {
+		t.Fatalf("GetClientSecret: %v", err)
+	}
+	if secret.Value != "s3cr3t" {
+		t.Errorf("value = %q, want s3cr3t", secret.Value)
+	}
+}
+
+func TestDeleteClient(t *testing.T) {
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodDelete,
+		wantPath: clientsBase + "/uuid-1",
+		status:   http.StatusNoContent,
+	}
+	c, _ := newTestClient(t, h)
+
+	if err := c.DeleteClient(context.Background(), "uuid-1"); err != nil {
+		t.Fatalf("DeleteClient: %v", err)
+	}
+}
+
+func TestDeleteClientByClientIDIfExistsAbsentIsNil(t *testing.T) {
+	// FindClientByClientID returns an empty array (no such client); the delete must
+	// be a no-op success.
+	h := &recordingHandler{t: t, wantMethod: http.MethodGet, wantPath: clientsBase, status: http.StatusOK, respBody: `[]`}
+	c, _ := newTestClient(t, h)
+
+	if err := c.DeleteClientByClientIDIfExists(context.Background(), "https://absent"); err != nil {
+		t.Fatalf("absent client must be a no-op success, got %v", err)
+	}
+}
+
+func TestCreateClientSendsPKCEAttribute(t *testing.T) {
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodPost, wantPath: clientsBase,
+		status:   http.StatusCreated,
+		location: "https://kc/admin/realms/holos/clients/uuid-pkce",
+	}
+	c, _ := newTestClient(t, h)
+
+	_, err := c.CreateClient(context.Background(), OIDCClient{
+		ClientID:     "https://pub",
+		PublicClient: true,
+		Attributes:   map[string]string{PKCECodeChallengeMethodAttr: PKCEMethodS256},
+	})
+	if err != nil {
+		t.Fatalf("CreateClient: %v", err)
+	}
+	attrs, ok := h.gotBody["attributes"].(map[string]any)
+	if !ok || attrs[PKCECodeChallengeMethodAttr] != "S256" {
+		t.Errorf("body attributes = %v, want PKCE S256", h.gotBody["attributes"])
+	}
+}
+
+func TestUpdateClientFieldsMergesPKCEAttribute(t *testing.T) {
+	var putBody map[string]any
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + clientsBase + "/uuid-1": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"uuid-1","clientId":"https://pub","attributes":{"existing":"keep"}}`)
+		},
+		"PUT " + clientsBase + "/uuid-1": func(w http.ResponseWriter, req *http.Request) {
+			body, _ := io.ReadAll(req.Body)
+			putBody = decodeJSONObject(t, body)
+			w.WriteHeader(http.StatusNoContent)
+		},
+	}}
+	c, _ := newTestClient(t, m)
+
+	err := c.UpdateClientFields(context.Background(), "uuid-1", ClientFields{
+		Attributes: map[string]string{PKCECodeChallengeMethodAttr: PKCEMethodS256},
+	})
+	if err != nil {
+		t.Fatalf("UpdateClientFields: %v", err)
+	}
+	attrs, ok := putBody["attributes"].(map[string]any)
+	if !ok {
+		t.Fatalf("PUT body has no attributes map: %v", putBody)
+	}
+	if attrs["existing"] != "keep" {
+		t.Errorf("unmanaged attribute clobbered: %v", attrs)
+	}
+	if attrs[PKCECodeChallengeMethodAttr] != "S256" {
+		t.Errorf("PKCE attribute not merged: %v", attrs)
+	}
+}
+
+func TestUpdateClientFieldsRemovesAttribute(t *testing.T) {
+	var putBody map[string]any
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + clientsBase + "/uuid-1": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"uuid-1","clientId":"https://conf","attributes":{"pkce.code.challenge.method":"S256","keep":"yes"}}`)
+		},
+		"PUT " + clientsBase + "/uuid-1": func(w http.ResponseWriter, req *http.Request) {
+			body, _ := io.ReadAll(req.Body)
+			putBody = decodeJSONObject(t, body)
+			w.WriteHeader(http.StatusNoContent)
+		},
+	}}
+	c, _ := newTestClient(t, m)
+
+	err := c.UpdateClientFields(context.Background(), "uuid-1", ClientFields{
+		RemoveAttributes: []string{PKCECodeChallengeMethodAttr},
+	})
+	if err != nil {
+		t.Fatalf("UpdateClientFields: %v", err)
+	}
+	attrs, ok := putBody["attributes"].(map[string]any)
+	if !ok {
+		t.Fatalf("PUT body has no attributes map: %v", putBody)
+	}
+	if _, present := attrs[PKCECodeChallengeMethodAttr]; present {
+		t.Errorf("PKCE attribute was not removed: %v", attrs)
+	}
+	if attrs["keep"] != "yes" {
+		t.Errorf("unmanaged attribute clobbered by removal: %v", attrs)
+	}
+}

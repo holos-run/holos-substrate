@@ -187,3 +187,34 @@ func TestCreateFederatedIdentityIfNotExistsSurfacesMismatchConflict(t *testing.T
 		t.Fatalf("expected the mismatch conflict to surface, got %v", err)
 	}
 }
+
+func TestDeleteUser(t *testing.T) {
+	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: usersBase + "/u1", status: http.StatusNoContent}
+	c, _ := newTestClient(t, h)
+
+	if err := c.DeleteUser(context.Background(), "u1"); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+}
+
+func TestDeleteUserIfExistsAbsentIsNil(t *testing.T) {
+	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: usersBase + "/gone", status: http.StatusNotFound}
+	c, _ := newTestClient(t, h)
+
+	if err := c.DeleteUserIfExists(context.Background(), "gone"); err != nil {
+		t.Fatalf("absent user must be a no-op success, got %v", err)
+	}
+}
+
+func TestDeleteFederatedIdentityIfExistsAbsentIsNil(t *testing.T) {
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodDelete,
+		wantPath: usersBase + "/u1/federated-identity/oidc",
+		status:   http.StatusNotFound,
+	}
+	c, _ := newTestClient(t, h)
+
+	if err := c.DeleteFederatedIdentityIfExists(context.Background(), "u1", "oidc"); err != nil {
+		t.Fatalf("absent link must be a no-op success, got %v", err)
+	}
+}

@@ -45,10 +45,15 @@ import (
 // controller-gen emits config/rbac/role.yaml; the reconcilers added in later
 // phases use exactly these verbs.
 //
-// Secrets are intentionally limited to get (not list/watch): the reconcilers
+// Secrets are limited to get and create (never list/watch): the reconcilers
 // resolve only the specific credential/webhook-URL Secrets a CR names, via the
 // manager's non-caching APIReader, so the controller never enumerates Secrets
-// cluster-wide.
+// cluster-wide. The create verb (HOL-1347) is for the KeycloakClient reconciler's
+// generate-once delivery of a confidential client's secret into the Secret named
+// by the resource's spec.secretRef; it create-if-absent only and never updates an
+// existing Secret, so the delivered value stays stable (the Runtime Secret
+// Handling guardrail). The delivered Secret is owner-referenced for GC, not
+// Owns-watched, so no cluster-wide Secret informer is needed.
 //
 // +kubebuilder:rbac:groups=quay.holos.run,resources=organizations;repositories,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=quay.holos.run,resources=organizations/status;repositories/status,verbs=get;update;patch
@@ -57,7 +62,7 @@ import (
 // +kubebuilder:rbac:groups=keycloak.holos.run,resources=keycloakinstances/status;keycloakgroups/status;keycloakusers/status;keycloakclients/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=keycloak.holos.run,resources=keycloakinstances/finalizers;keycloakgroups/finalizers;keycloakusers/finalizers;keycloakclients/finalizers,verbs=update
 // +kubebuilder:rbac:groups=security.holos.run,resources=referencegrants,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=authentication.k8s.io,resources=tokenreviews,verbs=create
@@ -179,6 +184,30 @@ func main() {
 		Client: mgr.GetClient(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "KeycloakGroup")
+		os.Exit(1)
+	}
+
+	// Register the KeycloakUser reconciler (HOL-1347). It pre-provisions a user by
+	// email, assigns the declared group memberships, and configures the IdP
+	// federated-identity link for first-login auto-link, resolving the Keycloak
+	// admin credential from the controller's own namespace like the reconcilers
+	// above.
+	if err := (&keycloakcontroller.UserReconciler{
+		Client: mgr.GetClient(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "KeycloakUser")
+		os.Exit(1)
+	}
+
+	// Register the KeycloakClient reconciler (HOL-1347). It manages the URL-named
+	// OIDC client, its client roles, and the client-role→groups-claim mapper, and
+	// for a confidential client delivers the generated secret (generate-once) to a
+	// Secret in the resource's namespace — the controller's first Secret-creating
+	// reconciler, hence the additional secrets create RBAC verb above.
+	if err := (&keycloakcontroller.ClientReconciler{
+		Client: mgr.GetClient(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "KeycloakClient")
 		os.Exit(1)
 	}
 

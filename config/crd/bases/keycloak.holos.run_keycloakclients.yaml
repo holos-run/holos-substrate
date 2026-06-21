@@ -69,6 +69,17 @@ spec:
               oidc-usermodel-client-role-mapper emits the role name into the shared groups
               claim (repo precedent in holos/components/keycloak/realm-config/buildplan.cue).
             properties:
+              adopt:
+                description: |-
+                  Adopt opts in to taking ownership of a pre-existing Keycloak client of the
+                  same clientId (the claim model, mirroring ADR-19's Organization). Default
+                  false: because a Keycloak client lives in the realm's single global client
+                  namespace while this CR is Kubernetes-namespaced, a client this CR did not
+                  create and does not already own is a Conflict (Ready=False, reason Conflict)
+                  and is never silently seized or reconfigured. Set adopt: true to deliberately
+                  claim and converge such a client. An adopted client is released, never
+                  deleted, on CR removal.
+                type: boolean
               caBundle:
                 description: |-
                   CABundle carries PEM-encoded x509 CA certificates the controller trusts in
@@ -135,7 +146,10 @@ spec:
                 description: |-
                   InstanceRef references the KeycloakInstance this client is provisioned in. A
                   cross-namespace reference (Namespace set to a different namespace) is gated
-                  by a security.holos.run ReferenceGrant in the instance's namespace.
+                  by a security.holos.run ReferenceGrant in the instance's namespace. It is
+                  immutable: retargeting a provisioned client to another instance would create
+                  a second OIDC client in the new realm and orphan the original (the finalizer
+                  can no longer reach it), so the target realm is fixed for the client's life.
                 properties:
                   name:
                     description: Name of the KeycloakInstance resource to target.
@@ -151,6 +165,9 @@ spec:
                 required:
                 - name
                 type: object
+                x-kubernetes-validations:
+                - message: instanceRef is immutable
+                  rule: self == oldSelf
               redirectUris:
                 description: RedirectURIs are the allowed OAuth2 redirect URIs for
                   the client.
@@ -182,11 +199,20 @@ spec:
                 - name
                 type: object
               type:
-                description: Type is the OIDC client type, public or confidential.
+                description: |-
+                  Type is the OIDC client type, public or confidential. It is immutable: a
+                  public<->confidential transition would strand the per-client artifacts keyed
+                  to the prior type (a confidential->public edit would orphan the delivered
+                  client-secret Secret; a public->confidential edit would need a freshly
+                  generated secret and a redirect/PKCE re-evaluation), so the type is fixed for
+                  the client's life — recreate the resource to change it.
                 enum:
                 - public
                 - confidential
                 type: string
+                x-kubernetes-validations:
+                - message: type is immutable
+                  rule: self == oldSelf
               webOrigins:
                 description: WebOrigins are the allowed CORS web origins for the client.
                 items:
@@ -207,6 +233,20 @@ spec:
               KeycloakClientStatus defines the observed state of a KeycloakClient, following
               the Gateway-API status convention.
             properties:
+              adopted:
+                description: |-
+                  Adopted records whether this CR adopted a pre-existing Keycloak client of
+                  the same clientId rather than creating it. An adopted client is released,
+                  never deleted, on CR removal.
+                type: boolean
+              clientUUID:
+                description: |-
+                  ClientUUID is the Keycloak UUID of the client this CR owns or adopted. It is
+                  the immutable handle the reconciler converges roles/mapper/secret against and
+                  the finalizer verifies before deleting — recorded so a re-run targets exactly
+                  the client this CR provisioned, and a UUID mismatch (the client was replaced
+                  out of band at the same clientId) is a Conflict rather than a silent seizure.
+                type: string
               conditions:
                 description: |-
                   Conditions represent the latest available observations of the client's
@@ -269,6 +309,13 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              created:
+                description: |-
+                  Created records whether this CR created the Keycloak client (true) versus
+                  adopted a pre-existing client of the same clientId (false). The finalizer
+                  deletes the Keycloak client only when Created is true; an adopted client is
+                  released, never deleted.
+                type: boolean
               observedGeneration:
                 description: |-
                   ObservedGeneration is the most recent generation observed for this
