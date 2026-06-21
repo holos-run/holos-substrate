@@ -309,8 +309,17 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 	}
 
 	// PROJECT_CONFIG_RESOURCE is the namespaced ProjectConfig: the auto-promotion
-	// policy (the project-config Stage) and the native Quay webhook receiver whose
-	// secretRef points at the WEBHOOK_SECRET in this same namespace.
+	// policies (the project-config Stage AND one per contained app's <app>-config
+	// Stage) and the native Quay webhook receiver whose secretRef points at the
+	// WEBHOOK_SECRET in this same namespace.
+	//
+	// The per-app auto-promotion policy is REQUIRED for app push-to-deploy to
+	// close: the Application component (HOL-1356) emits an <app>-config Kargo Stage
+	// per app, but a Stage only auto-promotes discovered Freight when a matching
+	// promotionPolicies entry enables it — without one the app Warehouse discovers
+	// Freight but argocd-update never runs.  Iterate apps where app.project == NAME
+	// (empty for a zero-app project, so the policy list is just the project Stage),
+	// adding {stage: <app>-config, autoPromotionEnabled: true} per app.
 	let PROJECT_CONFIG_RESOURCE = {
 		apiVersion: "kargo.akuity.io/v1alpha1"
 		kind:       "ProjectConfig"
@@ -320,10 +329,18 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 			labels: "app.kubernetes.io/name": NAME
 		}
 		spec: {
-			promotionPolicies: [{
-				stage:                STAGE
-				autoPromotionEnabled: true
-			}]
+			promotionPolicies: [
+				{
+					stage:                STAGE
+					autoPromotionEnabled: true
+				},
+				for APP, A in apps if A.project == NAME {
+					{
+						stage:                "\(APP)-config"
+						autoPromotionEnabled: true
+					}
+				},
+			]
 			webhookReceivers: [{
 				name: "quay"
 				quay: secretRef: name: WEBHOOK_SECRET
@@ -575,6 +592,19 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 	//     syncedTeams[].oidcGroup membership.
 	//   - the project's own client (clientRef: <name>), so the role also reaches
 	//     https://<name>.holos.localhost's token.
+	//   - EACH app contained by this project (apps where app.project == NAME): the
+	//     `for app in apps` comprehension below appends a clientRoles entry
+	//     {clientRef: <app-name>, role: <leaf>} per app, so the same project role
+	//     also confers the matching role on every app's KeycloakClient (the
+	//     Application component, HOL-1356, emits those app clients and defines the
+	//     owner/editor/viewer roles on them).  With ZERO apps the comprehension
+	//     contributes nothing and the role group confers only the Quay + project
+	//     clients (the HOL-1355 zero-app behavior); each registered app adds its
+	//     own clientRef entry.  The clientRef path is a SAME-NAMESPACE KeycloakClient
+	//     resolution (NOT subject to validateDirectClientRole), which holds because
+	//     the Application component places each app's KeycloakClient in this same
+	//     bare <name> control namespace.  app.name (the leaf role) maps 1:1 to the
+	//     app's owner/editor/viewer client roles.
 	let KEYCLOAK_ROLE_GROUP_RESOURCES = {
 		for r in ROLES {
 			(r): {
@@ -596,6 +626,17 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 						{
 							clientRef: PROJECT_CLIENT_NAME
 							role:      CLIENT_ROLE[r]
+						},
+						// One entry per app contained by this project (empty for a
+						// zero-app project).  The app's KeycloakClient CR metadata.name
+						// is the app name (the Application component), resolved
+						// same-namespace via clientRef; the app's matching client role
+						// is named r (owner/editor/viewer, 1:1 with the primitive role).
+						for APP, A in apps if A.project == NAME {
+							{
+								clientRef: APP
+								role:      r
+							}
 						},
 					]
 					custodians: [{

@@ -451,6 +451,27 @@ platform: {
 				cluster:   CLUSTER.name
 				labels: app: "project"
 			}}).output
+
+			// application is the collection-driven Application component (HOL-1356):
+			// it iterates the apps collection (holos/collections.cue) and emits, for
+			// every apps.<name> entry, the full application-level resource set
+			// (Deployment/Service/HTTPRoute, the app KeycloakClient defining the
+			// owner/editor/viewer roles the project role groups confer, the Quay
+			// Repository, and the Kargo Warehouse/Stage + Argo CD Application) into
+			// components/application/<name>/.  Registered after project for the
+			// containment ordering: an app's KeycloakClient is referenced by the
+			// project's role groups (clientRef), its Repository's organizationRef
+			// names the project Organization, and its Argo CD Application runs in the
+			// project AppProject — all emitted by the project component.  Like
+			// project it is render-here / apply-separately (its Repository carries a
+			// per-cluster caBundle injected at apply time, scripts/apply-projects),
+			// so it is EXCLUDED from the master scripts/apply.  With no apps
+			// registered today it renders no output.
+			(#ComponentTemplate & {inputs: {
+				component: "application"
+				cluster:   CLUSTER.name
+				labels: app: "application"
+			}}).output
 		}
 	}
 }

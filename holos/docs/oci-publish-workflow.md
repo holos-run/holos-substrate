@@ -412,6 +412,30 @@ created by either script and must be provisioned by hand:
 > project-scoped artifact exists, and the step-4 `Synced` result is reachable
 > only for such an artifact.
 
+> **The per-app `<app>-config` artifact is the Application component's
+> `workload/` bundle (HOL-1356) — the INTENDED publish contract, not yet wired
+> into `scripts/publish`.** The Application component
+> ([`holos/components/application/buildplan.cue`](../components/application/buildplan.cue))
+> renders each `apps.<name>` entry into **two** separate artifact directories
+> precisely so the bundles are independently packageable:
+> `components/application/<app>/workload/` (the
+> `Deployment`/`Service`/`HTTPRoute`/`ConfigMap`/`ServiceAccount`/`RoleBinding`)
+> and `components/application/<app>/control-plane/` (the Quay `Repository`, the
+> app `KeycloakClient`, the Kargo `Warehouse`/`Stage`, and the Argo CD
+> `Application`). The control-plane objects are applied by the operator path
+> (`scripts/apply-projects`, which applies **only** the `control-plane/` subtree).
+> The per-app delivery contract is that the publish step packages **only the
+> `workload/` subtree** as the `<app>-config` artifact the app's Argo CD
+> `Application` syncs — so Argo CD never tries to manage the
+> `Repository`/`KeycloakClient`/Kargo objects or the `Application` that points at
+> itself, and the artifact is the project-scoped, namespace-fit bundle the
+> whole-platform render is not. **`scripts/publish` does NOT yet implement this
+> per-app packaging** — it still renders and packages the whole platform tree (the
+> "publish step is future work" caveat above). Teaching `scripts/publish` to
+> package a single app's `workload/` subtree as `<app>-config` is the remaining
+> publish-workflow integration; the component split lands the rendered bundles
+> that step will consume.
+
 What you **can** verify today is that the scaffold is in place:
 
 ```bash

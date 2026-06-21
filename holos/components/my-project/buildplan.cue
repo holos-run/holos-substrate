@@ -374,10 +374,24 @@ let PROJECT_CONFIG_RESOURCE = {
 		labels: "app.kubernetes.io/name": NAME
 	}
 	spec: {
-		promotionPolicies: [{
-			stage:                STAGE
-			autoPromotionEnabled: true
-		}]
+		// The project-config Stage plus one auto-promotion policy per contained
+		// app's <app>-config Stage (the Application component, HOL-1356): without a
+		// matching promotionPolicies entry a Stage's discovered Freight never
+		// auto-promotes, so app push-to-deploy would not close.  Empty app set →
+		// just the project Stage.  HOL-1357 folds this into the generic project
+		// component.
+		promotionPolicies: [
+			{
+				stage:                STAGE
+				autoPromotionEnabled: true
+			},
+			for APP, A in apps if A.project == NAME {
+				{
+					stage:                "\(APP)-config"
+					autoPromotionEnabled: true
+				}
+			},
+		]
 		webhookReceivers: [{
 			name: "quay"
 			quay: secretRef: name: WEBHOOK_SECRET
@@ -806,6 +820,24 @@ let KEYCLOAK_ROLE_GROUP_RESOURCES = {
 					{
 						clientRef: PROJECT_CLIENT_NAME
 						role:      CLIENT_ROLE[r]
+					},
+					// One entry per app contained by THIS project (apps where
+					// app.project == my-project), mirroring the generic project
+					// component (HOL-1356): the Application component emits each app's
+					// KeycloakClient (CR named for the app) into this same bare
+					// my-project namespace and defines its owner/editor/viewer client
+					// roles, so the role group confers the matching role on the app
+					// client via clientRef (same-namespace resolution).  Without this
+					// a my-project app's KeycloakClient would exist but its roles would
+					// never be conferred (the codex round-2 finding).  Empty when
+					// my-project has no apps.  HOL-1357 folds this whole component into
+					// the generic project component, at which point this duplication
+					// disappears.
+					for APP, A in apps if A.project == NAME {
+						{
+							clientRef: APP
+							role:      r
+						}
 					},
 				]
 				custodians: [{
