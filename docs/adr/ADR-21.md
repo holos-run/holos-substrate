@@ -157,9 +157,15 @@ components** (the per-phase revision rows track what landed).
 >    Application component). The authoritative as-built inventory is the [authoring
 >    guide](../../holos/docs/project-and-application-templates.md).
 >
+ 4. **The project `KeycloakClient` is rendered *unconditionally*.** The Design
+>    below describes it as conditional ("only when the Project runs its own OIDC
+>    service"); as built the Project component always emits the project
+>    `KeycloakClient` (`https://<name>.holos.localhost`), which carries the
+>    project-prefixed role bindings, so the "conditional" framing is superseded.
+>
 > The body is retained for the design rationale; treat its resource placement,
-> editor mapping, and "all 11 resources rendered" claims as design-time intent
-> corrected by the three points above.
+> editor mapping, "all 11 resources rendered", and "conditional `KeycloakClient`"
+> claims as design-time intent corrected by the points above.
 
 ### The GCP containment model, mapped to Kubernetes
 
@@ -826,11 +832,13 @@ With `FEATURE_TEAM_SYNCING` on, Quay syncs Bob (carrying `my-project-owner` in h
 `groups` claim) into the `my-project-owner` team, which has the org `admin` role —
 so Bob administers the `my-project` Quay org and its repositories. The chain is
 complete: **one line of CUE → Keycloak groups → client role → `groups` claim →
-Quay team membership and role**, with the Quay end identical to
-[ADR-19](ADR-19.md)'s `admin`/`member`(+`write`/`read`) semantics. (`creator` is the
-third available Quay team `role` in ADR-19's enum; this primitive-role example uses
-`admin`/`member`, reserving `creator` for projects that want a repo-creating team
-without full org admin.)
+Quay team membership and role**, with the Quay end matching the rendered
+`organization-my-project.yaml`: owner → `role: admin`, editor → `role: creator` +
+`repositoryPermission: write`, viewer → `role: member` + `repositoryPermission: read`.
+(The as-built primitive-role example uses all three of ADR-19's team `role`
+values — `admin`/`creator`/`member` — with `creator` giving the editor team a
+repo-creating team scoped by `repositoryPermission: write`, short of full org
+admin.)
 
 ## Decision
 
