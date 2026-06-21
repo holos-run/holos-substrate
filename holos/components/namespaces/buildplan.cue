@@ -9,6 +9,20 @@ package holos
 userDefinedBuildPlan: {
 	metadata: name: "namespaces"
 
+	// _collectionsValidated puts the project/app collection contract on the
+	// holos render path.  holos render platform evaluates this BuildPlan, so
+	// referencing #CollectionsValidated (holos/collections.cue) here forces every
+	// collection constraint that produces a _|_ — a dangling app→project
+	// reference (conflict), a malformed app/project name or empty image/bad port
+	// (out of bound), and an ownerless project — to fail the render.  The field is
+	// hidden and unifies the empty struct, so it adds NOTHING to the rendered
+	// Namespace manifests (and emits no namespaced resource into this
+	// bootstrap-ordering component — see the note in collections.cue on why the
+	// missing-required-field case is enforced at consumption, not here).  This
+	// component is the natural anchor: it already derives the project namespaces
+	// from the same `projects` collection.
+	_collectionsValidated: #CollectionsValidated
+
 	spec: artifacts: manifests: {
 		for NAME, NS in namespaces {
 			// namespace-<name>.yaml matches the kubectl-slice naming
@@ -26,51 +40,6 @@ userDefinedBuildPlan: {
 					}
 				}]
 			}
-		}
-
-		// Collection-validation manifest.  This component is the anchor that puts
-		// the project/app collection contract on the holos render path: holos
-		// EXPORTS this ConfigMap's data, and the data is built from
-		// #CollectionsValidated (holos/collections.cue) — the per-project
-		// owners-ok bools and the per-app interpolated tokens.  Exporting forces
-		// every project/app entry to be valid and CONCRETE: an ownerless project
-		// (false), a missing required app field (interpolation of an incomplete
-		// value), a dangling app→project reference (conflict), or a malformed
-		// name/image/port (out of bound) each fails the render here.  The
-		// ConfigMap lands in the holos-controller namespace (an always-registered
-		// platform namespace) and is deterministic, so the deploy tree stays
-		// diff-clean; it documents, in-cluster, the validated collection state.
-		"clusters/\(clusterName)/components/\(metadata.name)/collections-validated.yaml": {
-			artifact: _
-			generators: [{
-				kind:   "Resources"
-				output: artifact
-				resources: #Resources & {
-					ConfigMap: "holos-collections-validated": {
-						metadata: {
-							name:      "holos-collections-validated"
-							namespace: "holos-controller"
-							labels: "app.holos.run/collection": "validated"
-						}
-						// project.<name> = "owners-ok" only when the project has
-						// >0 owners (#CollectionsValidated.ownersOk is true);
-						// app.<name> = the interpolated required-field token.  Both
-						// reference #CollectionsValidated, so exporting this data
-						// concretizes and validates every collection entry.
-						data: {
-							for PNAME, OK in #CollectionsValidated.ownersOk {
-								// OK is `true` for a valid project and _|_ (render
-								// error) for an ownerless one, so exporting it here
-								// fails the render on an ownerless project.
-								"project.\(PNAME)": "\(OK)"
-							}
-							for ANAME, TOK in #CollectionsValidated.tokens {
-								"app.\(ANAME)": TOK
-							}
-						}
-					}
-				}
-			}]
 		}
 	}
 }

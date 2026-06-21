@@ -306,12 +306,17 @@ Items 1–8 are the original Kubernetes/Quay/gateway resources; items 9–11 are
 manifests provision the identity half of its primitive-role model
 ([ADR-20](ADR-20.md)) alongside the Quay half ([ADR-19](ADR-19.md)):
 
-1. **k8s `Namespace`** `my-project` — the Project's containment boundary. The
-   Project component does **not** emit this `Namespace` inline (the
+1. **k8s `Namespace`s** `{ci,qa,prod}-<name>` — the Project's containment
+   boundaries (Revision 3: one Namespace **per environment**, not the single
+   `my-project` Namespace Revisions 1–2 described; the project-scoped control CRs
+   in items 2, 6, and 9–11 live in the `prod-<name>` control namespace — see
+   *Where the project-scoped control-plane CRs live*). The
+   Project component does **not** emit these `Namespace`s inline (the
    [component guidelines](../../holos/docs/component-guidelines.md)
    no-inline-Namespace guardrail); instead a one-line project registration
-   **derives a central [`holos/namespaces.cue`](../../holos/namespaces.cue)
-   registry entry** with **ambient mode** enabled (`_ambient: true`, the
+   **derives the central [`holos/namespaces.cue`](../../holos/namespaces.cue)
+   registry entries** (the `#Environments`/`#ProjectNamespace` comprehension,
+   built in HOL-1354) with **ambient mode** enabled (`_ambient: true`, the
    `istio.io/dataplane-mode: ambient` label), and the `namespaces` component
    renders the actual `Namespace` manifest. The Project component references the
    registered name and unifies it with `#RegisteredNamespace`. The Namespace is

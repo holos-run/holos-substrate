@@ -62,53 +62,76 @@ apps: appcoll.apps
 //
 // The collections' schema constraints (DNS-label names, the email-shaped owner
 // keys, the at-least-one-owner minimum, and the apps.<name>.project →
-// #RegisteredProject cross-reference) only fail at render if SOMETHING THE
-// RENDERED OUTPUT DEPENDS ON evaluates the constrained fields.  `holos render
-// platform` evaluates the `holos:` BuildPlan of each component, NOT arbitrary
-// hidden ancestor fields — a hidden field that no rendered output references is
-// never forced.  So until the Project/Application components (HOL-1355/HOL-1356)
-// consume the collections, the contract must be tied to an output something
-// already renders.  The always-present `namespaces` component is that anchor:
-// holos/namespaces.cue derives the project namespaces and the namespaces
-// buildplan UNIFIES the rendered Namespace resources with #CollectionsValidated
-// below, so evaluating any namespace manifest forces the whole validation.
+// #RegisteredProject cross-reference) only fail at render if SOMETHING ON THE
+// RENDER PATH evaluates the constrained fields.  `holos render platform`
+// evaluates each component's value, including a referenced hidden field — and a
+// hidden field that evaluates to _|_ (bottom) DOES surface as a render error.
+// So until the Project/Application components (HOL-1355/HOL-1356) consume the
+// collections, the contract is anchored to the always-rendered `namespaces`
+// component, which references #CollectionsValidated from a hidden field
+// (_collectionsValidated — see components/namespaces/buildplan.cue).  That
+// component is the natural anchor: it already derives the project namespaces
+// from the same `projects` collection.  The reference is a HIDDEN field, not a
+// rendered resource — the namespaces component is the bootstrap, apply-first
+// component and must emit ONLY Namespace manifests (a namespaced validation
+// resource would sort/apply before its own namespace and break a fresh apply),
+// so the validation rides evaluation, not an emitted object.
 //
-// #CollectionsValidated exposes two things the always-rendered namespaces
-// component folds into an EXPORTED manifest (a ConfigMap), which is what puts the
-// whole collection contract on the render path:
-//
-//   - `ownersOk`: a per-project bool that is `true` only when the project names
-//     at least one owner; an ownerless project makes it `false & true` (= _|_),
-//     failing render.
-//   - `tokens`: a per-app string folding each app's required fields via
-//     INTERPOLATION.  Interpolation forces CONCRETENESS on export, so when the
-//     namespaces component exports these strings, a MISSING required field
-//     (project!/image!/port! omitted) fails with `required field missing`, a
-//     dangling project fails the #RegisteredProject cross-reference (`conflicting
-//     values`), and a malformed name / empty image / bad port fails the value
-//     constraint (`out of bound`).  This is the lever that makes even a missing
-//     required field a render error — a hidden field merely READING the value
-//     left it incomplete (tolerated); an EXPORTED interpolation does not.
-//
-// Both maps are keyed by name (project/app) so distinct entries never unify into
-// a cross-entry conflict (the multi-app-collision trap).  The namespaces buildplan
-// is the anchor because it already derives the project namespaces from the same
-// `projects` collection; see components/namespaces/buildplan.cue.
+// #CollectionsValidated is well-defined ONLY when every project and app entry
+// satisfies its constraints; any violation that produces _|_ propagates the
+// failure to the namespaces component's _collectionsValidated reference and
+// fails the render.  The cases that produce _|_ — and therefore fail at render
+// now — are: an ownerless project, a dangling apps.<name>.project, and a
+// malformed app/project name or empty image or out-of-range port (the present-
+// value constraints).  The one case that does NOT (a required app field omitted
+// ENTIRELY leaves the value incomplete, not _|_, which a hidden field tolerates)
+// is enforced when the Application component (HOL-1356) consumes/exports the
+// field — the ! markers on #App declare the contract; see the _apps note below.
 #CollectionsValidated: {
-	// ownersOk: per-project, true iff the project has >0 owners.  The namespaces
-	// component exports these into the validation ConfigMap, forcing the check.
-	ownersOk: {
-		for NAME, P in projects {
-			(NAME): true & (len(P.owners) > 0)
+	// Every project must name at least one owner (len(owners) > 0).  The
+	// per-entry name/owner-key/email constraints ride the bound `projects` data
+	// itself; this adds the cross-cutting minimum the projects package could not
+	// express on #Project without making the abstract schema unsatisfiable (see
+	// projects.cue).  Unified into the empty struct via a guard: the for-body
+	// asserts but contributes no fields.
+	for _, P in projects {
+		if len(P.owners) < 1 {
+			// A project with no owners forces this branch, unifying the marker
+			// with an impossible constraint and failing the render.
+			_ownerless: false & true
 		}
 	}
 
-	// tokens: per-app interpolation of name|project|image|port.  Exporting these
-	// forces every required app field to be present and concrete and the
-	// project cross-reference to resolve.  (host is optional, so it is omitted.)
-	tokens: {
+	// Per-app validation, keyed by app NAME.  Keying by name (not a single shared
+	// field) is essential: a shared field would unify across apps and make two
+	// apps with different images/ports conflict — breaking multi-app support.
+	//
+	// What this forces on the render path NOW (a violation is a render error
+	// because it produces _|_, which holos surfaces even from a hidden field):
+	//   - the apps.<name>.project → #RegisteredProject CROSS-REFERENCE (a dangling
+	//     project is `conflicting values`),
+	//   - the name/image/port VALUE constraints when the field is present (a
+	//     malformed app name or an empty image is `out of bound`).
+	//
+	// What it does NOT force here, and why: a MISSING required field
+	// (project!/image!/port! omitted entirely) leaves the app value INCOMPLETE,
+	// not _|_, and holos render tolerates an incomplete HIDDEN field that no
+	// rendered manifest exports.  Concreteness of a required field is therefore
+	// enforced when an app is actually CONSUMED — i.e. when the Application
+	// component (HOL-1356) renders the app's Deployment/Service from these fields,
+	// the export forces project/image/port to be concrete.  The ! markers on #App
+	// declare the contract; the consuming component is where a render exports it.
+	// (host is optional, so it is not read.)  This is an honest boundary of the
+	// foundation phase: the cross-reference and present-value validation the AC
+	// mandates hold now; required-field presence rides the consumer.
+	_apps: {
 		for NAME, A in apps {
-			(NAME): "\(A.name)|\(A.project)|\(A.image)|\(A.port)"
+			(NAME): {
+				_p: A.project
+				_i: A.image
+				_n: A.port
+				_m: A.name
+			}
 		}
 	}
 }
