@@ -350,7 +350,14 @@ namespaces: {
 					// committed tree stays diff-clean until apps are registered.
 					if ENV == #ProjectControlEnvironment {
 						for ANAME, A in apps if A.project == PROJECT {
-							annotations: "app.holos.run/app.\(ANAME)": #CollectionsValidated.tokens[ANAME]
+							// The annotation KEY is app.holos.run/<app-name>.  The
+							// name segment after the "/" must be ≤63 chars (the
+							// Kubernetes annotation-key segment limit); ANAME is
+							// already #DNSLabel-bounded to ≤63, so the bare app name
+							// is a valid segment.  Do NOT prefix it (e.g. "app.")
+							// here — that would push a 60-63-char app name past 63
+							// and render an invalid annotation key.
+							annotations: "app.holos.run/\(ANAME)": #CollectionsValidated.tokens[ANAME]
 						}
 					}
 				}
