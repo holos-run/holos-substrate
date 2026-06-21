@@ -19,7 +19,7 @@
 // would contend with the KeycloakRealmImport CR.
 //
 // The keycloak Namespace is registered in the central namespaces registry
-// (holos/namespaces.cue) with _ambient: false — never emitted by components.
+// (holos/namespaces.cue) with _ambient: true — never emitted by components.
 package holos
 
 import (
