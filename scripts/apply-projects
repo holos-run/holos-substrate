@@ -3,34 +3,33 @@
 # components with the local-ca CA bundle injected into each project's Quay
 # Organization caBundle and each app's Quay Repository caBundle.
 #
-# The `project` component is the generalization of the bespoke my-project
-# scaffold: it iterates the `projects` collection (holos/collections.cue) and
-# renders, for every projects.<name> EXCEPT my-project (the bespoke component
-# still owns it until HOL-1357), the full per-project control-plane resource set
-# into clusters/k3d-holos/components/project/<name>/.  The `application` component
-# iterates the `apps` collection and renders one app resource set per apps.<name>
-# into clusters/k3d-holos/components/application/<app>/ (the Deployment/Service/
-# HTTPRoute, the app KeycloakClient, the Quay Repository, and the Kargo
-# Warehouse/Stage + Argo CD Application), each landing in its project's bare
-# control namespace.  Each project's Quay Organization (and each app's Quay
-# Repository) carries spec.caBundle — the per-cluster local-ca certificate the
-# Holos Controller (ADR-18/ADR-19) needs to trust the in-cluster Quay registry's
-# mkcert-signed serving certificate.  That trust material is per-cluster and is
-# NEVER committed (it is absent from the rendered holos/deploy/ tree); it is
-# injected here at apply time via the ca_bundle_pem CUE tag, the same --inject
-# pattern scripts/apply-my-project and scripts/publish use.
+# The `project` component is the generalization of the (now-deleted) bespoke
+# my-project scaffold: it iterates the `projects` collection (holos/collections.cue)
+# and renders, for EVERY projects.<name>, the full per-project control-plane
+# resource set into clusters/k3d-holos/components/project/<name>/.  The
+# `application` component iterates the `apps` collection and renders one app
+# resource set per apps.<name> into clusters/k3d-holos/components/application/<app>/
+# (the Deployment/Service/HTTPRoute, the app KeycloakClient, the Quay Repository,
+# and the Kargo Warehouse/Stage + Argo CD Application), each landing in its
+# project's bare control namespace.  Each project's Quay Organization (and each
+# app's Quay Repository) carries spec.caBundle — the per-cluster local-ca
+# certificate the Holos Controller (ADR-18/ADR-19) needs to trust the in-cluster
+# Quay registry's mkcert-signed serving certificate.  That trust material is
+# per-cluster and is NEVER committed (it is absent from the rendered holos/deploy/
+# tree); it is injected here at apply time via the ca_bundle_pem CUE tag, the same
+# --inject pattern scripts/publish uses.
 #
-# This script is the generic sibling of scripts/apply-my-project (which stays
-# bespoke and is removed with the my-project component in HOL-1357).  It mirrors
-# that script's posture exactly — context pinning, the CRD preflight, the
-# local-ca PEM resolution, the namespace-first / RBAC-pre-apply / stale-Job
-# delete ordering, and the per-resource Ready gates — but loops over every
-# rendered project subdirectory instead of the single my-project component.
+# This script SUPERSEDES the bespoke scripts/apply-my-project, deleted in HOL-1357
+# along with the components/my-project component.  It applies the reference
+# instance my-project (and its app my-app) like any other registered project,
+# looping over every rendered project subdirectory.  It mirrors the old script's
+# posture — context pinning, the CRD preflight, the local-ca PEM resolution, the
+# namespace-first / RBAC-pre-apply / stale-Job delete ordering, and the
+# per-resource Ready gates.
 #
-# With only my-project registered today the `project` component renders no
-# output, so this script is a clean no-op (it reports "no project components
-# rendered" and exits 0).  Register a real project (a projects/<name>.cue
-# one-liner) and it provisions that project's control plane.
+# It provisions every registered project's control plane (and its apps).  Register
+# a project (a projects/<name>.cue one-liner) plus, optionally, an app
+# (apps/<name>.cue) and re-run to provision them.
 #
 # ORDERING — the same prerequisites as scripts/apply-my-project:
 #   1. scripts/local-ca (the local CA whose certificate is injected).
@@ -175,14 +174,13 @@ KEYCLOAK_INSTANCE_DIR="${RENDER_DIR}/clusters/k3d-holos/components/keycloak-inst
 
 have_dir() { [[ -d "$1" ]] && [[ -n "$(ls -A "$1" 2>/dev/null)" ]]; }
 
-# Nothing to do if NEITHER the generic project component NOR the application
-# component rendered anything (the generic project component skips my-project,
-# and an app may be attached to my-project — applied by scripts/apply-my-project,
-# not here — so the project base can be empty while applications still render,
-# and vice versa).  Either alone is enough to proceed.
+# Nothing to do if NEITHER the project component NOR the application component
+# rendered anything (no project or app is registered).  Either alone is enough to
+# proceed (a project may have no apps, or — via the orphan sweep below — an app
+# could in principle be attached to a project applied by another path).
 if ! have_dir "${PROJECT_BASE}" && ! have_dir "${APPLICATION_BASE}"; then
-  echo "No project or application components rendered (the generic project component" >&2
-  echo "skips my-project, and no other project or app is registered).  Nothing to apply." >&2
+  echo "No project or application components rendered (no project or app is" >&2
+  echo "registered).  Nothing to apply." >&2
   exit 0
 fi
 
@@ -201,6 +199,52 @@ fi
 echo "==> keycloak-instance" >&2
 kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
   -f "${KEYCLOAK_INSTANCE_DIR}/"
+
+# ---------------------------------------------------------------------------
+# One-time migration cleanup (HOL-1357): prune retired my-project objects
+# ---------------------------------------------------------------------------
+# `kubectl apply -f <dir>/` never prunes resources whose manifests were deleted,
+# so a cluster that ran the now-deleted bespoke components/my-project (or its
+# scripts/apply-my-project) would otherwise keep retired objects indefinitely.
+# HOL-1357 deletes that component and folds my-project into this generic script;
+# carry forward the pruning the old script did:
+#
+#   - the retired Database-backend Quay bootstrap material (my-project-quay-bootstrap
+#     Job/RBAC across quay/my-project/argocd, and the quay-initial-admin superuser
+#     Secret) the OIDC switch (HOL-1296) removed — this pruning lived in the old
+#     scripts/apply-my-project and moves here so upgraded clusters do not retain
+#     the inert cross-namespace RBAC and the dead privileged Secret.
+#
+# The stale owner KeycloakUser CR from the HOL-1357 rename (`bob` → `bob-<hash8>`)
+# is DELIBERATELY NOT pruned (neither here nor in the project loop): the stale
+# `bob` CR created the realm user (status.created=true), and the KeycloakUser
+# finalizer deletes the user it created on CR deletion, so pruning it would
+# deprovision bob@example.com.  The orphan `bob` CR is inert and reconciles the
+# same desired state the new adopt:true CR asserts, so the two coexist; see the
+# NOTE in the project loop below.  Only the inert Quay bootstrap material (no
+# realm-user finalizer) is pruned here.
+#
+# All deletes are --ignore-not-found, so this is a no-op on a fresh cluster or a
+# second run.  Guarded on the my-project namespace existing (the only cluster that
+# could carry these is one that previously ran the bespoke my-project).
+if kubectl --context "${KUBE_CONTEXT}" get namespace my-project \
+  --ignore-not-found --request-timeout=10s -o name 2>/dev/null | grep -q .; then
+  echo "==> prune retired my-project bootstrap objects (one-time migration cleanup)" >&2
+  # The retired Database-backend Quay bootstrap Job/RBAC + superuser Secret.
+  stale_label="app.kubernetes.io/name=my-project-quay-bootstrap"
+  kubectl --context "${KUBE_CONTEXT}" --namespace quay \
+    delete job,serviceaccount,role,rolebinding -l "${stale_label}" \
+    --ignore-not-found --cascade=foreground --wait --request-timeout=60s
+  kubectl --context "${KUBE_CONTEXT}" --namespace my-project \
+    delete role,rolebinding -l "${stale_label}" \
+    --ignore-not-found --request-timeout=60s
+  kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
+    delete role,rolebinding -l "${stale_label}" \
+    --ignore-not-found --request-timeout=60s
+  kubectl --context "${KUBE_CONTEXT}" --namespace quay \
+    delete secret quay-initial-admin \
+    --ignore-not-found --request-timeout=60s
+fi
 
 # ---------------------------------------------------------------------------
 # Gate helpers (lifted from scripts/apply-my-project)
@@ -250,6 +294,20 @@ gate_ready() {
   # Project reports adoption failure as its own Stalled condition, NOT as a
   # Ready reason, so a Ready-reason match alone would never catch it and the gate
   # would block to timeout.  Both fail the gate immediately.
+  #
+  # STALE-READY GUARD (codex round-2 finding): a server-side apply that changes a
+  # CR's spec bumps metadata.generation, but the controller may not have
+  # reconciled it yet — so a Ready=True LEFT OVER FROM THE PRIOR GENERATION would
+  # make this gate report success before the current spec is reconciled (e.g. the
+  # project role groups whose clientRoles now confer the my-app role).  Every
+  # holos.run CR reports status.observedGeneration (the rich-status guardrail,
+  # AGENTS.md), so a Ready=True is only HONORED when observedGeneration has caught
+  # up to metadata.generation (observedGeneration >= generation).  The line is
+  # emitted FIRST as "gen=<generation>=<observedGeneration>" so the same single
+  # get sees both.  Resources that do NOT report observedGeneration (the
+  # cluster-scoped Kargo Project, whose plain-struct status has no such field)
+  # leave it empty, and an empty observedGeneration is TOLERATED (the generation
+  # check is skipped) so the Kargo Project gate keeps working as before.
   local namespace="$1" resource="$2" terminal="${3:-Conflict|ReferenceNotGranted}"
   local state lookup_failures=0
   local deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
@@ -258,22 +316,41 @@ gate_ready() {
   while true; do
     if state=$(kubectl --context "${KUBE_CONTEXT}" "${ns_args[@]}" \
       get "${resource}" --ignore-not-found --request-timeout=10s \
-      -o jsonpath='{range .status.conditions[*]}{.type}={.status}={.reason}{"\n"}{end}'); then
+      -o jsonpath='gen={.metadata.generation}={.status.observedGeneration}{"\n"}{range .status.conditions[*]}{.type}={.status}={.reason}{"\n"}{end}'); then
       lookup_failures=0
-      if [[ -z "${state}" ]]; then
+      # An ABSENT resource (kubectl --ignore-not-found) yields empty state, and a
+      # PRESENT-but-status-less resource yields only the leading "gen==" line.  In
+      # both cases there is no condition to act on yet — fall through to the
+      # deadline/sleep and keep polling.  Check this BEFORE any grep so a `grep`
+      # that finds nothing cannot trip `set -e` (codex round-3 finding); the
+      # condition greps below all use `|| true` for the same reason.
+      local conditions
+      conditions="$(grep -v '^gen=' <<<"${state}" || true)"
+      if [[ -z "${state}" ]] || [[ -z "${conditions}" ]]; then
         :
-      elif grep -q '^Ready=True=' <<<"${state}"; then
-        break
-      elif grep -q '^Stalled=True=' <<<"${state}"; then
-        echo "ERROR: ${namespace:-(cluster)}/${resource} is Stalled (often the namespace is missing the" >&2
-        echo "       kargo.akuity.io/project: \"true\" adoption label); inspect it with:" >&2
-        echo "       kubectl --context ${KUBE_CONTEXT} ${ns_args[*]} describe ${resource}" >&2
-        return 1
-      elif grep -qE "^Ready=False=(${terminal})\$" <<<"${state}"; then
-        local reason; reason="$(grep '^Ready=False=' <<<"${state}" | head -1)"
-        echo "ERROR: ${namespace:-(cluster)}/${resource} hit a terminal Ready=False (${reason##*=}); inspect it with:" >&2
-        echo "       kubectl --context ${KUBE_CONTEXT} ${ns_args[*]} describe ${resource}" >&2
-        return 1
+      else
+        # Parse the leading gen= line: generation and observedGeneration.
+        local gen_line generation observed
+        gen_line="$(grep '^gen=' <<<"${state}" | head -1 || true)"
+        generation="$(cut -d= -f2 <<<"${gen_line}")"
+        observed="$(cut -d= -f3 <<<"${gen_line}")"
+        if grep -q '^Ready=True=' <<<"${conditions}"; then
+          # Honor Ready=True only once the controller has observed the current
+          # generation (or the resource reports no observedGeneration at all).
+          if [[ -z "${observed}" ]] || [[ -z "${generation}" ]] || ((observed >= generation)); then
+            break
+          fi
+        elif grep -q '^Stalled=True=' <<<"${conditions}"; then
+          echo "ERROR: ${namespace:-(cluster)}/${resource} is Stalled (often the namespace is missing the" >&2
+          echo "       kargo.akuity.io/project: \"true\" adoption label); inspect it with:" >&2
+          echo "       kubectl --context ${KUBE_CONTEXT} ${ns_args[*]} describe ${resource}" >&2
+          return 1
+        elif grep -qE "^Ready=False=(${terminal})\$" <<<"${conditions}"; then
+          local reason; reason="$(grep '^Ready=False=' <<<"${conditions}" | head -1 || true)"
+          echo "ERROR: ${namespace:-(cluster)}/${resource} hit a terminal Ready=False (${reason##*=}); inspect it with:" >&2
+          echo "       kubectl --context ${KUBE_CONTEXT} ${ns_args[*]} describe ${resource}" >&2
+          return 1
+        fi
       fi
     else
       lookup_failures=$((lookup_failures + 1))
@@ -340,9 +417,9 @@ app_namespace() {
 # <app>-config artifact, so applying it here would make this script a second
 # manager fighting Argo CD's self-heal.  Until the first scripts/publish of
 # <app>-config, the app's Argo CD Application is Missing/Unknown — expected
-# scaffolding, exactly as the my-project Application is.  The control namespace
-# must already exist (applied by the project loop, or by scripts/apply-my-project
-# for a my-project app).
+# scaffolding, exactly as the project-level Application is.  The control namespace
+# must already exist (applied by the project loop, or — for the defensive orphan
+# sweep — by whatever path applies its project).
 apply_application_resources() {
   local app_dir="$1" app="$2"
   local cp_dir="${app_dir}control-plane"
@@ -362,8 +439,8 @@ gate_application() {
 
 # The set of app subdirectories already applied inside the project loop, so the
 # orphan sweep below applies only apps whose project is NOT a rendered project
-# (e.g. an app attached to my-project, whose project is applied by
-# scripts/apply-my-project).  Keyed by app name.
+# component (a defensive fallback — every registered project IS rendered by the
+# project component today, so the sweep is normally empty).  Keyed by app name.
 declare -A APPLIED_APPS=()
 
 # apps_for_project PROJECT — echo the app subdirectory paths whose control
@@ -451,13 +528,29 @@ for project_dir in "${PROJECT_BASE}"/*/; do
     gate_ready "${CTRL_NS}" "keycloakgroup.keycloak.holos.run/${NAME}-roles-${r}" || exit 1
     gate_ready "${CTRL_NS}" "keycloakgroup.keycloak.holos.run/${NAME}-custodians-${r}" || exit 1
   done
-  # One KeycloakUser per owner; gate each rendered user.
+  # One KeycloakUser per owner; gate each rendered user Ready.
   for user_file in "${project_dir}"keycloakuser-*.yaml; do
     [[ -e "${user_file}" ]] || continue
     user_name="$(basename "${user_file}" .yaml)"
     user_name="${user_name#keycloakuser-}"
     gate_ready "${CTRL_NS}" "keycloakuser.keycloak.holos.run/${user_name}" || exit 1
   done
+
+  # NOTE on the HOL-1357 owner-user RENAME (`bob` → `bob-<hash8>`): this script
+  # deliberately does NOT delete the stale `bob` KeycloakUser CR the bespoke
+  # component left on upgraded clusters.  Deleting it would be DESTRUCTIVE: that CR
+  # CREATED the realm user (status.created=true, the default adopt:false), and the
+  # KeycloakUser finalizer DELETES the realm user it created on CR deletion
+  # (internal/controller/keycloak/user_controller.go) — so pruning `bob` would
+  # deprovision bob@example.com (then the new adopt:true CR would recreate it,
+  # losing any out-of-band memberships/IdP links in the window).  The new adopt:true
+  # CR on the OTHER object does not protect the old object's finalizer path (codex
+  # round-3/4 finding).  Leaving the stale `bob` CR in place is SAFE and
+  # non-destructive: it keeps reconciling the user it created to the same desired
+  # state (same email, same projects/<name>/roles/owner membership, same IdP link)
+  # that the new bob-<hash8> adopt:true CR also asserts — the two coexist
+  # idempotently.  The stale CR is an inert, harmless orphan; removing it is a
+  # manual, deliberate operator step (release-then-delete), not an automated prune.
 
   # Now gate this project's apps (their KeycloakClient + Repository).
   while IFS= read -r app_dir; do
@@ -475,10 +568,11 @@ fi
 # ---------------------------------------------------------------------------
 # Orphan sweep: apply apps whose project is NOT a rendered project component
 # ---------------------------------------------------------------------------
-# An app may be attached to a project the generic component does not render here
-# (today, my-project — whose namespace and project-level CRs scripts/apply-my-project
-# applies).  Its app resources still rendered under components/application/<app>/;
-# apply and gate them here, against the already-existing project namespace.
+# Defensive fallback: should an app ever be attached to a project the project
+# component does not render here, its app resources still rendered under
+# components/application/<app>/ — apply and gate them against the already-existing
+# project namespace.  Every registered project IS rendered today, so this sweep is
+# normally empty (the app was already applied inside the project loop above).
 if have_dir "${APPLICATION_BASE}"; then
   for app_dir in "${APPLICATION_BASE}"/*/; do
     [[ -d "${app_dir}" ]] || continue

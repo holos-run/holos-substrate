@@ -54,20 +54,19 @@ let KEYCLOAK_URL = "https://keycloak-service.\(NAMESPACE).svc:8443"
 let CONTROLLER_CREDS_SECRET = "holos-controller-keycloak-creds"
 
 // PROJECT_NAMESPACES are the project namespaces the ReferenceGrant authorizes to
-// reference this instance.  It is the bespoke my-project namespace plus, derived
-// from the `projects` collection (HOL-1355), each generalized project's bare
-// <name> CONTROL namespace — where the Project component places its
-// keycloak.holos.run CRs (the bare-<name> control-namespace resolution forced by
-// the controller's validateDirectClientRole guard; see
-// holos/components/project/buildplan.cue).  The derivation skips my-project (the
-// bespoke component owns its namespace until HOL-1357, and the static literal
-// below already covers it), so with only my-project registered the grant's `from`
-// is byte-identical to before.  Each entry is unified with #RegisteredNamespace
-// so a typo or a removed registry entry is a render failure rather than a silent
-// unauthorized reference at reconcile time.
+// reference this instance.  Derived from the `projects` collection (HOL-1355):
+// each project's bare <name> CONTROL namespace — where the Project component
+// places its keycloak.holos.run CRs (the bare-<name> control-namespace resolution
+// forced by the controller's validateDirectClientRole guard; see
+// holos/components/project/buildplan.cue).  As of HOL-1357 the derivation covers
+// EVERY project including my-project (the bespoke component and its static literal
+// were removed; my-project is now a registered project), so the grant authorizes
+// the bare my-project namespace exactly as the static literal did before.  Each
+// entry is unified with #RegisteredNamespace so a typo or a removed registry entry
+// is a render failure rather than a silent unauthorized reference at reconcile
+// time.
 let PROJECT_NAMESPACES = [
-	"my-project" & #RegisteredNamespace,
-	for PROJECT, _ in projects if PROJECT != "my-project" {
+	for PROJECT, _ in projects {
 		PROJECT & #RegisteredNamespace
 	},
 ]

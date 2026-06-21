@@ -122,9 +122,9 @@ namespaces: [NAME=string]: corev1.#Namespace & {
 // holos/collections.cue's #CollectionsValidated.  Keep this in lock-step with the
 // static `namespaces` entries below: adding a platform namespace that a tenant
 // could plausibly name-collide with adds an entry here.  (The env-prefixed
-// derived names ci-/qa-/prod-<name> are covered by #ProjectNameNoEnvPrefix, and
-// the my-project static entry is covered by the bespoke component owning it; the
-// reserved set below is the OTHER static, non-project platform namespaces.)
+// derived names ci-/qa-/prod-<name> are covered by #ProjectNameNoEnvPrefix; the
+// reserved set below is the static, non-project platform namespaces.  my-project
+// is itself a registered project as of HOL-1357, so it is not reserved.)
 #ReservedNamespaceNames: [
 	"argocd",
 	"cert-manager",
@@ -315,32 +315,14 @@ namespaces: {
 		}
 	}
 
-	// my-project is the Kargo Project namespace for the my-project sample
-	// application's project-config delivery pipeline (HOL-1268): it holds the
-	// Kargo Project, ProjectConfig (quay webhook receiver), Warehouse, and the
-	// project-config promotion Stage added in the next phase (HOL-1270), whose
-	// promotion patches the my-project Argo CD Application's OCI targetRevision.
-	// Unlike the dedicated kargo-echo Project namespace, my-project IS the
-	// workload namespace as well: the Argo CD Application's destination targets
-	// it directly, so the rendered my-project-config artifact deploys here.  It
-	// is therefore ambient-enrolled (its workloads enroll in the mesh per the
-	// platform convention), in contrast to kargo-echo, which carries only Kargo
-	// control resources and stays unenrolled.
-	//
-	// The kargo.akuity.io/project label lets the Kargo Project controller ADOPT
-	// this pre-created namespace instead of refusing it (the controller requires
-	// the exact label value "true" to adopt an existing namespace), and the
-	// kargo.akuity.io/keep-namespace annotation tells Kargo not to delete this
-	// namespace if the Project is ever removed, since the namespaces component
-	// owns the base Namespace object.  This mirrors the kargo-echo adopt pattern
-	// above.
-	"my-project": {
-		_ambient: true
-		metadata: {
-			labels: "kargo.akuity.io/project":             "true"
-			annotations: "kargo.akuity.io/keep-namespace": "true"
-		}
-	}
+	// my-project's bare control namespace is no longer a STATIC entry: as of
+	// HOL-1357 the bespoke holos/components/my-project component was deleted and
+	// my-project is a registered project (holos/projects/my-project.cue), so its
+	// bare control namespace is DERIVED by the per-project comprehension below
+	// (alongside ci-/qa-/prod-my-project) — the same ambient-enrolled,
+	// Kargo-adoption-labelled shape this static entry carried.  The derivation no
+	// longer skips my-project (it formerly did, only so this static entry would not
+	// duplicate it while the bespoke component still referenced it).
 
 	// holos-controller hosts the Holos Controller (ADR-18): the
 	// controller-runtime manager that reconciles the quay.holos.run API group's
@@ -362,15 +344,15 @@ namespaces: {
 	// For every projects.<name> entry (the projects collection, bound into the
 	// root `holos` scope by holos/collections.cue) derive one namespace per
 	// environment in #Environments: ci-<name>, qa-<name>, prod-<name>.  This is
-	// the collection-driven generalization of the hand-written my-project entry
-	// above — ADR-21 calls it "the design's hardest constraint": a one-line
-	// project registration must produce correctly-labelled, ambient-enrolled
-	// registry entries WITHOUT a component emitting a Namespace inline (the
-	// no-inline-Namespace guardrail, holos/docs/component-guidelines.md).
+	// the collection-driven generalization that formerly mirrored the hand-written
+	// my-project entry — ADR-21 calls it "the design's hardest constraint": a
+	// one-line project registration must produce correctly-labelled,
+	// ambient-enrolled registry entries WITHOUT a component emitting a Namespace
+	// inline (the no-inline-Namespace guardrail, holos/docs/component-guidelines.md).
 	//
-	// Each derived entry reproduces the my-project entry's shape EXACTLY:
+	// Each derived entry carries:
 	//   - _ambient: true (the project namespaces carry workloads and enroll in
-	//     the mesh, like the static my-project entry).
+	//     the mesh).
 	//   - the kargo.akuity.io/project: "true" ADOPTION label, so the Kargo Project
 	//     controller adopts the pre-created namespace instead of refusing it.
 	//   - the kargo.akuity.io/keep-namespace: "true" annotation, so Kargo does not
@@ -378,10 +360,10 @@ namespaces: {
 	//     owns the base Namespace object).
 	//
 	// The name is built through #ProjectNamespace so the <env>-<name> convention
-	// is single-sourced and the derived name is DNS-label validated.  The static
-	// my-project entry above is deliberately RETAINED in this phase (the bespoke
-	// my-project component still references it until HOL-1357); the derived
-	// prod-my-project etc. are additional, non-conflicting entries.
+	// is single-sourced and the derived name is DNS-label validated.  As of
+	// HOL-1357 the static my-project entry was removed and my-project is a
+	// registered project, so its bare control namespace and ci-/qa-/prod-my-project
+	// env namespaces are all DERIVED here, exactly like any other project.
 	// Derived: per-project CONTROL namespace — the bare project name <name>.
 	//
 	// The Project component (HOL-1355) places a project's control-plane CRs (the
@@ -396,12 +378,13 @@ namespaces: {
 	// to be ratified in ADR-21 by HOL-1358); the bare-<name> control namespace is
 	// also exactly what the bespoke my-project component uses today.
 	//
-	// Gated `if PROJECT != "my-project"`: my-project already has the hand-written
-	// static bare entry above (retained until HOL-1357), and the Project component
-	// likewise skips my-project, so deriving a second bare my-project entry here
-	// would duplicate it.  The derived bare entry reproduces the env entries' shape
-	// (ambient + the Kargo adoption label/keep annotation), since the control
-	// namespace also hosts the cluster-scoped Kargo Project that adopts it.
+	// As of HOL-1357 this comprehension derives a bare control namespace for EVERY
+	// registered project, including my-project: the bespoke component and the
+	// hand-written static my-project entry were both removed, so the derivation is
+	// now the sole producer of the bare my-project namespace.  The derived bare
+	// entry reproduces the env entries' shape (ambient + the Kargo adoption
+	// label/keep annotation), since the control namespace also hosts the
+	// cluster-scoped Kargo Project that adopts it.
 	//
 	// COLLISION GUARD: a project literally named "<env>-<other>" (e.g. "prod-foo")
 	// would derive a BARE control namespace "prod-foo" that collides with the prod
@@ -414,7 +397,7 @@ namespaces: {
 	// error, so the rejection cannot live on this comprehension's key.  Here NS is
 	// only DNS-label validated; the env-prefix rejection is the collections-level
 	// assertion.
-	for PROJECT, _ in projects if PROJECT != "my-project" {
+	for PROJECT, _ in projects {
 		let NS = PROJECT & #DNSLabel
 		(NS): {
 			_ambient: true

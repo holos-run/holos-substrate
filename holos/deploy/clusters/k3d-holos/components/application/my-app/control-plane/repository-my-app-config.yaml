@@ -1,0 +1,13 @@
+apiVersion: quay.holos.run/v1alpha1
+kind: Repository
+metadata:
+  labels:
+    app.kubernetes.io/name: my-app
+  name: my-app-config
+  namespace: my-project
+spec:
+  credentialsSecretRef:
+    name: holos-controller-quay-creds
+  name: my-app-config
+  organizationRef: my-project
+  visibility: private

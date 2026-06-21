@@ -3,9 +3,10 @@ kind: KeycloakUser
 metadata:
   labels:
     app.kubernetes.io/name: my-project
-  name: bob
+  name: bob-5ff860bf
   namespace: my-project
 spec:
+  adopt: true
   email: bob@example.com
   groups:
   - projects/my-project/roles/owner

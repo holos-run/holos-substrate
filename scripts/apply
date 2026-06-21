@@ -157,29 +157,33 @@ ROLLOUT_TIMEOUT_SECONDS="$(duration_seconds "${ROLLOUT_TIMEOUT}")" || exit 1
 # too; Argo CD itself was applied earlier (argocd).  Nothing during bootstrap
 # depends on these.
 #
-# my-project is DELIBERATELY NOT in this array.  The Layer 3 sample app's
-# delivery scaffold — its Argo CD AppProject + Application, its Kargo control
-# plane (Project, ProjectConfig with a quay webhook receiver, Warehouse, the
-# project-config promotion Stage, and the webhook-token bootstrap Job), the
-# quay.holos.run Organization, and the project's keycloak.holos.run CRs the Holos
-# Controller reconciles — is applied by the dedicated scripts/apply-my-project
-# (HOL-1322/HOL-1348), not by this master apply.  That helper injects the
-# per-cluster local-ca PEM into the Organization's caBundle at render time (the
-# inject is per-cluster trust material that must never be committed), and it runs
-# after the manual Quay superuser-credential setup the controller depends on —
-# neither of which the unparameterized master apply can satisfy.  See
-# scripts/apply-my-project for the lifted pre-/wait- gating logic.
+# The project and application components are DELIBERATELY NOT in this array.  The
+# collection-driven Project (HOL-1355) and Application (HOL-1356) components emit
+# each registered project's and app's resources — its Argo CD AppProject +
+# Application, its Kargo control plane (Project, ProjectConfig with a quay webhook
+# receiver, Warehouse, the promotion Stages, and the webhook-token bootstrap Job),
+# the quay.holos.run Organization/Repository, and the keycloak.holos.run CRs the
+# Holos Controller reconciles.  As of HOL-1357 the reference instance my-project
+# (and its app my-app) is produced by these components — the bespoke
+# components/my-project and its scripts/apply-my-project were deleted.  They are
+# applied by the dedicated scripts/apply-projects (the generic successor to
+# scripts/apply-my-project), not by this master apply: that helper injects the
+# per-cluster local-ca PEM into each Organization's/Repository's caBundle at render
+# time (per-cluster trust material that must never be committed), and it runs after
+# the manual Quay superuser-credential setup the controller depends on — neither of
+# which the unparameterized master apply can satisfy.  See scripts/apply-projects
+# for the per-project pre-/wait- gating logic.
 #
 # keycloak-instance is DELIBERATELY NOT in this array either (HOL-1348).  The
 # central KeycloakInstance carries the same per-cluster local-ca caBundle (so the
 # controller trusts the in-cluster Keycloak's serving cert), injected at render
 # time and never committed.  Applying its committed, caBundle-less manifest from
 # this master apply would, under server-side apply with the same field manager,
-# strip the caBundle scripts/apply-my-project sets — so the KeycloakInstance and
-# its security.holos.run ReferenceGrant are applied (with the injected caBundle)
-# by scripts/apply-my-project, alongside the my-project Keycloak CRs that
-# reference them.  The realm-config component (in this array) still provisions the
-# controller's Keycloak admin credential Secret on every master apply.
+# strip the caBundle scripts/apply-projects sets — so the KeycloakInstance and its
+# security.holos.run ReferenceGrant are applied (with the injected caBundle) by
+# scripts/apply-projects, alongside the project Keycloak CRs that reference them.
+# The realm-config component (in this array) still provisions the controller's
+# Keycloak admin credential Secret on every master apply.
 COMPONENTS=(
   namespaces
   gateway-api
@@ -407,7 +411,7 @@ pre_keycloak_config() {
   # serviceaccount-quay-user-password-bootstrap.yaml — on a fresh cluster the
   # Job's pod would fail admission ("error looking up service account") until the
   # SA lands.  Pre-applying the identity here closes that race (the same
-  # pre-apply pattern scripts/apply-my-project uses for the my-project bootstrap
+  # pre-apply pattern scripts/apply-projects uses for each project's bootstrap
   # ServiceAccounts); the main apply then re-applies it idempotently.
   local pw_dir="${COMPONENTS_DIR}/keycloak-config"
   kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \

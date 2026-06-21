@@ -1,0 +1,18 @@
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Warehouse
+metadata:
+  labels:
+    app.kubernetes.io/name: my-app
+  name: my-app
+  namespace: my-project
+spec:
+  freightCreationPolicy: Automatic
+  interval: 1m
+  subscriptions:
+  - image:
+      allowTags: ^render-[0-9a-f]{12}-[0-9a-f]{12}$
+      discoveryLimit: 20
+      imageSelectionStrategy: Lexical
+      insecureSkipTLSVerify: true
+      repoURL: quay.holos.localhost/my-project/my-app-config
+      strictSemvers: true

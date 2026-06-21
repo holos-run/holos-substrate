@@ -1,0 +1,27 @@
+apiVersion: kargo.akuity.io/v1alpha1
+kind: Stage
+metadata:
+  labels:
+    app.kubernetes.io/name: my-app
+  name: my-app-config
+  namespace: my-project
+spec:
+  promotionTemplate:
+    spec:
+      steps:
+      - config:
+          apps:
+          - name: my-project-my-app
+            namespace: argocd
+            sources:
+            - desiredRevision: ${{ imageFrom("quay.holos.localhost/my-project/my-app-config").Digest
+                }}
+              repoURL: oci://quay.holos.localhost/my-project/my-app-config
+              updateTargetRevision: true
+        uses: argocd-update
+  requestedFreight:
+  - origin:
+      kind: Warehouse
+      name: my-app
+    sources:
+      direct: true
