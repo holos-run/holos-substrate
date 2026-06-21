@@ -1,0 +1,9 @@
+apiVersion: v1
+data:
+    project.my-project: "true"
+kind: ConfigMap
+metadata:
+    labels:
+        app.holos.run/collection: validated
+    name: holos-collections-validated
+    namespace: holos-controller

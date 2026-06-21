@@ -9,17 +9,6 @@ package holos
 userDefinedBuildPlan: {
 	metadata: name: "namespaces"
 
-	// _ validates the project/app collections on the RENDER path.  holos render
-	// platform evaluates this BuildPlan but not arbitrary hidden ancestor fields,
-	// so the collection contract (ownerless projects, dangling app→project
-	// references, malformed app names/images) is tied here to an always-rendered
-	// component by referencing #CollectionsValidated (holos/collections.cue).
-	// The reference is what forces the validation; the field carries no manifest
-	// data (it unifies the empty struct), so it does not affect the output.  This
-	// component is the natural anchor: it already derives the project namespaces
-	// from the same `projects` collection.
-	_collectionsValidated: #CollectionsValidated
-
 	spec: artifacts: manifests: {
 		for NAME, NS in namespaces {
 			// namespace-<name>.yaml matches the kubectl-slice naming
@@ -37,6 +26,51 @@ userDefinedBuildPlan: {
 					}
 				}]
 			}
+		}
+
+		// Collection-validation manifest.  This component is the anchor that puts
+		// the project/app collection contract on the holos render path: holos
+		// EXPORTS this ConfigMap's data, and the data is built from
+		// #CollectionsValidated (holos/collections.cue) — the per-project
+		// owners-ok bools and the per-app interpolated tokens.  Exporting forces
+		// every project/app entry to be valid and CONCRETE: an ownerless project
+		// (false), a missing required app field (interpolation of an incomplete
+		// value), a dangling app→project reference (conflict), or a malformed
+		// name/image/port (out of bound) each fails the render here.  The
+		// ConfigMap lands in the holos-controller namespace (an always-registered
+		// platform namespace) and is deterministic, so the deploy tree stays
+		// diff-clean; it documents, in-cluster, the validated collection state.
+		"clusters/\(clusterName)/components/\(metadata.name)/collections-validated.yaml": {
+			artifact: _
+			generators: [{
+				kind:   "Resources"
+				output: artifact
+				resources: #Resources & {
+					ConfigMap: "holos-collections-validated": {
+						metadata: {
+							name:      "holos-collections-validated"
+							namespace: "holos-controller"
+							labels: "app.holos.run/collection": "validated"
+						}
+						// project.<name> = "owners-ok" only when the project has
+						// >0 owners (#CollectionsValidated.ownersOk is true);
+						// app.<name> = the interpolated required-field token.  Both
+						// reference #CollectionsValidated, so exporting this data
+						// concretizes and validates every collection entry.
+						data: {
+							for PNAME, OK in #CollectionsValidated.ownersOk {
+								// OK is `true` for a valid project and _|_ (render
+								// error) for an ownerless one, so exporting it here
+								// fails the render on an ownerless project.
+								"project.\(PNAME)": "\(OK)"
+							}
+							for ANAME, TOK in #CollectionsValidated.tokens {
+								"app.\(ANAME)": TOK
+							}
+						}
+					}
+				}
+			}]
 		}
 	}
 }
