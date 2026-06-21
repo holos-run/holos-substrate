@@ -697,7 +697,7 @@ Revision 5 — see *Two-realm topology* below — the `holos` realm's
 `identityProviders[]` are owned by the **holos realm-config keycloak-config-cli
 Job**, not the `KeycloakRealmImport` CR, which keeps owning only `enabled`; the
 first-broker-login *flow* remains realm config, and either way it is **not** a
-`keycloak.holos.run` CR's concern.):
+`keycloak.holos.run` CR's concern.)
 
 ```yaml
 apiVersion: keycloak.holos.run/v1alpha1
@@ -742,7 +742,7 @@ realm-level first-broker-login flow + identity-provider configuration**, which
 stays platform-owned, not per-user CR state — and is **never** a
 `keycloak.holos.run` CR's concern. It lives in the **platform realm/IdP
 definition** (the `keycloak-config-cli` Job + the `KeycloakRealmImport` CR), with
-the field ownership split documented in *Two-realm topology* above: **as of
+the field ownership split documented in *Two-realm topology* below: **as of
 Revision 5** the `holos` realm's **`identityProviders[]`** (the OIDC broker for
 the `esso` realm, including its `trustEmail`/`firstBrokerLoginFlowAlias`) are
 owned by the **holos realm-config keycloak-config-cli Job** (so the broker's
@@ -921,7 +921,7 @@ mechanisms enforce disjointness:
     ID — reserving the display string `quay` alone would miss the real client and
     leave a bypass — the **esso broker client `https://auth.holos.internal/realms/holos`**
     (the confidential client the `esso` realm hosts for the `holos` realm's OIDC
-    broker; see *Two-realm topology* below) — and the **Keycloak built-in clients**
+    broker; see *Two-realm topology* above) — and the **Keycloak built-in clients**
     `realm-management` (hosts `realm-admin`/`manage-*`, the prime escalation
     target), `account`, `account-console`, `broker`, `security-admin-console`
     (HOL-1350): reserving these stops a tenant `KeycloakClient`/`KeycloakGroup`
@@ -938,14 +938,14 @@ mechanisms enforce disjointness:
     `quay-admin`.
   - **realms**: `holos` (the platform realm these CRs reconcile into) and
     **`esso`** (the enterprise-SSO upstream realm; see *Two-realm topology*
-    below) — a tenant CR may not target the `esso` realm via `instanceRef`, and
+    above) — a tenant CR may not target the `esso` realm via `instanceRef`, and
     the `esso` realm is provisioned only by keycloak-config-cli/bootstrap Jobs,
     never by the controller (HOL-1366/HOL-1367);
   - **identity-provider broker aliases**: **`esso`** (the `holos` realm's OIDC
     broker alias for the upstream `esso` realm; the alias changed from the
     earlier placeholder `holos` to `esso` in this revision). The identity
     providers are owned by the holos realm-config Job / `KeycloakRealmImport`
-    CR, not by these CRDs (see *Two-realm topology* below).
+    CR, not by these CRDs (see *Two-realm topology* above).
   This list tracks [realm-config buildplan.cue](../../holos/components/keycloak/realm-config/buildplan.cue);
   keeping the reserved set in sync with the platform realm config is itself a
   guard rail the implementation issue must wire (e.g. a generated constant), not a
