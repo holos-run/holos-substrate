@@ -33,6 +33,7 @@ spec:
           # The image is replaced by the config/manager kustomization images
           # transformer (controller -> quay.holos.localhost/holos/holos-controller).
           image: controller:dev
+          imagePullPolicy: Always
           args:
             - --leader-elect
             - --health-probe-bind-address=:8081

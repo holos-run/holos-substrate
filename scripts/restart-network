@@ -1,0 +1,46 @@
+#! /bin/bash
+#
+# Restarts the istio mesh network to resolve quay not being able to connect to
+# redis and posgresql.  Connectivity is periodically lost in k3d on my mac,
+# presumably when the system wakes from sleep.  Restarting the istio cni and
+# ztunnel, then workloads, fixes the issue.
+
+set -euo pipefail
+
+ROLLOUT_TIMEOUT=300s
+
+if [[ -z "${KUBE_CONTEXT:-}" ]]; then
+  KUBE_CONTEXT="$(kubectl config current-context)"
+  if [[ "${KUBE_CONTEXT}" != "k3d-holos" ]]; then
+    echo "ERROR: current kubectl context is '${KUBE_CONTEXT}', expected 'k3d-holos'." >&2
+    echo "       The rendered manifests target the k3d-holos cluster.  Set" >&2
+    echo "       KUBE_CONTEXT explicitly to apply to a different context." >&2
+    exit 1
+  fi
+fi
+echo "Will apply manifests to kubectl context: ${KUBE_CONTEXT}"
+
+# istio-ztunnel: ambient capture (the istio-cni node agent applied just
+# before, plus ztunnel) must be active before enrolled workloads start.
+wait_istio_ztunnel() {
+  kubectl --context "${KUBE_CONTEXT}" --namespace istio-system \
+    rollout status daemonset/istio-cni-node --timeout="${ROLLOUT_TIMEOUT}"
+  kubectl --context "${KUBE_CONTEXT}" --namespace istio-system \
+    rollout status daemonset/ztunnel --timeout="${ROLLOUT_TIMEOUT}"
+}
+
+kubectl -n istio-system rollout restart daemonset istio-cni-node ztunnel
+wait_istio_ztunnel
+
+kubectl -n istio-gateways rollout restart deployment default-istio
+kubectl -n quay rollout restart deployment quay quay-redis
+
+kubectl --context "${KUBE_CONTEXT}" --namespace istio-gateways \
+  rollout status deployment/default-istio --timeout="${ROLLOUT_TIMEOUT}"
+
+kubectl --context "${KUBE_CONTEXT}" --namespace quay \
+  rollout status deployment/quay-redis --timeout="${ROLLOUT_TIMEOUT}"
+
+kubectl --context "${KUBE_CONTEXT}" --namespace quay \
+  rollout status deployment/quay --timeout="${ROLLOUT_TIMEOUT}"
+
