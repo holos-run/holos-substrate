@@ -68,6 +68,14 @@ import (
 // +kubebuilder:rbac:groups=authentication.k8s.io,resources=tokenreviews,verbs=create
 // +kubebuilder:rbac:groups=authorization.k8s.io,resources=subjectaccessreviews,verbs=create
 
+// version is the build version stamped into the binary at link time with
+// -ldflags "-X main.version=<v>". The Makefile sets it from `git describe`,
+// following the leading-v vMAJOR.MINOR.PATCH tag convention (e.g. v0.2.0); it
+// defaults to "dev" for an un-stamped `go build`. It is logged once at manager
+// startup so an operator can correlate a running controller with the source
+// revision it was built from.
+var version = "dev"
+
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
@@ -220,7 +228,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLog.Info("starting manager")
+	setupLog.Info("starting manager", "version", version)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)

@@ -8,6 +8,11 @@
 FROM --platform=$BUILDPLATFORM golang:1.26 AS build
 ARG TARGETOS
 ARG TARGETARCH
+# VERSION is the build version stamped into the binary (mirrors
+# `make controller-build`); the controller logs it once at manager startup. The
+# build context excludes .git, so the Makefile controller docker targets pass it
+# through as --build-arg VERSION=$(VERSION); it defaults to "dev" otherwise.
+ARG VERSION=dev
 
 WORKDIR /workspace
 # Copy the Go module manifests and download dependencies first so this layer is
@@ -30,7 +35,9 @@ COPY internal/ internal/
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
-    go build -trimpath -o /holos-controller ./cmd/holos-controller
+    go build -trimpath \
+    -ldflags "-X main.version=${VERSION}" \
+    -o /holos-controller ./cmd/holos-controller
 
 # Use distroless as the minimal base image to package the binary.
 # https://github.com/GoogleContainerTools/distroless
