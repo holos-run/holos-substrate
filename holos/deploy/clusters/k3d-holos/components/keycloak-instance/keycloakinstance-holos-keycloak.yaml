@@ -9,4 +9,4 @@ spec:
   credentialsSecretRef:
     name: holos-controller-keycloak-creds
   realm: holos
-  url: https://keycloak-service.keycloak.svc:8443
+  url: https://auth.holos.internal

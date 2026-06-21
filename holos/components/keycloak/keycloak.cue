@@ -49,7 +49,7 @@ KeycloakVersion: "26.6.3"
 // sets it via its Kustomize transformer's kustomization.namespace; the
 // upstream ClusterRoleBinding subject already references the keycloak
 // namespace, so this matches upstream's expectation.  The namespace itself
-// is registered centrally (holos/namespaces.cue) with _ambient: false —
+// is registered centrally (holos/namespaces.cue) with _ambient: true —
 // see the registry entry and holos/docs/mesh-enrollment.md for the
 // rationale — never emitted by components.
 //

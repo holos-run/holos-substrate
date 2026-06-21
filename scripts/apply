@@ -344,6 +344,22 @@ wait_keycloak_operator() {
     rollout status deployment/keycloak-operator --timeout="${ROLLOUT_TIMEOUT}"
 }
 
+# keycloak: pre-apply cleanup of a retired resource (HOL-1362).  When Keycloak
+# moved to HTTP-only behind the shared Gateway, the keycloak component stopped
+# rendering the DestinationRule/keycloak-service in istio-gateways that made the
+# Gateway originate SIMPLE TLS to keycloak-service:8443.  `kubectl apply -f <dir>`
+# is purely additive — it never prunes a manifest the component no longer emits —
+# so on a cluster upgraded in place (rather than rebuilt) the stale rule would
+# linger and keep the Gateway speaking TLS to the now-plaintext :8080 backend,
+# breaking https://auth.holos.internal.  Delete it idempotently before the apply,
+# mirroring the pre_keycloak_config Job-cleanup pattern; --ignore-not-found makes
+# this a no-op on a fresh cluster (and on every subsequent apply once it is gone).
+pre_keycloak() {
+  kubectl --context "${KUBE_CONTEXT}" --namespace istio-gateways \
+    delete destinationrule/keycloak-service \
+    --ignore-not-found --request-timeout=60s
+}
+
 # keycloak: the Layer 1 smoke check.  First the Keycloak CR Ready condition
 # — the server started against the CNPG database with its TLS certificate —
 # then the KeycloakRealmImport Done condition, so the script cannot exit

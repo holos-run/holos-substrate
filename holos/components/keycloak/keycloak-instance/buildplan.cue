@@ -38,15 +38,15 @@ let NAME = "holos-keycloak"
 // component reconciles).  A KeycloakInstance binds exactly one realm.
 let REALM = "holos"
 
-// The in-cluster Keycloak admin API URL.  The operator names the Keycloak
-// Service "<cr-name>-service" = "keycloak-service", serving HTTPS on 8443 (the
-// SAN the keycloak-tls cert covers — ../instance/buildplan.cue).  The controller
-// reaches it by the in-namespace short name when it shares the keycloak
-// namespace and by the fully-qualified name otherwise; the controller runs in
-// holos-controller, so use the cluster-FQDN form that resolves from any
-// namespace.  An absolute https URL is required (the KeycloakInstance CRD rejects
-// http at admission).
-let KEYCLOAK_URL = "https://keycloak-service.\(NAMESPACE).svc:8443"
+// The Keycloak admin API URL.  Keycloak now runs HTTP-only behind the shared
+// Gateway (HOL-1362), so the controller reaches it through the unified issuer
+// URL https://auth.holos.internal — the Gateway terminates TLS once with the
+// wildcard cert and CoreDNS resolves the hostname in-cluster (HOL-1364), so the
+// same URL serves browsers, in-cluster consumers, and the controller alike.  An
+// absolute https URL is required (the KeycloakInstance CRD rejects http at
+// admission); the controller trusts the Gateway's local-CA-signed cert via
+// spec.caBundle below (the per-cluster local-ca PEM injected at apply time).
+let KEYCLOAK_URL = "https://auth.holos.internal"
 
 // CONTROLLER_CREDS_SECRET is the credential Secret the controller reads (the
 // realm-config CONTROLLER_CREDS_BOOTSTRAP Job writes it; named here explicitly to
