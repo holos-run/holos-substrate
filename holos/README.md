@@ -831,8 +831,13 @@ collection-driven [`components/project/`](components/project/buildplan.cue) and
 generalization of the formerly hand-authored scaffold (the bespoke
 `components/my-project` was deleted). It lays down everything one project needs to
 receive Kargo-driven OCI delivery ([ADR-16](../docs/adr/ADR-16.md)) and is the
-template for a future self-service `ProjectRequest` (below). Its rendered
-resources are:
+template for a future self-service `ProjectRequest` (below). How to register
+your own project and app — the `owners` map, the app `project`/`image`/`port`
+fields, the env-prefixed namespace model and the bare-`<name>` control
+namespace, the primitive-role → Quay-team and → app-client binding, and the
+`scripts/apply-projects` workflow — is the authoring guide
+[docs/project-and-application-templates.md](docs/project-and-application-templates.md)
+([ADR-21](../docs/adr/ADR-21.md), `Implemented`). Its rendered resources are:
 
 - a **Namespace** (`my-project`) — registered centrally in
   [`namespaces.cue`](namespaces.cue), **not** emitted by the component (per
@@ -847,8 +852,9 @@ resources are:
   destinations to the `my-project` namespace; the Application has an OCI source
   (`oci://quay.holos.localhost/my-project/my-project-config`) and the
   `kargo.akuity.io/authorized-stage: my-project:project-config` annotation
-  authorizing the Stage to patch its `targetRevision`. The Application is
-  hand-authored (not the deferred `argoAppDisabled` projection — see
+  authorizing the Stage to patch its `targetRevision`. This Application is an
+  **OCI**-source Application rendered by the Project component (not the deferred
+  `argoAppDisabled` git-source projection — see
   [docs/placeholders.md](docs/placeholders.md#argocd-gitops-delivery)) and its
   `targetRevision` is deliberately omitted so Kargo owns that field.
 - the **Kargo control plane**: a `Project` (the namespace boundary), a
@@ -867,28 +873,38 @@ resources are:
   below), so the committed `holos/deploy/` manifest carries **no** CA material.
 - the **Kargo webhook receiver token bootstrap**: a `Job`
   (`my-project-quay-webhook-bootstrap`, in the `my-project` namespace) that
-  generates the Kargo receiver Secret's shared token. The remaining **Quay-side**
-  data plane this scaffold needs — the `my-project/my-project-config`
-  **repository** (the `quay.holos.run` Repository CR is reconciled by the
-  controller but is **not** emitted by this component yet — only the Organization
-  is), the Argo CD pull-robot/repository Secret in `argocd`, and the `repo_push`
-  webhook **registration** that POSTs to the Warehouse's Kargo receiver URL — is
-  **not** emitted by the component (the robots/pull Secrets are out of scope for
-  the `v1alpha1` CRDs, ADR-19). The earlier `my-project-quay-bootstrap` Job that
+  generates the Kargo receiver Secret's shared token.
+- a **`quay.holos.run/v1alpha1` `Repository`** per app — emitted by the
+  **Application component** (`my-app-config`, within the `my-project` org, with a
+  gated `caBundle`) and reconciled by the Holos Controller. (The bespoke
+  component, by contrast, emitted only the Organization; the Repository CR now
+  ships per app as of HOL-1356.) What remains **manual** for the Quay-side data
+  plane: the app `Repository`'s `repo_push` webhook **registration** (omitted in
+  the current phase — the Warehouse polls the config repo as the fallback — until
+  the Kargo receiver URL is published into a referenceable Secret), the push
+  robot, and the Argo CD pull-robot/repository Secret in `argocd` and the Kargo
+  image-credential Secret (the robots/pull Secrets are out of scope for the
+  `v1alpha1` CRDs, ADR-19). The earlier `my-project-quay-bootstrap` Job that
   provisioned all of it (authenticating with the removed `quay-initial-admin`
   admin token) no longer exists; only the Kargo-side receiver token Job above
   remains (it needs no Quay admin token). A push will not trigger Freight
-  discovery until the repo/robot/webhook are provisioned by hand.
+  discovery until the robot/webhook are provisioned by hand.
 
 **The separate apply step — `scripts/apply-projects`.** As of HOL-1322,
 `my-project` is **deliberately removed from the master `scripts/apply`** and is
 applied by the dedicated [`scripts/apply-projects`](../scripts/apply-projects)
 instead. That script reads the local-ca PEM (the `cert-manager/local-ca` Secret,
 or `$(mkcert -CAROOT)/rootCA.pem`), renders the platform with it injected via the
-`ca_bundle_pem` CUE tag (the `scripts/publish` `--inject` pattern), and applies
-the `my-project` Namespace + the rendered component (Organization, Argo CD
-AppProject/Application, the Kargo control plane, and the webhook-token bootstrap)
-with `kubectl apply --server-side`. It runs **after** `scripts/local-ca` and
+`ca_bundle_pem` CUE tag (the `scripts/publish` `--inject` pattern), and applies —
+with `kubectl apply --server-side` — the `keycloak-instance` component (the central
+`KeycloakInstance` + its `security.holos.run` `ReferenceGrant`), the rendered
+**Project** component (the Quay `Organization`, the per-project `keycloak.holos.run`
+CRs — role/custodian `KeycloakGroup`s, owner `KeycloakUser`, project
+`KeycloakClient` — the Argo CD `AppProject`/`Application`, the Kargo control plane,
+the owner `RoleBinding`, and the webhook-token bootstrap), and each rendered
+**Application** component's control-plane bundle (the app `KeycloakClient`, the Quay
+`Repository`, the Kargo `Warehouse`/`Stage`, and the app's Argo CD `Application`);
+the app's workload bundle is delivered by Argo CD from the published OCI artifact. It runs **after** `scripts/local-ca` and
 **after** the manual Quay superuser-credential setup
 (`scripts/apply-svc-quay-resource-controller-creds` plus the `platform-automation`
 org / OAuth token per the runbooks) — the Argo CD and Kargo CRDs and controllers
@@ -898,8 +914,10 @@ script deletes the prior `my-project-quay-webhook-bootstrap` Job so each run
 re-generates the token idempotently, and gates that Job's completion, the Kargo
 Project's adoption of the `my-project` namespace, and the Organization reaching
 Ready. The Application stays `Unknown`/`Missing` until the first
-`my-project-config` artifact is published **and** the Quay repo is provisioned by
-hand — expected scaffolding.
+`my-project-config` artifact is published **and** the project's config Quay repo
+(`my-project-config`, **not** modeled by a `Repository` CR — only the app's
+`my-app-config` repo is, emitted by the Application component) plus the push robot
+and pull-credential Secrets are provisioned by hand — expected scaffolding.
 
 **Toward self-service `ProjectRequest`.** Everything above is what a future
 self-service `ProjectRequest` API would generate per tenant: a namespace, a
@@ -909,7 +927,10 @@ hand-authored reference instance that proves the shape end-to-end before that
 generator exists.
 
 **Verifying the scaffold, and the end-to-end contract it will satisfy.** The
-scaffold (Kargo pipeline, Application, Quay repo + webhook) is verifiable today;
+scaffold (Kargo pipeline, Application, the app's emitted Quay `Repository` CR) is
+verifiable today; the app `Repository`'s `repo_push` **webhook registration** is
+**omitted** in the current phase (the `Warehouse` polls the config repo as the
+fallback) until the Kargo receiver URL is published into a referenceable Secret;
 the publish step that drives the full push → webhook → Warehouse Freight →
 Stage promotion → Application sync loop is **future work**, because a clean
 sync needs a **project-scoped** `my-project-config` artifact and `scripts/publish`

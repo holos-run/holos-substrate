@@ -43,6 +43,44 @@ rather than reconciled by ArgoCD.
 > independent: enabling the projection does not change the hand-authored
 > sample Applications, and the sample Applications do not depend on it.
 
+## Project/Application templates: deferred follow-ups
+
+The collection-driven Project and Application components
+([ADR-21](../../docs/adr/ADR-21.md), `Implemented` as of HOL-1358 — see the
+[authoring guide](project-and-application-templates.md)) ship the one-line
+self-service registration and a single wired delivery path. ADR-21's
+"scaffold all envs, wire one delivery path" scope leaves three follow-ups
+explicitly deferred:
+
+- **Full `ci → qa → prod` Kargo promotion chain + progressive delivery.** Every
+  project derives its `ci-/qa-/prod-<name>` namespace set (topology, RBAC
+  boundaries, and Kargo adoption labels), but only the bare-`<name>` delivery path
+  is wired today. The cross-environment promotion stages across the three
+  namespaces, and the **blue-green progressive-delivery** primitives the
+  Application resource set still lacks — an Argo Rollouts `Rollout` with a second
+  "color" workload/`Service` and a traffic-switching step (or an equivalent staged
+  Kargo `Stage` pipeline) instead of the current single `argocd-update` hard
+  cutover (ADR-21, *The Application component*, item 4) — are follow-on work the
+  scaffolded namespaces make possible, not yet built.
+- **External-secrets store/controller prerequisite.** ADR-21 envisioned an app
+  `ExternalSecret` (ADR-21, Application resource 8) for runtime secret material in
+  the project namespace, but the Application component **does not emit one today**:
+  the platform ships **no** external-secrets installation, no
+  `SecretStore`/`ClusterSecretStore`, and no per-namespace enablement, so there is
+  nothing for an `ExternalSecret` to resolve against. Standing up the
+  external-secrets controller and store, and then adding the `ExternalSecret` to
+  the app resource set, is the deferred prerequisite. The namespace registry models
+  only namespace metadata (`_ambient`/labels/annotations) today.
+- **Self-service `ProjectRequest` API.** A registration is currently a reviewed
+  pull request adding a `holos/projects/*.cue` (and optionally `holos/apps/*.cue`)
+  entry. The first-class `Project` CRD and a `ProjectRequest` API that generates
+  the same rendered resource set on request remain **open** (ADR-1/ADR-21 left this
+  deferred deliberately — ADR-21, *Left open*). `my-project` is the reference
+  instance and the template for that future generator.
+
+When any of these lands, replace its bullet with a link to the real
+documentation.
+
 ## Observability dashboards
 
 The platform has no observability stack yet — no metrics collection, no log
