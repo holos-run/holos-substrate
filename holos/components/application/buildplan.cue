@@ -144,12 +144,18 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 	// committed — the Runtime Secret Handling guardrail).
 	let APP_CLIENT_SECRET = "\(NAME)-oidc"
 
-	// CONFIG_REPO is the rendered-manifests OCI repository the publish workflow
-	// pushes the app's config artifact to, scoped under the project's Quay org
-	// path.  The oci:// form (CONFIG_REPO_OCI) must stay byte-identical between
-	// the Application source and the Stage's argocd-update source (Kargo matches
-	// by exact string).
-	let CONFIG_REPO = "quay.holos.localhost/\(PROJECT)/\(NAME)-config"
+	// CONFIG_REPO_NAME is the app's rendered-manifests artifact repository NAME
+	// within the project's Quay org: <app>-config.  It is the repo the publish
+	// workflow pushes the config artifact to, the Warehouse watches, the Argo CD
+	// Application pulls from, AND the Quay Repository CR below manages (so the
+	// managed repo, its repo_push webhook, the Warehouse subscription, and the
+	// Application source are all the SAME repo — they must not drift).
+	let CONFIG_REPO_NAME = "\(NAME)-config"
+
+	// CONFIG_REPO is the full registry/org/repo path; CONFIG_REPO_OCI is its oci://
+	// form, which must stay byte-identical between the Application source and the
+	// Stage's argocd-update source (Kargo matches by exact string).
+	let CONFIG_REPO = "quay.holos.localhost/\(PROJECT)/\(CONFIG_REPO_NAME)"
 	let CONFIG_REPO_OCI = "oci://\(CONFIG_REPO)"
 
 	// CONFIG_TAG_REGEX scopes the Warehouse subscription to the input-addressed
@@ -377,14 +383,24 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 		apiVersion: "quay.holos.run/v1alpha1"
 		kind:       "Repository"
 		metadata: {
-			name:      NAME
+			// The CR is named for the repo it manages — the <app>-config artifact
+			// repo, NOT the bare app name — so it never collides with another app
+			// resource and so the managed Quay repo is unambiguously the config
+			// repo.
+			name:      CONFIG_REPO_NAME
 			namespace: CTRL_NS
 			labels: "app.kubernetes.io/name": NAME
 		}
 		spec: {
 			organizationRef: PROJECT
-			name:            NAME
-			visibility:      "private"
+			// spec.name is CONFIG_REPO_NAME (<app>-config): the SAME repo the
+			// Warehouse subscribes to, the Argo CD Application pulls from, and
+			// scripts/publish pushes the rendered config artifact to.  Managing the
+			// bare <app> repo instead would leave the actual delivery repo (and its
+			// repo_push webhook) unmanaged, so webhook-triggered delivery would not
+			// fire (the codex round-1 finding).
+			name:       CONFIG_REPO_NAME
+			visibility: "private"
 			credentialsSecretRef: name: "holos-controller-quay-creds"
 			webhook: urlSecretRef: {
 				name: "\(PROJECT)-quay-webhook"
@@ -503,7 +519,7 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 
 		KeycloakClient: (APP_CLIENT_NAME): KEYCLOAK_CLIENT_RESOURCE
 
-		Repository: (NAME): REPOSITORY_RESOURCE
+		Repository: (CONFIG_REPO_NAME): REPOSITORY_RESOURCE
 
 		Warehouse: (WAREHOUSE): WAREHOUSE_RESOURCE
 		Stage: (STAGE):         STAGE_RESOURCE

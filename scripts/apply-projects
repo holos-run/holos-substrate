@@ -169,14 +169,20 @@ echo "Rendering platform with ca_bundle_pem injected ..." >&2
 ) >&2
 
 PROJECT_BASE="${RENDER_DIR}/clusters/k3d-holos/components/project"
+APPLICATION_BASE="${RENDER_DIR}/clusters/k3d-holos/components/application"
 NAMESPACE_DIR="${RENDER_DIR}/clusters/k3d-holos/components/namespaces"
 KEYCLOAK_INSTANCE_DIR="${RENDER_DIR}/clusters/k3d-holos/components/keycloak-instance"
 
-# No project components rendered (only my-project registered, which the generic
-# component skips) → clean no-op.
-if [[ ! -d "${PROJECT_BASE}" ]] || [[ -z "$(ls -A "${PROJECT_BASE}" 2>/dev/null)" ]]; then
-  echo "No project components rendered (the generic project component skips my-project," >&2
-  echo "and no other project is registered).  Nothing to apply." >&2
+have_dir() { [[ -d "$1" ]] && [[ -n "$(ls -A "$1" 2>/dev/null)" ]]; }
+
+# Nothing to do if NEITHER the generic project component NOR the application
+# component rendered anything (the generic project component skips my-project,
+# and an app may be attached to my-project — applied by scripts/apply-my-project,
+# not here — so the project base can be empty while applications still render,
+# and vice versa).  Either alone is enough to proceed.
+if ! have_dir "${PROJECT_BASE}" && ! have_dir "${APPLICATION_BASE}"; then
+  echo "No project or application components rendered (the generic project component" >&2
+  echo "skips my-project, and no other project or app is registered).  Nothing to apply." >&2
   exit 0
 fi
 
@@ -286,8 +292,92 @@ gate_ready() {
 }
 
 # ---------------------------------------------------------------------------
-# Apply each rendered project, then gate it
+# Application apply/gate helpers (HOL-1356)
 # ---------------------------------------------------------------------------
+# The Application component renders one subdirectory per apps.<name> entry into
+# components/application/<app>/.  Every app resource (the Deployment/Service/
+# HTTPRoute, the app KeycloakClient, the Quay Repository, and the Kargo
+# Warehouse/Stage + Argo CD Application) lands in the app's PROJECT's bare
+# control namespace — the SAME namespace the project's role KeycloakGroups live
+# in, so the role groups' clientRef to the app KeycloakClient resolves
+# same-namespace.  That co-location is exactly why the app resources must be
+# APPLIED before the project's role groups are gated Ready: the project's role
+# KeycloakGroups now carry a clientRef to each app's KeycloakClient, so the group
+# reconciler marks the group NOT Ready until that app KeycloakClient exists.
+# apply_application_resources is therefore split from its gate: a project's apps
+# are applied right after the project (before the project's group gates), and
+# gated afterward.
+#
+# An app's namespace is the app's `project` — read from the rendered manifests'
+# metadata.namespace (== the project == the bare control namespace).
+
+# app_namespace APP_DIR APP — echo the app's control namespace (its project).
+app_namespace() {
+  local app_dir="$1" app="$2"
+  local repo_file="${app_dir}repository-${app}-config.yaml"
+  if [[ ! -f "${repo_file}" ]]; then
+    echo "ERROR: rendered Repository manifest ${repo_file} not found for app ${app}." >&2
+    return 1
+  fi
+  kubectl --context "${KUBE_CONTEXT}" create --dry-run=client \
+    -o jsonpath='{.metadata.namespace}' -f "${repo_file}"
+}
+
+# apply_application_resources APP_DIR APP — apply one app's manifests (RBAC
+# first), WITHOUT gating.  The control namespace must already exist (its owning
+# project's namespace, applied by the project loop or by scripts/apply-my-project
+# for a my-project app).
+apply_application_resources() {
+  local app_dir="$1" app="$2"
+  echo "==> apply application ${app}" >&2
+  # Pre-apply the ServiceAccount + RBAC before the workload.
+  local app_rbac_files=()
+  local f
+  for f in "${app_dir}"serviceaccount-*.yaml \
+           "${app_dir}"rolebinding-*.yaml; do
+    [[ -e "${f}" ]] && app_rbac_files+=(-f "${f}")
+  done
+  if ((${#app_rbac_files[@]})); then
+    kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts "${app_rbac_files[@]}"
+  fi
+  kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts -f "${app_dir}"
+}
+
+# gate_application APP_NS APP — gate one app's KeycloakClient and Repository
+# (named <app>-config, the managed config artifact repo) to Ready.
+gate_application() {
+  local app_ns="$1" app="$2"
+  gate_ready "${app_ns}" "keycloakclient.keycloak.holos.run/${app}" || return 1
+  gate_ready "${app_ns}" "repository.quay.holos.run/${app}-config" "Conflict" || return 1
+}
+
+# The set of app subdirectories already applied inside the project loop, so the
+# orphan sweep below applies only apps whose project is NOT a rendered project
+# (e.g. an app attached to my-project, whose project is applied by
+# scripts/apply-my-project).  Keyed by app name.
+declare -A APPLIED_APPS=()
+
+# apps_for_project PROJECT — echo the app subdirectory paths whose control
+# namespace is PROJECT (i.e. apps attached to that project).  Runs inside a
+# command/process substitution, so a hard failure here cannot reliably abort the
+# parent shell; a malformed render that makes app_namespace fail simply yields no
+# match, and the caller (or the orphan sweep) re-derives the namespace with a
+# real `|| exit 1` in the main shell, surfacing the error there.
+apps_for_project() {
+  local project="$1" app_dir app app_ns
+  have_dir "${APPLICATION_BASE}" || return 0
+  for app_dir in "${APPLICATION_BASE}"/*/; do
+    [[ -d "${app_dir}" ]] || continue
+    app="$(basename "${app_dir}")"
+    app_ns="$(app_namespace "${app_dir}" "${app}")" || continue
+    [[ "${app_ns}" == "${project}" ]] && printf '%s\n' "${app_dir}"
+  done
+}
+
+# ---------------------------------------------------------------------------
+# Apply each rendered project (and its apps), then gate them
+# ---------------------------------------------------------------------------
+if have_dir "${PROJECT_BASE}"; then
 for project_dir in "${PROJECT_BASE}"/*/; do
   [[ -d "${project_dir}" ]] || continue
   NAME="$(basename "${project_dir}")"
@@ -330,6 +420,16 @@ for project_dir in "${PROJECT_BASE}"/*/; do
   echo "==> apply ${NAME}" >&2
   kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts -f "${project_dir}"
 
+  # Apply this project's apps BEFORE the project's role-group Ready gates: the
+  # role groups carry a clientRef to each app's KeycloakClient, so they cannot go
+  # Ready until that app KeycloakClient exists (else the gates below time out).
+  while IFS= read -r app_dir; do
+    [[ -n "${app_dir}" ]] || continue
+    app="$(basename "${app_dir}")"
+    apply_application_resources "${app_dir}" "${app}"
+    APPLIED_APPS["${app}"]=1
+  done < <(apps_for_project "${NAME}")
+
   # Gates: webhook Job complete, Kargo Project Ready (cluster-scoped), the Quay
   # Organization Ready, and the keycloak.holos.run resources Ready.
   gate_job "${CTRL_NS}" "${NAME}-quay-webhook-bootstrap" || exit 1
@@ -350,58 +450,37 @@ for project_dir in "${PROJECT_BASE}"/*/; do
     gate_ready "${CTRL_NS}" "keycloakuser.keycloak.holos.run/${user_name}" || exit 1
   done
 
+  # Now gate this project's apps (their KeycloakClient + Repository).
+  while IFS= read -r app_dir; do
+    [[ -n "${app_dir}" ]] || continue
+    app="$(basename "${app_dir}")"
+    app_ns="$(app_namespace "${app_dir}" "${app}")" || exit 1
+    gate_application "${app_ns}" "${app}" || exit 1
+    echo "application ${app} applied." >&2
+  done < <(apps_for_project "${NAME}")
+
   echo "project ${NAME} applied." >&2
 done
+fi
 
 # ---------------------------------------------------------------------------
-# Apply each rendered application (HOL-1356), then gate it
+# Orphan sweep: apply apps whose project is NOT a rendered project component
 # ---------------------------------------------------------------------------
-# The Application component renders one subdirectory per apps.<name> entry into
-# components/application/<app>/.  Every app resource (the Deployment/Service/
-# HTTPRoute, the app KeycloakClient, the Quay Repository, and the Kargo
-# Warehouse/Stage + Argo CD Application) lands in the app's PROJECT's bare
-# control namespace (the same namespace the project's role KeycloakGroups live
-# in, so the role groups' clientRef to the app KeycloakClient resolves
-# same-namespace).  Applied AFTER the project loop so the project's Organization
-# (the Repository's organizationRef), role groups (which reference the app
-# KeycloakClient), AppProject, and webhook Secret (the Repository's webhook
-# urlSecretRef) already exist.  The app's control namespace is the app's
-# `project` — read it from the rendered Repository's organizationRef (the
-# project Organization CR name == the project == the control namespace).
-APPLICATION_BASE="${RENDER_DIR}/clusters/k3d-holos/components/application"
-if [[ -d "${APPLICATION_BASE}" ]] && [[ -n "$(ls -A "${APPLICATION_BASE}" 2>/dev/null)" ]]; then
+# An app may be attached to a project the generic component does not render here
+# (today, my-project — whose namespace and project-level CRs scripts/apply-my-project
+# applies).  Its app resources still rendered under components/application/<app>/;
+# apply and gate them here, against the already-existing project namespace.
+if have_dir "${APPLICATION_BASE}"; then
   for app_dir in "${APPLICATION_BASE}"/*/; do
     [[ -d "${app_dir}" ]] || continue
-    APP="$(basename "${app_dir}")"
-    # The control namespace is the app's project, carried on the rendered
-    # Repository's organizationRef (and == its namespace).
-    repo_file="${app_dir}repository-${APP}.yaml"
-    if [[ ! -f "${repo_file}" ]]; then
-      echo "ERROR: rendered Repository manifest ${repo_file} not found for app ${APP}." >&2
-      exit 1
-    fi
-    APP_NS="$(kubectl --context "${KUBE_CONTEXT}" create --dry-run=client -o jsonpath='{.metadata.namespace}' -f "${repo_file}")"
+    app="$(basename "${app_dir}")"
+    [[ -n "${APPLIED_APPS[${app}]:-}" ]] && continue
+    app_ns="$(app_namespace "${app_dir}" "${app}")" || exit 1
     echo "================================================================" >&2
-    echo "==> application ${APP} (namespace ${APP_NS})" >&2
-
-    # Pre-apply the ServiceAccount + RBAC before the workload.
-    app_rbac_files=()
-    for f in "${app_dir}"serviceaccount-*.yaml \
-             "${app_dir}"rolebinding-*.yaml; do
-      [[ -e "${f}" ]] && app_rbac_files+=(-f "${f}")
-    done
-    if ((${#app_rbac_files[@]})); then
-      kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts "${app_rbac_files[@]}"
-    fi
-
-    echo "==> apply ${APP}" >&2
-    kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts -f "${app_dir}"
-
-    # Gates: the app KeycloakClient and the Quay Repository converge to Ready.
-    gate_ready "${APP_NS}" "keycloakclient.keycloak.holos.run/${APP}" || exit 1
-    gate_ready "${APP_NS}" "repository.quay.holos.run/${APP}" "Conflict" || exit 1
-
-    echo "application ${APP} applied." >&2
+    echo "==> application ${app} (namespace ${app_ns}) [orphan: project applied elsewhere]" >&2
+    apply_application_resources "${app_dir}" "${app}"
+    gate_application "${app_ns}" "${app}" || exit 1
+    echo "application ${app} applied." >&2
   done
 fi
 
