@@ -294,6 +294,23 @@ curl -fs https://auth.holos.internal/realms/holos/.well-known/openid-configurati
 # log in to https://auth.holos.internal/admin/ with the credentials above
 ```
 
+Verify the second **esso** realm and the holos esso IdP broker (HOL-1366):
+
+```bash
+kubectl -n keycloak get keycloakrealmimport            # holos AND esso, both Done
+curl -fs https://auth.holos.internal/realms/esso/.well-known/openid-configuration | jq .issuer
+kubectl -n keycloak get secret esso-idp-oidc esso-user-alice   # shared broker secret + alice's password
+# in the admin console, holos realm → Identity providers → an enabled "esso"
+# OIDC provider with Trust email on; log in as alice (87654321 / password below)
+# through a holos relying party choosing the "esso" provider:
+kubectl -n keycloak get secret esso-user-alice -o jsonpath='{.data.password}' | base64 -d; echo
+```
+
+The esso realm is provisioned by `scripts/apply` (the `keycloak-esso-config`
+phase, between `keycloak` and `keycloak-config`) with **no holos-controller
+dependency** — see the
+[esso ↔ holos IdP runbook](../docs/runbooks/esso-keycloak-idp.md).
+
 State lives in the `keycloak-db` Postgres `Cluster`, not the pod: deleting
 the Keycloak pod (`kubectl -n keycloak delete pod -l
 app.kubernetes.io/managed-by=keycloak-operator`) loses nothing — after the
@@ -342,6 +359,15 @@ realm. What it reconciles:
   client secret is the `quay-oidc` Secret, generated once into both the
   `keycloak` and `quay` namespaces and substituted into the import document at
   run time (never committed).
+- the **esso OIDC identity provider** (`identityProviders[]`, alias `esso`) that
+  brokers logins from the second `esso` realm into `holos` — `trustEmail: true`
+  and a custom first-broker-login **auto-link** flow so a federated login matches
+  a pre-provisioned `holos` user by verified email and links silently (HOL-1369).
+  Its `clientSecret` is the shared `esso-idp-oidc` Secret, injected at run time.
+  The esso realm itself (its broker client and the alice user) is reconciled by a
+  **separate** `keycloak-esso-config` Job (the `realm-esso-config` component,
+  scoped to `realm: "esso"`); see the
+  [esso ↔ holos IdP runbook](../docs/runbooks/esso-keycloak-idp.md).
 
 The declarative-client pattern itself — public vs confidential clients (the
 public `argocd`/`kargo` clients use PKCE S256; the confidential `quay` client is
@@ -353,9 +379,13 @@ documented in
 
 The import document is authored in CUE and marshalled to JSON in a
 `ConfigMap` the Job mounts at `/config/holos.json`; it carries
-`realm: "holos"` only (no `enabled` or identity-provider fields), so it
-layers onto the realm shell the `KeycloakRealmImport` CR bootstraps without
-contending with it. keycloak-config-cli's default managed-import behavior is
+`realm: "holos"` only (no `enabled` field — that stays owned by the
+`KeycloakRealmImport` CR), so it layers onto the realm shell the CR bootstraps
+without contending with it. As of HOL-1369 this Job **does** own the realm's
+`identityProviders[]` (the esso OIDC broker) and its custom first-broker-login
+flow, so the broker `clientSecret` can be injected at run time; the
+`KeycloakRealmImport` CR declares no identity providers, so the two paths own
+disjoint fields. keycloak-config-cli's default managed-import behavior is
 no-delete, so realm objects the Job does not declare are left untouched
 (full-realm purge is deliberately not enabled).
 
