@@ -8,6 +8,18 @@ package holos
 // is needed — there is never a multi-resource bundle to slice.
 userDefinedBuildPlan: {
 	metadata: name: "namespaces"
+
+	// _ validates the project/app collections on the RENDER path.  holos render
+	// platform evaluates this BuildPlan but not arbitrary hidden ancestor fields,
+	// so the collection contract (ownerless projects, dangling app→project
+	// references, malformed app names/images) is tied here to an always-rendered
+	// component by referencing #CollectionsValidated (holos/collections.cue).
+	// The reference is what forces the validation; the field carries no manifest
+	// data (it unifies the empty struct), so it does not affect the output.  This
+	// component is the natural anchor: it already derives the project namespaces
+	// from the same `projects` collection.
+	_collectionsValidated: #CollectionsValidated
+
 	spec: artifacts: manifests: {
 		for NAME, NS in namespaces {
 			// namespace-<name>.yaml matches the kubectl-slice naming

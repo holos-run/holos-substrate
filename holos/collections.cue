@@ -62,45 +62,49 @@ apps: appcoll.apps
 //
 // The collections' schema constraints (DNS-label names, the email-shaped owner
 // keys, the at-least-one-owner minimum, and the apps.<name>.project →
-// #RegisteredProject cross-reference) only fail at render if SOMETHING ON THE
-// RENDER PATH actually evaluates the constrained fields.  Until the
-// Project/Application components (HOL-1355/HOL-1356) consume the collections,
-// nothing does: `holos render platform` would happily ignore a malformed
-// holos/apps/*.cue or an ownerless project, and the validation would fire only
-// under an explicit `cue vet ./apps`/`./projects`.
+// #RegisteredProject cross-reference) only fail at render if SOMETHING THE
+// RENDERED OUTPUT DEPENDS ON evaluates the constrained fields.  `holos render
+// platform` evaluates the `holos:` BuildPlan of each component, NOT arbitrary
+// hidden ancestor fields — a hidden field that no rendered output references is
+// never forced.  So until the Project/Application components (HOL-1355/HOL-1356)
+// consume the collections, the contract must be tied to an output something
+// already renders.  The always-present `namespaces` component is that anchor:
+// holos/namespaces.cue derives the project namespaces and the namespaces
+// buildplan UNIFIES the rendered Namespace resources with #CollectionsValidated
+// below, so evaluating any namespace manifest forces the whole validation.
 //
-// collections.cue is a build-plan ANCESTOR of every component (a root-level
-// `package holos` file), so the validation fields below are evaluated on EVERY
-// component render — putting the collection contract on the scripts/render path
-// now, before the consuming components exist.  Each field is hidden (underscore)
-// so it never escapes into a manifest; CUE still evaluates a referenced hidden
-// field, and these are referenced by being concrete struct fields of the
-// ancestor.
-
-// _validateProjects forces every project's owner constraints onto the render
-// path: len(owners) > 0 (no ownerless project) per concrete entry.  The
-// per-entry name/owner-key/email constraints ride the bound `projects` data
-// itself; this comprehension adds the cross-cutting minimum the projects
-// package could only express as a package-private field (#Project cannot carry
-// it without making the abstract schema unsatisfiable — see projects.cue).
-_validateProjects: {
-	for NAME, P in projects {
-		(NAME): len(P.owners) & >0
+// #CollectionsValidated is a single concrete value (the empty struct) that is
+// well-defined ONLY when every project and app entry satisfies its constraints;
+// any violation makes one of the unifications below _|_ and propagates the
+// failure to whatever references #CollectionsValidated (the namespaces
+// buildplan).  It is referenced — not hidden-and-unreferenced — so it is on the
+// render path.
+#CollectionsValidated: {
+	// Every project must name at least one owner (len(owners) > 0).  The
+	// per-entry name/owner-key/email constraints ride the bound `projects` data
+	// itself; this adds the cross-cutting minimum the projects package could not
+	// express on #Project without making the abstract schema unsatisfiable (see
+	// projects.cue).  Unified into the empty struct via a guard: the for-body
+	// asserts but contributes no fields.
+	for _, P in projects {
+		if len(P.owners) < 1 {
+			// A project with no owners forces this branch, unifying the marker
+			// with an impossible constraint and failing the render.
+			_ownerless: false & true
+		}
 	}
-}
 
-// _validateApps forces every app's fields — including the apps.<name>.project →
-// #RegisteredProject cross-reference — onto the render path by referencing them.
-// Reading project/image/port/name makes a malformed or dangling app entry a
-// render failure even with no Application component yet.  (host is optional, so
-// it is not forced.)
-_validateApps: {
-	for NAME, A in apps {
-		(NAME): {
-			project: A.project
-			image:   A.image
-			port:    A.port
-			name:    A.name
+	// Every app's project/image/port/name must evaluate — forcing the
+	// apps.<name>.project → #RegisteredProject cross-reference and the
+	// name/image/port constraints.  Reading the fields into throwaway hidden
+	// bindings makes a malformed or dangling app entry a render failure even
+	// with no Application component yet.  (host is optional, so it is not read.)
+	for _, A in apps {
+		_app: {
+			_p: A.project
+			_i: A.image
+			_n: A.port
+			_m: A.name
 		}
 	}
 }
