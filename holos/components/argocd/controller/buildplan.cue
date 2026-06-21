@@ -357,9 +357,10 @@ userDefinedBuildPlan: {
 
 								"oidc.config": yaml.Marshal(OIDC_CONFIG)
 
-								// Accept the local-CA/mkcert backend cert on
-								// the argocd-server → Keycloak backchannel
-								// hop (OIDC discovery/JWKS/token).  Local-only
+								// Accept the local-CA/mkcert cert the shared
+								// Gateway serves on the argocd-server →
+								// Keycloak backchannel hop (OIDC
+								// discovery/JWKS/token).  Local-only
 								// MVP posture: the mkcert root CA is
 								// per-machine and cannot be embedded at
 								// render time deterministically, so a

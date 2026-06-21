@@ -599,9 +599,9 @@ the issuer in-cluster: the component ships a `ServiceEntry` that makes
 backchannel re-enters through the same Gateway→Keycloak path browsers use
 and the `iss` claim matches the configured issuer. The backchannel sets
 `oidc.tls.insecure.skip.verify: "true"` to accept the per-machine
-mkcert/local-CA backend cert — a local-only MVP posture (the mkcert root
-cannot be embedded at render time); production replaces it with `rootCA`
-trust (see the production deployment area placeholder in
+mkcert/local-CA cert the shared Gateway serves on that hop — a local-only MVP
+posture (the mkcert root cannot be embedded at render time); production
+replaces it with `rootCA` trust (see the production deployment area placeholder in
 [docs/placeholders.md](docs/placeholders.md#production-deployment-area)).
 
 To verify SSO end to end: create a user in the `holos` realm

@@ -19,11 +19,14 @@ metadata:
     istio.io/dataplane-mode: ambient
 ```
 
-The label enrolls every pod in the namespace in the ambient mesh: istio-cni
+The label enrolls the namespace's pods in the ambient mesh: istio-cni
 redirects the pods' traffic to the ztunnel node proxy, which carries it over
 HBONE (HTTP-Based Overlay Network Environment) with mutual TLS. Workloads
 need no sidecar and no restart-ordering relationship with the mesh — the
-label is the entire enrollment.
+label is the entire enrollment. An individual pod can still opt back out with
+the pod-level label `istio.io/dataplane-mode: none`, which takes precedence
+over the namespace label (see the keycloak partial-enrollment note below,
+where the CNPG `keycloak-db` pods use exactly this).
 
 Namespaces are declared in the central namespaces registry
 ([`holos/namespaces.cue`](../namespaces.cue)), rendered by the
