@@ -1021,7 +1021,10 @@ func TestGroupConfersRoleOnNamedReservedClient(t *testing.T) {
 		t.Skip("envtest not provisioned (KUBEBUILDER_ASSETS unset); run via make controller-test")
 	}
 	ctx := context.Background()
-	const ns = "kc-group-namedclient"
+	// The namespace MUST equal the path's project (the project↔namespace ownership
+	// boundary the direct-path guard enforces; namespace == project per the
+	// my-project convention).
+	const ns = "my-project"
 	makeNamespace(t, ctx, ns)
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
@@ -1142,32 +1145,41 @@ func TestGroupDirectClientRoleGuards(t *testing.T) {
 		t.Skip("envtest not provisioned")
 	}
 	ctx := context.Background()
-	const ns = "kc-group-directguard"
-	makeNamespace(t, ctx, ns)
-	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
-	readyInstance(t, ctx, ns, "kc")
 
+	// Each case runs in a namespace equal to its path's project (the project↔
+	// namespace ownership boundary), except the dedicated mismatch case. The
+	// namespace is created per-case so the guard under test — not an unrelated
+	// namespace-mismatch — is what rejects.
 	cases := []struct {
-		name     string
-		path     string
-		clientID string
-		role     string
+		name      string
+		namespace string
+		path      string
+		clientID  string
+		role      string
 	}{
-		{"non-allowlisted client", "projects/my-project/roles/owner", "realm-management", "my-project-realm-admin"},
-		{"another reserved client", "projects/my-project/roles/owner", "argocd", "my-project-owner"},
-		{"cross-project role on quay", "projects/my-project/roles/owner", "https://quay.holos.localhost", "other-project-owner"},
-		// Prefix collision: project "my" (path projects/my/roles/owner) must NOT be
-		// able to confer "my-project-owner", which belongs to project "my-project".
-		// The exact <project>-<leaf> match (not a prefix) rejects it.
-		{"prefix-collision cross-project", "projects/my/roles/owner", "https://quay.holos.localhost", "my-project-owner"},
+		{"non-allowlisted client", "my-project", "projects/my-project/roles/owner", "realm-management", "my-project-realm-admin"},
+		{"another reserved client", "my-project", "projects/my-project/roles/owner", "argocd", "my-project-owner"},
+		{"cross-project role on quay", "my-project", "projects/my-project/roles/owner", "https://quay.holos.localhost", "other-project-owner"},
+		// Prefix collision: project "my" (path projects/my/roles/owner, namespace
+		// "my") must NOT be able to confer "my-project-owner", which belongs to
+		// project "my-project". The exact <project>-<leaf> match (not a prefix)
+		// rejects it.
+		{"prefix-collision cross-project", "my", "projects/my/roles/owner", "https://quay.holos.localhost", "my-project-owner"},
 		// A non-role (custodian) group must not confer a claim value on the reserved
 		// client even with a name that matches its own path's leaf.
-		{"non-role custodian path", "projects/my-project/custodians/owner", "https://quay.holos.localhost", "my-project-owner"},
+		{"non-role custodian path", "my-project", "projects/my-project/custodians/owner", "https://quay.holos.localhost", "my-project-owner"},
+		// Project↔namespace mismatch: a CR in namespace "intruder" naming a path for
+		// project "my-project" is refused even with a correct <project>-<leaf> role,
+		// because the path project must equal the CR namespace.
+		{"project-namespace mismatch", "intruder", "projects/my-project/roles/owner", "https://quay.holos.localhost", "my-project-owner"},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			makeNamespace(t, ctx, tc.namespace)
+			createIgnoreExists(t, ctx, newCredentialSecret(tc.namespace, keycloakv1alpha1.DefaultCredentialsSecretName))
+			readyInstance(t, ctx, tc.namespace, "kc")
 			group := &keycloakv1alpha1.KeycloakGroup{
-				ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "directguard-" + strconv.Itoa(i)},
+				ObjectMeta: metav1.ObjectMeta{Namespace: tc.namespace, Name: "directguard-" + strconv.Itoa(i)},
 				Spec: keycloakv1alpha1.KeycloakGroupSpec{
 					Path:        tc.path,
 					InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
@@ -1183,7 +1195,7 @@ func TestGroupDirectClientRoleGuards(t *testing.T) {
 			// Seed every candidate client so the guard — not a missing-client error —
 			// is what rejects.
 			fake.seedClient(tc.clientID, "target-uuid")
-			r, _ := newGroupReconciler(fake, ns)
+			r, _ := newGroupReconciler(fake, tc.namespace)
 			key := client.ObjectKeyFromObject(group)
 			_, _ = reconcileGroup(ctx, r, key) // finalizer
 			if _, err := reconcileGroup(ctx, r, key); err == nil {

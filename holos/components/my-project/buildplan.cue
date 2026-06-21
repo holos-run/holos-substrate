@@ -223,7 +223,7 @@ let APPLICATION_RESOURCE = {
 // values are now PRODUCED by the keycloak.holos.run CRs this component emits below
 // (HOL-1348): the role/custodian KeycloakGroups, the owner KeycloakUser, and the
 // project KeycloakClient, reconciled by the shipped Holos Controller (ADR-20,
-// Partially Implemented).  As of HOL-1350 (ADR-20 Rev 3) the role groups confer
+// Partially Implemented).  As of HOL-1350 (ADR-20 Rev 4) the role groups confer
 // the my-project-<role> client role on the platform Quay client directly (the
 // "Keycloak data plane" note below), so those values surface in the platform Quay
 // client's groups claim via the already-deployed quay-client-roles mapper and the
@@ -665,7 +665,7 @@ let STAGE_RESOURCE = kargostage.#Stage & {
 // claim (the platform's quay-client-roles precedent).  A member of roles/owner
 // thereby surfaces my-project-owner in the token.
 //
-// The role is conferred on TWO clients (ADR-20 Rev 3, HOL-1350):
+// The role is conferred on TWO clients (ADR-20 Rev 4, HOL-1350):
 //
 //   - the platform Quay client (https://quay.holos.localhost) — the ADR-20 "Quay
 //     use case".  A KeycloakGroup names this reserved clientId DIRECTLY via
@@ -715,7 +715,7 @@ let PROJECT_CLIENT_ID = "https://my-project.holos.localhost"
 // QUAY_CLIENT_ID).  The role groups confer the my-project-<role> client role on it
 // directly via clientRoles[].clientId (NOT clientRef — no tenant KeycloakClient CR
 // exists for the reserved client; the reserved-name guard forbids one), closing
-// the ADR-20 Rev 3 "Quay use case" gap: the role surfaces in Quay's groups claim
+// the ADR-20 Rev 4 "Quay use case" gap: the role surfaces in Quay's groups claim
 // via the platform's already-deployed quay-client-roles mapper, so the
 // Organization's syncedTeams[].oidcGroup membership populates (HOL-1350).  Only the
 // project-prefixed role name is controller-claimed on this client; the client
@@ -778,7 +778,7 @@ let KEYCLOAK_CLIENT_RESOURCE = {
 //
 //   - the platform Quay client (clientId: https://quay.holos.localhost), so the
 //     role surfaces in Quay's groups claim via the already-deployed
-//     quay-client-roles mapper — the ADR-20 Rev 3 "Quay use case" that populates
+//     quay-client-roles mapper — the ADR-20 Rev 4 "Quay use case" that populates
 //     the Organization's syncedTeams[].oidcGroup membership (HOL-1350).  Named by
 //     clientId directly because no tenant KeycloakClient CR exists for the
 //     reserved client.

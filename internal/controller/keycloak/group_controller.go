@@ -440,7 +440,7 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 		// model and needs no extra check here.
 		directTarget := ref.ClientID != ""
 		if directTarget {
-			if err := validateDirectClientRole(group.Spec.Path, clientID, ref.Role); err != nil {
+			if err := validateDirectClientRole(group.Namespace, group.Spec.Path, clientID, ref.Role); err != nil {
 				return err
 			}
 		}
@@ -560,14 +560,23 @@ func splitManagedRole(key string) (clientID, role string, ok bool) {
 //  2. the role name is not one of the platform's own reserved client-role names
 //     (platform-admin/project-admin), so a platform role binding is never
 //     overwritten;
-//  3. the role name is EXACTLY this role group's own name `<project>-<leaf>`,
+//  3. the path's `<project>` segment equals the CR's own namespace. This is the
+//     authoritative ownership binding: a project's CRs live in a namespace named
+//     after the project (the my-project convention; namespace == project), and
+//     Kubernetes RBAC governs who may create a KeycloakGroup in a given namespace
+//     (and a ReferenceGrant governs cross-namespace use of the central instance).
+//     So a tenant in namespace `my-project` cannot declare
+//     `projects/other-project/roles/owner` to confer `other-project-owner` — the
+//     path's project would have to be `my-project`. Without this, the guard would
+//     prove only string consistency, not project ownership.
+//  4. the role name is EXACTLY this role group's own name `<project>-<leaf>`,
 //     parsed from a `projects/<project>/roles/<leaf>` path. The match is exact
 //     (not a prefix) so a prefix collision cannot confer another project's role —
 //     e.g. project `my` (path projects/my/roles/owner) cannot confer
 //     `my-project-owner` (which belongs to project `my-project`), and a non-role
 //     path (projects/<project>/custodians/<leaf>) is refused outright since only a
 //     roles/* group confers a claim value.
-func validateDirectClientRole(groupPath, clientID, role string) error {
+func validateDirectClientRole(namespace, groupPath, clientID, role string) error {
 	if !directClientRoleTargets[clientID] {
 		return fmt.Errorf("clientId %q may not be named directly by a KeycloakGroup clientRoles entry; only the platform Quay client is a permitted direct target (use a same-namespace KeycloakClient and clientRef for other clients)", clientID)
 	}
@@ -577,6 +586,9 @@ func validateDirectClientRole(groupPath, clientID, role string) error {
 	project, leaf, ok := projectRoleFromGroupPath(groupPath)
 	if !ok {
 		return fmt.Errorf("cannot confer a role on reserved client %q from group path %q: only a projects/<project>/roles/<leaf> group may confer a project role on a reserved client", clientID, groupPath)
+	}
+	if project != namespace {
+		return fmt.Errorf("cannot confer a role on reserved client %q: group path project %q must equal the resource namespace %q (the project↔namespace ownership boundary), so a tenant cannot confer another project's role", clientID, project, namespace)
 	}
 	if want := project + "-" + leaf; role != want {
 		return fmt.Errorf("client role %q on reserved client %q must be exactly this role group's name %q (project %q + role %q) so a group cannot confer another project's role", role, clientID, want, project, leaf)
