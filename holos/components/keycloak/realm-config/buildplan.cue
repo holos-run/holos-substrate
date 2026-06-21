@@ -317,6 +317,21 @@ let REALM_CONFIG = {
 			credentials: [{type: "password", value: "$(env:\(QUAY_ADMIN_PASSWORD_ENV))", temporary: false}]
 			realmRoles: ["platform-owner"]
 		},
+		{
+			// HOL-1348: the synthetic service-account user backing the
+			// svc-holos-controller confidential client.  Keycloak auto-creates a
+			// service-account-<clientId> user when serviceAccountsEnabled is true;
+			// keycloak-config-cli assigns that user's roles via this users[] entry
+			// (serviceAccountClientId binds it to the client; clientRoles grants the
+			// scoped realm-management roles).  This is the supported keycloak-config-cli
+			// path for service-account role assignment — there is no
+			// serviceAccountClientRoles field on the client object.  No password (a
+			// service account authenticates by the client secret, not a password).
+			username:              "service-account-\(CONTROLLER_CLIENT_ID)"
+			enabled:               true
+			serviceAccountClientId: CONTROLLER_CLIENT_ID
+			clientRoles: "realm-management": CONTROLLER_REALM_MGMT_ROLES
+		},
 	]
 
 	clients: [{
@@ -600,11 +615,12 @@ let REALM_CONFIG = {
 		// A service-account client has no browser redirect.
 		redirectUris: []
 		webOrigins: []
-		// The scoped realm-management roles the controller's service account
-		// holds (CONTROLLER_REALM_MGMT_ROLES).  keycloak-config-cli grants these
-		// to the synthetic service-account user (service-account-<clientId>) via
-		// serviceAccountClientRoles, so no separate users[] entry is needed.
-		serviceAccountClientRoles: "realm-management": CONTROLLER_REALM_MGMT_ROLES
+		// The scoped realm-management roles the controller's service account holds
+		// are NOT granted on the client object — keycloak-config-cli has no
+		// serviceAccountClientRoles client field.  They are assigned via the
+		// synthetic service-account user (service-account-svc-holos-controller) in
+		// the users[] list below (serviceAccountClientId + clientRoles), the
+		// keycloak-config-cli convention for service-account role assignment.
 	}]
 
 	// HOL-1348: the first-broker-login flow configured for AUTO-LINK, so a
