@@ -58,6 +58,20 @@ logs for the pod's enrollment events:
 kubectl logs -n istio-system -l app=ztunnel | grep <pod-name>
 ```
 
+## Troubleshooting: HBONE blocked by a NetworkPolicy
+
+Enrollment (`HBONE` above) only confirms ztunnel *captures* the pod — it does
+**not** mean meshed peers can reach it. In ambient mode, meshed traffic arrives
+at a pod over HBONE on TCP **15008** (not the app port), so any `NetworkPolicy`
+selecting the pod must permit 15008 or every meshed client is silently dropped
+with `Connection reset` while the pod is healthy. Chart/operator-shipped
+policies are the usual cause (the Keycloak operator's `keycloak-network-policy`
+is the worked example). The decisive check is a one-shot probe of 15008 vs the
+app port on a backend pod IP — `15008 REFUSED` + app port `OPEN` means a
+NetworkPolicy is blocking HBONE. See the operational runbook,
+[Ambient mesh HBONE blocked by a NetworkPolicy](../../docs/runbooks/keycloak-ambient-mesh-hbone-networkpolicy.md),
+for the full diagnosis-to-remediation procedure.
+
 ## Exceptions: workload namespaces that are not enrolled
 
 The convention above applies to namespaces **carrying workloads**. Two such
