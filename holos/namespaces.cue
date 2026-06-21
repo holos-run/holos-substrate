@@ -212,7 +212,7 @@ namespaces: {
 	// keycloak-db Postgres pods stay OUT of the mesh (components/cnpg-clusters
 	// sets istio.io/dataplane-mode: none via the Cluster's inheritedMetadata),
 	// so the plaintext Keycloak↔Postgres hop is not re-wrapped by ztunnel.
-	// Full doc reconciliation is HOL-1363.  See holos/docs/mesh-enrollment.md.
+	// See holos/docs/mesh-enrollment.md (Partial enrollment: keycloak).
 	keycloak: _ambient: true
 
 	// quay hosts the Quay registry and its CNPG Postgres cluster (quay-db,

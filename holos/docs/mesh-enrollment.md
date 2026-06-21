@@ -66,12 +66,35 @@ kubectl logs -n istio-system -l app=ztunnel | grep <pod-name>
   themselves and terminate mesh traffic natively, so redirecting them through
   ztunnel adds nothing. See the registry entry in
   [`holos/namespaces.cue`](../namespaces.cue).
-- **`keycloak`** — Keycloak terminates its own TLS with a cert-manager
-  certificate end-to-end, and the reference platform's root-cause analysis
-  found ztunnel ambient interception breaks Keycloak — the reference sets
-  `istio.io/dataplane-mode: none` at both the namespace and pod level. The
-  CNPG Postgres pods in this namespace (`keycloak-db`, see the
-  [`cnpg-clusters`](../components/cnpg-clusters/) component) are
-  consequently unenrolled too; Keycloak↔Postgres traffic stays in-namespace
-  and CNPG/Keycloak handle their own transport security. See the registry
-  entry in [`holos/namespaces.cue`](../namespaces.cue).
+
+There is no `keycloak` exception. Keycloak **is** enrolled in the ambient mesh
+like any other workload namespace (`keycloak: _ambient: true`); see the
+partial-enrollment note below for the one CNPG nuance.
+
+## Partial enrollment: keycloak (HOL-1362)
+
+The `keycloak` namespace is enrolled in the ambient mesh, but its CNPG Postgres
+pods are deliberately kept out — an exception scoped to a single workload, not
+the whole namespace.
+
+Keycloak used to be a full namespace-level exception: it terminated its own TLS
+with a cert-manager `keycloak-tls` certificate, and a Gateway→Keycloak
+`DestinationRule` re-encrypted the hop, because the reference platform's
+root-cause analysis found ztunnel ambient interception broke Keycloak **when
+Keycloak terminated its own TLS**. HOL-1362 removed that double TLS: Keycloak now
+runs HTTP-only behind the shared Gateway, which terminates external TLS **once**
+and forwards plaintext HTTP to `keycloak-service:8080`. ztunnel wraps that
+Gateway→pod hop in HBONE mTLS, so the cross-namespace traffic is encrypted on the
+wire without a per-pod TLS keystore — and with single TLS at the Gateway the RCA
+failure mode is gone. The `keycloak-tls` `Certificate` and the Gateway→Keycloak
+`DestinationRule` no longer exist. Keycloak resolves its own issuer
+(`auth.holos.internal`) through CoreDNS in-cluster, so it needs **no** per-namespace
+`ServiceEntry` for self-resolution.
+
+The CNPG Postgres pods in this namespace (`keycloak-db`, see the
+[`cnpg-clusters`](../components/cnpg-clusters/) component) stay **out** of the
+mesh at the pod level: the `Cluster` sets `istio.io/dataplane-mode: none` via its
+`spec.inheritedMetadata.labels`, so the plaintext Keycloak↔Postgres hop to
+`keycloak-db-rw:5432` is not re-wrapped by ztunnel. Only those database pods are
+excluded; the Keycloak server pods are enrolled. See the registry entry in
+[`holos/namespaces.cue`](../namespaces.cue).

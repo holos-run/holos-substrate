@@ -116,13 +116,16 @@ platform service:
 15. `keycloak-operator-crds` — Keycloak operator CRDs (`crds: "true"`),
     fetched as the two separate upstream single-CRD manifests
 16. `keycloak-operator` — the Keycloak operator, in the `keycloak`
-    namespace (deliberately not ambient-enrolled, see
+    namespace (ambient-enrolled like the rest of the namespace, see
     [namespaces.cue](namespaces.cue))
 17. `keycloak` — the Keycloak server instance: the `Keycloak` CR backed by
-    the `keycloak-db` Postgres `Cluster`, its TLS `Certificate`, the
-    declarative `holos` realm import, the `HTTPRoute` attaching it to the
-    shared Gateway at `auth.holos.internal`, and the `DestinationRule`
-    that re-encrypts the Gateway→Keycloak hop
+    the `keycloak-db` Postgres `Cluster`, the declarative `holos` realm
+    import, and the `HTTPRoute` attaching it to the shared Gateway at
+    `auth.holos.internal`. Keycloak runs HTTP-only behind the Gateway: the
+    Gateway terminates external TLS once and forwards plaintext HTTP to
+    `keycloak-service:8080`, with ztunnel securing that Gateway→pod hop over
+    HBONE mTLS (HOL-1362 — no per-pod TLS `Certificate`, no Gateway→Keycloak
+    re-encryption `DestinationRule`)
 18. `keycloak-config` — the realm-reconciliation `Job` that converges the
     `holos` realm declaratively on every apply: the
     [keycloak-config-cli](https://github.com/adorsys/keycloak-config-cli)
