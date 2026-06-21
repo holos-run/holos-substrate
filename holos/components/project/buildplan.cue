@@ -640,14 +640,17 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 			(EMAIL): {
 				apiVersion: "keycloak.holos.run/v1alpha1"
 				kind:       "KeycloakUser"
-				// _userName is the DNS-safe metadata.name derived from the email's
-				// local part: take the substring before "@", lowercase it, replace
-				// every run of chars outside [a-z0-9] with a single "-", and trim a
-				// leading/trailing "-" so the result is a valid DNS label (the email
-				// itself is carried in spec.email; this is only the object name).
-				let _local = strings.ToLower(strings.SplitN(EMAIL, "@", 2)[0])
-				let _collapsed = regexp.ReplaceAll("[^a-z0-9]+", _local, "-")
-				let _userName = regexp.ReplaceAll("^-+|-+$", _collapsed, "")
+				// _userName is the DNS-safe metadata.name derived from the FULL email
+				// (local part AND domain): lowercase the whole address and replace
+				// every run of chars outside [a-z0-9] with a single "-", then trim a
+				// leading/trailing "-".  Including the domain is REQUIRED for
+				// uniqueness — deriving from the local part alone would map distinct
+				// owners alice@example.com and alice@example.org to the same name
+				// "alice", a render conflict (and a single CR with two emails).  The
+				// email itself is carried in spec.email; this is only the object
+				// name, bounded to a valid DNS label by the metadata.name unification.
+				let _sanitized = regexp.ReplaceAll("[^a-z0-9]+", strings.ToLower(EMAIL), "-")
+				let _userName = regexp.ReplaceAll("^-+|-+$", _sanitized, "")
 				metadata: {
 					name:      _userName & =~"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
 					namespace: CTRL_NS
@@ -742,8 +745,15 @@ userDefinedBuildPlan: {
 			"clusters/\(clusterName)/components/project/\(PROJECT)": {
 				artifact: _
 				generators: [{
-					kind:   "Resources"
-					output: "resources.gen.yaml"
+					kind: "Resources"
+					// The generator + transformer output filenames are written into
+					// the component's SHARED BuildContext.tempDir, so every artifact
+					// entry in this multi-project component must use a DISTINCT
+					// filename — a bare "resources.gen.yaml" reused across projects
+					// fails render with "resources.gen.yaml already set".  Scope each
+					// to the project name (PROJECT is DNS-label-bounded, so it is a
+					// safe filename segment).
+					output: "resources-\(PROJECT).gen.yaml"
 					resources: (#ProjectResources & {
 						NAME:   PROJECT
 						OWNERS: P.owners
@@ -753,7 +763,7 @@ userDefinedBuildPlan: {
 					{
 						kind: "Kustomize"
 						inputs: [for G in generators {G.output}]
-						output: "kustomize-output-bundle.yaml"
+						output: "kustomize-output-bundle-\(PROJECT).yaml"
 						kustomize: kustomization: resources: inputs
 					},
 					{

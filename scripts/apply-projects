@@ -226,9 +226,18 @@ gate_job() {
 }
 
 gate_ready() {
-  # gate_ready NAMESPACE RESOURCE [TERMINAL_REASON_REGEX]: poll a holos.run
+  # gate_ready NAMESPACE RESOURCE [TERMINAL_READY_REASON_REGEX]: poll a holos.run
   # resource to Ready=True, tolerating absence (apply lag) and failing fast on a
-  # terminal Ready=False reason.  NAMESPACE empty → cluster-scoped (no --namespace).
+  # terminal failure.  NAMESPACE empty → cluster-scoped (no --namespace).
+  #
+  # The jsonpath emits EVERY status condition as a "<type>=<status>=<reason>" line
+  # (not just the Ready condition), so two distinct terminal signals are
+  # detectable: (1) the Ready condition reporting False with a reason in the
+  # TERMINAL_READY_REASON_REGEX set (e.g. Conflict|ReferenceNotGranted that a
+  # retry cannot clear), and (2) a SEPARATE Stalled=True condition — Kargo's
+  # Project reports adoption failure as its own Stalled condition, NOT as a
+  # Ready reason, so a Ready-reason match alone would never catch it and the gate
+  # would block to timeout.  Both fail the gate immediately.
   local namespace="$1" resource="$2" terminal="${3:-Conflict|ReferenceNotGranted}"
   local state lookup_failures=0
   local deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
@@ -237,14 +246,20 @@ gate_ready() {
   while true; do
     if state=$(kubectl --context "${KUBE_CONTEXT}" "${ns_args[@]}" \
       get "${resource}" --ignore-not-found --request-timeout=10s \
-      -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[?(@.type=="Ready")]}{.status}={.reason}{"\n"}{end}'); then
+      -o jsonpath='{range .status.conditions[*]}{.type}={.status}={.reason}{"\n"}{end}'); then
       lookup_failures=0
       if [[ -z "${state}" ]]; then
         :
-      elif grep -q '^True=' <<<"${state}"; then
+      elif grep -q '^Ready=True=' <<<"${state}"; then
         break
-      elif grep -qE "^False=(${terminal})\$" <<<"${state}"; then
-        echo "ERROR: ${namespace:-(cluster)}/${resource} hit a terminal Ready=False (${state##*=}); inspect it with:" >&2
+      elif grep -q '^Stalled=True=' <<<"${state}"; then
+        echo "ERROR: ${namespace:-(cluster)}/${resource} is Stalled (often the namespace is missing the" >&2
+        echo "       kargo.akuity.io/project: \"true\" adoption label); inspect it with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} ${ns_args[*]} describe ${resource}" >&2
+        return 1
+      elif grep -qE "^Ready=False=(${terminal})\$" <<<"${state}"; then
+        local reason; reason="$(grep '^Ready=False=' <<<"${state}" | head -1)"
+        echo "ERROR: ${namespace:-(cluster)}/${resource} hit a terminal Ready=False (${reason##*=}); inspect it with:" >&2
         echo "       kubectl --context ${KUBE_CONTEXT} ${ns_args[*]} describe ${resource}" >&2
         return 1
       fi
@@ -312,7 +327,9 @@ for project_dir in "${PROJECT_BASE}"/*/; do
   # Gates: webhook Job complete, Kargo Project Ready (cluster-scoped), the Quay
   # Organization Ready, and the keycloak.holos.run resources Ready.
   gate_job "${CTRL_NS}" "${NAME}-quay-webhook-bootstrap" || exit 1
-  gate_ready "" "project.kargo.akuity.io/${NAME}" "Stalled" || exit 1
+  # The cluster-scoped Kargo Project: gate_ready detects its Stalled=True
+  # condition (adoption failure) directly, so no Ready-reason override is needed.
+  gate_ready "" "project.kargo.akuity.io/${NAME}" || exit 1
   gate_ready "${CTRL_NS}" "organization.quay.holos.run/${NAME}" "Conflict" || exit 1
   gate_ready "${CTRL_NS}" "keycloakclient.keycloak.holos.run/${NAME}" || exit 1
   for r in owner editor viewer; do

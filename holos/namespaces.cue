@@ -1,6 +1,8 @@
 package holos
 
 import (
+	"strings"
+
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -90,6 +92,23 @@ namespaces: [NAME=string]: corev1.#Namespace & {
 	env:     string
 	name:    "\(env)-\(project)" & =~"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
 }
+
+// #DNSLabel is the RFC 1123 DNS-label pattern (the same regex the namespaces map
+// key and the projects/apps collections enforce), named once for reuse by the
+// derivations below.
+#DNSLabel: =~"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
+
+// #ProjectNameNoEnvPrefix REJECTS a project name that begins with a reserved
+// "<env>-" prefix (ci-/qa-/prod-).  Such a name's derived BARE control namespace
+// (<name>) would collide with another project's derived ENV namespace — e.g. a
+// project "prod-foo" derives control namespace "prod-foo", which is also the prod
+// env namespace of project "foo" — silently unifying two projects' namespaces and
+// (via the Project component's owner-admin RoleBinding) leaking admin across them.
+// The pattern is the single env list (#Environments) joined into one alternation,
+// so the reserved set stays in lock-step with the environments.  Applied to a
+// project's bare control-namespace name so a violating registration fails at
+// render.
+#ProjectNameNoEnvPrefix: !~"^(\(strings.Join(#Environments, "|")))-"
 
 namespaces: {
 	// istio-system hosts the mesh dataplane and control plane themselves:
@@ -344,8 +363,20 @@ namespaces: {
 	// would duplicate it.  The derived bare entry reproduces the env entries' shape
 	// (ambient + the Kargo adoption label/keep annotation), since the control
 	// namespace also hosts the cluster-scoped Kargo Project that adopts it.
+	//
+	// COLLISION GUARD: a project literally named "<env>-<other>" (e.g. "prod-foo")
+	// would derive a BARE control namespace "prod-foo" that collides with the prod
+	// env namespace of a project "foo" — a cross-project namespace takeover (the
+	// owner-admin RoleBinding the Project component emits there would leak admin
+	// across the two projects).  That env-prefixed name is rejected at RENDER by
+	// #CollectionsValidated.projectNamesNoEnvPrefix (holos/collections.cue), which
+	// fails HARD via the namespaces component's _collectionsValidated reference —
+	// a bottom map KEY here is silently dropped by CUE and would NOT raise an
+	// error, so the rejection cannot live on this comprehension's key.  Here NS is
+	// only DNS-label validated; the env-prefix rejection is the collections-level
+	// assertion.
 	for PROJECT, _ in projects if PROJECT != "my-project" {
-		let NS = PROJECT & =~"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
+		let NS = PROJECT & #DNSLabel
 		(NS): {
 			_ambient: true
 			metadata: {

@@ -106,6 +106,27 @@ apps: appcoll.apps
 		}
 	}
 
+	// No project name may begin with a reserved "<env>-" prefix (ci-/qa-/prod-).
+	// The Project component (HOL-1355) derives a BARE <name> control namespace per
+	// project; a project literally named "prod-foo" would derive control namespace
+	// "prod-foo", which is also the PROD ENV namespace of a project "foo" — two
+	// projects silently unifying into one namespace, and (via the Project
+	// component's owner-admin RoleBinding) one project's owners gaining admin on
+	// the other's namespace.  A bottom map KEY is silently DROPPED by CUE rather
+	// than raised as an error, so the bare-namespace comprehension in
+	// holos/namespaces.cue cannot itself reject such a name — the rejection must be
+	// an explicit assertion HERE, on the always-rendered validation anchor (the
+	// _ownerless precedent above), so a violating registration fails the render
+	// with a clear locus.  Each project NAME is unified with #ProjectNameNoEnvPrefix
+	// (holos/namespaces.cue — the single-sourced "<env>-" rejection pattern derived
+	// from #Environments) into a keyed field; a name that begins with a reserved
+	// prefix makes its entry bottom and fails the render.
+	projectNamesNoEnvPrefix: {
+		for PROJECT, _ in projects {
+			(PROJECT): PROJECT & #ProjectNameNoEnvPrefix
+		}
+	}
+
 	// tokens: per-app, an INTERPOLATION of the app's required fields
 	// (name|project|image|port).  Keyed by app NAME so distinct apps never unify
 	// into a cross-app conflict (the multi-app-collision trap).  Interpolation is
