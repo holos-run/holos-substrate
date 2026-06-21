@@ -12,6 +12,7 @@
 | -------- | ---------- | ----------- | -------------- |
 | 1        | 2026-06-17 | @jeffmccune | Initial design — four illustrative Kinds (`KeycloakClient`, `KeycloakClientRole`, `KeycloakRealmRole`, `KeycloakGroup`), the ownership boundary vs `keycloak-config-cli`, reserved-name + claim enforcement, and a list of open questions; schemas explicitly "illustrative, not final" |
 | 2        | 2026-06-20 | @jeffmccune | Make the `## Design` concrete for the **project group-management use case**. Add the centrally-managed **`KeycloakInstance`** reference Kind (API URL, `caBundle`, admin `credentialsSecretRef`, `realm`; multiple instances per cluster; in/out-of/remote-cluster targets) and the **`KeycloakUser`** Kind (Admin-API pre-create-if-necessary + first-broker-login auto-link by email). Resolve the open questions: the **claim value** comes from a **client-role** assignment surfaced by the existing `oidc-usermodel-client-role-mapper` (rejecting the full-path Group Membership mapper and a script mapper); **nested groups** `projects/<project>/{roles,custodians}/{owner,editor,viewer}` are idiomatic in Keycloak 26.x; **custodian delegation** uses Fine-Grained Admin Permissions v2 `manage-members`/`manage-membership` group scope (KC ≥ 26.2). Every Kind references a `KeycloakInstance` and a cross-namespace reference is authorized by a `security.holos.run` `ReferenceGrant` ([ADR-22](ADR-22.md)). State the **API-group dependency boundary** (`api/keycloak/v1alpha1` imports only `k8s.io/api`/`k8s.io/apimachinery`), the **`holos_controller` metrics**, and the **Gateway-API status** contract. Reconciled by the existing `holos-controller` binary as a second API group alongside `quay.holos.run`. Keep `Status: Proposed`, `Updates: ADR-3` |
+| 4        | 2026-06-21 | @jeffmccune | **Close the "Quay use case" gap (HOL-1350).** Reconcile the implemented `clientRoles` model with this ADR's proposed `clientRoleBindings`/`emitProjectRolesInGroupsClaim` design: `ClientRoleReference` now names its target client by **exactly one of** `clientRef` (a same-namespace `KeycloakClient` CR, the "project's own service" path) **or `clientId`** (a Keycloak clientId directly — the new field, CEL-enforced mutual exclusion). A `KeycloakGroup` confers a **project-prefixed** client role (`my-project-<role>`) on the **platform-reserved Quay client** (`https://quay.holos.localhost`) by naming its `clientId` directly — no tenant `KeycloakClient` CR exists for it (the reserved-name guard still forbids one). The group reconciler **ensures the project-prefixed role exists** on the named client (idempotent create) before assigning, and a **reserved-client guard** in `conferClientRoles` permits only project-prefixed names there — the platform's own reserved client-role names (`platform-admin`/`project-admin`) are refused, so the controller never overwrites a platform role binding and the `quay` **client object** stays config-cli's. The role then surfaces in Quay's `groups` claim via the already-deployed `quay-client-roles` mapper, so [ADR-19](ADR-19.md) `syncedTeams[].oidcGroup` membership populates with **no Quay-side or new-mapper change**. The `KeycloakClient` reserved-name guard (client-object create/reconfigure) is unchanged. The `my-project` role groups now confer the role on **both** the Quay client (`clientId`) and the project client (`clientRef`). `KeycloakClientRole`/`KeycloakRealmRole` remain unimplemented. `Status`/`Updates: ADR-3` unchanged |
 | 3        | 2026-06-20 | @jeffmccune | **`Status: Partially Implemented`** — the API group **shipped** (HOL-1344..HOL-1348): the `api/keycloak/v1alpha1` types (`KeycloakInstance`/`Group`/`User`/`Client`), the `internal/keycloak` Admin REST client seam, and the four reconcilers (`internal/controller/keycloak`, claim model + finalizers + conditions + metrics + `ReferenceGrant` gating), with CRDs and RBAC installed by the controller's kustomize tree. Phase 6 (HOL-1348) wired the Holos CUE layer: the controller's **admin credential** (the confidential `svc-holos-controller` service-account client with scoped `realm-management` roles + a generate-once bootstrap into `holos-controller-keycloak-creds`), the realm's **first-broker-login auto-link flow** (`Detect Existing Broker User` + `Automatically Set Existing User`), the central **`KeycloakInstance`** + `security.holos.run` `ReferenceGrant` (the `keycloak-instance` component), and the **`my-project`** project CRs (the role/custodian `KeycloakGroup`s, the owner `KeycloakUser` `bob@example.com`, and the project `KeycloakClient`). **Implementation deviations from this ADR's worked examples:** the shipped `KeycloakGroup.spec.clientRoles[]` / `KeycloakClient.spec.clientRoles[]` (a `{clientRef, role}` referencing a `KeycloakClient` CR by object name) replaced the proposed `KeycloakGroup.clientRoleBindings` (a bare `clientId` list) + `KeycloakClient.emitProjectRolesInGroupsClaim` flag, and the `KeycloakClient` reconciler always ensures its own client-role→`groups` mapper. A consequence: the ADR's **"Quay use case"** (folding `my-project-<role>` into the **platform Quay** client's token with no project client) is **not yet implemented** — the reserved-name guard forbids a tenant `KeycloakClient` targeting `https://quay.holos.localhost` and `clientRef` resolves only a same-namespace CR, so today the `my-project` claim values surface in the **project's own** `https://my-project.holos.localhost` client token (the ADR's "project's own service" path). Folding onto the reserved Quay client is tracked as follow-up. `KeycloakClientRole`/`KeycloakRealmRole` remain unimplemented. `Updates: ADR-3` unchanged |
 
 ## Context and Problem Statement
@@ -384,11 +385,18 @@ spec:
   # per-client; see "claim value" below). The Quay client https://quay.holos.localhost
   # is the consumer for the ADR-19 syncedTeams use case — and it needs NO project
   # KeycloakClient at all, which is why this binding lives on KeycloakGroup (the
-  # owner of the role groups), not on KeycloakClient. List one or more clientIds;
-  # each may be a platform client (e.g. the Quay client, project-prefixed roles
-  # only) or a project's own KeycloakClient.
-  clientRoleBindings:
+  # owner of the role groups), not on KeycloakClient. List one or more entries;
+  # each names its target client by EXACTLY ONE of clientId (a Keycloak clientId
+  # directly — used for the reserved Quay client, project-prefixed roles only) or
+  # clientRef (a same-namespace KeycloakClient CR — a project's own client).
+  #
+  # IMPLEMENTED SHAPE (HOL-1347/HOL-1350): the field is spec.clientRoles[], a list
+  # of {clientId|clientRef, role} — it replaced this ADR's earlier proposed
+  # KeycloakGroup.clientRoleBindings (a bare clientId list). The example below uses
+  # the implemented field.
+  clientRoles:
     - clientId: https://quay.holos.localhost   # the ADR-19 syncedTeams consumer
+      role: my-project-owner                   # project-prefixed; reserved on this client
   # Custodian delegation: members of custodians/<role> manage membership of
   # roles/<role>, via FGAP v2 manage-members/manage-membership scoped to the
   # roles/<role> group. "controller" is the fallback mechanism (see below).
@@ -497,15 +505,18 @@ one owner for the binding even when, as in the Quay case, **no project
 `KeycloakClient` exists at all**:
 
 - **For the Quay use case** (`syncedTeams[].oidcGroup` reads Quay's token): the
-  `KeycloakGroup` lists `clientId: https://quay.holos.localhost` in
-  `clientRoleBindings`, so each `roles/<role>` group is assigned a **client role
-  `my-project-<role>` on the Quay client** — the client the existing
-  `quay-client-roles` mapper already serves. A member of `roles/owner` thereby
-  holds the `my-project-owner` Quay-client role (via Keycloak's group → role
-  assignment), and the already-deployed `quay-client-roles` mapper emits
-  `my-project-owner` into Quay's `groups` claim with **no Quay-side or new-mapper
-  change** and **no project `KeycloakClient`**. This is the join the "no Quay-side
-  change" consequence rests on.
+  `KeycloakGroup` lists `clientId: https://quay.holos.localhost` in its
+  `clientRoles` (the implemented field; see the example above), so each
+  `roles/<role>` group is assigned a **client role `my-project-<role>` on the Quay
+  client** — the client the existing `quay-client-roles` mapper already serves. A
+  member of `roles/owner` thereby holds the `my-project-owner` Quay-client role
+  (via Keycloak's group → role assignment), and the already-deployed
+  `quay-client-roles` mapper emits `my-project-owner` into Quay's `groups` claim
+  with **no Quay-side or new-mapper change** and **no project `KeycloakClient`**.
+  This is the join the "no Quay-side change" consequence rests on, and it is
+  **implemented as of HOL-1350** (Revision 4): the group reconciler resolves the
+  named `clientId`, ensures the project-prefixed role on it, and assigns it without
+  seizing the client object.
 - **For a project's own service** (its token must carry its own role): the
   `KeycloakGroup` lists that project `KeycloakClient`'s `clientId` in
   `clientRoleBindings`, and the `KeycloakClient` sets

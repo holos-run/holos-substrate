@@ -43,14 +43,35 @@ const clientRoleMapperName = "client-roles"
 const groupsClaimName = "groups"
 
 // reservedClientIDs are the platform-reserved Keycloak clientIds a tenant
-// KeycloakClient refuses to manage (ADR-20). They are the platform OIDC clients
-// owned by the keycloak-config-cli realm config (argocd, kargo) and the
-// in-cluster Quay client (https://quay.holos.localhost); a namespaced tenant CR
-// must not claim or clobber them.
+// KeycloakClient refuses to MANAGE as a client object (ADR-20). They are the
+// platform OIDC clients owned by the keycloak-config-cli realm config (argocd,
+// kargo) and the in-cluster Quay client (https://quay.holos.localhost); a
+// namespaced tenant CR must not create or reconfigure the client object itself.
+//
+// The guard applies to the CLIENT OBJECT only. Per ADR-20 "Claim value via a
+// client role", a KeycloakGroup MAY still confer a controller-claimed,
+// project-prefixed client ROLE (e.g. my-project-owner) on a reserved client
+// without seizing the client object — that is the join the Quay use case rests on
+// (the role surfaces in Quay's groups claim via the already-deployed
+// quay-client-roles mapper). Only the platform's own reserved client-role NAMES
+// stay off-limits (reservedClientRoleNames below).
 var reservedClientIDs = map[string]bool{
 	"argocd":                       true,
 	"kargo":                        true,
 	"https://quay.holos.localhost": true,
+}
+
+// reservedClientRoleNames are the platform's own client-role names on a reserved
+// client that a tenant CR must never claim (ADR-20 "Ownership / disjointness vs
+// keycloak-config-cli": the quay client's platform-admin/project-admin). A
+// KeycloakGroup conferring a role on a reserved client is restricted to
+// project-prefixed names — a reserved name here is refused so the controller never
+// overwrites a platform role binding. Project-prefixed names (my-project-owner)
+// are NOT in this set and remain assignable, which is what makes the claim-value
+// mechanism safe.
+var reservedClientRoleNames = map[string]bool{
+	"platform-admin": true,
+	"project-admin":  true,
 }
 
 // ClientClient is the seam the KeycloakClient reconciler drives Keycloak through.

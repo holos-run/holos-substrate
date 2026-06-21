@@ -77,6 +77,12 @@ type GroupClient interface {
 	// GetClientRole fetches one client role by name (notably its UUID, needed to
 	// assign it to a group); a missing role reports keycloak.IsNotFound.
 	GetClientRole(ctx context.Context, clientUUID, roleName string) (*keycloak.ClientRole, error)
+	// CreateClientRoleIfNotExists creates a client role on the client, treating an
+	// already-existing role as success (idempotent). The group reconciler ensures
+	// the conferred role exists before assigning it — required for the Quay use
+	// case, where the project-prefixed role on the platform-reserved Quay client is
+	// not created by any KeycloakClient CR (none exists for the reserved client).
+	CreateClientRoleIfNotExists(ctx context.Context, clientUUID string, role keycloak.ClientRole) error
 	// AssignClientRoleToGroup grants the client role to the group; re-assigning an
 	// already-held role is idempotent on Keycloak's side.
 	AssignClientRoleToGroup(ctx context.Context, groupID, clientUUID string, role keycloak.ClientRole) error
@@ -402,10 +408,13 @@ func (s *stringSet) sorted() []string {
 // and unassigns any role this CR previously managed (recorded in
 // status.managedClientRoles) that is no longer desired — so a role removed from
 // the spec is actively revoked rather than left active (the add-only gap). Each
-// declared entry resolves the referenced KeycloakClient CR to its Keycloak
-// clientId, finds the OIDC client, gets the named client role, and assigns it (the
-// join that makes a member of the group hold the client role the client's role
-// mapper emits into the groups claim, ADR-20). status.managedClientRoles is
+// declared entry resolves its target clientId (a same-namespace KeycloakClient CR
+// via clientRef, or a named clientId directly via clientId — the Quay use case),
+// finds the OIDC client, gets the named client role, and assigns it (the join that
+// makes a member of the group hold the client role the client's role mapper emits
+// into the groups claim, ADR-20). A project-prefixed role may be conferred on a
+// platform-reserved client, but the platform's own reserved client-role names on
+// it are refused (the claim-value boundary). status.managedClientRoles is
 // rewritten to the new desired set so the next reconcile knows what it owns.
 func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient, group *keycloakv1alpha1.KeycloakGroup, groupID string) error {
 	// Resolve the desired roles, keyed "<clientId>/<role>", to the OIDC client UUID
@@ -417,9 +426,18 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 	desired := map[string]roleTarget{}
 	desiredKeys := make([]string, 0, len(group.Spec.ClientRoles))
 	for _, ref := range group.Spec.ClientRoles {
-		clientID, err := r.resolveClientID(ctx, group.Namespace, ref.ClientRef)
+		clientID, err := r.resolveClientID(ctx, group.Namespace, ref)
 		if err != nil {
 			return err
+		}
+		// Reserved-client guard (ADR-20 "Claim value via a client role"): a group
+		// MAY confer a project-prefixed client role on a platform-reserved client
+		// (the Quay use case) but MUST NOT touch the platform's own reserved client
+		// roles on it — the client OBJECT stays config-cli's, only project-prefixed
+		// roles on it are controller-claimed. A reserved role name on a reserved
+		// client is refused before any Keycloak write.
+		if reservedClientIDs[clientID] && reservedClientRoleNames[ref.Role] {
+			return fmt.Errorf("client role %q on reserved client %q is platform-reserved and cannot be conferred by a KeycloakGroup", ref.Role, clientID)
 		}
 		oidc, err := kc.FindClientByClientID(ctx, clientID)
 		recordKeycloakAPI(opFindClientByClientID, err)
@@ -427,7 +445,16 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 			return fmt.Errorf("finding Keycloak client %q for role %q: %w", clientID, ref.Role, err)
 		}
 		if oidc == nil {
-			return fmt.Errorf("no Keycloak client %q (from clientRef %q) exists", clientID, ref.ClientRef)
+			return fmt.Errorf("no Keycloak client %q (from %s) exists", clientID, clientRefDescription(ref))
+		}
+		// Ensure the conferred role exists on the target client before assigning it.
+		// For a project's own KeycloakClient the client reconciler also creates it,
+		// but for a named reserved client (the Quay use case) no KeycloakClient CR
+		// exists to create it — so the group reconciler must (idempotent).
+		createRoleErr := kc.CreateClientRoleIfNotExists(ctx, oidc.ID, keycloak.ClientRole{Name: ref.Role})
+		recordKeycloakAPI(opCreateClientRole, createRoleErr)
+		if createRoleErr != nil {
+			return fmt.Errorf("ensuring client role %q on Keycloak client %q: %w", ref.Role, clientID, createRoleErr)
 		}
 		role, err := kc.GetClientRole(ctx, oidc.ID, ref.Role)
 		recordKeycloakAPI(opGetClientRole, err)
@@ -512,11 +539,28 @@ func splitManagedRole(key string) (clientID, role string, ok bool) {
 	return key[:idx], key[idx+1:], true
 }
 
-// resolveClientID resolves a clientRef (a KeycloakClient object name in namespace)
-// to the underlying Keycloak clientId (the KeycloakClient's spec.clientId), so the
-// reference stays a valid Kubernetes object name even though the Keycloak clientId
-// is a URL (ADR-20, ClientRoleReference).
-func (r *GroupReconciler) resolveClientID(ctx context.Context, namespace, clientRef string) (string, error) {
+// clientRefDescription renders a human-readable description of which field named
+// the target client, for error messages (clientId X or clientRef Y).
+func clientRefDescription(ref keycloakv1alpha1.ClientRoleReference) string {
+	if ref.ClientID != "" {
+		return fmt.Sprintf("clientId %q", ref.ClientID)
+	}
+	return fmt.Sprintf("clientRef %q", ref.ClientRef)
+}
+
+// resolveClientID resolves a ClientRoleReference to the underlying Keycloak
+// clientId (ADR-20, ClientRoleReference). When ref.ClientID is set it names the
+// Keycloak clientId directly (the "Quay use case" — conferring a project-prefixed
+// role on the platform-reserved Quay client, for which no same-namespace
+// KeycloakClient CR exists). Otherwise ref.ClientRef names a same-namespace
+// KeycloakClient CR whose spec.clientId is the target, so the reference stays a
+// valid Kubernetes object name even though the Keycloak clientId is a URL. The CRD
+// CEL rule guarantees exactly one of the two is set.
+func (r *GroupReconciler) resolveClientID(ctx context.Context, namespace string, ref keycloakv1alpha1.ClientRoleReference) (string, error) {
+	if ref.ClientID != "" {
+		return ref.ClientID, nil
+	}
+	clientRef := ref.ClientRef
 	kclient := &keycloakv1alpha1.KeycloakClient{}
 	key := types.NamespacedName{Namespace: namespace, Name: clientRef}
 	if err := r.Get(ctx, key, kclient); err != nil {
