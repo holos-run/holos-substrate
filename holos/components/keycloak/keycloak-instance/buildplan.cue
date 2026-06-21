@@ -54,12 +54,22 @@ let KEYCLOAK_URL = "https://keycloak-service.\(NAMESPACE).svc:8443"
 let CONTROLLER_CREDS_SECRET = "holos-controller-keycloak-creds"
 
 // PROJECT_NAMESPACES are the project namespaces the ReferenceGrant authorizes to
-// reference this instance.  Today only my-project; adding a project adds its
-// namespace here (each entry is unified with #RegisteredNamespace so a typo or a
-// removed registry entry is a render failure rather than a silent unauthorized
-// reference at reconcile time).
+// reference this instance.  It is the bespoke my-project namespace plus, derived
+// from the `projects` collection (HOL-1355), each generalized project's bare
+// <name> CONTROL namespace — where the Project component places its
+// keycloak.holos.run CRs (the bare-<name> control-namespace resolution forced by
+// the controller's validateDirectClientRole guard; see
+// holos/components/project/buildplan.cue).  The derivation skips my-project (the
+// bespoke component owns its namespace until HOL-1357, and the static literal
+// below already covers it), so with only my-project registered the grant's `from`
+// is byte-identical to before.  Each entry is unified with #RegisteredNamespace
+// so a typo or a removed registry entry is a render failure rather than a silent
+// unauthorized reference at reconcile time.
 let PROJECT_NAMESPACES = [
 	"my-project" & #RegisteredNamespace,
+	for PROJECT, _ in projects if PROJECT != "my-project" {
+		PROJECT & #RegisteredNamespace
+	},
 ]
 
 // KEYCLOAK_GROUP is the API group every keycloak.holos.run referrer and the

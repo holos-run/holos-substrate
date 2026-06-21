@@ -1,0 +1,350 @@
+#!/usr/bin/env bash
+# Apply the collection-driven Project component (HOL-1355) with the local-ca CA
+# bundle injected into each project's Quay Organization caBundle.
+#
+# The `project` component is the generalization of the bespoke my-project
+# scaffold: it iterates the `projects` collection (holos/collections.cue) and
+# renders, for every projects.<name> EXCEPT my-project (the bespoke component
+# still owns it until HOL-1357), the full per-project control-plane resource set
+# into clusters/k3d-holos/components/project/<name>/.  Each project's Quay
+# Organization carries spec.caBundle — the per-cluster local-ca certificate the
+# Holos Controller (ADR-18/ADR-19) needs to trust the in-cluster Quay registry's
+# mkcert-signed serving certificate.  That trust material is per-cluster and is
+# NEVER committed (it is absent from the rendered holos/deploy/ tree); it is
+# injected here at apply time via the ca_bundle_pem CUE tag, the same --inject
+# pattern scripts/apply-my-project and scripts/publish use.
+#
+# This script is the generic sibling of scripts/apply-my-project (which stays
+# bespoke and is removed with the my-project component in HOL-1357).  It mirrors
+# that script's posture exactly — context pinning, the CRD preflight, the
+# local-ca PEM resolution, the namespace-first / RBAC-pre-apply / stale-Job
+# delete ordering, and the per-resource Ready gates — but loops over every
+# rendered project subdirectory instead of the single my-project component.
+#
+# With only my-project registered today the `project` component renders no
+# output, so this script is a clean no-op (it reports "no project components
+# rendered" and exits 0).  Register a real project (a projects/<name>.cue
+# one-liner) and it provisions that project's control plane.
+#
+# ORDERING — the same prerequisites as scripts/apply-my-project:
+#   1. scripts/local-ca (the local CA whose certificate is injected).
+#   2. scripts/apply-svc-quay-resource-controller-creds (the holos-controller-quay-creds
+#      Secret the controller authenticates to Quay with) and the Keycloak
+#      controller credential — see docs/runbooks/holos-controller.md.
+#   3. The master scripts/apply (the Argo CD / Kargo controllers + namespaces
+#      component) and `make controller-deploy` (the Holos Controller + its CRDs).
+#
+# Environment overrides (identical to scripts/apply-my-project):
+#   KUBE_CONTEXT     — kubectl context to apply to (default: current, must be k3d-holos).
+#   CA_BUNDLE_PEM    — the local-ca certificate PEM to inject (default: read from
+#                      the cert-manager/local-ca Secret, falling back to mkcert).
+#   ROLLOUT_TIMEOUT  — per-gate timeout (default: 300s).
+#   KEEP_WORKDIR     — keep the temporary render directory for debugging.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+HOLOS_DIR="${REPO_ROOT}/holos"
+
+ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
+
+# Convert a kubectl-style duration to whole seconds (same grammar as
+# scripts/apply-my-project's duration_seconds).
+duration_seconds() {
+  local duration="$1" rest="$1" total=0
+  if [[ ! "${duration}" =~ ^([0-9]+[hms])+$ ]]; then
+    echo "ERROR: cannot parse duration '${duration}' (expected e.g. 300s, 5m, 1h30m)." >&2
+    return 1
+  fi
+  while [[ "${rest}" =~ ^([0-9]+)([hms]) ]]; do
+    case "${BASH_REMATCH[2]}" in
+      h) total=$((total + 10#${BASH_REMATCH[1]} * 3600)) ;;
+      m) total=$((total + 10#${BASH_REMATCH[1]} * 60)) ;;
+      s) total=$((total + 10#${BASH_REMATCH[1]})) ;;
+    esac
+    rest="${rest:${#BASH_REMATCH[0]}}"
+  done
+  echo "${total}"
+}
+
+ROLLOUT_TIMEOUT_SECONDS="$(duration_seconds "${ROLLOUT_TIMEOUT}")" || exit 1
+
+# ---------------------------------------------------------------------------
+# Prerequisites
+# ---------------------------------------------------------------------------
+missing=0
+for tool in holos kubectl; do
+  if ! command -v "${tool}" >/dev/null 2>&1; then
+    echo "ERROR: '${tool}' not found on PATH." >&2
+    [[ "${tool}" == holos ]] && echo "       Install from https://holos.run/docs/cli/" >&2
+    missing=1
+  fi
+done
+if [[ "${missing}" -ne 0 ]]; then
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Resolve and pin the target context (the scripts/apply posture)
+# ---------------------------------------------------------------------------
+if [[ -z "${KUBE_CONTEXT:-}" ]]; then
+  KUBE_CONTEXT="$(kubectl config current-context)"
+  if [[ "${KUBE_CONTEXT}" != "k3d-holos" ]]; then
+    echo "ERROR: current kubectl context is '${KUBE_CONTEXT}', expected 'k3d-holos'." >&2
+    echo "       The rendered manifests target the k3d-holos cluster.  Set" >&2
+    echo "       KUBE_CONTEXT explicitly to apply to a different context." >&2
+    exit 1
+  fi
+fi
+echo "Will apply manifests to kubectl context: ${KUBE_CONTEXT}"
+
+if ! kubectl --context "${KUBE_CONTEXT}" version --request-timeout=10s >/dev/null 2>&1; then
+  echo "ERROR: cannot reach the cluster for kubectl context '${KUBE_CONTEXT}'." >&2
+  echo "       Create the local cluster with scripts/local-k3d (see docs/local-cluster.md)." >&2
+  exit 1
+fi
+
+# Preflight: the Holos Controller's Organization CRD must be installed, or the
+# component apply below fails with `no matches for kind "Organization"`.
+if ! kubectl --context "${KUBE_CONTEXT}" get crd organizations.quay.holos.run \
+  --request-timeout=10s >/dev/null 2>&1; then
+  echo "ERROR: the organizations.quay.holos.run CRD is not installed on context '${KUBE_CONTEXT}'." >&2
+  echo "       The Holos Controller reconciles each project's Organization; install it first with:" >&2
+  echo "         make controller-deploy" >&2
+  echo "       (see docs/runbooks/holos-controller.md).  scripts/apply does not install the controller." >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Resolve the local-ca PEM to inject as each Organization's caBundle
+# ---------------------------------------------------------------------------
+CA_BUNDLE_PEM="${CA_BUNDLE_PEM:-}"
+if [[ -z "${CA_BUNDLE_PEM}" ]]; then
+  echo "Reading the local-ca Secret from cert-manager in context ${KUBE_CONTEXT} ..." >&2
+  CA_BUNDLE_PEM="$(kubectl --context "${KUBE_CONTEXT}" --namespace cert-manager \
+    get secret local-ca -o jsonpath='{.data.ca\.crt}' 2>/dev/null | base64 -d || true)"
+fi
+if [[ -z "${CA_BUNDLE_PEM}" ]] && command -v mkcert >/dev/null 2>&1; then
+  caroot="$(mkcert -CAROOT 2>/dev/null || true)"
+  if [[ -n "${caroot}" && -f "${caroot}/rootCA.pem" ]]; then
+    echo "local-ca Secret unreadable; falling back to ${caroot}/rootCA.pem" >&2
+    CA_BUNDLE_PEM="$(cat "${caroot}/rootCA.pem")"
+  fi
+fi
+if [[ -z "${CA_BUNDLE_PEM}" ]]; then
+  echo "ERROR: could not resolve the local-ca PEM." >&2
+  echo "       Run scripts/local-ca first, or set CA_BUNDLE_PEM to the local CA certificate." >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Render the platform with the local-ca PEM injected (cleaned up on exit)
+# ---------------------------------------------------------------------------
+WORKDIR="$(mktemp -d "${HOLOS_DIR}/.apply-projects.XXXXXX")"
+RENDER_DIR="${WORKDIR}/deploy"
+cleanup() {
+  if [[ -z "${KEEP_WORKDIR:-}" ]]; then
+    rm -rf "${WORKDIR}"
+  else
+    echo "KEEP_WORKDIR set; left render directory at ${WORKDIR}" >&2
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+echo "Rendering platform with ca_bundle_pem injected ..." >&2
+(
+  cd "${HOLOS_DIR}"
+  holos render platform \
+    --inject "ca_bundle_pem=${CA_BUNDLE_PEM}" \
+    --write-to "$(basename "${WORKDIR}")/deploy"
+) >&2
+
+PROJECT_BASE="${RENDER_DIR}/clusters/k3d-holos/components/project"
+NAMESPACE_DIR="${RENDER_DIR}/clusters/k3d-holos/components/namespaces"
+KEYCLOAK_INSTANCE_DIR="${RENDER_DIR}/clusters/k3d-holos/components/keycloak-instance"
+
+# No project components rendered (only my-project registered, which the generic
+# component skips) → clean no-op.
+if [[ ! -d "${PROJECT_BASE}" ]] || [[ -z "$(ls -A "${PROJECT_BASE}" 2>/dev/null)" ]]; then
+  echo "No project components rendered (the generic project component skips my-project," >&2
+  echo "and no other project is registered).  Nothing to apply." >&2
+  exit 0
+fi
+
+if [[ ! -d "${KEYCLOAK_INSTANCE_DIR}" ]]; then
+  echo "ERROR: render produced no keycloak-instance manifests under ${RENDER_DIR}." >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Apply the central KeycloakInstance + ReferenceGrant (shared by all projects)
+# ---------------------------------------------------------------------------
+# The KeycloakInstance carries the injected local-ca caBundle and the
+# ReferenceGrant authorizes each project namespace's Keycloak CRs to reference
+# it.  Applied once before any project component, from this injected render (the
+# committed tree omits the caBundle), exactly as scripts/apply-my-project does.
+echo "==> keycloak-instance" >&2
+kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
+  -f "${KEYCLOAK_INSTANCE_DIR}/"
+
+# ---------------------------------------------------------------------------
+# Gate helpers (lifted from scripts/apply-my-project)
+# ---------------------------------------------------------------------------
+gate_job() {
+  local namespace="$1" job="job/$2"
+  local job_state lookup_failures=0
+  local deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+  while true; do
+    if job_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace "${namespace}" \
+      get "${job}" --ignore-not-found --request-timeout=10s \
+      -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
+      lookup_failures=0
+      if [[ -z "${job_state}" ]] || grep -q '^Complete=True$' <<<"${job_state}"; then
+        break
+      fi
+      if grep -q '^Failed=True$' <<<"${job_state}"; then
+        echo "ERROR: ${namespace}/${job} failed; inspect it with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} --namespace ${namespace} describe ${job}" >&2
+        return 1
+      fi
+    else
+      lookup_failures=$((lookup_failures + 1))
+      if ((lookup_failures >= 3)); then
+        echo "ERROR: cannot query ${namespace}/${job}: ${lookup_failures} consecutive lookup failures." >&2
+        return 1
+      fi
+    fi
+    if ((SECONDS >= deadline)); then
+      echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for ${namespace}/${job} to complete." >&2
+      return 1
+    fi
+    sleep 5
+  done
+}
+
+gate_ready() {
+  # gate_ready NAMESPACE RESOURCE [TERMINAL_READY_REASON_REGEX]: poll a holos.run
+  # resource to Ready=True, tolerating absence (apply lag) and failing fast on a
+  # terminal failure.  NAMESPACE empty → cluster-scoped (no --namespace).
+  #
+  # The jsonpath emits EVERY status condition as a "<type>=<status>=<reason>" line
+  # (not just the Ready condition), so two distinct terminal signals are
+  # detectable: (1) the Ready condition reporting False with a reason in the
+  # TERMINAL_READY_REASON_REGEX set (e.g. Conflict|ReferenceNotGranted that a
+  # retry cannot clear), and (2) a SEPARATE Stalled=True condition — Kargo's
+  # Project reports adoption failure as its own Stalled condition, NOT as a
+  # Ready reason, so a Ready-reason match alone would never catch it and the gate
+  # would block to timeout.  Both fail the gate immediately.
+  local namespace="$1" resource="$2" terminal="${3:-Conflict|ReferenceNotGranted}"
+  local state lookup_failures=0
+  local deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+  local ns_args=()
+  [[ -n "${namespace}" ]] && ns_args=(--namespace "${namespace}")
+  while true; do
+    if state=$(kubectl --context "${KUBE_CONTEXT}" "${ns_args[@]}" \
+      get "${resource}" --ignore-not-found --request-timeout=10s \
+      -o jsonpath='{range .status.conditions[*]}{.type}={.status}={.reason}{"\n"}{end}'); then
+      lookup_failures=0
+      if [[ -z "${state}" ]]; then
+        :
+      elif grep -q '^Ready=True=' <<<"${state}"; then
+        break
+      elif grep -q '^Stalled=True=' <<<"${state}"; then
+        echo "ERROR: ${namespace:-(cluster)}/${resource} is Stalled (often the namespace is missing the" >&2
+        echo "       kargo.akuity.io/project: \"true\" adoption label); inspect it with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} ${ns_args[*]} describe ${resource}" >&2
+        return 1
+      elif grep -qE "^Ready=False=(${terminal})\$" <<<"${state}"; then
+        local reason; reason="$(grep '^Ready=False=' <<<"${state}" | head -1)"
+        echo "ERROR: ${namespace:-(cluster)}/${resource} hit a terminal Ready=False (${reason##*=}); inspect it with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} ${ns_args[*]} describe ${resource}" >&2
+        return 1
+      fi
+    else
+      lookup_failures=$((lookup_failures + 1))
+      if ((lookup_failures >= 3)); then
+        echo "ERROR: repeated failures reading ${namespace:-(cluster)}/${resource}; aborting the gate." >&2
+        return 1
+      fi
+    fi
+    if ((SECONDS >= deadline)); then
+      echo "ERROR: timed out waiting for ${namespace:-(cluster)}/${resource} to become Ready; inspect it with:" >&2
+      echo "       kubectl --context ${KUBE_CONTEXT} ${ns_args[*]} describe ${resource}" >&2
+      return 1
+    fi
+    sleep 5
+  done
+}
+
+# ---------------------------------------------------------------------------
+# Apply each rendered project, then gate it
+# ---------------------------------------------------------------------------
+for project_dir in "${PROJECT_BASE}"/*/; do
+  [[ -d "${project_dir}" ]] || continue
+  NAME="$(basename "${project_dir}")"
+  # The control namespace is the bare project name (the bare-<name> control
+  # namespace resolution — see holos/components/project/buildplan.cue).
+  CTRL_NS="${NAME}"
+  echo "================================================================" >&2
+  echo "==> project ${NAME} (control namespace ${CTRL_NS})" >&2
+
+  # Namespace first (owned by the namespaces component): the bare control
+  # namespace carries the kargo.akuity.io/project adoption label the Kargo
+  # Project gates on.
+  ns_file="${NAMESPACE_DIR}/namespace-${CTRL_NS}.yaml"
+  if [[ ! -f "${ns_file}" ]]; then
+    echo "ERROR: namespace manifest ${ns_file} not found for project ${NAME}." >&2
+    exit 1
+  fi
+  echo "==> namespace ${CTRL_NS}" >&2
+  kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts -f "${ns_file}"
+
+  # Pre-apply ServiceAccounts + RBAC before the Jobs (the filename-ordering race
+  # guard lifted from scripts/apply-my-project).
+  rbac_files=()
+  for f in "${project_dir}"serviceaccount-*.yaml \
+           "${project_dir}"role-*.yaml \
+           "${project_dir}"rolebinding-*.yaml; do
+    [[ -e "${f}" ]] && rbac_files+=(-f "${f}")
+  done
+  if ((${#rbac_files[@]})); then
+    kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts "${rbac_files[@]}"
+  fi
+
+  # Delete the prior webhook-token bootstrap Job so each run re-runs a fresh
+  # idempotent token-generate (a completed Job's pod template is immutable).
+  kubectl --context "${KUBE_CONTEXT}" --namespace "${CTRL_NS}" \
+    delete job -l "app.kubernetes.io/name=${NAME}-quay-webhook-bootstrap" \
+    --ignore-not-found --cascade=foreground --wait --request-timeout=60s
+
+  # Apply the full project component.
+  echo "==> apply ${NAME}" >&2
+  kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts -f "${project_dir}"
+
+  # Gates: webhook Job complete, Kargo Project Ready (cluster-scoped), the Quay
+  # Organization Ready, and the keycloak.holos.run resources Ready.
+  gate_job "${CTRL_NS}" "${NAME}-quay-webhook-bootstrap" || exit 1
+  # The cluster-scoped Kargo Project: gate_ready detects its Stalled=True
+  # condition (adoption failure) directly, so no Ready-reason override is needed.
+  gate_ready "" "project.kargo.akuity.io/${NAME}" || exit 1
+  gate_ready "${CTRL_NS}" "organization.quay.holos.run/${NAME}" "Conflict" || exit 1
+  gate_ready "${CTRL_NS}" "keycloakclient.keycloak.holos.run/${NAME}" || exit 1
+  for r in owner editor viewer; do
+    gate_ready "${CTRL_NS}" "keycloakgroup.keycloak.holos.run/${NAME}-roles-${r}" || exit 1
+    gate_ready "${CTRL_NS}" "keycloakgroup.keycloak.holos.run/${NAME}-custodians-${r}" || exit 1
+  done
+  # One KeycloakUser per owner; gate each rendered user.
+  for user_file in "${project_dir}"keycloakuser-*.yaml; do
+    [[ -e "${user_file}" ]] || continue
+    user_name="$(basename "${user_file}" .yaml)"
+    user_name="${user_name#keycloakuser-}"
+    gate_ready "${CTRL_NS}" "keycloakuser.keycloak.holos.run/${user_name}" || exit 1
+  done
+
+  echo "project ${NAME} applied." >&2
+done
+
+echo "All rendered projects applied."

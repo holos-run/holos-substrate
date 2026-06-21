@@ -1,6 +1,8 @@
 package holos
 
 import (
+	"strings"
+
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -90,6 +92,62 @@ namespaces: [NAME=string]: corev1.#Namespace & {
 	env:     string
 	name:    "\(env)-\(project)" & =~"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
 }
+
+// #DNSLabel is the RFC 1123 DNS-label pattern (the same regex the namespaces map
+// key and the projects/apps collections enforce), named once for reuse by the
+// derivations below.
+#DNSLabel: =~"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
+
+// #ProjectNameNoEnvPrefix REJECTS a project name that begins with a reserved
+// "<env>-" prefix (ci-/qa-/prod-).  Such a name's derived BARE control namespace
+// (<name>) would collide with another project's derived ENV namespace — e.g. a
+// project "prod-foo" derives control namespace "prod-foo", which is also the prod
+// env namespace of project "foo" — silently unifying two projects' namespaces and
+// (via the Project component's owner-admin RoleBinding) leaking admin across them.
+// The pattern is the single env list (#Environments) joined into one alternation,
+// so the reserved set stays in lock-step with the environments.  Applied to a
+// project's bare control-namespace name so a violating registration fails at
+// render.
+#ProjectNameNoEnvPrefix: !~"^(\(strings.Join(#Environments, "|")))-"
+
+// #ReservedNamespaceNames is the set of platform-infrastructure namespace names a
+// project may NOT take as its name.  A project's derived BARE control namespace is
+// the bare project name <name>; without this guard a project named e.g. "argocd",
+// "keycloak", or "quay" would derive a control namespace that UNIFIES with the
+// existing static platform namespace of that name (rather than failing), and the
+// Project component's owner-admin RoleBinding would then grant that project's
+// owners admin over the platform namespace — a privilege escalation.  Enumerated
+// explicitly (not computed from `namespaces`, which would be circular: the project
+// derivations contribute to that same map) and asserted in
+// holos/collections.cue's #CollectionsValidated.  Keep this in lock-step with the
+// static `namespaces` entries below: adding a platform namespace that a tenant
+// could plausibly name-collide with adds an entry here.  (The env-prefixed
+// derived names ci-/qa-/prod-<name> are covered by #ProjectNameNoEnvPrefix, and
+// the my-project static entry is covered by the bespoke component owning it; the
+// reserved set below is the OTHER static, non-project platform namespaces.)
+#ReservedNamespaceNames: [
+	"argocd",
+	"cert-manager",
+	"cnpg-system",
+	"echo",
+	"holos-controller",
+	"istio-gateways",
+	"istio-system",
+	"kargo",
+	"kargo-cluster-secrets",
+	"kargo-echo",
+	"kargo-shared-resources",
+	"kargo-system-resources",
+	"keycloak",
+	"quay",
+]
+
+// #ProjectNameNotReserved REJECTS a project name equal to any reserved
+// platform-namespace name (#ReservedNamespaceNames).  Built as a pattern that is
+// the project name unified with "not equal to" each reserved name; expressed as a
+// regexp anchored full-string NON-match of the alternation so a single constraint
+// covers the whole set and stays single-sourced.
+#ProjectNameNotReserved: !~"^(\(strings.Join(#ReservedNamespaceNames, "|")))$"
 
 namespaces: {
 	// istio-system hosts the mesh dataplane and control plane themselves:
@@ -324,6 +382,49 @@ namespaces: {
 	// my-project entry above is deliberately RETAINED in this phase (the bespoke
 	// my-project component still references it until HOL-1357); the derived
 	// prod-my-project etc. are additional, non-conflicting entries.
+	// Derived: per-project CONTROL namespace — the bare project name <name>.
+	//
+	// The Project component (HOL-1355) places a project's control-plane CRs (the
+	// keycloak.holos.run role/custodian groups + owner user + client, the Quay
+	// Organization, and the cluster-scoped Kargo Project's adopted namespace) in a
+	// namespace named EXACTLY the bare project name.  This is forced by the
+	// as-built controller guard validateDirectClientRole (HOL-1350): a role group
+	// may confer <name>-<role> on the platform Quay client directly only when its
+	// CR namespace equals the bare project name <name> — the Quay claim-population
+	// the Project's syncedTeams depend on.  This DEVIATES from ADR-21 Revision 3's
+	// prod-<name> control-namespace pick (recorded as a Deferred AC on HOL-1355,
+	// to be ratified in ADR-21 by HOL-1358); the bare-<name> control namespace is
+	// also exactly what the bespoke my-project component uses today.
+	//
+	// Gated `if PROJECT != "my-project"`: my-project already has the hand-written
+	// static bare entry above (retained until HOL-1357), and the Project component
+	// likewise skips my-project, so deriving a second bare my-project entry here
+	// would duplicate it.  The derived bare entry reproduces the env entries' shape
+	// (ambient + the Kargo adoption label/keep annotation), since the control
+	// namespace also hosts the cluster-scoped Kargo Project that adopts it.
+	//
+	// COLLISION GUARD: a project literally named "<env>-<other>" (e.g. "prod-foo")
+	// would derive a BARE control namespace "prod-foo" that collides with the prod
+	// env namespace of a project "foo" — a cross-project namespace takeover (the
+	// owner-admin RoleBinding the Project component emits there would leak admin
+	// across the two projects).  That env-prefixed name is rejected at RENDER by
+	// #CollectionsValidated.projectNamesNoEnvPrefix (holos/collections.cue), which
+	// fails HARD via the namespaces component's _collectionsValidated reference —
+	// a bottom map KEY here is silently dropped by CUE and would NOT raise an
+	// error, so the rejection cannot live on this comprehension's key.  Here NS is
+	// only DNS-label validated; the env-prefix rejection is the collections-level
+	// assertion.
+	for PROJECT, _ in projects if PROJECT != "my-project" {
+		let NS = PROJECT & #DNSLabel
+		(NS): {
+			_ambient: true
+			metadata: {
+				labels: "kargo.akuity.io/project":             "true"
+				annotations: "kargo.akuity.io/keep-namespace": "true"
+			}
+		}
+	}
+
 	for PROJECT, _ in projects {
 		for ENV in #Environments {
 			let NS = (#ProjectNamespace & {project: PROJECT, env: ENV}).name
