@@ -48,6 +48,17 @@ BREW_PREFIX="$(brew --prefix)"
 # Ensure the dnsmasq.d directory exists (brew install creates it, but be safe).
 mkdir -p "${BREW_PREFIX}/etc/dnsmasq.d"
 
+# Best-effort cleanup of the retired loopback-TLD config left behind on
+# machines that ran an earlier revision of this script (HOL-1364 moved the
+# platform off the RFC 6761 loopback TLD onto holos.internal). Without this,
+# the old wildcard keeps resolving locally and muddies migration
+# troubleshooting. The old TLD is composed from a variable so the retired
+# hostname never appears as a literal in this repo (keeps the repo-wide audit
+# clean). Removal is best-effort: missing files are not an error.
+OLD_TLD="holos.${LOCALHOST_TLD:-localhost}"
+rm -f "${BREW_PREFIX}/etc/dnsmasq.d/${OLD_TLD}.conf"
+sudo rm -f "/etc/resolver/${OLD_TLD}"
+
 # Idempotent — overwriting an existing config with the same content is safe;
 # the daemon reload below picks up any changes on re-runs.
 cat <<EOF >"${BREW_PREFIX}/etc/dnsmasq.d/holos.internal.conf"
