@@ -803,10 +803,12 @@ where the customer's IdP authenticates and the `holos` realm owns authorization.
 realm declares an **OIDC identity provider** with **broker alias `esso`** that
 points at the `esso` realm's OIDC endpoints. Its key settings:
 
-- **`alias: esso`** — the broker alias. (This is the alias the
-  `idp-auto-link`/`idp-create-user-if-unique` executions in the `holos` realm's
-  first-broker-login flow bind to. The alias changed from the earlier
-  placeholder `holos` to **`esso`** in this revision.)
+- **`alias: esso`** — the broker alias that identifies this identity provider in
+  the `holos` realm. The IdP selects which first-broker-login flow runs for its
+  logins via `firstBrokerLoginFlowAlias` (below); the flow's `idp-auto-link` /
+  `idp-create-user-if-unique` executions are flow configuration, not bound to the
+  alias. The alias changed from the earlier placeholder `holos` to **`esso`** in
+  this revision.
 - **`trustEmail: true`** — `esso` is trusted to assert verified email ownership,
   so the broker accepts the asserted email without re-verifying it. This is the
   setting that **enables email-based auto-link** to a pre-provisioned
@@ -833,14 +835,16 @@ client definition and the `holos` realm's IdP config and is **generated at
 runtime and never committed** (the runtime-secret guardrail,
 [secret-handling.md](../../holos/docs/secret-handling.md)).
 
-**This fixes the currently-failing auto-link flow.** Today the `holos` realm
-declares the HOL-1348 auto-link flow but **no IdP exists**, so the keycloak-config
-Job fails with `Cannot find stored execution by authenticator 'idp-auto-link'…`
-(an `idp-auto-link` execution cannot be stored when the realm has no identity
-provider to bind it to). Introducing the `esso` IdP — together with correcting
-the flow declaration in phases 2–3 — is precisely what **completes and fixes**
-this design: the auto-link executions become valid and the keycloak-config Job
-goes green.
+**This fixes the currently-failing auto-link flow.** Today the `holos` realm's
+first-broker-login flow declaration is incomplete/incorrect and no IdP exists to
+exercise it, and the keycloak-config Job fails with
+`Cannot find stored execution by authenticator 'idp-auto-link'…`. The precise
+config-cli/Keycloak cause is diagnosed and fixed in the implementing phases
+(HOL-1369), not asserted here; what this ADR records is the **design
+resolution**: introducing the `esso` IdP **and correcting the
+first-broker-login flow declaration** (phases 2–3) together **complete and fix**
+the HOL-1348 auto-link design so the keycloak-config Job goes green and a
+federated `esso` login auto-links to its pre-provisioned `holos` user.
 
 **Provisioned by Jobs only — no controller dependency (AC #5).** The `esso`
 realm and the `holos` realm's IdP are provisioned **exclusively by
@@ -893,8 +897,8 @@ The division of ownership and the disjointness *enforcement* generalize Revision
   (Before Rev 5 config-cli imported `realm: "holos"` with **no**
   `identity-provider` fields and the `KeycloakRealmImport` CR owned the IdP
   fields; Rev 5 moves `identityProviders[]` to config-cli — the two paths still
-  do not contend because they own disjoint fields.) Either way the **CRDs do
-  **not** redeclare or fight over any of these**. config-cli's managed-import
+  do not contend because they own disjoint fields.) Either way the CRDs do
+  **not** redeclare or fight over any of these. config-cli's managed-import
   behavior is **no-delete**: realm objects it does not declare are left untouched.
 - **The controller owns per-project, tenant-facing objects** reconciled from the
   CRDs above: a project's OIDC clients, its `projects/<project>/{roles,custodians}`
