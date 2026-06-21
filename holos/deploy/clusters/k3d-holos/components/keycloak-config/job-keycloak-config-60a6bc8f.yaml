@@ -3,7 +3,7 @@ kind: Job
 metadata:
   labels:
     app.kubernetes.io/name: keycloak-config
-  name: keycloak-config-732bd103
+  name: keycloak-config-60a6bc8f
   namespace: keycloak
 spec:
   backoffLimit: 3
@@ -47,6 +47,11 @@ spec:
             secretKeyRef:
               key: client_secret
               name: svc-holos-controller-oidc
+        - name: ESSO_IDP_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              key: client_secret
+              name: esso-idp-oidc
         - name: KEYCLOAK_AVAILABILITYCHECK_ENABLED
           value: "true"
         - name: KEYCLOAK_AVAILABILITYCHECK_TIMEOUT
