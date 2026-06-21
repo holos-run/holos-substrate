@@ -133,6 +133,16 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 	// NAME unified with "not equal to PROJECT" is bottom when they match.
 	NAME: !=PROJECT
 
+	// An app MUST NOT be named "project" either.  The app's Kargo Stage is named
+	// <name>-config, but the PROJECT component's project-level Stage is the fixed
+	// name "project-config" in the SAME control namespace — so an app named exactly
+	// "project" would render Stage "project-config" and COLLIDE with the project's
+	// promotion Stage (which NAME != PROJECT does not catch when the project is not
+	// itself named "project").  "project" is therefore a reserved app name; reject
+	// it at RENDER.  (HOL-1357 will unify the project-level Stage naming; until
+	// then the reserved name is the guard.)
+	NAME: !="project"
+
 	// CTRL_NS is the app's project's BARE control namespace (see the namespace
 	// note in the file header): every app resource lands here.  Unified with
 	// #RegisteredNamespace so a missing registry entry fails at render, not apply.
@@ -393,13 +403,23 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 	// REPOSITORY_RESOURCE is the quay.holos.run Repository within the project's
 	// Quay org (organizationRef = the project Organization CR named <project> in
 	// this same namespace — emitted by the Project component).  The Holos
-	// Controller reconciles it into the in-cluster Quay registry.  The repo_push
-	// webhook into the project ProjectConfig's Kargo receiver is reconciled at
-	// runtime from the receiver URL (the urlSecretRef points at the project's
-	// generated webhook Secret), so the committed CR carries NO webhook URL
-	// material; spec.caBundle carries the per-cluster local-ca PEM only when
-	// _CABundlePEM is injected at apply time (scripts/apply-projects), like the
-	// Organization.
+	// Controller reconciles it into the in-cluster Quay registry.  spec.caBundle
+	// carries the per-cluster local-ca PEM only when _CABundlePEM is injected at
+	// apply time (scripts/apply-projects), like the Organization.
+	//
+	// The repo_push webhook (AC: "OPTIONAL repo_push webhook") is DELIBERATELY NOT
+	// emitted in this foundational phase.  Kargo exposes the receiver URL in the
+	// project ProjectConfig's status (status.webhookReceivers[].url), NOT in the
+	// project's generated webhook Secret (the project's bootstrap Job writes only
+	// the receiver TOKEN under key `secret`, never the URL) — and no copier yet
+	// lands that status URL into a Secret key the Repository's urlSecretRef could
+	// read.  A webhook urlSecretRef pointing at a non-existent `url` key would make
+	// every app Repository fail webhook registration (WebhookURLNotFound), so the
+	// webhook is omitted until that receiver-URL plumbing exists (a Project-
+	// component concern).  Delivery still works WITHOUT the webhook: the app
+	// Warehouse polls the config repo every minute (WAREHOUSE_RESOURCE interval),
+	// the ADR-21-documented fallback.  Wiring the webhook is a follow-up once the
+	// receiver URL is published into a Secret key.
 	let REPOSITORY_RESOURCE = {
 		apiVersion: "quay.holos.run/v1alpha1"
 		kind:       "Repository"
@@ -417,16 +437,11 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 			// spec.name is CONFIG_REPO_NAME (<app>-config): the SAME repo the
 			// Warehouse subscribes to, the Argo CD Application pulls from, and
 			// scripts/publish pushes the rendered config artifact to.  Managing the
-			// bare <app> repo instead would leave the actual delivery repo (and its
-			// repo_push webhook) unmanaged, so webhook-triggered delivery would not
-			// fire (the codex round-1 finding).
+			// bare <app> repo instead would leave the actual delivery repo
+			// unmanaged (the codex round-1 finding).
 			name:       CONFIG_REPO_NAME
 			visibility: "private"
 			credentialsSecretRef: name: "holos-controller-quay-creds"
-			webhook: urlSecretRef: {
-				name: "\(PROJECT)-quay-webhook"
-				key:  "url"
-			}
 			if _CABundlePEM != "" {
 				caBundle: base64.Encode(null, _CABundlePEM)
 			}
