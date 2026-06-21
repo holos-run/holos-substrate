@@ -262,7 +262,10 @@ Run the bring-up steps **in order**:
    carrying the injected `caBundle`), then the `my-project` Namespace +
    Organization + the project's `keycloak.holos.run` CRs (the project client, the
    role/custodian KeycloakGroups, and the owner KeycloakUser, HOL-1348) and the
-   rest of the component. It gates the Organization reaching `Ready`.
+   rest of the component. It gates the Organization **and** the
+   `keycloak.holos.run` resources (the `KeycloakInstance`, the project
+   `KeycloakClient`, the role/custodian `KeycloakGroup`s, and the owner
+   `KeycloakUser`) reaching `Ready`.
 
 ```bash
 scripts/apply-my-project
