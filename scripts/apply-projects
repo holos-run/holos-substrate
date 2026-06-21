@@ -317,29 +317,39 @@ gate_ready() {
       get "${resource}" --ignore-not-found --request-timeout=10s \
       -o jsonpath='gen={.metadata.generation}={.status.observedGeneration}{"\n"}{range .status.conditions[*]}{.type}={.status}={.reason}{"\n"}{end}'); then
       lookup_failures=0
-      # Parse the leading gen= line: generation and observedGeneration.
-      local gen_line generation observed
-      gen_line="$(grep '^gen=' <<<"${state}" | head -1)"
-      generation="$(cut -d= -f2 <<<"${gen_line}")"
-      observed="$(cut -d= -f3 <<<"${gen_line}")"
-      if [[ -z "${state}" ]] || [[ -z "$(grep -v '^gen=' <<<"${state}")" ]]; then
+      # An ABSENT resource (kubectl --ignore-not-found) yields empty state, and a
+      # PRESENT-but-status-less resource yields only the leading "gen==" line.  In
+      # both cases there is no condition to act on yet — fall through to the
+      # deadline/sleep and keep polling.  Check this BEFORE any grep so a `grep`
+      # that finds nothing cannot trip `set -e` (codex round-3 finding); the
+      # condition greps below all use `|| true` for the same reason.
+      local conditions
+      conditions="$(grep -v '^gen=' <<<"${state}" || true)"
+      if [[ -z "${state}" ]] || [[ -z "${conditions}" ]]; then
         :
-      elif grep -q '^Ready=True=' <<<"${state}"; then
-        # Honor Ready=True only once the controller has observed the current
-        # generation (or the resource reports no observedGeneration at all).
-        if [[ -z "${observed}" ]] || [[ -z "${generation}" ]] || ((observed >= generation)); then
-          break
+      else
+        # Parse the leading gen= line: generation and observedGeneration.
+        local gen_line generation observed
+        gen_line="$(grep '^gen=' <<<"${state}" | head -1 || true)"
+        generation="$(cut -d= -f2 <<<"${gen_line}")"
+        observed="$(cut -d= -f3 <<<"${gen_line}")"
+        if grep -q '^Ready=True=' <<<"${conditions}"; then
+          # Honor Ready=True only once the controller has observed the current
+          # generation (or the resource reports no observedGeneration at all).
+          if [[ -z "${observed}" ]] || [[ -z "${generation}" ]] || ((observed >= generation)); then
+            break
+          fi
+        elif grep -q '^Stalled=True=' <<<"${conditions}"; then
+          echo "ERROR: ${namespace:-(cluster)}/${resource} is Stalled (often the namespace is missing the" >&2
+          echo "       kargo.akuity.io/project: \"true\" adoption label); inspect it with:" >&2
+          echo "       kubectl --context ${KUBE_CONTEXT} ${ns_args[*]} describe ${resource}" >&2
+          return 1
+        elif grep -qE "^Ready=False=(${terminal})\$" <<<"${conditions}"; then
+          local reason; reason="$(grep '^Ready=False=' <<<"${conditions}" | head -1 || true)"
+          echo "ERROR: ${namespace:-(cluster)}/${resource} hit a terminal Ready=False (${reason##*=}); inspect it with:" >&2
+          echo "       kubectl --context ${KUBE_CONTEXT} ${ns_args[*]} describe ${resource}" >&2
+          return 1
         fi
-      elif grep -q '^Stalled=True=' <<<"${state}"; then
-        echo "ERROR: ${namespace:-(cluster)}/${resource} is Stalled (often the namespace is missing the" >&2
-        echo "       kargo.akuity.io/project: \"true\" adoption label); inspect it with:" >&2
-        echo "       kubectl --context ${KUBE_CONTEXT} ${ns_args[*]} describe ${resource}" >&2
-        return 1
-      elif grep -qE "^Ready=False=(${terminal})\$" <<<"${state}"; then
-        local reason; reason="$(grep '^Ready=False=' <<<"${state}" | head -1)"
-        echo "ERROR: ${namespace:-(cluster)}/${resource} hit a terminal Ready=False (${reason##*=}); inspect it with:" >&2
-        echo "       kubectl --context ${KUBE_CONTEXT} ${ns_args[*]} describe ${resource}" >&2
-        return 1
       fi
     else
       lookup_failures=$((lookup_failures + 1))
@@ -528,22 +538,27 @@ for project_dir in "${PROJECT_BASE}"/*/; do
     rendered_users+=("${user_name}")
   done
 
-  # Prune stale KeycloakUser CRs: any keycloak.holos.run/KeycloakUser in this
-  # project's control namespace that is NOT in the rendered set.  This handles the
-  # HOL-1357 owner-user RENAME (the bespoke component named the CR `bob`; the
-  # generic Project component derives bob-<hash8> with adopt: true) — and any
-  # future owner removal — generically.  It runs AFTER the rendered users are
-  # applied and gated Ready (codex round-2 finding): on a first upgrade run the new
-  # bob-<hash8> CR is already present and Ready here, so deleting the stale `bob`
-  # leaves the new adopt:true CR as the sole manager with NO window of zero or two
-  # managers.  adopt:true means the realm user is RELEASED (never deleted) when the
-  # stale CR is removed, so the shared user survives the prune
-  # (api/keycloak/v1alpha1 KeycloakUserSpec.Adopt).  Only prune once at least one
-  # user is rendered for this project, so a render glitch that produced no users
-  # never deletes every user CR.
+  # Prune stale KeycloakUser CRs: any keycloak.holos.run/KeycloakUser THIS PROJECT
+  # OWNS (labelled app.kubernetes.io/name=${NAME}, the label every rendered project
+  # resource — including the bespoke component's owner user `bob` — carries) that
+  # is NOT in the rendered set.  Scoping the list to that label is essential: an
+  # unscoped list could delete unrelated KeycloakUser CRs that happen to share the
+  # control namespace, and for a NON-adopted user the finalizer would delete the
+  # actual realm user (codex round-3 finding).  This handles the HOL-1357 owner-user
+  # RENAME (the bespoke component named the CR `bob`; the generic Project component
+  # derives bob-<hash8> with adopt: true) — and any future owner removal —
+  # generically.  It runs AFTER the rendered users are applied and gated Ready
+  # (codex round-2 finding): on a first upgrade run the new bob-<hash8> CR is
+  # already present and Ready here, so deleting the stale `bob` leaves the new
+  # adopt:true CR as the sole manager with NO window of zero or two managers.
+  # adopt:true means the realm user is RELEASED (never deleted) when the stale CR is
+  # removed, so the shared user survives the prune (api/keycloak/v1alpha1
+  # KeycloakUserSpec.Adopt).  Only prune once at least one user is rendered for this
+  # project, so a render glitch that produced no users never deletes every user CR.
   if ((${#rendered_users[@]})); then
     existing_users="$(kubectl --context "${KUBE_CONTEXT}" --namespace "${CTRL_NS}" \
-      get keycloakuser.keycloak.holos.run -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
+      get keycloakuser.keycloak.holos.run -l "app.kubernetes.io/name=${NAME}" \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
       --request-timeout=10s 2>/dev/null || true)"
     while IFS= read -r existing_user; do
       [[ -n "${existing_user}" ]] || continue
