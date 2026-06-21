@@ -55,7 +55,10 @@ logs for the pod's enrollment events:
 kubectl logs -n istio-system -l app=ztunnel | grep <pod-name>
 ```
 
-## Exceptions: namespaces that are not enrolled
+## Exceptions: workload namespaces that are not enrolled
+
+The convention above applies to namespaces **carrying workloads**. Two such
+namespaces are deliberately left out:
 
 - **`istio-system`** — hosts the mesh dataplane and control plane themselves:
   istiod, istio-cni, and ztunnel. ztunnel is the node proxy that implements
@@ -66,6 +69,15 @@ kubectl logs -n istio-system -l app=ztunnel | grep <pod-name>
   themselves and terminate mesh traffic natively, so redirecting them through
   ztunnel adds nothing. See the registry entry in
   [`holos/namespaces.cue`](../namespaces.cue).
+
+Separately, a few **config/control-only** namespaces also carry
+`_ambient: false` — `kargo-system-resources`, `kargo-shared-resources`,
+`kargo-cluster-secrets`, and `kargo-echo`. These hold only configuration,
+credential, or Kargo control objects (`Warehouse`/`Stage`/`Freight`/`Promotion`)
+referenced by the enrolled `kargo` namespace, not pods, so there is no traffic
+for ztunnel to capture. They are not mesh exceptions in the same sense as the
+two above; see their rationale comments in
+[`holos/namespaces.cue`](../namespaces.cue).
 
 There is no `keycloak` exception. Keycloak **is** enrolled in the ambient mesh
 like any other workload namespace (`keycloak: _ambient: true`); see the

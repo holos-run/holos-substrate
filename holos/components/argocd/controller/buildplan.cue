@@ -34,13 +34,13 @@ import (
 // backchannel OIDC path (discovery/JWKS/token) runs in-cluster: the
 // SERVICE_ENTRY below makes the issuer hostname auth.holos.internal a
 // service the mesh resolves to the shared Istio gateway, so argocd-server
-// reaches Keycloak through the same Gateway→Keycloak path browsers use (the
-// Gateway terminates external TLS once and forwards plaintext HTTP to the
-// ambient Keycloak pod over a ztunnel HBONE mTLS hop, HOL-1362 — no
-// re-encryption DestinationRule) (the quay-holos-internal ServiceEntry
-// pattern — see the SERVICE_ENTRY comment for why the entry is retained even
-// though, on the .internal TLD, CoreDNS now resolves the issuer hostname
-// authoritatively), and "oidc.tls.insecure.skip.verify" accepts the
+// reaches Keycloak through the same Gateway→Keycloak path browsers use,
+// following the quay-holos-internal ServiceEntry pattern.  The Gateway
+// terminates external TLS once and forwards plaintext HTTP to the ambient
+// Keycloak pod over a ztunnel HBONE mTLS hop (HOL-1362 — no re-encryption
+// DestinationRule).  See the SERVICE_ENTRY comment for why the entry is
+// retained even though, on the .internal TLD, CoreDNS now resolves the issuer
+// hostname authoritatively.  "oidc.tls.insecure.skip.verify" accepts the
 // per-machine local-CA cert the Gateway serves (the local-only MVP posture
 // documented below).
 
