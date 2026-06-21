@@ -100,7 +100,19 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 	// projects key, validated by the collection's #RegisteredProject reference).
 	PROJECT: string
 
-	// IMAGE is the container image the app's Deployment runs (apps.<name>.image).
+	// IMAGE is the container image the app's Deployment runs (apps.<name>.image,
+	// a digest-pinned reference per the publish posture).  The image is per-APP, so
+	// it is carried on the app's REGISTRATION (the apps.<name>.image field), NOT the
+	// single platform-wide _AppImage tag (which can pin only ONE image and serves
+	// the echo sample) — a one-image tag cannot parameterize many apps.  The
+	// Deployment that runs this image is delivered to the cluster by the app's
+	// Argo CD Application from the published <app>-config artifact (NOT by
+	// scripts/apply-projects, which applies only the control plane — see the apply
+	// script), so updating the running image is a publish of a new <app>-config
+	// artifact built from an updated apps.<name>.image, the same render→publish→
+	// promote loop scripts/publish drives for echo/my-project.  Per-app digest
+	// injection at publish time is a publish-workflow extension; the registration's
+	// digest-pinned image is the foundational-phase mechanism.
 	IMAGE: string
 
 	// PORT is the container port the app listens on (apps.<name>.port); the
@@ -111,6 +123,15 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 	// (apps.<name>.host); when unset it defaults to <name>.holos.localhost (the
 	// convention; per-env hostname selection is a future extension).
 	HOST: string | *"\(NAME).holos.localhost"
+
+	// An app MUST NOT be named the same as its project.  Every app resource here
+	// is named with the bare app name in the project's control namespace, and the
+	// PROJECT component names its own KeycloakClient / Warehouse / Argo CD
+	// Application with the bare PROJECT name in that SAME namespace — so an app
+	// named <project> would collide with the project's own client/warehouse/
+	// application (a silent apply/reconcile-time failure).  Reject it at RENDER:
+	// NAME unified with "not equal to PROJECT" is bottom when they match.
+	NAME: !=PROJECT
 
 	// CTRL_NS is the app's project's BARE control namespace (see the namespace
 	// note in the file header): every app resource lands here.  Unified with

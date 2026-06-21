@@ -329,18 +329,31 @@ app_namespace() {
 # for a my-project app).
 apply_application_resources() {
   local app_dir="$1" app="$2"
-  echo "==> apply application ${app}" >&2
-  # Pre-apply the ServiceAccount + RBAC before the workload.
-  local app_rbac_files=()
+  echo "==> apply application ${app} (control plane)" >&2
+  # Apply ONLY the app's CONTROL-PLANE resources here: the Quay Repository, the
+  # app KeycloakClient, the Kargo Warehouse/Stage, and the Argo CD Application.
+  # The WORKLOAD objects (Deployment, Service, HTTPRoute, ConfigMap, and the app
+  # ServiceAccount/RoleBinding the workload runs as) are DELIVERED BY THE APP'S
+  # ARGO CD APPLICATION from the published <app>-config OCI artifact — applying
+  # them here too would make this script a SECOND manager of the same objects,
+  # fighting Argo CD's self-heal (the codex round-2 finding).  So they are
+  # rendered into the deploy tree (the source the publish workflow packages into
+  # the <app>-config artifact) but NOT kubectl-applied: until the first
+  # scripts/publish of <app>-config, the app's Argo CD Application is
+  # Missing/Unknown — expected scaffolding, exactly as the my-project Application
+  # is until its first config artifact publishes.
+  local cp_files=()
   local f
-  for f in "${app_dir}"serviceaccount-*.yaml \
-           "${app_dir}"rolebinding-*.yaml; do
-    [[ -e "${f}" ]] && app_rbac_files+=(-f "${f}")
+  for f in "${app_dir}"repository-*.yaml \
+           "${app_dir}"keycloakclient-*.yaml \
+           "${app_dir}"warehouse-*.yaml \
+           "${app_dir}"stage-*.yaml \
+           "${app_dir}"application-*.yaml; do
+    [[ -e "${f}" ]] && cp_files+=(-f "${f}")
   done
-  if ((${#app_rbac_files[@]})); then
-    kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts "${app_rbac_files[@]}"
+  if ((${#cp_files[@]})); then
+    kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts "${cp_files[@]}"
   fi
-  kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts -f "${app_dir}"
 }
 
 # gate_application APP_NS APP — gate one app's KeycloakClient and Repository
