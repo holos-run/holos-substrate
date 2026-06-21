@@ -801,9 +801,11 @@ let REALM_CONFIG = {
 	// confidential client the esso realm registered for this broker.
 	//
 	// config carries OIDC endpoints discovered from the esso realm's
-	// .well-known/openid-configuration (validateSignature off — Keycloak fetches
-	// the JWKS from the issuer directly via the discovery document).  useJwksUrl
-	// true so signature keys are fetched from the JWKS endpoint rather than pinned.
+	// .well-known/openid-configuration.  validateSignature: "true" — the broker
+	// verifies the esso-issued ID token's signature against the esso realm's JWKS
+	// (useJwksUrl: "true" fetches the keys from jwksUrl rather than pinning them),
+	// the secure posture for an OIDC IdP.  Both sides are the same Keycloak
+	// instance, so the JWKS fetch is an in-cluster call through the Gateway.
 	identityProviders: [{
 		alias:                     ESSO_IDP_ALIAS
 		displayName:               "Enterprise SSO (esso)"
