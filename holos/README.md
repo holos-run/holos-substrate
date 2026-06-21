@@ -831,8 +831,13 @@ collection-driven [`components/project/`](components/project/buildplan.cue) and
 generalization of the formerly hand-authored scaffold (the bespoke
 `components/my-project` was deleted). It lays down everything one project needs to
 receive Kargo-driven OCI delivery ([ADR-16](../docs/adr/ADR-16.md)) and is the
-template for a future self-service `ProjectRequest` (below). Its rendered
-resources are:
+template for a future self-service `ProjectRequest` (below). How to register
+your own project and app — the `owners` map, the app `project`/`image`/`port`
+fields, the env-prefixed namespace model and the bare-`<name>` control
+namespace, the primitive-role → Quay-team and → app-client binding, and the
+`scripts/apply-projects` workflow — is the authoring guide
+[docs/project-and-application-templates.md](docs/project-and-application-templates.md)
+([ADR-21](../docs/adr/ADR-21.md), `Implemented`). Its rendered resources are:
 
 - a **Namespace** (`my-project`) — registered centrally in
   [`namespaces.cue`](namespaces.cue), **not** emitted by the component (per
