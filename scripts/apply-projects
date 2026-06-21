@@ -207,41 +207,28 @@ kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
 # so a cluster that ran the now-deleted bespoke components/my-project (or its
 # scripts/apply-my-project) would otherwise keep retired objects indefinitely.
 # HOL-1357 deletes that component and folds my-project into this generic script;
-# carry forward the pruning the old script did, plus the new rename hazard:
+# carry forward the pruning the old script did:
 #
-#   - keycloakuser/bob — the bespoke component named the owner KeycloakUser CR
-#     `bob`; the generic Project component derives a DNS-safe, collision-resistant
-#     name (`bob-<hash8>`, e.g. bob-5ff860bf) with adopt: true.  On an upgraded
-#     cluster BOTH CRs would exist, both reconciling the same realm user — and the
-#     stale `bob` CR (created with the default adopt: false, so it OWNS the realm
-#     user) would, if it ever reconciled or were later GC'd, seize-or-DELETE the
-#     shared user out from under the new adopt:true CR.  Delete the stale `bob` CR
-#     so the new bob-<hash8> CR is the sole manager (codex round-1 finding).  The
-#     new CR's adopt: true then converges the realm user non-destructively.
 #   - the retired Database-backend Quay bootstrap material (my-project-quay-bootstrap
 #     Job/RBAC across quay/my-project/argocd, and the quay-initial-admin superuser
 #     Secret) the OIDC switch (HOL-1296) removed — this pruning lived in the old
 #     scripts/apply-my-project and moves here so upgraded clusters do not retain
 #     the inert cross-namespace RBAC and the dead privileged Secret.
 #
+# The stale owner KeycloakUser CR rename (`bob` → `bob-<hash8>`) is pruned LATER,
+# INSIDE the project loop AFTER the new hashed CR is applied and gated Ready (see
+# prune_stale_keycloak_users) — NOT here.  Pruning it here would run before the
+# new CR is applied, so on the FIRST upgrade run the old `bob` would be deleted
+# (or skipped) before bob-<hash8> exists, leaving a window with no manager (or
+# both); deferring the prune to after the new CR is Ready closes that window
+# (codex round-2 finding).
+#
 # All deletes are --ignore-not-found, so this is a no-op on a fresh cluster or a
 # second run.  Guarded on the my-project namespace existing (the only cluster that
 # could carry these is one that previously ran the bespoke my-project).
 if kubectl --context "${KUBE_CONTEXT}" get namespace my-project \
   --ignore-not-found --request-timeout=10s -o name 2>/dev/null | grep -q .; then
-  echo "==> prune retired my-project objects (one-time migration cleanup)" >&2
-  # The stale owner KeycloakUser CR from the bespoke component (named `bob`).  The
-  # generalized component's CR is bob-<hash8>, so `bob` is no longer rendered and a
-  # plain apply never removes it.  Delete only if the new hashed CR is present, so
-  # we never delete the sole manager of the realm user on a cluster the new render
-  # has not yet reached.
-  if kubectl --context "${KUBE_CONTEXT}" --namespace my-project \
-    get keycloakuser.keycloak.holos.run -o name --request-timeout=10s 2>/dev/null \
-    | grep -q '/bob-'; then
-    kubectl --context "${KUBE_CONTEXT}" --namespace my-project \
-      delete keycloakuser.keycloak.holos.run bob \
-      --ignore-not-found --request-timeout=60s
-  fi
+  echo "==> prune retired my-project bootstrap objects (one-time migration cleanup)" >&2
   # The retired Database-backend Quay bootstrap Job/RBAC + superuser Secret.
   stale_label="app.kubernetes.io/name=my-project-quay-bootstrap"
   kubectl --context "${KUBE_CONTEXT}" --namespace quay \
@@ -306,6 +293,20 @@ gate_ready() {
   # Project reports adoption failure as its own Stalled condition, NOT as a
   # Ready reason, so a Ready-reason match alone would never catch it and the gate
   # would block to timeout.  Both fail the gate immediately.
+  #
+  # STALE-READY GUARD (codex round-2 finding): a server-side apply that changes a
+  # CR's spec bumps metadata.generation, but the controller may not have
+  # reconciled it yet — so a Ready=True LEFT OVER FROM THE PRIOR GENERATION would
+  # make this gate report success before the current spec is reconciled (e.g. the
+  # project role groups whose clientRoles now confer the my-app role).  Every
+  # holos.run CR reports status.observedGeneration (the rich-status guardrail,
+  # AGENTS.md), so a Ready=True is only HONORED when observedGeneration has caught
+  # up to metadata.generation (observedGeneration >= generation).  The line is
+  # emitted FIRST as "gen=<generation>=<observedGeneration>" so the same single
+  # get sees both.  Resources that do NOT report observedGeneration (the
+  # cluster-scoped Kargo Project, whose plain-struct status has no such field)
+  # leave it empty, and an empty observedGeneration is TOLERATED (the generation
+  # check is skipped) so the Kargo Project gate keeps working as before.
   local namespace="$1" resource="$2" terminal="${3:-Conflict|ReferenceNotGranted}"
   local state lookup_failures=0
   local deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
@@ -314,12 +315,21 @@ gate_ready() {
   while true; do
     if state=$(kubectl --context "${KUBE_CONTEXT}" "${ns_args[@]}" \
       get "${resource}" --ignore-not-found --request-timeout=10s \
-      -o jsonpath='{range .status.conditions[*]}{.type}={.status}={.reason}{"\n"}{end}'); then
+      -o jsonpath='gen={.metadata.generation}={.status.observedGeneration}{"\n"}{range .status.conditions[*]}{.type}={.status}={.reason}{"\n"}{end}'); then
       lookup_failures=0
-      if [[ -z "${state}" ]]; then
+      # Parse the leading gen= line: generation and observedGeneration.
+      local gen_line generation observed
+      gen_line="$(grep '^gen=' <<<"${state}" | head -1)"
+      generation="$(cut -d= -f2 <<<"${gen_line}")"
+      observed="$(cut -d= -f3 <<<"${gen_line}")"
+      if [[ -z "${state}" ]] || [[ -z "$(grep -v '^gen=' <<<"${state}")" ]]; then
         :
       elif grep -q '^Ready=True=' <<<"${state}"; then
-        break
+        # Honor Ready=True only once the controller has observed the current
+        # generation (or the resource reports no observedGeneration at all).
+        if [[ -z "${observed}" ]] || [[ -z "${generation}" ]] || ((observed >= generation)); then
+          break
+        fi
       elif grep -q '^Stalled=True=' <<<"${state}"; then
         echo "ERROR: ${namespace:-(cluster)}/${resource} is Stalled (often the namespace is missing the" >&2
         echo "       kargo.akuity.io/project: \"true\" adoption label); inspect it with:" >&2
@@ -507,13 +517,48 @@ for project_dir in "${PROJECT_BASE}"/*/; do
     gate_ready "${CTRL_NS}" "keycloakgroup.keycloak.holos.run/${NAME}-roles-${r}" || exit 1
     gate_ready "${CTRL_NS}" "keycloakgroup.keycloak.holos.run/${NAME}-custodians-${r}" || exit 1
   done
-  # One KeycloakUser per owner; gate each rendered user.
+  # One KeycloakUser per owner; gate each rendered user and collect the rendered
+  # names so stale (no-longer-rendered) user CRs can be pruned afterward.
+  rendered_users=()
   for user_file in "${project_dir}"keycloakuser-*.yaml; do
     [[ -e "${user_file}" ]] || continue
     user_name="$(basename "${user_file}" .yaml)"
     user_name="${user_name#keycloakuser-}"
     gate_ready "${CTRL_NS}" "keycloakuser.keycloak.holos.run/${user_name}" || exit 1
+    rendered_users+=("${user_name}")
   done
+
+  # Prune stale KeycloakUser CRs: any keycloak.holos.run/KeycloakUser in this
+  # project's control namespace that is NOT in the rendered set.  This handles the
+  # HOL-1357 owner-user RENAME (the bespoke component named the CR `bob`; the
+  # generic Project component derives bob-<hash8> with adopt: true) — and any
+  # future owner removal — generically.  It runs AFTER the rendered users are
+  # applied and gated Ready (codex round-2 finding): on a first upgrade run the new
+  # bob-<hash8> CR is already present and Ready here, so deleting the stale `bob`
+  # leaves the new adopt:true CR as the sole manager with NO window of zero or two
+  # managers.  adopt:true means the realm user is RELEASED (never deleted) when the
+  # stale CR is removed, so the shared user survives the prune
+  # (api/keycloak/v1alpha1 KeycloakUserSpec.Adopt).  Only prune once at least one
+  # user is rendered for this project, so a render glitch that produced no users
+  # never deletes every user CR.
+  if ((${#rendered_users[@]})); then
+    existing_users="$(kubectl --context "${KUBE_CONTEXT}" --namespace "${CTRL_NS}" \
+      get keycloakuser.keycloak.holos.run -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
+      --request-timeout=10s 2>/dev/null || true)"
+    while IFS= read -r existing_user; do
+      [[ -n "${existing_user}" ]] || continue
+      keep=0
+      for ru in "${rendered_users[@]}"; do
+        [[ "${existing_user}" == "${ru}" ]] && { keep=1; break; }
+      done
+      if ((keep == 0)); then
+        echo "==> prune stale KeycloakUser ${CTRL_NS}/${existing_user} (no longer rendered)" >&2
+        kubectl --context "${KUBE_CONTEXT}" --namespace "${CTRL_NS}" \
+          delete keycloakuser.keycloak.holos.run "${existing_user}" \
+          --ignore-not-found --request-timeout=60s
+      fi
+    done <<<"${existing_users}"
+  fi
 
   # Now gate this project's apps (their KeycloakClient + Repository).
   while IFS= read -r app_dir; do
