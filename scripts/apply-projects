@@ -527,53 +527,29 @@ for project_dir in "${PROJECT_BASE}"/*/; do
     gate_ready "${CTRL_NS}" "keycloakgroup.keycloak.holos.run/${NAME}-roles-${r}" || exit 1
     gate_ready "${CTRL_NS}" "keycloakgroup.keycloak.holos.run/${NAME}-custodians-${r}" || exit 1
   done
-  # One KeycloakUser per owner; gate each rendered user and collect the rendered
-  # names so stale (no-longer-rendered) user CRs can be pruned afterward.
-  rendered_users=()
+  # One KeycloakUser per owner; gate each rendered user Ready.
   for user_file in "${project_dir}"keycloakuser-*.yaml; do
     [[ -e "${user_file}" ]] || continue
     user_name="$(basename "${user_file}" .yaml)"
     user_name="${user_name#keycloakuser-}"
     gate_ready "${CTRL_NS}" "keycloakuser.keycloak.holos.run/${user_name}" || exit 1
-    rendered_users+=("${user_name}")
   done
 
-  # Prune stale KeycloakUser CRs: any keycloak.holos.run/KeycloakUser THIS PROJECT
-  # OWNS (labelled app.kubernetes.io/name=${NAME}, the label every rendered project
-  # resource — including the bespoke component's owner user `bob` — carries) that
-  # is NOT in the rendered set.  Scoping the list to that label is essential: an
-  # unscoped list could delete unrelated KeycloakUser CRs that happen to share the
-  # control namespace, and for a NON-adopted user the finalizer would delete the
-  # actual realm user (codex round-3 finding).  This handles the HOL-1357 owner-user
-  # RENAME (the bespoke component named the CR `bob`; the generic Project component
-  # derives bob-<hash8> with adopt: true) — and any future owner removal —
-  # generically.  It runs AFTER the rendered users are applied and gated Ready
-  # (codex round-2 finding): on a first upgrade run the new bob-<hash8> CR is
-  # already present and Ready here, so deleting the stale `bob` leaves the new
-  # adopt:true CR as the sole manager with NO window of zero or two managers.
-  # adopt:true means the realm user is RELEASED (never deleted) when the stale CR is
-  # removed, so the shared user survives the prune (api/keycloak/v1alpha1
-  # KeycloakUserSpec.Adopt).  Only prune once at least one user is rendered for this
-  # project, so a render glitch that produced no users never deletes every user CR.
-  if ((${#rendered_users[@]})); then
-    existing_users="$(kubectl --context "${KUBE_CONTEXT}" --namespace "${CTRL_NS}" \
-      get keycloakuser.keycloak.holos.run -l "app.kubernetes.io/name=${NAME}" \
-      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
-      --request-timeout=10s 2>/dev/null || true)"
-    while IFS= read -r existing_user; do
-      [[ -n "${existing_user}" ]] || continue
-      keep=0
-      for ru in "${rendered_users[@]}"; do
-        [[ "${existing_user}" == "${ru}" ]] && { keep=1; break; }
-      done
-      if ((keep == 0)); then
-        echo "==> prune stale KeycloakUser ${CTRL_NS}/${existing_user} (no longer rendered)" >&2
-        kubectl --context "${KUBE_CONTEXT}" --namespace "${CTRL_NS}" \
-          delete keycloakuser.keycloak.holos.run "${existing_user}" \
-          --ignore-not-found --request-timeout=60s
-      fi
-    done <<<"${existing_users}"
-  fi
+  # NOTE on the HOL-1357 owner-user RENAME (`bob` → `bob-<hash8>`): this script
+  # deliberately does NOT delete the stale `bob` KeycloakUser CR the bespoke
+  # component left on upgraded clusters.  Deleting it would be DESTRUCTIVE: that CR
+  # CREATED the realm user (status.created=true, the default adopt:false), and the
+  # KeycloakUser finalizer DELETES the realm user it created on CR deletion
+  # (internal/controller/keycloak/user_controller.go) — so pruning `bob` would
+  # deprovision bob@example.com (then the new adopt:true CR would recreate it,
+  # losing any out-of-band memberships/IdP links in the window).  The new adopt:true
+  # CR on the OTHER object does not protect the old object's finalizer path (codex
+  # round-3/4 finding).  Leaving the stale `bob` CR in place is SAFE and
+  # non-destructive: it keeps reconciling the user it created to the same desired
+  # state (same email, same projects/<name>/roles/owner membership, same IdP link)
+  # that the new bob-<hash8> adopt:true CR also asserts — the two coexist
+  # idempotently.  The stale CR is an inert, harmless orphan; removing it is a
+  # manual, deliberate operator step (release-then-delete), not an automated prune.
 
   # Now gate this project's apps (their KeycloakClient + Repository).
   while IFS= read -r app_dir; do
