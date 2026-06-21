@@ -201,16 +201,19 @@ namespaces: {
 	echo: _ambient: true
 
 	// keycloak hosts the Keycloak server and its CNPG Postgres cluster
-	// (keycloak-db, components/cnpg-clusters).  Deliberately NOT enrolled in
-	// ambient: Keycloak terminates its own TLS with a cert-manager
-	// certificate end-to-end, and the reference platform's root-cause
-	// analysis found ztunnel ambient interception breaks Keycloak — the
-	// reference sets istio.io/dataplane-mode: none at both the namespace and
-	// pod level.  The CNPG Postgres pods in this namespace are consequently
-	// unenrolled too; Keycloak↔Postgres traffic stays in-namespace and
-	// CNPG/Keycloak handle their own transport security.  See the exceptions
-	// section of holos/docs/mesh-enrollment.md.
-	keycloak: _ambient: false
+	// (keycloak-db, components/cnpg-clusters).  Enrolled in the ambient mesh
+	// per the platform convention (HOL-1362): Keycloak now runs HTTP-only
+	// behind the shared Gateway, which terminates external TLS once and
+	// forwards plaintext HTTP to keycloak-service:8080 — ztunnel wraps that
+	// Gateway→pod hop in HBONE mTLS, so there is no double TLS and no per-pod
+	// TLS keystore.  The reference platform's RCA that ambient interception
+	// breaks Keycloak applied specifically when Keycloak terminated its own
+	// TLS; with single TLS at the Gateway that failure mode is gone.  The CNPG
+	// keycloak-db Postgres pods stay OUT of the mesh (components/cnpg-clusters
+	// sets istio.io/dataplane-mode: none via the Cluster's inheritedMetadata),
+	// so the plaintext Keycloak↔Postgres hop is not re-wrapped by ztunnel.
+	// Full doc reconciliation is HOL-1363.  See holos/docs/mesh-enrollment.md.
+	keycloak: _ambient: true
 
 	// quay hosts the Quay registry and its CNPG Postgres cluster (quay-db,
 	// components/cnpg-clusters); its workloads enroll in the ambient mesh

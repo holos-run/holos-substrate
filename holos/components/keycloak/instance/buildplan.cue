@@ -2,11 +2,13 @@ package holos
 
 // keycloak renders the Keycloak server instance reconciled by the operator
 // (the sibling operator component): the Keycloak CR backed by the CNPG
-// keycloak-db Postgres Cluster (components/cnpg-clusters), the cert-manager
-// Certificate Keycloak terminates its own TLS with, the declarative holos
-// realm import, the HTTPRoute attaching it to the shared Gateway
-// (components/istio-gateway), and the DestinationRule that makes the
-// Gateway re-encrypt to the HTTPS backend.  The version pin and the
+// keycloak-db Postgres Cluster (components/cnpg-clusters), running HTTP-only
+// behind the shared Gateway, the declarative holos realm import, and the
+// HTTPRoute attaching it to the shared Gateway (components/istio-gateway).
+// The Gateway terminates external TLS once with the wildcard cert and ztunnel
+// HBONE mTLS secures the Gateway→pod hop (HOL-1362), so Keycloak needs no
+// per-pod TLS cert and no Gateway-side re-encryption DestinationRule.  The
+// version pin and the
 // deployment-method decision live in ../keycloak.cue, shared with the
 // operator components: the operator's RELATED_IMAGE_KEYCLOAK env var pins
 // the server image to KeycloakVersion, so the CR sets no image field and
@@ -21,7 +23,7 @@ package holos
 //	  | jq '.data | map_values(@base64d)'
 //
 // The keycloak Namespace is registered in the central namespaces registry
-// (holos/namespaces.cue) with _ambient: false — see the registry entry for
+// (holos/namespaces.cue) with _ambient: true — see the registry entry for
 // the rationale — never emitted by components.
 
 let NAME = "keycloak"
@@ -38,47 +40,20 @@ let SERVICE = "\(NAME)-service"
 // docs/local-cluster.md.
 let HOSTNAME = "auth.holos.internal"
 
-let HTTPS_PORT = 8443
-let TLS_SECRET = "\(NAME)-tls"
+// Keycloak serves plaintext HTTP on this port behind the shared Gateway; the
+// operator-created keycloak-service exposes it as the port named "http", which
+// the HTTPRoute backendRef targets and Istio treats as an HTTP backend.
+let HTTP_PORT = 8080
 
-// The shared Gateway's namespace (components/istio-gateway).  The
-// DestinationRule below lives there so the gateway proxy applies it on the
-// Gateway→Keycloak hop.
+// The shared Gateway's namespace (components/istio-gateway).  The Keycloak
+// HTTPRoute attaches to the shared Gateway in this namespace.
 let GATEWAY_NAMESPACE = "istio-gateways"
-
-// Keycloak terminates its own TLS (http.tlsSecret below), so the
-// certificate covers the operator-created Service DNS names — the names
-// in-cluster backchannel consumers (Quay later) and the Gateway connect to
-// — plus the public hostname.  Issued by the local-ca ClusterIssuer
-// (components/local-ca) backed by the mkcert root CA the host trusts.
-let CERTIFICATE = {
-	apiVersion: "cert-manager.io/v1"
-	kind:       "Certificate"
-	metadata: {
-		name:      TLS_SECRET
-		namespace: NAMESPACE
-	}
-	spec: {
-		secretName: TLS_SECRET
-		dnsNames: [
-			"\(SERVICE).\(NAMESPACE).svc.cluster.local",
-			"\(SERVICE).\(NAMESPACE).svc",
-			SERVICE,
-			HOSTNAME,
-		]
-		issuerRef: {
-			group: "cert-manager.io"
-			kind:  "ClusterIssuer"
-			name:  "local-ca"
-		}
-	}
-}
 
 // The Keycloak CR uses v2beta1, the storage version of the pinned
 // KeycloakVersion CRDs — see the #Resources comment in holos/resources.cue.
-// With a real database and a TLS secret configured the operator runs the
-// server in start (production) mode, never start-dev; verify the rendered
-// StatefulSet args on the live cluster after changing this CR.
+// With a real database configured the operator runs the server in start
+// (production) mode, never start-dev; verify the rendered StatefulSet args on
+// the live cluster after changing this CR.
 let KEYCLOAK = {
 	apiVersion: "k8s.keycloak.org/v2beta1"
 	kind:       "Keycloak"
@@ -117,25 +92,27 @@ let KEYCLOAK = {
 			}
 		}
 
-		// Keycloak terminates its own TLS with the cert-manager Certificate
-		// above; the shared Gateway re-encrypts to this port via the
-		// DestinationRule below.
+		// HTTP-only behind the shared Gateway: the Gateway terminates external
+		// TLS once and forwards plaintext HTTP to keycloak-service:8080, and
+		// ztunnel HBONE mTLS secures the Gateway→pod wire hop (the keycloak
+		// namespace is ambient-enrolled, HOL-1362).  No per-pod tlsSecret.
 		http: {
-			httpsPort: HTTPS_PORT
-			tlsSecret: TLS_SECRET
+			httpEnabled: true
+			httpPort:    HTTP_PORT
 		}
 
-		// Browsers use the public hostname through the Gateway, and
-		// backchannelDynamic lets in-cluster consumers (Quay later) reach
-		// Keycloak via the Service DNS names over the backchannel.
-		// hostname-strict is ignored once a full hostname is configured;
-		// strict: false is kept explicit so the intended posture survives
-		// if the hostname field is ever removed or made relative.  See
-		// https://www.keycloak.org/server/hostname.
+		// One issuer URL resolved everywhere: browsers AND in-cluster consumers
+		// (quay/argocd/kargo, and Keycloak itself) reach Keycloak through the
+		// Gateway at https://auth.holos.internal, which CoreDNS resolves
+		// in-cluster (HOL-1364).  backchannelDynamic is deliberately NOT set so
+		// Keycloak does not advertise plaintext Service-DNS backchannel URLs
+		// that consumers would reject.  hostname-strict is ignored once a full
+		// hostname is configured; strict: false is kept explicit so the intended
+		// posture survives if the hostname field is ever removed or made
+		// relative.  See https://www.keycloak.org/server/hostname.
 		hostname: {
-			hostname:           "https://\(HOSTNAME)"
-			strict:             false
-			backchannelDynamic: true
+			hostname: "https://\(HOSTNAME)"
+			strict:   false
 		}
 
 		// The shared Gateway sets the X-Forwarded-* headers.
@@ -150,13 +127,6 @@ let KEYCLOAK = {
 			}
 			limits: memory: "1Gi"
 		}
-
-		// Explicitly opt the pod out of Istio ambient mode, mirroring the
-		// reference platform's defense in depth: the keycloak namespace
-		// already carries _ambient: false (holos/namespaces.cue), and the
-		// pod label guards against an accidental namespace-label change
-		// re-enrolling Keycloak.
-		unsupported: podTemplate: metadata: labels: "istio.io/dataplane-mode": "none"
 	}
 }
 
@@ -222,7 +192,7 @@ let HTTPROUTE = {
 			matches: [{path: {type: "PathPrefix", value: "/"}}]
 			backendRefs: [{
 				name: SERVICE
-				port: HTTPS_PORT
+				port: HTTP_PORT
 			}]
 		}]
 	}
@@ -259,46 +229,6 @@ let HTTPROUTE_REDIRECT = {
 	}
 }
 
-// The backend serves HTTPS on 8443 but the Gateway API standard channel
-// bundle this repo ships (components/gateway-api) has no BackendTLSPolicy
-// CRD, so an Istio DestinationRule makes the gateway proxy originate TLS
-// on the Gateway→Keycloak hop, as the reference platform does.  It lives
-// in the Gateway's namespace and is exported only there ("."): only the
-// gateway proxy needs it, and scoping it prevents surprising other mesh
-// clients of the Service.
-//
-// Unlike the reference platform (which sets insecureSkipVerify), the
-// gateway verifies the backend certificate against the local CA:
-// credentialName references the wildcard-holos-internal Secret the
-// istio-gateway component's Certificate writes in this same namespace —
-// cert-manager CA issuers include the signing CA in the issued Secret's
-// ca.crt key, and Istio's SDS reads ca.crt from a TLS-type Secret as the
-// trust anchor for SIMPLE-mode origination (the Secret must live in the
-// gateway proxy's namespace, which is why the wildcard Secret is usable
-// and the keycloak-tls Secret is not).  subjectAltNames pins the expected
-// backend identity to the Service FQDN, present in the keycloak-tls
-// certificate's dnsNames; sni makes the gateway present that same name so
-// verification stays deterministic.  Replace with the standard-channel
-// BackendTLSPolicy when the pinned Gateway API version ships it.
-let DESTINATION_RULE = {
-	apiVersion: "networking.istio.io/v1"
-	kind:       "DestinationRule"
-	metadata: {
-		name:      SERVICE
-		namespace: GATEWAY_NAMESPACE
-	}
-	spec: {
-		host: "\(SERVICE).\(NAMESPACE).svc.cluster.local"
-		exportTo: ["."]
-		trafficPolicy: tls: {
-			mode:           "SIMPLE"
-			credentialName: "wildcard-holos-internal"
-			sni:            "\(SERVICE).\(NAMESPACE).svc.cluster.local"
-			subjectAltNames: ["\(SERVICE).\(NAMESPACE).svc.cluster.local"]
-		}
-	}
-}
-
 userDefinedBuildPlan: {
 	metadata: name: "keycloak"
 	spec: artifacts: manifests: {
@@ -311,17 +241,14 @@ userDefinedBuildPlan: {
 				output: "resources.gen.yaml"
 				// Unify with #Resources (holos/resources.cue) so the
 				// hand-authored resources validate against the vendored
-				// Keycloak, cert-manager, Gateway API, and Istio schemas at
-				// render time.
+				// Keycloak and Gateway API schemas at render time.
 				resources: #Resources & {
-					Certificate: (CERTIFICATE.metadata.name):          CERTIFICATE
 					Keycloak: (KEYCLOAK.metadata.name):                KEYCLOAK
 					KeycloakRealmImport: (REALM_IMPORT.metadata.name): REALM_IMPORT
 					HTTPRoute: {
 						(HTTPROUTE.metadata.name):          HTTPROUTE
 						(HTTPROUTE_REDIRECT.metadata.name): HTTPROUTE_REDIRECT
 					}
-					DestinationRule: (DESTINATION_RULE.metadata.name): DESTINATION_RULE
 				}
 			}]
 			transformers: [

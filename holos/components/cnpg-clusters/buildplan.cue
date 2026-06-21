@@ -32,6 +32,13 @@ let DATABASES = {
 	"keycloak-db": {
 		namespace: "keycloak" & #RegisteredNamespace
 		database:  "keycloak"
+		// Keep the keycloak-db Postgres pods OUT of the Istio ambient mesh,
+		// even though the keycloak namespace is now ambient-enrolled (HOL-1362):
+		// inheritedMetadata propagates istio.io/dataplane-mode: none onto the
+		// Cluster's pods so the plaintext Keycloak↔Postgres hop
+		// (keycloak-db-rw:5432, no sslmode) is not re-wrapped by ztunnel HBONE.
+		// Scoped to THIS database only; quay-db stays in the mesh.
+		inheritedMetadata: labels: "istio.io/dataplane-mode": "none"
 	}
 	"quay-db": {
 		namespace: "quay" & #RegisteredNamespace
@@ -65,6 +72,12 @@ userDefinedBuildPlan: {
 								namespace: DB.namespace
 							}
 							spec: {
+								// Per-database pod metadata (e.g. keycloak-db's
+								// istio.io/dataplane-mode: none); only set when the
+								// DATABASES entry declares it.
+								if DB.inheritedMetadata != _|_ {
+									inheritedMetadata: DB.inheritedMetadata
+								}
 								// One laptop-sized instance per service: the
 								// MVP demo target is a single Apple Silicon
 								// Mac (ADR-7) — no HA replicas.
