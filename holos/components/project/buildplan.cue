@@ -309,8 +309,17 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 	}
 
 	// PROJECT_CONFIG_RESOURCE is the namespaced ProjectConfig: the auto-promotion
-	// policy (the project-config Stage) and the native Quay webhook receiver whose
-	// secretRef points at the WEBHOOK_SECRET in this same namespace.
+	// policies (the project-config Stage AND one per contained app's <app>-config
+	// Stage) and the native Quay webhook receiver whose secretRef points at the
+	// WEBHOOK_SECRET in this same namespace.
+	//
+	// The per-app auto-promotion policy is REQUIRED for app push-to-deploy to
+	// close: the Application component (HOL-1356) emits an <app>-config Kargo Stage
+	// per app, but a Stage only auto-promotes discovered Freight when a matching
+	// promotionPolicies entry enables it — without one the app Warehouse discovers
+	// Freight but argocd-update never runs.  Iterate apps where app.project == NAME
+	// (empty for a zero-app project, so the policy list is just the project Stage),
+	// adding {stage: <app>-config, autoPromotionEnabled: true} per app.
 	let PROJECT_CONFIG_RESOURCE = {
 		apiVersion: "kargo.akuity.io/v1alpha1"
 		kind:       "ProjectConfig"
@@ -320,10 +329,18 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 			labels: "app.kubernetes.io/name": NAME
 		}
 		spec: {
-			promotionPolicies: [{
-				stage:                STAGE
-				autoPromotionEnabled: true
-			}]
+			promotionPolicies: [
+				{
+					stage:                STAGE
+					autoPromotionEnabled: true
+				},
+				for APP, A in apps if A.project == NAME {
+					{
+						stage:                "\(APP)-config"
+						autoPromotionEnabled: true
+					}
+				},
+			]
 			webhookReceivers: [{
 				name: "quay"
 				quay: secretRef: name: WEBHOOK_SECRET

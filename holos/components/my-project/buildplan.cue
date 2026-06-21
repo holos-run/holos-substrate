@@ -374,10 +374,24 @@ let PROJECT_CONFIG_RESOURCE = {
 		labels: "app.kubernetes.io/name": NAME
 	}
 	spec: {
-		promotionPolicies: [{
-			stage:                STAGE
-			autoPromotionEnabled: true
-		}]
+		// The project-config Stage plus one auto-promotion policy per contained
+		// app's <app>-config Stage (the Application component, HOL-1356): without a
+		// matching promotionPolicies entry a Stage's discovered Freight never
+		// auto-promotes, so app push-to-deploy would not close.  Empty app set →
+		// just the project Stage.  HOL-1357 folds this into the generic project
+		// component.
+		promotionPolicies: [
+			{
+				stage:                STAGE
+				autoPromotionEnabled: true
+			},
+			for APP, A in apps if A.project == NAME {
+				{
+					stage:                "\(APP)-config"
+					autoPromotionEnabled: true
+				}
+			},
+		]
 		webhookReceivers: [{
 			name: "quay"
 			quay: secretRef: name: WEBHOOK_SECRET
