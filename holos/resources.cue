@@ -74,6 +74,18 @@ import (
 		metadata: name: string
 		...
 	}
+	// The quay.holos.run Repository kind (ADR-19) gets an explicit but DELIBERATELY
+	// OPEN entry, like Organization above and for the same reason: the controller's
+	// CRDs have no generated CUE type under cue.mod/gen/ (they live in
+	// api/quay/v1alpha1/).  The openness is SCOPED to this kind, so the generic
+	// catch-all above stays CLOSED and a misspelled Kind still fails render-time
+	// validation.  The Application component (HOL-1356) emits a Repository per
+	// apps.<name> entry through #Resources.
+	Repository?: [_]: {
+		kind: "Repository"
+		metadata: name: string
+		...
+	}
 	PersistentVolumeClaim?: [_]: corev1.#PersistentVolumeClaim
 	// The Kargo Project and ProjectConfig kinds (kargo.akuity.io) get explicit
 	// but DELIBERATELY OPEN entries (the trailing `...`) rather than a vendored
