@@ -243,8 +243,13 @@ echo "Rendering platform with ca_bundle_pem injected ..." >&2
 
 MY_PROJECT_DIR="${RENDER_DIR}/clusters/k3d-holos/components/my-project"
 NAMESPACE_FILE="${RENDER_DIR}/clusters/k3d-holos/components/namespaces/namespace-my-project.yaml"
-if [[ ! -d "${MY_PROJECT_DIR}" || ! -f "${NAMESPACE_FILE}" ]]; then
-  echo "ERROR: render produced no my-project manifests at ${MY_PROJECT_DIR}." >&2
+# The central KeycloakInstance + its security.holos.run ReferenceGrant (HOL-1348)
+# carry the local-ca caBundle, so they are injected and applied here too (the
+# committed deploy tree omits the caBundle).  The KeycloakInstance must exist —
+# and carry the trust anchor — before the my-project Keycloak CRs reconcile.
+KEYCLOAK_INSTANCE_DIR="${RENDER_DIR}/clusters/k3d-holos/components/keycloak-instance"
+if [[ ! -d "${MY_PROJECT_DIR}" || ! -f "${NAMESPACE_FILE}" || ! -d "${KEYCLOAK_INSTANCE_DIR}" ]]; then
+  echo "ERROR: render produced no my-project / keycloak-instance manifests under ${RENDER_DIR}." >&2
   exit 1
 fi
 
@@ -326,11 +331,27 @@ kubectl --context "${KUBE_CONTEXT}" --namespace quay \
   --ignore-not-found --request-timeout=60s
 
 # ---------------------------------------------------------------------------
+# Apply the central KeycloakInstance + ReferenceGrant (HOL-1348)
+# ---------------------------------------------------------------------------
+# The KeycloakInstance carries the injected local-ca caBundle so the controller
+# trusts the in-cluster Keycloak's serving cert; the ReferenceGrant authorizes
+# the my-project namespace's Keycloak CRs to reference it.  Applied before the
+# my-project component so the instance + grant exist when the project Keycloak CRs
+# reconcile.  The committed deploy tree omits the caBundle, so — like the
+# Organization — these MUST be applied from this injected render, not the master
+# scripts/apply (which applies the committed, caBundle-less tree).
+echo "==> keycloak-instance" >&2
+kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
+  -f "${KEYCLOAK_INSTANCE_DIR}/"
+
+# ---------------------------------------------------------------------------
 # Apply the rendered my-project component
 # ---------------------------------------------------------------------------
 # Organization (quay.holos.run, reconciled by the Holos Controller with the
-# injected caBundle), Argo CD AppProject + Application, Kargo
-# Project/ProjectConfig/Warehouse/Stage, and the webhook-token bootstrap Job.
+# injected caBundle), the project's keycloak.holos.run CRs (KeycloakClient,
+# role/custodian KeycloakGroups, the owner KeycloakUser — HOL-1348), Argo CD
+# AppProject + Application, Kargo Project/ProjectConfig/Warehouse/Stage, and the
+# webhook-token bootstrap Job.
 echo "==> my-project" >&2
 kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
   -f "${MY_PROJECT_DIR}/"
