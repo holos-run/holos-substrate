@@ -72,18 +72,18 @@ import (
 //     reference the central KeycloakInstance cross-namespace (the grant is owned
 //     by the keycloak namespace, ADR-22 — this component does not re-emit it).
 //
-// --- COLLISION GATE: skip my-project this phase --------------------------------
+// --- my-project: now produced by this component (HOL-1357) ---------------------
 //
-// The `projects` collection already registers my-project (holos/projects/
-// my-project.cue), and the BESPOKE components/my-project still emits that
-// project's resources (the same Quay org name, Keycloak group paths, and
-// cluster-scoped Kargo Project name) in the bare my-project namespace.  If this
-// component iterated my-project too it would DOUBLE-EMIT colliding objects.  So
-// the comprehension skips my-project (if PROJECT != "my-project") until HOL-1357
-// deletes the bespoke component and lets this one take it over.  With only
-// my-project registered today, this component therefore renders NO output and the
-// committed deploy tree stays diff-clean; the iteration is exercised by a
-// throwaway sample-project registration during development (never committed).
+// This component iterates EVERY registered project, including my-project.  The
+// bespoke holos/components/my-project component — which formerly emitted that
+// project's resources (the Quay org, the Keycloak group paths, the cluster-scoped
+// Kargo Project) — was DELETED in HOL-1357, so this generalized component is the
+// sole producer of the reference instance's project-level resource set.  The
+// rendered my-project tree is behavior-equivalent to the bespoke one, with two
+// deliberate, documented supersets: the owner-access RoleBinding (the bespoke
+// component lacked it) and the env-derived hash suffix on the owner KeycloakUser's
+// metadata.name (a DNS-safe, collision-resistant name derived from the email).
+// See the PR description for the full pre/post diff rationale.
 
 // ROLES is the GCP-style primitive role triad every project provisions
 // (owner/editor/viewer), shared by the Keycloak role/custodian groups, the
@@ -805,12 +805,12 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 userDefinedBuildPlan: {
 	metadata: name: "project"
 	// One artifact directory per project (clusters/<cluster>/components/project/<name>/),
-	// iterating the projects collection.  my-project is skipped this phase (the
-	// bespoke component still owns it until HOL-1357 — see the collision-gate note
-	// in the file header).  With only my-project registered, this renders no
-	// artifacts and the deploy tree stays diff-clean.
+	// iterating the projects collection.  As of HOL-1357 this includes my-project
+	// (the bespoke holos/components/my-project component was deleted and this
+	// generalized component now produces the reference instance's project-level
+	// resource set); every registered project renders its own subdirectory.
 	spec: artifacts: manifests: {
-		for PROJECT, P in projects if PROJECT != "my-project" {
+		for PROJECT, P in projects {
 			"clusters/\(clusterName)/components/project/\(PROJECT)": {
 				artifact: _
 				generators: [{

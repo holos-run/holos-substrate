@@ -44,11 +44,11 @@ go.work.sum
 **/manifests/.tmp.*
 
 # Temporary render/package working directories created by scripts/publish and
-# scripts/apply-my-project under the holos module root (holos render platform
+# scripts/apply-projects under the holos module root (holos render platform
 # writes relative to that root).  The EXIT trap removes them, but a SIGKILL
 # bypasses traps and could strand one.
 holos/.publish.*
-holos/.apply-my-project.*
+holos/.apply-projects.*
 
 # Holos files
 .DS_Store

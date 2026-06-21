@@ -3,34 +3,33 @@
 # components with the local-ca CA bundle injected into each project's Quay
 # Organization caBundle and each app's Quay Repository caBundle.
 #
-# The `project` component is the generalization of the bespoke my-project
-# scaffold: it iterates the `projects` collection (holos/collections.cue) and
-# renders, for every projects.<name> EXCEPT my-project (the bespoke component
-# still owns it until HOL-1357), the full per-project control-plane resource set
-# into clusters/k3d-holos/components/project/<name>/.  The `application` component
-# iterates the `apps` collection and renders one app resource set per apps.<name>
-# into clusters/k3d-holos/components/application/<app>/ (the Deployment/Service/
-# HTTPRoute, the app KeycloakClient, the Quay Repository, and the Kargo
-# Warehouse/Stage + Argo CD Application), each landing in its project's bare
-# control namespace.  Each project's Quay Organization (and each app's Quay
-# Repository) carries spec.caBundle — the per-cluster local-ca certificate the
-# Holos Controller (ADR-18/ADR-19) needs to trust the in-cluster Quay registry's
-# mkcert-signed serving certificate.  That trust material is per-cluster and is
-# NEVER committed (it is absent from the rendered holos/deploy/ tree); it is
-# injected here at apply time via the ca_bundle_pem CUE tag, the same --inject
-# pattern scripts/apply-my-project and scripts/publish use.
+# The `project` component is the generalization of the (now-deleted) bespoke
+# my-project scaffold: it iterates the `projects` collection (holos/collections.cue)
+# and renders, for EVERY projects.<name>, the full per-project control-plane
+# resource set into clusters/k3d-holos/components/project/<name>/.  The
+# `application` component iterates the `apps` collection and renders one app
+# resource set per apps.<name> into clusters/k3d-holos/components/application/<app>/
+# (the Deployment/Service/HTTPRoute, the app KeycloakClient, the Quay Repository,
+# and the Kargo Warehouse/Stage + Argo CD Application), each landing in its
+# project's bare control namespace.  Each project's Quay Organization (and each
+# app's Quay Repository) carries spec.caBundle — the per-cluster local-ca
+# certificate the Holos Controller (ADR-18/ADR-19) needs to trust the in-cluster
+# Quay registry's mkcert-signed serving certificate.  That trust material is
+# per-cluster and is NEVER committed (it is absent from the rendered holos/deploy/
+# tree); it is injected here at apply time via the ca_bundle_pem CUE tag, the same
+# --inject pattern scripts/publish uses.
 #
-# This script is the generic sibling of scripts/apply-my-project (which stays
-# bespoke and is removed with the my-project component in HOL-1357).  It mirrors
-# that script's posture exactly — context pinning, the CRD preflight, the
-# local-ca PEM resolution, the namespace-first / RBAC-pre-apply / stale-Job
-# delete ordering, and the per-resource Ready gates — but loops over every
-# rendered project subdirectory instead of the single my-project component.
+# This script SUPERSEDES the bespoke scripts/apply-my-project, deleted in HOL-1357
+# along with the components/my-project component.  It applies the reference
+# instance my-project (and its app my-app) like any other registered project,
+# looping over every rendered project subdirectory.  It mirrors the old script's
+# posture — context pinning, the CRD preflight, the local-ca PEM resolution, the
+# namespace-first / RBAC-pre-apply / stale-Job delete ordering, and the
+# per-resource Ready gates.
 #
-# With only my-project registered today the `project` component renders no
-# output, so this script is a clean no-op (it reports "no project components
-# rendered" and exits 0).  Register a real project (a projects/<name>.cue
-# one-liner) and it provisions that project's control plane.
+# It provisions every registered project's control plane (and its apps).  Register
+# a project (a projects/<name>.cue one-liner) plus, optionally, an app
+# (apps/<name>.cue) and re-run to provision them.
 #
 # ORDERING — the same prerequisites as scripts/apply-my-project:
 #   1. scripts/local-ca (the local CA whose certificate is injected).
@@ -175,14 +174,13 @@ KEYCLOAK_INSTANCE_DIR="${RENDER_DIR}/clusters/k3d-holos/components/keycloak-inst
 
 have_dir() { [[ -d "$1" ]] && [[ -n "$(ls -A "$1" 2>/dev/null)" ]]; }
 
-# Nothing to do if NEITHER the generic project component NOR the application
-# component rendered anything (the generic project component skips my-project,
-# and an app may be attached to my-project — applied by scripts/apply-my-project,
-# not here — so the project base can be empty while applications still render,
-# and vice versa).  Either alone is enough to proceed.
+# Nothing to do if NEITHER the project component NOR the application component
+# rendered anything (no project or app is registered).  Either alone is enough to
+# proceed (a project may have no apps, or — via the orphan sweep below — an app
+# could in principle be attached to a project applied by another path).
 if ! have_dir "${PROJECT_BASE}" && ! have_dir "${APPLICATION_BASE}"; then
-  echo "No project or application components rendered (the generic project component" >&2
-  echo "skips my-project, and no other project or app is registered).  Nothing to apply." >&2
+  echo "No project or application components rendered (no project or app is" >&2
+  echo "registered).  Nothing to apply." >&2
   exit 0
 fi
 
@@ -340,9 +338,9 @@ app_namespace() {
 # <app>-config artifact, so applying it here would make this script a second
 # manager fighting Argo CD's self-heal.  Until the first scripts/publish of
 # <app>-config, the app's Argo CD Application is Missing/Unknown — expected
-# scaffolding, exactly as the my-project Application is.  The control namespace
-# must already exist (applied by the project loop, or by scripts/apply-my-project
-# for a my-project app).
+# scaffolding, exactly as the project-level Application is.  The control namespace
+# must already exist (applied by the project loop, or — for the defensive orphan
+# sweep — by whatever path applies its project).
 apply_application_resources() {
   local app_dir="$1" app="$2"
   local cp_dir="${app_dir}control-plane"
@@ -362,8 +360,8 @@ gate_application() {
 
 # The set of app subdirectories already applied inside the project loop, so the
 # orphan sweep below applies only apps whose project is NOT a rendered project
-# (e.g. an app attached to my-project, whose project is applied by
-# scripts/apply-my-project).  Keyed by app name.
+# component (a defensive fallback — every registered project IS rendered by the
+# project component today, so the sweep is normally empty).  Keyed by app name.
 declare -A APPLIED_APPS=()
 
 # apps_for_project PROJECT — echo the app subdirectory paths whose control
@@ -475,10 +473,11 @@ fi
 # ---------------------------------------------------------------------------
 # Orphan sweep: apply apps whose project is NOT a rendered project component
 # ---------------------------------------------------------------------------
-# An app may be attached to a project the generic component does not render here
-# (today, my-project — whose namespace and project-level CRs scripts/apply-my-project
-# applies).  Its app resources still rendered under components/application/<app>/;
-# apply and gate them here, against the already-existing project namespace.
+# Defensive fallback: should an app ever be attached to a project the project
+# component does not render here, its app resources still rendered under
+# components/application/<app>/ — apply and gate them against the already-existing
+# project namespace.  Every registered project IS rendered today, so this sweep is
+# normally empty (the app was already applied inside the project loop above).
 if have_dir "${APPLICATION_BASE}"; then
   for app_dir in "${APPLICATION_BASE}"/*/; do
     [[ -d "${app_dir}" ]] || continue

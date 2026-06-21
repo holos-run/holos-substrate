@@ -342,7 +342,7 @@ exactly as ADR-18 anticipates.
 
 **Next step — provision the `my-project` sample.** With the credential Secret in
 place (and after `scripts/local-ca`), run
-[`scripts/apply-my-project`](../../scripts/apply-my-project) to apply the
+[`scripts/apply-projects`](../../scripts/apply-projects) to apply the
 `my-project` Namespace + `quay.holos.run` Organization. That script injects the
 local-ca PEM as the Organization's `caBundle` so the controller trusts the
 in-cluster Quay's mkcert-signed serving certificate via the resource's `caBundle`

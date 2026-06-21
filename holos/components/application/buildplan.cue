@@ -139,8 +139,8 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 	// "project" would render Stage "project-config" and COLLIDE with the project's
 	// promotion Stage (which NAME != PROJECT does not catch when the project is not
 	// itself named "project").  "project" is therefore a reserved app name; reject
-	// it at RENDER.  (HOL-1357 will unify the project-level Stage naming; until
-	// then the reserved name is the guard.)
+	// it at RENDER.  (The project-level Stage is the fixed name "project-config" in
+	// the same control namespace, so this reserved name is the standing guard.)
 	NAME: !="project"
 
 	// CTRL_NS is the app's project's BARE control namespace (see the namespace

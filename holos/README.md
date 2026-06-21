@@ -874,9 +874,9 @@ a future self-service `ProjectRequest` (below). Its rendered resources are:
   remains (it needs no Quay admin token). A push will not trigger Freight
   discovery until the repo/robot/webhook are provisioned by hand.
 
-**The separate apply step — `scripts/apply-my-project`.** As of HOL-1322,
+**The separate apply step — `scripts/apply-projects`.** As of HOL-1322,
 `my-project` is **deliberately removed from the master `scripts/apply`** and is
-applied by the dedicated [`scripts/apply-my-project`](../scripts/apply-my-project)
+applied by the dedicated [`scripts/apply-projects`](../scripts/apply-projects)
 instead. That script reads the local-ca PEM (the `cert-manager/local-ca` Secret,
 or `$(mkcert -CAROOT)/rootCA.pem`), renders the platform with it injected via the
 `ca_bundle_pem` CUE tag (the `scripts/publish` `--inject` pattern), and applies

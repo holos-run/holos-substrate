@@ -3,17 +3,19 @@ kind: KeycloakGroup
 metadata:
   labels:
     app.kubernetes.io/name: my-project
-  name: my-project-roles-viewer
+  name: my-project-roles-owner
   namespace: my-project
 spec:
   clientRoles:
   - clientId: https://quay.holos.localhost
-    role: my-project-viewer
+    role: my-project-owner
   - clientRef: my-project
-    role: my-project-viewer
+    role: my-project-owner
+  - clientRef: my-app
+    role: owner
   custodians:
-  - path: projects/my-project/custodians/viewer
+  - path: projects/my-project/custodians/owner
   instanceRef:
     name: holos-keycloak
     namespace: keycloak
-  path: projects/my-project/roles/viewer
+  path: projects/my-project/roles/owner

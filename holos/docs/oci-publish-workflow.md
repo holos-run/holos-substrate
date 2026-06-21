@@ -372,8 +372,8 @@ ways that simplify the operator workflow:
   Job (the receiver token) still runs — it needs no Quay admin token. Those
   remaining Quay objects and the Argo CD repository Secret are provisioned by hand,
   so a push triggers Freight discovery only after that manual setup.
-- **Applied by `scripts/apply-my-project`, not `scripts/apply`.** HOL-1322 removed
-  `my-project` from the master apply; the dedicated `scripts/apply-my-project`
+- **Applied by `scripts/apply-projects`, not `scripts/apply`.** HOL-1322 removed
+  `my-project` from the master apply; the dedicated `scripts/apply-projects`
   injects the local-ca PEM as the Organization's `caBundle` at apply time and
   applies the component (Namespace, Organization, Argo CD/Kargo objects, and the
   webhook-token Job).
@@ -381,7 +381,7 @@ ways that simplify the operator workflow:
 ### Verify the scaffold, and the end-to-end contract it will satisfy
 
 Prerequisites: the cluster is up, `scripts/apply` has run, and
-`scripts/apply-my-project` has been run (so the
+`scripts/apply-projects` has been run (so the
 `my-project-quay-webhook-bootstrap` receiver-token Job completed — that script
 gates it, and gates the Organization reaching Ready). Two categories are **not**
 created by either script and must be provisioned by hand:

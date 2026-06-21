@@ -21,14 +21,15 @@ import (
 _AppImage: string | *"registry.k8s.io/e2e-test-images/agnhost:2.53" @tag(app_image, type=string)
 
 // _CABundlePEM is the per-cluster local-ca certificate (PEM) injected at apply
-// time so a quay.holos.run resource (the my-project Organization) can carry the
-// trust anchor the holos-controller needs to verify the in-cluster Quay
-// registry's mkcert-signed serving certificate (HOL-1319/HOL-1320).
+// time so a quay.holos.run resource (a project's Organization, an app's
+// Repository) and the central KeycloakInstance can carry the trust anchor the
+// holos-controller needs to verify the in-cluster Quay/Keycloak mkcert-signed
+// serving certificates (HOL-1319/HOL-1320).
 //
 // The default is the EMPTY string so an unparameterized `holos render platform`
 // (and scripts/render's clean-tree gate) stays diff-clean: when the tag is
 // empty the consuming component omits spec.caBundle entirely, so the committed
-// holos/deploy/ tree carries no per-cluster CA material.  scripts/apply-my-project
+// holos/deploy/ tree carries no per-cluster CA material.  scripts/apply-projects
 // injects the cluster's local-ca PEM:
 //
 //	holos render platform --inject ca_bundle_pem="$PEM" --write-to <tmp>

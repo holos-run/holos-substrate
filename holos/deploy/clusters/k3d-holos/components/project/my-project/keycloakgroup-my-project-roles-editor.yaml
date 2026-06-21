@@ -11,6 +11,8 @@ spec:
     role: my-project-editor
   - clientRef: my-project
     role: my-project-editor
+  - clientRef: my-app
+    role: editor
   custodians:
   - path: projects/my-project/custodians/editor
   instanceRef:

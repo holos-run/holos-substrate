@@ -414,38 +414,21 @@ platform: {
 				labels: app: "kargo"
 			}}).output
 
-			// my-project is the Layer 3 sample application's delivery scaffold
-			// (HOL-1268).  This phase (HOL-1269) emits an Argo CD AppProject and
-			// an Argo CD Application reconciling the my-project-config OCI
-			// artifact from the in-cluster Quay registry; the Kargo Project,
-			// ProjectConfig, Warehouse, and project-config promotion Stage that
-			// drive the Application's targetRevision land in the next phase
-			// (HOL-1270).  Registered after argocd and kargo: the Application and
-			// AppProject are argoproj.io custom resources (so the argocd CRDs and
-			// controller must be established first), and the authorized-stage
-			// annotation references the Kargo Stage the next phase adds (so the
-			// kargo CRDs and controller belong upstream of it too).  Nothing
-			// during bootstrap depends on my-project.
-			(#ComponentTemplate & {inputs: {
-				component: "my-project"
-				cluster:   CLUSTER.name
-				labels: app: "my-project"
-			}}).output
-
-			// project is the collection-driven generalization of the my-project
-			// scaffold (HOL-1355): it iterates the projects collection
-			// (holos/collections.cue) and emits the full per-project control-plane
-			// resource set into components/project/<name>/ for every
-			// projects.<name> EXCEPT my-project (the bespoke component still owns
-			// it until HOL-1357).  Registered after argocd, kargo, and my-project
-			// for the same upstream-CRD/controller reasons: the AppProject/
-			// Application are argoproj.io kinds, the Kargo Project/Stage are
-			// kargo.akuity.io kinds, and the Organization/Keycloak CRs are
-			// reconciled by the Holos Controller.  Like my-project it is
-			// render-here / apply-separately — its Organization carries a
-			// per-cluster caBundle injected at apply time (scripts/apply-projects),
-			// so it is EXCLUDED from the master scripts/apply.  With only
-			// my-project registered today it renders no output.
+			// project is the collection-driven generalization of the (now-deleted)
+			// bespoke my-project scaffold (HOL-1355): it iterates the projects
+			// collection (holos/collections.cue) and emits the full per-project
+			// control-plane resource set into components/project/<name>/ for EVERY
+			// projects.<name>.  As of HOL-1357 the bespoke holos/components/my-project
+			// component was removed and my-project is produced wholly by this
+			// generalized component (plus the application component for its app), so
+			// the reference instance renders under components/project/my-project/.
+			// Registered after argocd and kargo for the upstream-CRD/controller
+			// reasons: the AppProject/Application are argoproj.io kinds, the Kargo
+			// Project/Stage are kargo.akuity.io kinds, and the Organization/Keycloak
+			// CRs are reconciled by the Holos Controller.  It is render-here /
+			// apply-separately — its Organization carries a per-cluster caBundle
+			// injected at apply time (scripts/apply-projects), so it is EXCLUDED from
+			// the master scripts/apply.
 			(#ComponentTemplate & {inputs: {
 				component: "project"
 				cluster:   CLUSTER.name
@@ -465,8 +448,9 @@ platform: {
 			// project AppProject — all emitted by the project component.  Like
 			// project it is render-here / apply-separately (its Repository carries a
 			// per-cluster caBundle injected at apply time, scripts/apply-projects),
-			// so it is EXCLUDED from the master scripts/apply.  With no apps
-			// registered today it renders no output.
+			// so it is EXCLUDED from the master scripts/apply.  As of HOL-1357 the
+			// reference app my-app (holos/apps/my-app.cue, project my-project) is
+			// registered, so it renders under components/application/my-app/.
 			(#ComponentTemplate & {inputs: {
 				component: "application"
 				cluster:   CLUSTER.name

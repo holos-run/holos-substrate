@@ -154,7 +154,7 @@ step.
 The central `KeycloakInstance` (`holos-keycloak`, in the `keycloak` namespace) and
 its `security.holos.run` `ReferenceGrant` are emitted by the `keycloak-instance`
 component and applied — with the per-cluster local-ca `caBundle` injected at apply
-time — by `scripts/apply-my-project` (the caBundle is per-cluster trust material
+time — by `scripts/apply-projects` (the caBundle is per-cluster trust material
 that is never committed, the same pattern as the `my-project` Organization).
 
 ## Deploy and verify the controller
@@ -227,7 +227,7 @@ Once the controller is deployed and the credential Secret is wired, the
 `my-project` Layer 3 delivery sample is applied **separately** from the master
 platform apply. As of HOL-1322, `my-project` is **removed from `scripts/apply`**
 and applied by the dedicated
-[`scripts/apply-my-project`](../../scripts/apply-my-project), because its
+[`scripts/apply-projects`](../../scripts/apply-projects), because its
 `quay.holos.run` Organization carries a per-cluster `caBundle` that must be
 injected at apply time and never committed.
 
@@ -248,7 +248,7 @@ Run the bring-up steps **in order**:
    `keycloak.holos.run`, and `security.holos.run` CRDs and the manager into the
    `holos-controller` namespace (the *Deploy and verify the controller* steps
    above). It targets, but does not create, that Namespace, and `scripts/apply`
-   does **not** install the CRDs; `scripts/apply-my-project` fails fast if a CRD
+   does **not** install the CRDs; `scripts/apply-projects` fails fast if a CRD
    it needs is absent.
 4. **The manual Quay credential mint** — `scripts/apply-svc-quay-resource-controller-creds`
    plus the `platform-automation` org / OAuth-Application token, per the
@@ -256,7 +256,7 @@ Run the bring-up steps **in order**:
    the `holos-controller-quay-creds` Secret the Organization's
    `credentialsSecretRef` resolves. (The **Keycloak** credential is provisioned at
    runtime in step 2 and needs no manual step.)
-5. **`scripts/apply-my-project`** — reads the local-ca PEM, renders the platform
+5. **`scripts/apply-projects`** — reads the local-ca PEM, renders the platform
    with it injected via the `ca_bundle_pem` CUE tag, and applies the central
    `KeycloakInstance` + its `ReferenceGrant` (the `keycloak-instance` component,
    carrying the injected `caBundle`), then the `my-project` Namespace +
@@ -268,7 +268,7 @@ Run the bring-up steps **in order**:
    `KeycloakUser`) reaching `Ready`.
 
 ```bash
-scripts/apply-my-project
+scripts/apply-projects
 ```
 
 **TLS trust comes from the resource's `caBundle`, not the pod's system store.**
@@ -277,11 +277,11 @@ per-cluster mkcert local CA, which is **not** in the controller pod's system
 trust store. The controller therefore establishes TLS to Quay by trusting the
 **`spec.caBundle`** the `my-project` Organization carries (the standardized
 cross-Kind field, [ADR-19](../adr/ADR-19.md) — appended to the system roots, not
-replacing them) — `scripts/apply-my-project` populates it with the local-ca PEM
+replacing them) — `scripts/apply-projects` populates it with the local-ca PEM
 at apply time. An Organization applied **without** a `caBundle` (e.g. by `kubectl
 apply` of the committed manifest, which carries none) would fail to reach `Ready`
 with an `x509: certificate signed by unknown authority` TLS error against Quay;
-always provision `my-project` through `scripts/apply-my-project` so the trust
+always provision `my-project` through `scripts/apply-projects` so the trust
 anchor is injected.
 
 ## See also

@@ -9,6 +9,8 @@ spec:
   promotionPolicies:
   - autoPromotionEnabled: true
     stage: project-config
+  - autoPromotionEnabled: true
+    stage: my-app-config
   webhookReceivers:
   - name: quay
     quay:
