@@ -382,10 +382,11 @@ let CA_CERTIFICATE = {
 // with the auto-allocated VIP and routes connections to that VIP to the shared
 // Gateway, which terminates TLS for *.holos.internal and routes by SNI/Host to
 // the keycloak HTTPRoute — the API traverses the exact host path browsers use,
-// and the existing Gateway→Keycloak DestinationRule re-encrypts to the backend,
+// and the Gateway forwards plaintext HTTP to the ambient Keycloak pod over a
+// ztunnel HBONE mTLS hop (HOL-1362 — no re-encryption DestinationRule),
 // so the issuer serves https://auth.holos.internal/realms/holos end-to-end and
 // the iss claim matches api.oidc.issuerURL.  protocol TLS keeps ztunnel at L4
-// (the Gateway terminates TLS, then re-encrypts); resolution DNS tracks the
+// (the Gateway terminates external TLS once); resolution DNS tracks the
 // Gateway Service by name so the entry survives ClusterIP changes — the
 // "<gateway>-istio" Service name is Istio's gateway auto-deployment convention,
 // coupled to GATEWAY_NAME above.  Lives in the kargo namespace (the consumer);

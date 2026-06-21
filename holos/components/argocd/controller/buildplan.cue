@@ -34,12 +34,15 @@ import (
 // backchannel OIDC path (discovery/JWKS/token) runs in-cluster: the
 // SERVICE_ENTRY below makes the issuer hostname auth.holos.internal a
 // service the mesh resolves to the shared Istio gateway, so argocd-server
-// reaches Keycloak through the same Gateway→Keycloak re-encrypt path
-// browsers use (the quay-holos-internal ServiceEntry pattern — see the
-// SERVICE_ENTRY comment for why the entry is retained even though, on the
-// .internal TLD, CoreDNS now resolves the issuer hostname authoritatively),
-// and "oidc.tls.insecure.skip.verify" accepts the per-machine local-CA cert
-// on that hop (the local-only MVP posture documented below).
+// reaches Keycloak through the same Gateway→Keycloak path browsers use,
+// following the quay-holos-internal ServiceEntry pattern.  The Gateway
+// terminates external TLS once and forwards plaintext HTTP to the ambient
+// Keycloak pod over a ztunnel HBONE mTLS hop (HOL-1362 — no re-encryption
+// DestinationRule).  See the SERVICE_ENTRY comment for why the entry is
+// retained even though, on the .internal TLD, CoreDNS now resolves the issuer
+// hostname authoritatively.  "oidc.tls.insecure.skip.verify" accepts the
+// per-machine local-CA cert the Gateway serves (the local-only MVP posture
+// documented below).
 
 let NAME = "argocd"
 
@@ -199,11 +202,12 @@ let POLICIES = [
 // routes connections to that VIP to the shared Gateway, which terminates TLS
 // for *.holos.internal and routes by
 // SNI/Host to the keycloak HTTPRoute — argocd-server traverses the exact
-// host path browsers use, and the existing Gateway→Keycloak DestinationRule
-// re-encrypts to the backend, so the issuer serves
+// host path browsers use, and the Gateway forwards plaintext HTTP to the
+// ambient Keycloak pod over a ztunnel HBONE mTLS hop (HOL-1362 — no
+// re-encryption DestinationRule), so the issuer serves
 // https://auth.holos.internal/realms/holos end-to-end and the iss claim
 // matches OIDC_CONFIG.issuer.  protocol TLS keeps ztunnel at L4 (the Gateway
-// terminates TLS, then re-encrypts); resolution DNS tracks the Gateway
+// terminates external TLS once); resolution DNS tracks the Gateway
 // Service by name so the entry survives ClusterIP changes — the
 // "<gateway>-istio" Service name is Istio's gateway auto-deployment
 // convention, coupled to GATEWAY_NAME above.  Lives in the argocd namespace
@@ -353,16 +357,17 @@ userDefinedBuildPlan: {
 
 								"oidc.config": yaml.Marshal(OIDC_CONFIG)
 
-								// Accept the local-CA/mkcert backend cert on
-								// the argocd-server → Keycloak backchannel
-								// hop (OIDC discovery/JWKS/token).  Local-only
+								// Accept the local-CA/mkcert cert the shared
+								// Gateway serves on the argocd-server →
+								// Keycloak backchannel hop (OIDC
+								// discovery/JWKS/token).  Local-only
 								// MVP posture: the mkcert root CA is
 								// per-machine and cannot be embedded at
 								// render time deterministically, so a
 								// render-time rootCA trust anchor is not
-								// available — this mirrors the reference
-								// platform's insecureSkipVerify on the
-								// Keycloak DestinationRule.  Future
+								// available — the backchannel accepts the
+								// local-CA cert the shared Gateway serves on
+								// the auth.holos.internal hop.  Future
 								// production work: replace with oidc.config
 								// rootCA trust (pin the cluster CA bundle)
 								// once a non-mkcert issuer is in play — see

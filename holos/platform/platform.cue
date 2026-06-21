@@ -236,8 +236,8 @@ platform: {
 
 			// keycloak-operator renders the Keycloak operator from the
 			// upstream kubernetes.yml manifest, placed in the keycloak
-			// namespace (deliberately NOT ambient-enrolled, see
-			// holos/namespaces.cue).  Applies after cnpg-clusters in
+			// namespace (ambient-enrolled like the rest of the namespace,
+			// see holos/namespaces.cue).  Applies after cnpg-clusters in
 			// scripts/apply, which gates on the operator Deployment rollout:
 			// the next phase applies Keycloak/KeycloakRealmImport CRs that
 			// need the operator reconciling and the keycloak-db Cluster
@@ -251,14 +251,16 @@ platform: {
 			}}).output
 
 			// keycloak emits the Keycloak server instance: the Keycloak CR,
-			// its TLS Certificate, the declarative holos realm import, the
-			// HTTPRoute attaching it to the shared Gateway, and the
-			// DestinationRule for the Gateway→Keycloak TLS hop.  Applies
-			// last in scripts/apply: its CRs need the operator reconciling
-			// and the keycloak-db Cluster reachable, and its Certificate
-			// needs the cert-manager webhook admitting — hence the retried
-			// apply — with gates on the Keycloak CR Ready and realm import
-			// Done conditions as the Layer 1 smoke check.
+			// the declarative holos realm import, and the HTTPRoute attaching
+			// it to the shared Gateway.  Keycloak runs HTTP-only behind the
+			// Gateway, which terminates external TLS once and forwards
+			// plaintext HTTP to keycloak-service:8080 over a ztunnel HBONE
+			// mTLS hop (HOL-1362) — no per-pod TLS Certificate and no
+			// Gateway→Keycloak re-encryption DestinationRule.  Applies last
+			// in scripts/apply: its CRs need the operator reconciling and the
+			// keycloak-db Cluster reachable, with gates on the Keycloak CR
+			// Ready and realm import Done conditions as the Layer 1 smoke
+			// check.
 			(#ComponentTemplate & {inputs: {
 				name:      "keycloak"
 				component: "instance"
