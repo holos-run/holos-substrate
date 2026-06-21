@@ -168,6 +168,41 @@ let REALM_IMPORT = {
 	}
 }
 
+// HOL-1368: the esso realm shell.  A second realm on the SAME Keycloak
+// instance models an upstream Enterprise SSO identity provider
+// (authentication only); the holos realm brokers logins from it (phase 3,
+// HOL-1369).  Mirrors REALM_IMPORT above: the operator's import Job
+// bootstraps only the realm shell (realm esso, enabled: true) on a clean
+// cluster — no clients.  The esso realm's contents (the confidential
+// https://auth.holos.internal/realms/holos client and the alice user) are
+// owned and reconciled on every apply by the sibling realm-esso-config
+// component's keycloak-config-cli Job (HOL-1368), exactly as realm-config
+// owns the holos realm's contents.  The realm is served at
+// https://auth.holos.internal/realms/esso by the existing Keycloak CR and
+// HTTPRoute — no new route or CR is needed.  The same bootstrap-only CAVEAT
+// as REALM_IMPORT applies: this import does not reconcile changes into an
+// existing realm; realm-esso-config converges them on every apply.
+let ESSO_REALM_IMPORT = {
+	apiVersion: "k8s.keycloak.org/v2beta1"
+	kind:       "KeycloakRealmImport"
+	metadata: {
+		name:      "esso"
+		namespace: NAMESPACE
+	}
+	spec: {
+		keycloakCRName: KEYCLOAK.metadata.name
+		realm: {
+			realm:   "esso"
+			enabled: true
+			// No clients are declared here — only the realm shell.  The esso
+			// realm-config component's keycloak-config-cli Job owns and
+			// reconciles the confidential broker client and the alice user
+			// (scoped to realm: "esso" only), so it never contends with this
+			// bootstrap import (which owns only realm + enabled).
+		}
+	}
+}
+
 // Cross-namespace attachment to the shared Gateway is allowed because its
 // listeners set allowedRoutes.namespaces.from: All (istio-gateway
 // component).  sectionName binds this route to the https listener only:
@@ -244,7 +279,10 @@ userDefinedBuildPlan: {
 				// Keycloak and Gateway API schemas at render time.
 				resources: #Resources & {
 					Keycloak: (KEYCLOAK.metadata.name):                KEYCLOAK
-					KeycloakRealmImport: (REALM_IMPORT.metadata.name): REALM_IMPORT
+					KeycloakRealmImport: {
+						(REALM_IMPORT.metadata.name):      REALM_IMPORT
+						(ESSO_REALM_IMPORT.metadata.name): ESSO_REALM_IMPORT
+					}
 					HTTPRoute: {
 						(HTTPROUTE.metadata.name):          HTTPROUTE
 						(HTTPROUTE_REDIRECT.metadata.name): HTTPROUTE_REDIRECT
