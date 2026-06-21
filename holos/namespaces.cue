@@ -49,8 +49,47 @@ namespaces: [NAME=string]: corev1.#Namespace & {
 // between the literal and the registry entry becomes a render failure
 // instead of an apply-time NotFound error.  This file is a CUE ancestor of
 // every component instance, so components reference this definition rather
-// than cloning the comprehension.
+// than cloning the comprehension.  It enumerates EVERY entry — the static
+// ones below and the env-prefixed ones derived from the projects collection.
 #RegisteredNamespace: or([for NAME, _ in namespaces {NAME}])
+
+// --- Project namespace topology (ADR-21 multi-environment) -------------------
+//
+// A Project is realized not as a single Namespace but as one Namespace PER
+// ENVIRONMENT (ADR-21's revised topology): ci-<name>, qa-<name>, prod-<name>.
+// The set of environments and the <env>-<name> naming convention are declared
+// ONCE here as reusable definitions the Project and Application components
+// (HOL-1355/HOL-1356) consume, so the prefix convention lives in a single place.
+
+// #Environments is the canonical, ordered list of per-project delivery
+// environments.  Declared once; every derivation of an env-prefixed namespace
+// (here, and in the components) iterates this list rather than re-spelling the
+// "ci"/"qa"/"prod" strings.  Each value is a DNS-label-safe prefix.
+#Environments: ["ci", "qa", "prod"]
+
+// #ProjectControlEnvironment is the environment whose namespace doubles as the
+// Project's single CONTROL namespace — where the project-scoped, env-independent
+// control-plane CRs live (the Quay Organization, the keycloak.holos.run CRs, and
+// the cluster-scoped Kargo Project's adopted namespace).  ADR-21 records the
+// rationale for choosing prod-<name>: it is a real, always-present delivery
+// environment (no extra un-prefixed namespace to register), and the production
+// environment is the natural long-lived home for a project's identity/registry
+// control objects.  The components reference THIS definition rather than
+// hard-coding "prod".
+#ProjectControlEnvironment: "prod"
+
+// #ProjectNamespace maps a (project name, environment) pair to its derived
+// namespace name, <env>-<name>.  It is the single source of truth for the
+// prefix convention: the comprehension below and the Project/Application
+// components all build env namespace names through this definition so the naming
+// never drifts.  The result is validated as a DNS label (the same constraint the
+// namespaces map key enforces), so an over-long project name that would overflow
+// the 63-char label limit once prefixed fails at render.
+#ProjectNamespace: {
+	project: string
+	env:     string
+	name:    "\(env)-\(project)" & =~"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
+}
 
 namespaces: {
 	// istio-system hosts the mesh dataplane and control plane themselves:
@@ -259,4 +298,42 @@ namespaces: {
 	// credential Secret (holos-controller-quay-creds) from this namespace via the
 	// downward-API POD_NAMESPACE the manager Deployment sets (HOL-1313).
 	"holos-controller": _ambient: true
+
+	// --- Derived: per-project, per-environment namespaces (ADR-21) -----------
+	//
+	// For every projects.<name> entry (the projects collection, bound into the
+	// root `holos` scope by holos/collections.cue) derive one namespace per
+	// environment in #Environments: ci-<name>, qa-<name>, prod-<name>.  This is
+	// the collection-driven generalization of the hand-written my-project entry
+	// above — ADR-21 calls it "the design's hardest constraint": a one-line
+	// project registration must produce correctly-labelled, ambient-enrolled
+	// registry entries WITHOUT a component emitting a Namespace inline (the
+	// no-inline-Namespace guardrail, holos/docs/component-guidelines.md).
+	//
+	// Each derived entry reproduces the my-project entry's shape EXACTLY:
+	//   - _ambient: true (the project namespaces carry workloads and enroll in
+	//     the mesh, like the static my-project entry).
+	//   - the kargo.akuity.io/project: "true" ADOPTION label, so the Kargo Project
+	//     controller adopts the pre-created namespace instead of refusing it.
+	//   - the kargo.akuity.io/keep-namespace: "true" annotation, so Kargo does not
+	//     delete the namespace if the Project is removed (the namespaces component
+	//     owns the base Namespace object).
+	//
+	// The name is built through #ProjectNamespace so the <env>-<name> convention
+	// is single-sourced and the derived name is DNS-label validated.  The static
+	// my-project entry above is deliberately RETAINED in this phase (the bespoke
+	// my-project component still references it until HOL-1357); the derived
+	// prod-my-project etc. are additional, non-conflicting entries.
+	for PROJECT, _ in projects {
+		for ENV in #Environments {
+			let NS = (#ProjectNamespace & {project: PROJECT, env: ENV}).name
+			(NS): {
+				_ambient: true
+				metadata: {
+					labels: "kargo.akuity.io/project":             "true"
+					annotations: "kargo.akuity.io/keep-namespace": "true"
+				}
+			}
+		}
+	}
 }
