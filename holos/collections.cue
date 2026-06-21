@@ -57,3 +57,50 @@ apps: appcoll.apps
 
 // #App is the per-entry application schema, re-exported for the components.
 #App: appcoll.#App
+
+// --- Render-path validation -------------------------------------------------
+//
+// The collections' schema constraints (DNS-label names, the email-shaped owner
+// keys, the at-least-one-owner minimum, and the apps.<name>.project →
+// #RegisteredProject cross-reference) only fail at render if SOMETHING ON THE
+// RENDER PATH actually evaluates the constrained fields.  Until the
+// Project/Application components (HOL-1355/HOL-1356) consume the collections,
+// nothing does: `holos render platform` would happily ignore a malformed
+// holos/apps/*.cue or an ownerless project, and the validation would fire only
+// under an explicit `cue vet ./apps`/`./projects`.
+//
+// collections.cue is a build-plan ANCESTOR of every component (a root-level
+// `package holos` file), so the validation fields below are evaluated on EVERY
+// component render — putting the collection contract on the scripts/render path
+// now, before the consuming components exist.  Each field is hidden (underscore)
+// so it never escapes into a manifest; CUE still evaluates a referenced hidden
+// field, and these are referenced by being concrete struct fields of the
+// ancestor.
+
+// _validateProjects forces every project's owner constraints onto the render
+// path: len(owners) > 0 (no ownerless project) per concrete entry.  The
+// per-entry name/owner-key/email constraints ride the bound `projects` data
+// itself; this comprehension adds the cross-cutting minimum the projects
+// package could only express as a package-private field (#Project cannot carry
+// it without making the abstract schema unsatisfiable — see projects.cue).
+_validateProjects: {
+	for NAME, P in projects {
+		(NAME): len(P.owners) & >0
+	}
+}
+
+// _validateApps forces every app's fields — including the apps.<name>.project →
+// #RegisteredProject cross-reference — onto the render path by referencing them.
+// Reading project/image/port/name makes a malformed or dangling app entry a
+// render failure even with no Application component yet.  (host is optional, so
+// it is not forced.)
+_validateApps: {
+	for NAME, A in apps {
+		(NAME): {
+			project: A.project
+			image:   A.image
+			port:    A.port
+			name:    A.name
+		}
+	}
+}

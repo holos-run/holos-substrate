@@ -92,19 +92,14 @@ projects: [NAME=string]: #Project & {
 	name: NAME & #DNSLabel
 }
 
-// A registered project MUST name at least one owner — an ownerless project is
-// rejected at render, not silently admitted (it would have no KeycloakUser to
-// pre-provision and no one to bind project access to).  Enforced as a separate
-// validation comprehension over the CONCRETE entries (not as a constraint on
-// #Project or on the projects pattern label, either of which evaluates against
-// the empty default owners struct and is unsatisfiable / cannot resolve the
-// field): for each entry, len(owners) is unified with >0, so a project with an
-// empty owners map fails here at render.
-_projectsHaveOwners: {
-	for NAME, P in projects {
-		(NAME): len(P.owners) & >0
-	}
-}
+// The "at least one owner" minimum is NOT enforced in this package.  A
+// constraint on #Project or on the projects pattern label evaluates against the
+// empty default owners struct (unsatisfiable / cannot resolve the field), and a
+// package-private validation field here would NOT be on the render path — only
+// holos/collections.cue (a build-plan ancestor of every component) is, so the
+// len(owners) > 0 check lives THERE (_validateProjects), alongside the apps
+// cross-reference validation, where `holos render platform` actually evaluates
+// it.  See collections.cue *Render-path validation*.
 
 // #RegisteredProject is the disjunction of every registered project name —
 // mirroring holos/namespaces.cue's #RegisteredNamespace.  The apps collection
