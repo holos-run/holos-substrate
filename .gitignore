@@ -50,6 +50,11 @@ go.work.sum
 holos/.publish.*
 holos/.apply-projects.*
 
+# Local build artifact produced by `make config-build` (scripts/publish-config
+# --build): the gzipped tarball of the rendered holos/deploy/ tree.  It is a
+# build output pushed by `make config-push`, never committed.
+holos/deploy.tar.gz
+
 # Holos files
 .DS_Store
 .DS_Store?

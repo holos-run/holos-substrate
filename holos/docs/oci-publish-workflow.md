@@ -78,6 +78,119 @@ Consume it as an Argo CD OCI source by digest:
   targetRevision: sha256:1a88…dad
 ```
 
+## Platform config bundle (`holos-paas-config`)
+
+Distinct from the per-app `scripts/publish` path above, the **platform config
+bundle** packages the **whole rendered `holos/deploy/` tree as-is** into one OCI
+artifact under a mutable `:dev` tag, for Argo CD to **bootstrap the entire
+platform** from an App-of-Apps (HOL-1373/HOL-1374 — the producer side of the
+bootstrap; later phases consume it). [`scripts/publish-config`](../../scripts/publish-config)
+and the `make config-build` / `make config-push` targets implement it.
+
+It is deliberately **not** `scripts/publish`:
+
+| | `scripts/publish` (`make publish`) | `scripts/publish-config` (`make config-build`/`config-push`) |
+| --- | --- | --- |
+| Input | `holos render platform --inject app_image=…` (re-renders) | the **committed** `holos/deploy/` tree, **as-is** (no render) |
+| Packaging | Kustomize `build` → one flat `manifests.yaml` | a straight `tar` of the deploy tree (no Kustomize) |
+| Repo | `quay.holos.internal/holos/holos-paas-manifests` | `quay.holos.internal/holos/holos-paas-config` |
+| Tag | immutable, input-addressed `render-<config12>-<appimage12>` | mutable `dev` |
+| Consumer | Kargo `Warehouse` → per-app delivery | Argo CD App-of-Apps → platform bootstrap |
+| Layer media type | `application/vnd.oci.image.layer.v1.tar+gzip` | same |
+| Transport (`*.holos.internal` → `--insecure`, etc.) | same `run_oras_dest` machinery | same (reused) |
+
+### Build / push split
+
+The two steps are **separate** targets, mirroring `docker-build` / `docker-push`
+— `config-build` produces a local artifact with **no network I/O**, `config-push`
+depends on it and `oras push`es it:
+
+```bash
+# Build the local artifact tarball (holos/deploy.tar.gz, gitignored). No network.
+make config-build
+
+# Build (if stale) then push to quay.holos.internal/holos/holos-paas-config:dev.
+make config-push
+
+# Override the target. CONFIG_REPO is the bare repo; CONFIG_TAG the tag.
+make config-push CONFIG_REPO=localhost:5099/holos/holos-paas-config CONFIG_TAG=dev
+
+# The script directly (the Make targets are thin wrappers):
+scripts/publish-config --build                       # tar holos/deploy/
+scripts/publish-config --push                        # oras push the built tarball
+DIGEST=$(scripts/publish-config --push)              # capture the pushed digest
+```
+
+`config-push` declares `config-build` as a prerequisite, so a single `make
+config-push` builds then pushes; the build alone never reaches the network. Like
+`scripts/publish`, `--push` prints progress and the consumption hint to
+**stderr** and the bare pushed digest to **stdout** (the last line).
+
+### Tarball layout (what Phase 3 references)
+
+The artifact is a single `application/vnd.oci.image.layer.v1.tar+gzip` layer
+holding `holos/deploy.tar.gz`. The tar is rooted at `holos/deploy/`, so the
+member paths inside the tarball begin at **`clusters/`**:
+
+```
+clusters/k3d-holos/components/<component>/<resource>.yaml
+```
+
+An Argo CD child `Application` consuming this bundle therefore selects a
+per-component subpath with:
+
+```yaml
+spec:
+  source:
+    repoURL: oci://quay.holos.internal/holos/holos-paas-config
+    targetRevision: dev   # the mutable bootstrap tag (or pin a digest)
+    path: clusters/k3d-holos/components/<component>
+```
+
+The bundle contains the **full** `holos/deploy/` tree (every component, all 30+
+under `clusters/k3d-holos/components/`), so the App-of-Apps can fan out one child
+Application per component by `source.path`. The build packages the **committed**
+tree at `HEAD` (`git archive HEAD:holos/deploy`), **not** the working tree — so
+an uncommitted or unstaged local render can never leak into the mutable `:dev`
+bootstrap tag (the platform Argo CD bootstraps from must be a reviewed, committed
+render), a stray local file never appears, and the archive is **byte-reproducible**
+— sorted member order, zeroed ownership, a pinned `--mtime` epoch (a tree-ish has
+no commit timestamp, so without the pin `git archive` would stamp the current
+time and mint a new digest on every build), and `gzip -n` to drop gzip's own
+timestamp. Identical committed config therefore always produces an identical
+tarball. `config-build` fails loudly if `holos/deploy/` is absent from `HEAD`
+rather than pushing an empty bundle.
+
+### Registry transport and credentials
+
+`scripts/publish-config` reuses `scripts/publish`'s `run_oras_dest` /
+`transport_flags` machinery, so the **same** per-host transport rules apply: a
+`*.holos.internal` host (the in-cluster Quay's mkcert-signed cert) auto-enables
+`--insecure`; a `localhost`/`127.0.0.1` host auto-enables `--plain-http`. Force
+either with `ORAS_INSECURE=1` / `ORAS_PLAIN_HTTP=1`. Destination push
+credentials are `ORAS_USERNAME` / `ORAS_PASSWORD` (passed via
+`--password-stdin`), or omit them to use oras's ambient auth — identical to the
+[Registry credentials](#registry-credentials) section below.
+
+### Verification (manual)
+
+```bash
+# 1. Build the bundle with no network access and confirm the layout.
+make config-build
+tar tzf holos/deploy.tar.gz | head    # clusters/k3d-holos/components/...
+
+# 2. Against a throwaway local registry, push and round-trip it.
+docker run -d --name reg -p 5099:5000 registry:2
+DIGEST=$(make -s config-push CONFIG_REPO=localhost:5099/holos/holos-paas-config)
+oras manifest fetch --plain-http \
+  localhost:5099/holos/holos-paas-config:dev | jq '.layers[].mediaType'
+#   "application/vnd.oci.image.layer.v1.tar+gzip"
+docker rm -f reg
+```
+
+Do **not** attempt a live push to a cluster registry in CI — `config-build` is
+the network-free step CI exercises.
+
 ## Deterministic, input-addressed tagging (idempotency)
 
 The artifact is tagged input-addressed:

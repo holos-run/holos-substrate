@@ -1,0 +1,286 @@
+#!/usr/bin/env bash
+# Bundle the rendered platform manifests under holos/deploy/ into a single OCI
+# artifact and publish it as the platform-config bundle the App-of-Apps
+# bootstrap consumes (quay.holos.internal/holos/holos-paas-config:dev).
+#
+# This is the PRODUCER side of the App-of-Apps bootstrap (HOL-1373/HOL-1374): a
+# straight tar of the committed holos/deploy/ tree under a mutable :dev tag, for
+# Argo CD to bootstrap the whole platform from. It is deliberately DISTINCT from
+# scripts/publish (the per-app delivery path) in two ways:
+#
+#   - No render, no digest injection, no Kustomize.  scripts/publish renders the
+#     platform with an injected app image digest, Kustomize-packages it, and
+#     pushes an input-addressed `render-<config12>-<appimage12>` tag into
+#     holos-paas-manifests for the Kargo-driven app delivery.  This script does
+#     NONE of that — it tars the holos/deploy/ tree AS-IS so Argo CD child
+#     Applications can select per-component subpaths
+#     (clusters/k3d-holos/components/<component>) via `source.path`.
+#   - A mutable :dev tag, not an immutable input-addressed one.  The platform
+#     bootstrap tracks the latest committed render under one stable handle.
+#
+# It reuses scripts/publish's oras transport machinery (the
+# `*.holos.internal` -> `--insecure`, `localhost` -> `--plain-http` per-host
+# decision and the `--password-stdin` credential handling) so the two scripts
+# behave identically against the in-cluster Quay's mkcert-signed certificate.
+#
+# The build and push steps are SEPARATE, mirroring `docker-build`/`docker-push`:
+#
+#   scripts/publish-config --build          # tar holos/deploy/ -> a local
+#                                           #   artifact, NO network I/O
+#   scripts/publish-config --push           # oras push that artifact to
+#                                           #   $CONFIG_REPO:$CONFIG_TAG
+#
+# Usage:
+#   scripts/publish-config --build [oci-repo[:tag]]
+#   scripts/publish-config --push  [oci-repo[:tag]]
+#
+#   --build          Tar the holos/deploy/ tree into the artifact tarball on
+#                    disk (default $ARTIFACT_TARBALL) and exit.  No network I/O.
+#   --push           oras push the already-built artifact tarball to the target
+#                    OCI repo:tag and print the pushed digest on stdout.  Fails
+#                    fast if the tarball does not exist (run --build first).
+#
+#   [oci-repo[:tag]] The target OCI reference.  Either a bare repo (the :tag is
+#                    taken from $CONFIG_TAG, default `dev`) or a repo:tag.
+#                    Defaults to $CONFIG_REPO:$CONFIG_TAG, then to
+#                    quay.holos.internal/holos/holos-paas-config:dev.
+#                    Used by --push (and accepted but unused by --build, so a
+#                    caller can pass the same args to both steps).
+#
+# Environment overrides:
+#   CONFIG_REPO      Default target OCI repository (no tag suffix).
+#                    Default quay.holos.internal/holos/holos-paas-config.
+#   CONFIG_TAG       Default tag.  Default `dev`.
+#   ARTIFACT_TARBALL Path to the build/push artifact tarball.
+#                    Default holos/deploy.tar.gz (gitignored).
+#   ORAS_USERNAME /  Destination (config artifact) **push** credentials, passed
+#   ORAS_PASSWORD    via `--username/--password-stdin`.  Omit to use oras's
+#                    ambient auth (~/.docker/config.json, a prior `oras login`).
+#   ORAS_INSECURE    Set to a non-empty value to force `--insecure` (skip TLS
+#                    verification) on the destination registry.  When unset,
+#                    `--insecure` auto-enables for a `*.holos.internal` host
+#                    (the in-cluster Quay's mkcert-signed cert).
+#   ORAS_PLAIN_HTTP  Set to a non-empty value to force `--plain-http` (a registry
+#                    served over plain HTTP, e.g. a bare `localhost:5000` dev
+#                    registry).  When unset, `--plain-http` auto-enables for a
+#                    `localhost`/`127.0.0.1` host and takes precedence over the
+#                    `--insecure` TLS path.
+#
+# Prerequisites:
+#   --build needs: git, gzip  (no oras, no network)
+#   --push  needs: oras
+#
+# NOTE: prerequisite checks are inline rather than a copy of the check_prereq
+# helper, matching scripts/publish and scripts/render.
+
+set -euo pipefail
+
+# Resolve the repo root so this script works from any working directory.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+DEPLOY_DIR="${REPO_ROOT}/holos/deploy"
+
+# The artifact tarball lives at the repo root by default (gitignored).  It holds
+# the holos/deploy/ tree with the clusters/... path layout at the tarball root,
+# so an Argo CD OCI source resolves `source.path: clusters/k3d-holos/components/
+# <component>` directly against it (the layout Phase 3's child Applications use).
+ARTIFACT_TARBALL="${ARTIFACT_TARBALL:-${REPO_ROOT}/holos/deploy.tar.gz}"
+
+# Target OCI coordinates.  CONFIG_REPO is the bare repo; CONFIG_TAG the tag.
+CONFIG_REPO="${CONFIG_REPO:-quay.holos.internal/holos/holos-paas-config}"
+CONFIG_TAG="${CONFIG_TAG:-dev}"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  scripts/publish-config --build [oci-repo[:tag]]   # tar holos/deploy/ (no network)
+  scripts/publish-config --push  [oci-repo[:tag]]   # oras push the built artifact
+
+Defaults: CONFIG_REPO=quay.holos.internal/holos/holos-paas-config CONFIG_TAG=dev
+See the header of this script and holos/docs/oci-publish-workflow.md.
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Inputs
+# ---------------------------------------------------------------------------
+MODE=""
+case "${1:-}" in
+  --build) MODE="build"; shift ;;
+  --push)  MODE="push";  shift ;;
+  -h|--help) usage; exit 0 ;;
+  "")      echo "ERROR: a mode is required (--build or --push)." >&2; usage; exit 1 ;;
+  *)       echo "ERROR: unknown mode '${1}' (expected --build or --push)." >&2; usage; exit 1 ;;
+esac
+
+# Resolve the target reference.  A positional arg overrides $CONFIG_REPO:$CONFIG_TAG.
+# Accept either a bare repo (append :$CONFIG_TAG) or an explicit repo:tag.  A
+# `:tag` is only present when the LAST path segment contains a ':' -- the
+# registry's `:port` colon lives in the FIRST segment and must be preserved
+# (mirrors scripts/publish's tag-vs-port disambiguation).
+ARG_REF="${1:-}"
+if [[ -n "${ARG_REF}" ]]; then
+  last_segment="${ARG_REF##*/}"
+  if [[ "${last_segment}" == *:* ]]; then
+    ARTIFACT_REF="${ARG_REF}"
+  else
+    ARTIFACT_REF="${ARG_REF}:${CONFIG_TAG}"
+  fi
+else
+  ARTIFACT_REF="${CONFIG_REPO}:${CONFIG_TAG}"
+fi
+
+# ---------------------------------------------------------------------------
+# Transport handling (mirrors scripts/publish run_oras_dest)
+# ---------------------------------------------------------------------------
+# transport_flags HOST -> echoes the oras transport flag for that host:
+#   --plain-http for a bare localhost dev registry (HTTP, no TLS);
+#   --insecure   for *.holos.internal (mkcert-signed cert not in the trust
+#                store), matching the Argo CD repo Secret's insecure: "true".
+# ORAS_PLAIN_HTTP / ORAS_INSECURE overrides, when set, force the flag; plain
+# HTTP takes precedence over insecure (--insecure is a TLS-only concern).
+transport_flags() {
+  local host="$1" plain insecure
+  plain="${ORAS_PLAIN_HTTP:-}"
+  insecure="${ORAS_INSECURE:-}"
+  if [[ -z "${ORAS_PLAIN_HTTP+x}" ]]; then
+    case "${host}" in
+      localhost|localhost:*|127.0.0.1|127.0.0.1:*) plain=1 ;;
+    esac
+  fi
+  if [[ -z "${ORAS_INSECURE+x}" ]]; then
+    case "${host}" in
+      *.holos.internal) insecure=1 ;;
+    esac
+  fi
+  if [[ -n "${plain}" ]]; then
+    printf '%s' "--plain-http"
+  elif [[ -n "${insecure}" ]]; then
+    printf '%s' "--insecure"
+  fi
+}
+
+# run_oras_dest wraps oras for the destination registry, applying that
+# registry's transport flag and only its credentials.  Credentials are passed
+# via --password-stdin so the secret never appears in the process list.
+run_oras_dest() {
+  local cmd="$1"; shift
+  local host="${ARTIFACT_REF%%/*}"
+  local flag; flag="$(transport_flags "${host}")"
+  if [[ -n "${ORAS_USERNAME:-}" && -n "${ORAS_PASSWORD:-}" ]]; then
+    printf '%s' "${ORAS_PASSWORD}" \
+      | oras "${cmd}" ${flag:+"${flag}"} \
+          --username "${ORAS_USERNAME}" --password-stdin "$@"
+  else
+    oras "${cmd}" ${flag:+"${flag}"} "$@"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# --build: tar the holos/deploy/ tree (no network I/O)
+# ---------------------------------------------------------------------------
+do_build() {
+  for tool in git gzip; do
+    if ! command -v "${tool}" >/dev/null 2>&1; then
+      echo "ERROR: '${tool}' not found on PATH." >&2
+      exit 1
+    fi
+  done
+
+  if [[ ! -d "${DEPLOY_DIR}" ]]; then
+    echo "ERROR: ${DEPLOY_DIR} does not exist; run scripts/render first." >&2
+    exit 1
+  fi
+
+  # Bundle the **committed** holos/deploy/ tree from HEAD -- not the working tree.
+  # `git archive HEAD:holos/deploy` reads the exact bytes recorded at HEAD, so an
+  # uncommitted or unstaged local render can NEVER leak into the mutable :dev
+  # bootstrap tag (the artifact Argo CD bootstraps the whole platform from must
+  # be a reviewed, committed render).  The `HEAD:holos/deploy` tree-ish roots the
+  # archive at the deploy tree's contents, so the tarball layout is
+  # `clusters/k3d-holos/components/<component>/...` -- the path Phase 3's child
+  # Applications reference via source.path.
+  #
+  # Determinism: a tree-ish (HEAD:holos/deploy, as opposed to a commit) has no
+  # commit timestamp, so `git archive` would stamp every tar entry with the
+  # *current* time, minting a different artifact digest on every build of the
+  # same committed tree.  Pin `--mtime` to a fixed epoch so the archive is
+  # byte-reproducible (members are already emitted in sorted tree order with
+  # zeroed ownership); `gzip -n` drops gzip's own timestamp/name for the same
+  # reason.  Identical committed config therefore always produces an identical
+  # tarball.
+  #
+  # Fail loudly if holos/deploy/ is absent from HEAD (never committed), rather
+  # than pushing an empty bootstrap bundle.
+  local count
+  if ! count="$(
+        cd "${REPO_ROOT}"
+        git ls-tree -r --name-only HEAD -- holos/deploy | grep -c .
+      )" || [[ "${count}" -eq 0 ]]; then
+    echo "ERROR: holos/deploy/ is not committed at HEAD." >&2
+    echo "       Run scripts/render and commit holos/deploy/ first." >&2
+    exit 1
+  fi
+
+  echo "Bundling committed holos/deploy/ (HEAD) -> ${ARTIFACT_TARBALL} ..." >&2
+  (
+    cd "${REPO_ROOT}"
+    git archive --format=tar --mtime='1970-01-01 00:00:00 UTC' HEAD:holos/deploy
+  ) | gzip -n > "${ARTIFACT_TARBALL}"
+
+  echo "Built ${count} files into ${ARTIFACT_TARBALL}." >&2
+  echo "Push it with: scripts/publish-config --push" >&2
+}
+
+# ---------------------------------------------------------------------------
+# --push: oras push the built artifact
+# ---------------------------------------------------------------------------
+do_push() {
+  if ! command -v oras >/dev/null 2>&1; then
+    echo "ERROR: 'oras' not found on PATH." >&2
+    echo "       Install from https://oras.land/docs/installation" >&2
+    exit 1
+  fi
+
+  if [[ ! -s "${ARTIFACT_TARBALL}" ]]; then
+    echo "ERROR: artifact tarball ${ARTIFACT_TARBALL} not found or empty." >&2
+    echo "       Run 'scripts/publish-config --build' first." >&2
+    exit 1
+  fi
+
+  echo "Pushing ${ARTIFACT_REF} ..." >&2
+  # Single layer: the gzipped tarball, layer media type
+  # application/vnd.oci.image.layer.v1.tar+gzip (the type Argo CD's OCI source
+  # accepts -- holos/docs/argocd-application-source.md).  Push from the tarball's
+  # directory so the layer's path annotation is the bare filename, and capture
+  # the pushed digest via the go-template format.
+  local tarball_dir tarball_name push_digest
+  tarball_dir="$(cd "$(dirname "${ARTIFACT_TARBALL}")" && pwd)"
+  tarball_name="$(basename "${ARTIFACT_TARBALL}")"
+  push_digest="$(
+    cd "${tarball_dir}"
+    run_oras_dest push "${ARTIFACT_REF}" \
+      --format 'go-template={{.digest}}' \
+      "${tarball_name}:application/vnd.oci.image.layer.v1.tar+gzip"
+  )"
+
+  if [[ -z "${push_digest}" ]]; then
+    echo "ERROR: oras push did not report a digest." >&2
+    exit 1
+  fi
+
+  local repo="${ARTIFACT_REF%:*}"
+  echo "Published ${repo}@${push_digest} (tag ${ARTIFACT_REF##*:})" >&2
+  echo "Consume it as an Argo CD OCI source:" >&2
+  echo "  repoURL:        oci://${repo}" >&2
+  echo "  targetRevision: ${ARTIFACT_REF##*:}   # the :dev tag, or pin ${push_digest}" >&2
+
+  # The pushed artifact digest is the script's machine-readable result: print it
+  # alone on stdout as the last line so callers can DIGEST=$(scripts/publish-config --push).
+  echo "${push_digest}"
+}
+
+case "${MODE}" in
+  build) do_build ;;
+  push)  do_push ;;
+esac
