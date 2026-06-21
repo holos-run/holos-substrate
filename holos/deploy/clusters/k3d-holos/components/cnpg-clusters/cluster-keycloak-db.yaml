@@ -8,6 +8,9 @@ spec:
         initdb:
             database: keycloak
             owner: keycloak
+    inheritedMetadata:
+        labels:
+            istio.io/dataplane-mode: none
     instances: 1
     resources:
         limits:

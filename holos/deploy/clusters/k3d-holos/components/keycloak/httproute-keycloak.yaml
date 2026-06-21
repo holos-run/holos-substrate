@@ -13,7 +13,7 @@ spec:
   rules:
   - backendRefs:
     - name: keycloak-service
-      port: 8443
+      port: 8080
     matches:
     - path:
         type: PathPrefix
