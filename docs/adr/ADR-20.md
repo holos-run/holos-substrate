@@ -14,6 +14,7 @@
 | 2        | 2026-06-20 | @jeffmccune | Make the `## Design` concrete for the **project group-management use case**. Add the centrally-managed **`KeycloakInstance`** reference Kind (API URL, `caBundle`, admin `credentialsSecretRef`, `realm`; multiple instances per cluster; in/out-of/remote-cluster targets) and the **`KeycloakUser`** Kind (Admin-API pre-create-if-necessary + first-broker-login auto-link by email). Resolve the open questions: the **claim value** comes from a **client-role** assignment surfaced by the existing `oidc-usermodel-client-role-mapper` (rejecting the full-path Group Membership mapper and a script mapper); **nested groups** `projects/<project>/{roles,custodians}/{owner,editor,viewer}` are idiomatic in Keycloak 26.x; **custodian delegation** uses Fine-Grained Admin Permissions v2 `manage-members`/`manage-membership` group scope (KC ≥ 26.2). Every Kind references a `KeycloakInstance` and a cross-namespace reference is authorized by a `security.holos.run` `ReferenceGrant` ([ADR-22](ADR-22.md)). State the **API-group dependency boundary** (`api/keycloak/v1alpha1` imports only `k8s.io/api`/`k8s.io/apimachinery`), the **`holos_controller` metrics**, and the **Gateway-API status** contract. Reconciled by the existing `holos-controller` binary as a second API group alongside `quay.holos.run`. Keep `Status: Proposed`, `Updates: ADR-3` |
 | 3        | 2026-06-20 | @jeffmccune | **`Status: Partially Implemented`** — the API group **shipped** (HOL-1344..HOL-1348): the `api/keycloak/v1alpha1` types (`KeycloakInstance`/`Group`/`User`/`Client`), the `internal/keycloak` Admin REST client seam, and the four reconcilers (`internal/controller/keycloak`, claim model + finalizers + conditions + metrics + `ReferenceGrant` gating), with CRDs and RBAC installed by the controller's kustomize tree. Phase 6 (HOL-1348) wired the Holos CUE layer: the controller's **admin credential** (the confidential `svc-holos-controller` service-account client with scoped `realm-management` roles + a generate-once bootstrap into `holos-controller-keycloak-creds`), the realm's **first-broker-login auto-link flow** (`Detect Existing Broker User` + `Automatically Set Existing User`), the central **`KeycloakInstance`** + `security.holos.run` `ReferenceGrant` (the `keycloak-instance` component), and the **`my-project`** project CRs (the role/custodian `KeycloakGroup`s, the owner `KeycloakUser` `bob@example.com`, and the project `KeycloakClient`). **Implementation deviations from this ADR's worked examples:** the shipped `KeycloakGroup.spec.clientRoles[]` / `KeycloakClient.spec.clientRoles[]` (a `{clientRef, role}` referencing a `KeycloakClient` CR by object name) replaced the proposed `KeycloakGroup.clientRoleBindings` (a bare `clientId` list) + `KeycloakClient.emitProjectRolesInGroupsClaim` flag, and the `KeycloakClient` reconciler always ensures its own client-role→`groups` mapper. A consequence: the ADR's **"Quay use case"** (folding `my-project-<role>` into the **platform Quay** client's token with no project client) is **not yet implemented** — the reserved-name guard forbids a tenant `KeycloakClient` targeting `https://quay.holos.internal` and `clientRef` resolves only a same-namespace CR, so today the `my-project` claim values surface in the **project's own** `https://my-project.holos.internal` client token (the ADR's "project's own service" path). Folding onto the reserved Quay client is tracked as follow-up. `KeycloakClientRole`/`KeycloakRealmRole` remain unimplemented. `Updates: ADR-3` unchanged |
 | 4        | 2026-06-21 | @jeffmccune | **Close the "Quay use case" gap (HOL-1350).** Reconcile the implemented `clientRoles` model with this ADR's proposed `clientRoleBindings`/`emitProjectRolesInGroupsClaim` design: `ClientRoleReference` now names its target client by **exactly one of** `clientRef` (a same-namespace `KeycloakClient` CR, the "project's own service" path) **or `clientId`** (a Keycloak clientId directly — the new field, CEL-enforced mutual exclusion). A `KeycloakGroup` confers a **project-prefixed** client role (`my-project-<role>`) on the **platform-reserved Quay client** (`https://quay.holos.internal`) by naming its `clientId` directly — no tenant `KeycloakClient` CR exists for it (the reserved-name guard still forbids one). The group reconciler **ensures the project-prefixed role exists** on the named client (idempotent create, on the direct path only — a `clientRef` target stays get-only so a group never expands a project client's role vocabulary), and a **direct-path guard** in `conferClientRoles` bounds the raw-`clientId` capability so it cannot escalate privilege: the target must be on a tight **allowlist of permitted reserved consumer clients** (only the Quay client — so the path cannot reach `realm-management`/`argocd`/`kargo` or an arbitrary client); the path must be a `projects/<project>/roles/<leaf>` role group whose **`<project>` equals the CR's namespace** (the project↔namespace ownership boundary — RBAC governs who creates a CR in a namespace, so a tenant cannot declare another project's path); the role must be **exactly** this role group's own name `<project>-<leaf>` (an exact match, not a prefix, so a prefix collision like project `my` conferring `my-project-owner` is rejected); and the platform's own reserved client-role names (`platform-admin`/`project-admin`) are refused. The guard keys on the **resolved** clientId regardless of which field named it: the Keycloak built-in clients (`realm-management`, `account`, `account-console`, `broker`, `security-admin-console`) are added to the reserved set, and a `clientRef` resolving to **any** reserved client is refused outright — so a tenant cannot craft a same-namespace `KeycloakClient` whose `spec.clientId` is `realm-management` and confer `realm-admin` through `clientRef` (a reserved client's roles are conferable only via the bounded direct path, which allowlists only the Quay client). The `quay` **client object** stays config-cli's. `KeycloakClient.spec.clientRoles` is CEL-constrained to forbid `clientId` (a client defines roles on itself), so the shared `ClientRoleReference` type never admits a silently-ignored target there. The role then surfaces in Quay's `groups` claim via the already-deployed `quay-client-roles` mapper, so [ADR-19](ADR-19.md) `syncedTeams[].oidcGroup` membership populates with **no Quay-side or new-mapper change**. The `KeycloakClient` reserved-name guard (client-object create/reconfigure) is unchanged. The `my-project` role groups now confer the role on **both** the Quay client (`clientId`) and the project client (`clientRef`). `KeycloakClientRole`/`KeycloakRealmRole` remain unimplemented. `Status`/`Updates: ADR-3` unchanged |
+| 5        | 2026-06-21 | @jeffmccune | **Record the `esso` enterprise-SSO realm + `holos` OIDC brokering topology (HOL-1366/HOL-1367).** Add the *Two-realm topology: the `esso` enterprise-SSO realm + the `holos` OIDC broker* design section: a **second Keycloak realm `esso`** on the **single** Keycloak instance at `https://auth.holos.internal` (reachable at `https://auth.holos.internal/realms/esso`; the existing `auth.holos.internal` HTTPRoute already covers all realms — no new route) models an **authentication-only** upstream Enterprise SSO IdP, and the `holos` realm **brokers** logins from it via an **OIDC identity provider** (broker **alias `esso`**, `trustEmail: true`, `firstBrokerLoginFlowAlias: "first broker login"`). The broker's confidential **esso client** is named `https://auth.holos.internal/realms/holos` with redirect URI `https://auth.holos.internal/realms/holos/broker/esso/endpoint`. **Authorization stays entirely in the `holos` realm's groups/roles** ([ADR-3](ADR-3.md)) — `esso` authenticates, `holos` authorizes. Introducing the `esso` IdP (and correcting the `holos` realm's first-broker-login flow declaration) is what **completes and fixes** the HOL-1348 auto-link flow that currently fails the keycloak-config Job (`Cannot find stored execution by authenticator 'idp-auto-link'…`) because no IdP is present. **AC #5 provisioning constraint:** the `esso` realm and the `holos` IdP are provisioned by **keycloak-config-cli Jobs + bootstrap Jobs only**, with **no dependency on the `holos-controller` API groups** (`keycloak.holos.run`/`quay.holos.run`), to avoid a fresh-cluster provisioning race. **Ownership shift:** the `holos` realm's `identityProviders[]` move under the **holos realm-config keycloak-config-cli Job** (so the IdP `clientSecret` can be injected at runtime via `$(env:…)`), while the `KeycloakRealmImport` CR keeps owning `enabled`. Update the *reserved names* set to add the `esso` realm, the `esso` IdP broker alias, and the `https://auth.holos.internal/realms/holos` esso client ID, and note the broker alias changed from the placeholder `holos` to `esso`. This revision is a **design record only — no CUE/Go behavior changes**; phases 2–4 (HOL-1368..HOL-1370) implement it. `Status: Partially Implemented`/`Updates: ADR-3` unchanged |
 
 ## Context and Problem Statement
 
@@ -689,10 +690,14 @@ assign group membership before that person's first login) and assigns that
 person's **group membership**. It does **not** itself configure the realm or IdP:
 the **first-login auto-link** that links the federated login to the pre-created
 record (rather than creating a duplicate) is **platform realm/IdP configuration**
-(the `KeycloakRealmImport` CR's identity-provider/flow fields, **not** the
-`keycloak-config-cli` Job — see *What the platform must provide* below) and the CR
-**assumes is present**. The CR's surface is the per-user pre-create + membership;
-the auto-link behavior is a documented prerequisite, not CR state:
+(see *What the platform must provide* below) and the CR **assumes is present**.
+The CR's surface is the per-user pre-create + membership; the auto-link behavior
+is a documented prerequisite, not CR state. (**Rev 5 ownership note:** as of
+Revision 5 — see *Two-realm topology* below — the `holos` realm's
+`identityProviders[]` are owned by the **holos realm-config keycloak-config-cli
+Job**, not the `KeycloakRealmImport` CR, which keeps owning only `enabled`; the
+first-broker-login *flow* remains realm config, and either way it is **not** a
+`keycloak.holos.run` CR's concern.)
 
 ```yaml
 apiVersion: keycloak.holos.run/v1alpha1
@@ -734,22 +739,25 @@ pre-create-if-absent** (a local user with the given email), and assigns the list
 
 **What the platform realm/IdP config must provide.** The **auto-link behavior is
 realm-level first-broker-login flow + identity-provider configuration**, which
-stays platform-owned, not per-user CR state. Crucially, it is **not** owned by the
-`keycloak-config-cli` Job: that Job imports `realm: "holos"` **only** and
-deliberately carries **no `identity-provider` (or `enabled`) fields**, which are
-owned by the **`KeycloakRealmImport` CR** in the
-[instance component](../../holos/components/keycloak/instance/buildplan.cue) to
-avoid contention between the two reconciliation paths
+stays platform-owned, not per-user CR state — and is **never** a
+`keycloak.holos.run` CR's concern. It lives in the **platform realm/IdP
+definition** (the `keycloak-config-cli` Job + the `KeycloakRealmImport` CR), with
+the field ownership split documented in *Two-realm topology* below: **as of
+Revision 5** the `holos` realm's **`identityProviders[]`** (the OIDC broker for
+the `esso` realm, including its `trustEmail`/`firstBrokerLoginFlowAlias`) are
+owned by the **holos realm-config keycloak-config-cli Job** (so the broker's
+`clientSecret` can be injected at runtime via `$(env:…)`), while the
+`KeycloakRealmImport` CR keeps owning **`enabled`** — the two paths still avoid
+contention because they own disjoint fields
 ([keycloak-clients.md](../../holos/docs/keycloak-clients.md), the *Keycloak
-Configuration as Code* guard rail). So the realm's first-broker-login flow
-(**`Detect Existing Broker User`** + **`Automatically Set Existing User`**) and the
-IdP's **`Trust Email`** setting are configured by the **platform realm/IdP
-definition (the `KeycloakRealmImport` CR for IdP/flow fields, the realm component's
-flows)** — so that when Bob first authenticates through the federated IdP, Keycloak
-matches his email to the pre-created record and **links** it instead of creating a
-second user. The `KeycloakUser` CR **assumes** this realm/IdP configuration is
-present (a documented prerequisite); it does **not** reconcile the
-first-broker-login flow or the IdP itself.
+Configuration as Code* guard rail, updated to match in phases 3/5). The realm's
+first-broker-login flow (**`Detect Existing Broker User`** + **`Automatically Set
+Existing User`**) and the IdP's **`Trust Email`** setting are therefore configured
+by that platform layer — so that when Bob first authenticates through the
+federated IdP, Keycloak matches his email to the pre-created record and **links**
+it instead of creating a second user. The `KeycloakUser` CR **assumes** this
+realm/IdP configuration is present (a documented prerequisite); it does **not**
+reconcile the first-broker-login flow or the IdP itself.
 
 **Security tradeoff of email-based auto-link.** Auto-linking on email trusts the
 IdP's assertion that the email is verified and owned by the authenticating user —
@@ -761,6 +769,112 @@ federated IdP is trusted to verify email ownership; the realm config and the
 runbook must state that prerequisite explicitly. `provision: ifNecessary` (only
 pre-create when needed, never blindly) and assigning memberships narrowly limit
 the blast radius, but the trust assumption is intrinsic to email-based auto-link.
+
+### Two-realm topology: the `esso` enterprise-SSO realm + the `holos` OIDC broker
+
+The auto-link prerequisite above (`Detect Existing Broker User` +
+`Automatically Set Existing User` + `Trust Email`) only completes when there is
+an **identity provider** for the federated login to arrive through. In a
+production deployment that IdP is the customer's real Enterprise SSO. For
+**local development** the platform models that upstream IdP with a **second
+Keycloak realm**, `esso`, on the **same** Keycloak instance — so the whole
+broker-and-auto-link flow can be exercised end-to-end on a fresh local cluster
+with no external dependency. This section records that topology; the CUE/Job
+changes that build it land in phases 2–4 (HOL-1368..HOL-1370), not here.
+
+**One Keycloak instance, two realms.** A single Keycloak CR (the
+[instance component](../../holos/components/keycloak/instance/buildplan.cue))
+serves **both** realms at `https://auth.holos.internal`. The platform realm is
+reachable at `https://auth.holos.internal/realms/holos` and the new
+enterprise-SSO realm at `https://auth.holos.internal/realms/esso`. The existing
+`auth.holos.internal` HTTPRoute already fronts all realms on that host, so **no
+new route** is added — the second realm is purely additive realm configuration.
+
+**`esso` is authentication-only.** The `esso` realm models an upstream
+Enterprise SSO identity provider. Its sole job is to **authenticate** a person
+(e.g. the worked-example user `alice`) and assert a verified email. It carries
+**no** authorization state — no project groups, no `owner`/`editor`/`viewer`
+roles, no Quay/Argo client roles. All authorization remains in the `holos`
+realm's groups and roles ([ADR-3](ADR-3.md)): the `holos` realm authorizes, the
+`esso` realm only authenticates. This split is exactly the production model
+where the customer's IdP authenticates and the `holos` realm owns authorization.
+
+**The `holos` realm brokers `esso` via an OIDC identity provider.** The `holos`
+realm declares an **OIDC identity provider** with **broker alias `esso`** that
+points at the `esso` realm's OIDC endpoints. Its key settings:
+
+- **`alias: esso`** — the broker alias that identifies this identity provider in
+  the `holos` realm. The IdP selects which first-broker-login flow runs for its
+  logins via `firstBrokerLoginFlowAlias` (below); the flow's `idp-auto-link` /
+  `idp-create-user-if-unique` executions are flow configuration, not bound to the
+  alias. The alias changed from the earlier placeholder `holos` to **`esso`** in
+  this revision.
+- **`trustEmail: true`** — `esso` is trusted to assert verified email ownership,
+  so the broker accepts the asserted email without re-verifying it. This is the
+  setting that **enables email-based auto-link** to a pre-provisioned
+  `KeycloakUser` (with the *email-based auto-link security tradeoff* documented
+  in *KeycloakUser* above — safe only because the upstream `esso` IdP is trusted
+  to verify email ownership).
+- **`firstBrokerLoginFlowAlias: "first broker login"`** — the broker uses the
+  `holos` realm's first-broker-login flow, the flow that already declares the
+  HOL-1348 auto-link subflow (`idp-create-user-if-unique` ALTERNATIVE +
+  `idp-auto-link` ALTERNATIVE). With the `esso` IdP now present and the flow
+  declaration corrected, a federated `esso` login whose email matches a
+  pre-provisioned `holos` user is **linked** to that user rather than creating a
+  duplicate — completing the design HOL-1348 began.
+
+**The confidential `esso` client.** For the `holos` realm to broker to `esso`
+over OIDC, the **`esso` realm** hosts a **confidential OIDC client** that the
+`holos` broker authenticates as. That client's `clientId` is
+**`https://auth.holos.internal/realms/holos`** (it identifies the `holos` realm
+as the relying party), and its single redirect URI is the broker callback
+**`https://auth.holos.internal/realms/holos/broker/esso/endpoint`** — Keycloak's
+canonical `…/broker/<alias>/endpoint` path for the `esso` broker alias. The
+client is confidential; its **`clientSecret` is shared** between the `esso`
+client definition and the `holos` realm's IdP config and is **generated at
+runtime and never committed** (the runtime-secret guardrail,
+[secret-handling.md](../../holos/docs/secret-handling.md)).
+
+**This fixes the currently-failing auto-link flow.** Today the `holos` realm's
+first-broker-login flow declaration is incomplete/incorrect and no IdP exists to
+exercise it, and the keycloak-config Job fails with
+`Cannot find stored execution by authenticator 'idp-auto-link'…`. The precise
+config-cli/Keycloak cause is diagnosed and fixed in the implementing phases
+(HOL-1369), not asserted here; what this ADR records is the **design
+resolution**: introducing the `esso` IdP **and correcting the
+first-broker-login flow declaration** (phases 2–3) together **complete and fix**
+the HOL-1348 auto-link design so the keycloak-config Job goes green and a
+federated `esso` login auto-links to its pre-provisioned `holos` user.
+
+**Provisioned by Jobs only — no controller dependency (AC #5).** The `esso`
+realm and the `holos` realm's IdP are provisioned **exclusively by
+keycloak-config-cli Jobs + bootstrap Jobs** — the same declarative,
+config-cli-driven mechanism the platform already uses for its own realm — with
+**no dependency on the `holos-controller` API groups** (`keycloak.holos.run` /
+`quay.holos.run`). This is load-bearing: the controller and its CRDs are
+themselves bootstrapped against the `holos` realm (e.g. the
+`svc-holos-controller` admin credential, the `KeycloakInstance`), so making the
+realm/IdP topology depend on the controller would create a **fresh-cluster
+provisioning race** — the realm the controller authenticates against could not
+be brought up until the controller it depends on was already running. Keeping
+the two-realm topology entirely in the config-cli/bootstrap-Job layer breaks
+that cycle: the realms and the broker exist before any controller reconcile.
+
+**Ownership shift: config-cli owns the `holos` realm's `identityProviders[]`.**
+Per ADR-20 today the `holos` realm-config keycloak-config-cli Job imports
+`realm: "holos"` and deliberately carries **no `identity-provider` (or
+`enabled`) fields**, which are owned by the `KeycloakRealmImport` CR
+([keycloak-clients.md](../../holos/docs/keycloak-clients.md), the *Keycloak
+Configuration as Code* guard rail). **This feature shifts that boundary:** the
+`holos` realm's **`identityProviders[]`** move under the **holos realm-config
+Job's** ownership, so the broker's `clientSecret` can be injected at runtime via
+`$(env:…)` substitution (`IMPORT_VARSUBSTITUTION_ENABLED`) the same way the
+existing confidential-client secrets are. The `KeycloakRealmImport` CR keeps
+owning **`enabled`** (and the realm's existence), so the two reconciliation
+paths still do not contend. Phases 3 and 5 (HOL-1369/HOL-1371) update the
+AGENTS.md *Keycloak Configuration as Code* guard rail and the
+[keycloak-clients.md](../../holos/docs/keycloak-clients.md) note to match this
+shift; this ADR records the decision so they have a single source of truth.
 
 ### Ownership / disjointness vs `keycloak-config-cli` (AC #6)
 
@@ -774,11 +888,18 @@ The division of ownership and the disjointness *enforcement* generalize Revision
   realm roles, the shared `groups`-claim mappers, the `authenticated` default
   group, and the seeded superuser users remain `keycloak-config-cli`'s; the
   **identity-provider and first-broker-login / IdP flow config** (the auto-link
-  prerequisite above) is the **`KeycloakRealmImport` CR's** (config-cli imports
-  `realm: "holos"` only, with no `identity-provider`/`enabled` fields, to avoid
-  contention — see *KeycloakUser* above). The CRDs do **not** redeclare or fight
-  over any of these. config-cli's managed-import behavior is **no-delete**: realm
-  objects it does not declare are left untouched.
+  prerequisite above) is **platform realm/IdP configuration owned by the
+  config-cli / `KeycloakRealmImport` layer, not the CRDs** — and **as of Revision
+  5** that ownership is split: the `holos` realm's **`identityProviders[]`** are
+  owned by the **holos realm-config keycloak-config-cli Job** (so the broker's
+  `clientSecret` can be injected at runtime via `$(env:…)`; see *Two-realm
+  topology* above), while the `KeycloakRealmImport` CR keeps owning **`enabled`**.
+  (Before Rev 5 config-cli imported `realm: "holos"` with **no**
+  `identity-provider` fields and the `KeycloakRealmImport` CR owned the IdP
+  fields; Rev 5 moves `identityProviders[]` to config-cli — the two paths still
+  do not contend because they own disjoint fields.) Either way the CRDs do
+  **not** redeclare or fight over any of these. config-cli's managed-import
+  behavior is **no-delete**: realm objects it does not declare are left untouched.
 - **The controller owns per-project, tenant-facing objects** reconciled from the
   CRDs above: a project's OIDC clients, its `projects/<project>/{roles,custodians}`
   group tree, its client/realm roles, and its pre-provisioned users.
@@ -798,11 +919,13 @@ mechanisms enforce disjointness:
   - **client IDs**: `argocd`, `kargo`, **`https://quay.holos.internal`** (the
     real Quay `clientId`, `QUAY_CLIENT_ID`), the legacy disabled `quay` client
     ID — reserving the display string `quay` alone would miss the real client and
-    leave a bypass — and the **Keycloak built-in clients** `realm-management`
-    (hosts `realm-admin`/`manage-*`, the prime escalation target), `account`,
-    `account-console`, `broker`, `security-admin-console` (HOL-1350): reserving
-    these stops a tenant `KeycloakClient`/`KeycloakGroup` from defining or
-    conferring roles on Keycloak's own clients;
+    leave a bypass — the **esso broker client `https://auth.holos.internal/realms/holos`**
+    (the confidential client the `esso` realm hosts for the `holos` realm's OIDC
+    broker; see *Two-realm topology* above) — and the **Keycloak built-in clients**
+    `realm-management` (hosts `realm-admin`/`manage-*`, the prime escalation
+    target), `account`, `account-console`, `broker`, `security-admin-console`
+    (HOL-1350): reserving these stops a tenant `KeycloakClient`/`KeycloakGroup`
+    from defining or conferring roles on Keycloak's own clients;
   - **realm roles**: `platform-owner`, `platform-editor`, `platform-viewer`;
   - **client roles on a platform client**: the `quay` client's own
     `platform-admin`/`project-admin` (a controller-claimed *project-prefixed*
@@ -813,6 +936,16 @@ mechanisms enforce disjointness:
   - **groups**: `authenticated` (the realm default group);
   - **users**: the seeded superusers `svc-quay-resource-controller` and
     `quay-admin`.
+  - **realms**: `holos` (the platform realm these CRs reconcile into) and
+    **`esso`** (the enterprise-SSO upstream realm; see *Two-realm topology*
+    above) — a tenant CR may not target the `esso` realm via `instanceRef`, and
+    the `esso` realm is provisioned only by keycloak-config-cli/bootstrap Jobs,
+    never by the controller (HOL-1366/HOL-1367);
+  - **identity-provider broker aliases**: **`esso`** (the `holos` realm's OIDC
+    broker alias for the upstream `esso` realm; the alias changed from the
+    earlier placeholder `holos` to `esso` in this revision). The identity
+    providers are owned by the holos realm-config Job / `KeycloakRealmImport`
+    CR, not by these CRDs (see *Two-realm topology* above).
   This list tracks [realm-config buildplan.cue](../../holos/components/keycloak/realm-config/buildplan.cue);
   keeping the reserved set in sync with the platform realm config is itself a
   guard rail the implementation issue must wire (e.g. a generated constant), not a
@@ -949,10 +1082,12 @@ which is the observability ADR-22's grant model depends on.
    **`KeycloakUser` pre-provisions a person by email only-if-necessary** and assigns
    group membership; the **first-login auto-link** (`Detect Existing Broker User` +
    `Automatically Set Existing User` + `Trust Email`) is **platform realm/IdP config
-   the `KeycloakRealmImport` CR owns** (the identity-provider/flow fields config-cli
-   deliberately does **not** carry), not CR state — with the documented
-   email-based-auto-link security tradeoff. `KeycloakClientRole`/`KeycloakRealmRole`
-   carry the client-scoped triad and the realm-role → client-role composite.
+   the config-cli / `KeycloakRealmImport` layer owns** (per Decision #10 / Rev 5
+   the `holos` realm's `identityProviders[]` are owned by the holos realm-config
+   keycloak-config-cli Job and the `KeycloakRealmImport` CR keeps `enabled`), not
+   CR state — with the documented email-based-auto-link security tradeoff.
+   `KeycloakClientRole`/`KeycloakRealmRole` carry the client-scoped triad and the
+   realm-role → client-role composite.
 7. **The API-group dependency boundary holds (AC #3):** `api/keycloak/v1alpha1`
    imports **only** `k8s.io/api` / `k8s.io/apimachinery`; it reaches Keycloak
    solely via the `KeycloakInstance` credential and takes **no** dependency on
@@ -961,9 +1096,10 @@ which is the observability ADR-22's grant model depends on.
    the claim-name string, preserving [ADR-19](ADR-19.md)'s boundary in reverse.
 8. **Disjoint ownership from the platform realm config is enforced**, not assumed:
    `keycloak-config-cli` keeps owning the platform's own realm objects (clients,
-   roles, the `authenticated` group, the superusers) and the `KeycloakRealmImport`
-   CR owns the identity-provider / first-broker-login flow (config-cli carries no
-   `identity-provider` fields); the controller owns per-project objects.
+   roles, the `authenticated` group, the superusers) — and, **as of Rev 5
+   (Decision #10)**, the `holos` realm's `identityProviders[]` too — while the
+   `KeycloakRealmImport` CR owns `enabled` (and, before Rev 5, the IdP fields the
+   realm-config Job now owns); the controller owns per-project objects.
    Enforcement is **reserved platform names** (the real
    identifiers: `argocd`/`kargo`/`https://quay.holos.internal` + legacy `quay`
    client IDs, `platform-owner/editor/viewer` realm roles, `authenticated` group,
@@ -977,6 +1113,28 @@ which is the observability ADR-22's grant model depends on.
    YAML is concrete-but-illustrative of the field-level API; the Go types, CRD
    manifests, and reconcilers land in
    [HOL-1344](https://linear.app/holos-run/issue/HOL-1344) and later issues.
+10. **A second `esso` realm models the upstream enterprise IdP for local dev,
+    brokered by the `holos` realm over OIDC (HOL-1366/HOL-1367).** One Keycloak
+    instance serves both `holos` and `esso` at `https://auth.holos.internal`
+    (`esso` at `…/realms/esso`; no new HTTPRoute). The `esso` realm is
+    **authentication-only**; **all authorization stays in the `holos` realm's
+    groups/roles** ([ADR-3](ADR-3.md)). The `holos` realm brokers `esso` via an
+    **OIDC identity provider** with **alias `esso`**, `trustEmail: true`, and
+    `firstBrokerLoginFlowAlias: "first broker login"`; the `esso` realm hosts the
+    broker's **confidential client** `https://auth.holos.internal/realms/holos`
+    with redirect URI
+    `https://auth.holos.internal/realms/holos/broker/esso/endpoint` and a
+    runtime-generated, shared `clientSecret`. Introducing this IdP (and
+    correcting the flow declaration) **completes and fixes** the HOL-1348
+    auto-link flow that otherwise fails the keycloak-config Job
+    (`Cannot find stored execution by authenticator 'idp-auto-link'…`). The
+    `esso` realm and the `holos` IdP are provisioned by **keycloak-config-cli +
+    bootstrap Jobs only, with no dependency on the `holos-controller` API
+    groups** (`keycloak.holos.run`/`quay.holos.run`), to avoid a fresh-cluster
+    provisioning race. The **`holos` realm's `identityProviders[]` shift to the
+    holos realm-config Job's ownership** (runtime `$(env:…)` secret injection)
+    while the `KeycloakRealmImport` CR keeps owning `enabled`. This decision is a
+    **design record only**; phases 2–4 (HOL-1368..HOL-1370) implement it.
 
 ## Consequences
 
@@ -1009,6 +1167,19 @@ which is the observability ADR-22's grant model depends on.
   pre-provision-by-email flow is safe **only** when the federated IdP verifies email
   ownership. This is an intrinsic, documented trust assumption the realm config and
   runbook must state, not a controller bug to fix.
+- **The auto-link prerequisite is now modeled end-to-end for local dev (Rev 5).**
+  The `esso` realm + `holos` OIDC broker (alias `esso`) gives the
+  first-broker-login auto-link flow an actual identity provider to arrive
+  through, so the whole pre-provision-by-email → federated-login → auto-link path
+  is exercisable on a fresh local cluster with no external IdP. Because the
+  realm/IdP topology is provisioned by config-cli/bootstrap Jobs only — never the
+  controller — the realm the controller authenticates against exists **before**
+  any controller reconcile, so there is no fresh-cluster provisioning race. The
+  cost is the ownership shift of the `holos` realm's `identityProviders[]` from
+  the `KeycloakRealmImport` CR to the holos realm-config Job (the
+  *Keycloak Configuration as Code* guard rail in AGENTS.md and
+  [keycloak-clients.md](../../holos/docs/keycloak-clients.md) are updated to match
+  in phases 3/5).
 - **The ownership boundary [ADR-18](ADR-18.md) deferred now has a concrete,
   enforced answer.** Reserved platform names (keyed on the real realm identifiers,
   kept in sync with the realm config) plus a per-CR claim model make
