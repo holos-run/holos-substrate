@@ -9,6 +9,11 @@
 FROM --platform=$BUILDPLATFORM golang:1.26 AS build
 ARG TARGETOS
 ARG TARGETARCH
+# VERSION is the build version stamped into the binary (mirrors `make build`).
+# The build context excludes .git, so `git describe` cannot run here — the
+# Makefile docker targets pass it through as --build-arg VERSION=$(VERSION); it
+# defaults to "dev" for a bare `docker build` with no build-arg.
+ARG VERSION=dev
 
 WORKDIR /workspace
 # Copy the Go module manifests and download dependencies first so this layer is
@@ -32,7 +37,9 @@ COPY internal/ internal/
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
-    go build -trimpath -o /holos-paas ./cmd/holos-paas
+    go build -trimpath \
+    -ldflags "-X github.com/holos-run/holos-paas/internal/cli.version=${VERSION}" \
+    -o /holos-paas ./cmd/holos-paas
 
 # Use distroless as the minimal base image to package the binary.
 # https://github.com/GoogleContainerTools/distroless

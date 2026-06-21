@@ -138,9 +138,16 @@ controller-fmt: ## Run go fmt against the controller, API, and internal sources.
 controller-vet: ## Run go vet against the controller, API, and internal sources.
 	go vet ./cmd/holos-controller/... ./api/... ./internal/quay/... ./internal/keycloak/... ./internal/controller/... ./internal/referencegrant/...
 
+# CONTROLLER_LDFLAGS stamps the build VERSION (defined in the root Makefile,
+# from `git describe`) into the controller binary by overriding its package-main
+# `version` var, which it logs once at manager startup ("starting manager",
+# version=...). Dockerfile.controller applies the same -X via its VERSION
+# build-arg.
+CONTROLLER_LDFLAGS ?= -X main.version=$(VERSION)
+
 .PHONY: controller-build
 controller-build: controller-fmt controller-vet ## Build the holos-controller binary.
-	go build -o bin/holos-controller ./cmd/holos-controller
+	go build -ldflags "$(CONTROLLER_LDFLAGS)" -o bin/holos-controller ./cmd/holos-controller
 
 # controller-test provisions the envtest control-plane binaries (kube-apiserver +
 # etcd) via setup-envtest and exports KUBEBUILDER_ASSETS so the envtest-based
@@ -164,13 +171,16 @@ controller-test: controller-fmt controller-vet envtest-tool ## Run controller, A
 # build a single-$(CONTROLLER_PLATFORM) image; for a multi-arch manifest list
 # spanning $(CONTROLLER_MULTIARCH_PLATFORMS) use the controller-docker-buildx
 # target below.
+# --build-arg VERSION=$(VERSION) carries the git-describe version (from the root
+# Makefile) into Dockerfile.controller, which stamps it via -ldflags exactly as
+# `make controller-build` does on the host.
 .PHONY: controller-docker-build
 controller-docker-build: ## Build the controller image for $(CONTROLLER_PLATFORM) tagged $(CONTROLLER_IMAGE).
-	docker buildx build --platform $(CONTROLLER_PLATFORM) -f Dockerfile.controller -t $(CONTROLLER_IMAGE) --load .
+	docker buildx build --platform $(CONTROLLER_PLATFORM) --build-arg VERSION=$(VERSION) -f Dockerfile.controller -t $(CONTROLLER_IMAGE) --load .
 
 .PHONY: controller-docker-push
 controller-docker-push: ## Build for $(CONTROLLER_PLATFORM) and push $(CONTROLLER_IMAGE) to the registry.
-	docker buildx build --platform $(CONTROLLER_PLATFORM) -f Dockerfile.controller -t $(CONTROLLER_IMAGE) --push .
+	docker buildx build --platform $(CONTROLLER_PLATFORM) --build-arg VERSION=$(VERSION) -f Dockerfile.controller -t $(CONTROLLER_IMAGE) --push .
 
 # Multi-arch controller image index. Mirrors the root docker-buildx pair and
 # reuses the same shared $(BUILDX_BUILDER), since both services produce identical
@@ -194,4 +204,4 @@ controller-docker-buildx-builder: docker-buildx-builder ## Ensure the shared doc
 #   docker buildx imagetools inspect $(CONTROLLER_IMAGE)
 .PHONY: controller-docker-buildx
 controller-docker-buildx: controller-docker-buildx-builder ## Build and push the multi-arch $(CONTROLLER_MULTIARCH_PLATFORMS) image index $(CONTROLLER_IMAGE).
-	docker buildx build --builder $(BUILDX_BUILDER) --platform $(CONTROLLER_MULTIARCH_PLATFORMS) -f Dockerfile.controller -t $(CONTROLLER_IMAGE) --push .
+	docker buildx build --builder $(BUILDX_BUILDER) --platform $(CONTROLLER_MULTIARCH_PLATFORMS) --build-arg VERSION=$(VERSION) -f Dockerfile.controller -t $(CONTROLLER_IMAGE) --push .

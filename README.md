@@ -57,6 +57,39 @@ Verify the image locally without the cluster:
 docker run --rm quay.holos.localhost/holos/holos-paas:dev --help
 ```
 
+### Build version
+
+Both binaries are stamped with a build version at link time, derived from
+`git describe --tags --always --dirty`: the most recent tag, plus the
+commits-since and abbreviated SHA when `HEAD` is past it, plus `-dirty` for an
+uncommitted working tree. `--tags` honors lightweight tags too (not only
+annotated ones), and `--always` falls back to a bare SHA when no tag is
+reachable. The tagging convention is a leading `v` on `MAJOR.MINOR.PATCH`
+(e.g. `v0.2.0`); on a tagged commit `git describe` returns exactly that tag.
+
+The version flows into `holos-paas` (reported by `holos-paas --version`) and
+into `holos-controller`, which logs it once at manager startup:
+
+```json
+{"level":"info","ts":"...","logger":"setup","msg":"starting manager","version":"v0.2.0"}
+```
+
+`make build` / `make controller-build` stamp it via `-ldflags`; the
+`docker-*` targets pass it into the `Dockerfile` builds as
+`--build-arg VERSION=$(VERSION)` (the build context excludes `.git`). Useful
+targets:
+
+```bash
+make version              # print the version that builds will stamp
+make version-bump-minor   # create an annotated vX.(Y+1).0 tag (local only)
+```
+
+`version-bump-minor` selects the highest existing `vX.Y.Z` tag by version sort,
+bumps the minor and resets the patch to `0`, and creates an **annotated** tag
+(starting at `v0.1.0` when none exist). It tags locally only — review with
+`git show <tag>` and publish with `git push origin <tag>`. Override `VERSION`
+to stamp an explicit value (e.g. in CI).
+
 ### Multi-arch images
 
 `docker-build`/`docker-push` produce a single-`PLATFORM` image. To publish a

@@ -22,6 +22,20 @@ PLATFORM   ?= linux/arm64
 MULTIARCH_PLATFORMS ?= linux/amd64,linux/arm64
 BUILDX_BUILDER      ?= holos-paas-multiarch
 
+# VERSION is the build version stamped into both binaries at link time via
+# -ldflags (see the build / controller-build targets) and into the container
+# images via the VERSION build-arg. It is the output of `git describe`:
+#   --tags   considers lightweight tags too, not only annotated ones, so a tag
+#            made without -a still names the build;
+#   --always falls back to a bare abbreviated SHA when no tag is reachable;
+#   --dirty  appends -dirty when the working tree has uncommitted changes.
+# The tagging convention is a leading v on MAJOR.MINOR.PATCH (e.g. v0.2.0); on a
+# tagged commit `git describe` returns exactly that tag, and past it the
+# vX.Y.Z-<n>-g<sha> form. Defined here, before the include, so both the
+# holos-paas and holos-controller targets stamp the identical value. Override
+# VERSION to stamp an explicit value (e.g. a Docker build with no .git context).
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+
 .PHONY: all
 all: build
 
@@ -45,9 +59,41 @@ lint: ## Run golangci-lint.
 test: fmt vet ## Run tests with the race detector and coverage.
 	go test -race -coverprofile cover.out ./...
 
+# PAAS_LDFLAGS stamps the build VERSION into the holos-paas binary by overriding
+# internal/cli.version (the var the CLI reports via app.Version). The Dockerfile
+# applies the same -X through its VERSION build-arg.
+PAAS_LDFLAGS ?= -X github.com/holos-run/holos-paas/internal/cli.version=$(VERSION)
+
 .PHONY: build
 build: fmt vet ## Build the holos-paas binary.
-	go build -o bin/holos-paas ./cmd/holos-paas
+	go build -ldflags "$(PAAS_LDFLAGS)" -o bin/holos-paas ./cmd/holos-paas
+
+# version prints the build version that `make build` stamps in — the same
+# `git describe` output the binaries report at runtime.
+.PHONY: version
+version: ## Print the build version (git describe).
+	@echo $(VERSION)
+
+# version-bump-minor creates an annotated tag that bumps the minor component of
+# the most recent vMAJOR.MINOR.PATCH tag and resets the patch to 0 (v0.2.x ->
+# v0.3.0), following the leading-v convention. The most recent tag is selected by
+# version sort (not commit date), so it is independent of checkout history; with
+# no existing version tag it starts at v0.1.0. It creates the tag locally only —
+# review with `git show <tag>` and publish with `git push origin <tag>`.
+.PHONY: version-bump-minor
+version-bump-minor: ## Tag an annotated minor-version bump (vX.Y.0).
+	@set -e; \
+	current="$$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)"; \
+	if [ -z "$$current" ]; then \
+		next="v0.1.0"; \
+	else \
+		ver="$${current#v}"; \
+		major="$$(printf '%s' "$$ver" | cut -d. -f1)"; \
+		minor="$$(printf '%s' "$$ver" | cut -d. -f2)"; \
+		next="v$$major.$$((minor + 1)).0"; \
+	fi; \
+	echo "Creating annotated tag $$next (bumped from $${current:-<none>})"; \
+	git tag -a "$$next" -m "$$next"
 
 # The publish target wraps scripts/publish: render the platform with an injected
 # app image digest, package the rendered manifests through Kustomize, and oras
@@ -67,13 +113,16 @@ publish: ## Render, Kustomize-package, and oras push the manifests artifact (set
 # single-$(PLATFORM) image; for a multi-arch manifest list spanning
 # $(MULTIARCH_PLATFORMS) use the docker-buildx target below (and
 # controller-docker-buildx in Makefile.controller for the controller image).
+# --build-arg VERSION=$(VERSION) carries the git-describe version into the
+# Dockerfile (whose build context excludes .git), where it is stamped into the
+# binary via -ldflags exactly as `make build` does on the host.
 .PHONY: docker-build
 docker-build: ## Build the container image for $(PLATFORM) tagged $(IMAGE).
-	docker buildx build --platform $(PLATFORM) -t $(IMAGE) --load .
+	docker buildx build --platform $(PLATFORM) --build-arg VERSION=$(VERSION) -t $(IMAGE) --load .
 
 .PHONY: docker-push
 docker-push: ## Build for $(PLATFORM) and push $(IMAGE) to the registry.
-	docker buildx build --platform $(PLATFORM) -t $(IMAGE) --push .
+	docker buildx build --platform $(PLATFORM) --build-arg VERSION=$(VERSION) -t $(IMAGE) --push .
 
 # The multi-arch targets build a single OCI image index (manifest list) spanning
 # $(MULTIARCH_PLATFORMS) — both the amd64 and arm64 cross-compiles in one image,
@@ -119,7 +168,7 @@ docker-buildx-builder: ## Ensure the shared docker-container buildx builder $(BU
 #   docker buildx imagetools inspect $(IMAGE)
 .PHONY: docker-buildx
 docker-buildx: docker-buildx-builder ## Build and push the multi-arch $(MULTIARCH_PLATFORMS) image index $(IMAGE).
-	docker buildx build --builder $(BUILDX_BUILDER) --platform $(MULTIARCH_PLATFORMS) -t $(IMAGE) --push .
+	docker buildx build --builder $(BUILDX_BUILDER) --platform $(MULTIARCH_PLATFORMS) --build-arg VERSION=$(VERSION) -t $(IMAGE) --push .
 
 # The holos-controller service (ADR-18, HOL-1309) lives in this same module and
 # repo but keeps its targets isolated in Makefile.controller — all namespaced
