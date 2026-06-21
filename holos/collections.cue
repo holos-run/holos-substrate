@@ -81,12 +81,16 @@ apps: appcoll.apps
 // satisfies its constraints; any violation that produces _|_ propagates the
 // failure to the namespaces component's _collectionsValidated reference and
 // fails the render.  The cases that produce _|_ — and therefore fail at render
-// now — are: an ownerless project, a dangling apps.<name>.project, and a
-// malformed app/project name or empty image or out-of-range port (the present-
-// value constraints).  The one case that does NOT (a required app field omitted
-// ENTIRELY leaves the value incomplete, not _|_, which a hidden field tolerates)
-// is enforced when the Application component (HOL-1356) consumes/exports the
-// field — the ! markers on #App declare the contract; see the _apps note below.
+// via the hidden reference — are: an ownerless project, a dangling
+// apps.<name>.project, and a malformed app/project name or empty image or
+// out-of-range port (the present-value constraints).  The one case that does NOT
+// produce _|_ — a required app field omitted ENTIRELY leaves the value
+// incomplete, which a hidden reference tolerates — is forced by EXPORT instead:
+// the `tokens` field below is a per-app interpolation that holos/namespaces.cue
+// folds into the project's prod-<name> control-namespace annotation, and
+// exporting an interpolation of an incomplete value IS a render error.  So both
+// halves fail at render now; the ! markers on #App declare the contract.  See
+// the `tokens` note below.
 #CollectionsValidated: {
 	// Every project must name at least one owner (len(owners) > 0).  The
 	// per-entry name/owner-key/email constraints ride the bound `projects` data

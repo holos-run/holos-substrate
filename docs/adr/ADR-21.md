@@ -289,8 +289,18 @@ means a member of this `owners` map; the field is plural to admit more than one.
 
 ```cue
 // holos/apps/my-app.cue
-apps: "my-app": project: "my-project"
+apps: "my-app": {
+	project: "my-project"
+	image:   "quay.holos.localhost/my-project/my-app@sha256:…"
+	port:    8080
+}
 ```
+
+(As built in HOL-1354 the `#App` schema requires `project`, `image`, and
+`port` — the minimal fields the Application component needs to render a
+`Deployment`/`Service`; `host` is optional. The single binding field that ties
+an app to its project is still `project`, the rest are the app's own minimal
+deployable shape.)
 
 Holos renders each `projects.<name>` entry into the full set of project-level
 resources (the Project component) and each `apps.<name>` entry into the full set
