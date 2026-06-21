@@ -218,12 +218,16 @@ let APPLICATION_RESOURCE = {
 // api/quay/v1alpha1 SyncedTeam, the reconciler internal/controller/quay/teams.go).
 // The set here is the worked GCP-style primitive-role example from ADR-19: a
 // logical project's owner/editor/viewer OIDC groups map to three synced teams.
-// OIDC groups are referenced BY NAME ONLY (the oidcGroup string) — no Keycloak
-// dependency: the Quay API group imports no IdP type, and these
-// my-project-{owner,editor,viewer} groups are now DESIGNED as keycloak.holos.run
-// resources (ADR-20 Rev 2's KeycloakGroup/KeycloakUser/KeycloakClient, ADR-21 Rev 2's
-// per-Project rendering and worked example) but their CRD/controller IMPLEMENTATION is
-// still future, so today they are referenced here as data before they exist.
+// OIDC groups are referenced BY NAME ONLY in this Quay CR (the oidcGroup string)
+// — the Quay API group imports no IdP type.  The my-project-{owner,editor,viewer}
+// values are now PRODUCED by the keycloak.holos.run CRs this component emits below
+// (HOL-1348): the role/custodian KeycloakGroups, the owner KeycloakUser, and the
+// project KeycloakClient, reconciled by the shipped Holos Controller (ADR-20,
+// Partially Implemented).  CAVEAT (the "Keycloak data plane" note below): today
+// the reconcilers surface those values in the PROJECT's own client token, not the
+// platform Quay client's token, so the synced teams here are created/bound but
+// their membership is not yet populated from the project role groups — folding the
+// role onto the reserved Quay client is ADR-20 Rev 3 follow-up.
 //
 // The two enums are distinct (ADR-19 "Two distinct Quay concepts"): `role` is the
 // team's ORG role (admin | creator | member), `repositoryPermission` is an

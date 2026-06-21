@@ -399,6 +399,54 @@ gate_job() {
   done
 }
 
+# gate_keycloak_ready NAMESPACE RESOURCE: poll a keycloak.holos.run resource to
+# Ready=True, returning 0 when Ready (or the resource is absent — tolerated like
+# the Organization gate, the controller may not have observed it yet) and 1 on a
+# terminal Ready=False (reason Conflict / ReferenceNotGranted — a retry cannot
+# clear those) or on timeout / repeated lookup failures.  Polled rather than
+# `kubectl wait` so a terminal failure fails on the next poll instead of blocking
+# the full timeout — the Organization-gate shape below.  These gates surface a
+# not-Ready Keycloak resource (missing CRD, denied ReferenceGrant, bad/absent
+# Keycloak credential, TLS failure, or a Keycloak-side conflict) by name rather
+# than letting the script report success while the controller has not reconciled.
+gate_keycloak_ready() {
+  local namespace="$1" resource="$2"
+  local kc_state kc_lookup_failures=0
+  local kc_deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+  while true; do
+    if kc_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace "${namespace}" \
+      get "${resource}" --ignore-not-found --request-timeout=10s \
+      -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[?(@.type=="Ready")]}{.status}={.reason}{"\n"}{end}'); then
+      kc_lookup_failures=0
+      if [[ -z "${kc_state}" ]]; then
+        # Not present yet (apply lag / controller has not observed it); keep polling.
+        :
+      elif grep -q '^True=' <<<"${kc_state}"; then
+        break
+      elif grep -qE '^False=(Conflict|ReferenceNotGranted)$' <<<"${kc_state}"; then
+        echo "ERROR: ${namespace}/${resource} hit a terminal Ready=False (${kc_state##*=}); inspect it with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} --namespace ${namespace} describe ${resource}" >&2
+        return 1
+      fi
+    else
+      kc_lookup_failures=$((kc_lookup_failures + 1))
+      if ((kc_lookup_failures >= 3)); then
+        echo "ERROR: repeated failures reading ${namespace}/${resource}; aborting the gate." >&2
+        return 1
+      fi
+    fi
+    if ((SECONDS >= kc_deadline)); then
+      echo "ERROR: timed out waiting for ${namespace}/${resource} to become Ready; inspect it with:" >&2
+      echo "       kubectl --context ${KUBE_CONTEXT} --namespace ${namespace} describe ${resource}" >&2
+      echo "       (a not-Ready Keycloak resource often means the holos-controller-keycloak-creds" >&2
+      echo "        Secret is missing, the ReferenceGrant is absent, or the controller cannot" >&2
+      echo "        reach/trust Keycloak — see docs/runbooks/holos-controller.md)." >&2
+      return 1
+    fi
+    sleep 5
+  done
+}
+
 # The webhook-token Job (my-project ns) generates the receiver Secret's token;
 # surface a Failed bootstrap here by name rather than as a missing-Secret error
 # later.
@@ -490,5 +538,20 @@ while true; do
   fi
   sleep 5
 done
+
+# Gate the keycloak.holos.run resources the controller reconciles (HOL-1348) so
+# this script does not report success while any is unreconciled.  The central
+# KeycloakInstance first (the others reference it; a not-Ready instance is the
+# common root cause — missing credential or untrusted Keycloak TLS), then the
+# project client and role/custodian groups and the owner user.  A terminal
+# Ready=False (Conflict / ReferenceNotGranted) fails fast.
+echo "==> gating keycloak.holos.run resources" >&2
+gate_keycloak_ready keycloak keycloakinstance.keycloak.holos.run/holos-keycloak || exit 1
+gate_keycloak_ready my-project keycloakclient.keycloak.holos.run/my-project || exit 1
+for r in owner editor viewer; do
+  gate_keycloak_ready my-project "keycloakgroup.keycloak.holos.run/my-project-roles-${r}" || exit 1
+  gate_keycloak_ready my-project "keycloakgroup.keycloak.holos.run/my-project-custodians-${r}" || exit 1
+done
+gate_keycloak_ready my-project keycloakuser.keycloak.holos.run/bob || exit 1
 
 echo "my-project delivery scaffold applied."
