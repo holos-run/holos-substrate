@@ -196,8 +196,22 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 
 	// STAGE is the Kargo Stage authorized to patch the app Application's
 	// targetRevision; WAREHOUSE is the Warehouse the Stage requests Freight from.
+	// Both are NAMESPACED into the project control namespace, so the bare app name
+	// is unique enough there (an app name is unique within its project).
 	let STAGE = "\(NAME)-config"
 	let WAREHOUSE = NAME
+
+	// ARGOCD_APP_NAME is the app's Argo CD Application metadata.name.  Unlike the
+	// namespaced Warehouse/Stage/Repository, the Argo CD Application lives in the
+	// SHARED argocd namespace alongside every project's and app's Application — so
+	// a bare app name would collide across projects (e.g. an app named "my-project"
+	// in some other project would clash with project my-project's own Application
+	// named "my-project").  Prefix with the project to make it GLOBALLY unique:
+	// project names are unique and an app name is unique within its project, so
+	// <project>-<app> is unique across the whole platform.  The project component's
+	// own Application is the bare <project>, which never equals <project>-<app>
+	// (the "-" separator and non-empty app name guarantee it).
+	let ARGOCD_APP_NAME = "\(PROJECT)-\(NAME)"
 
 	// --- Workload: Deployment + Service (the echo OCI app shape) -------------
 
@@ -496,7 +510,7 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 				uses: "argocd-update"
 				config: {
 					apps: [{
-						name:      NAME
+						name:      ARGOCD_APP_NAME
 						namespace: ArgoCDNamespace
 						sources: [{
 							repoURL:              CONFIG_REPO_OCI
@@ -515,12 +529,14 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 	// modify it.  destination is the app's project control namespace.  It runs in
 	// the project's AppProject (the Project component constrains that AppProject's
 	// sourceRepos to the project's Quay org OCI path, which the app's
-	// <name>-config repo is under).
+	// <name>-config repo is under).  metadata.name is the GLOBALLY-unique
+	// <project>-<app> (ARGOCD_APP_NAME) because the argocd namespace is shared
+	// across all projects/apps; a bare app name would collide cross-project.
 	let APPLICATION_RESOURCE = {
 		apiVersion: "argoproj.io/v1alpha1"
 		kind:       "Application"
 		metadata: {
-			name:      NAME
+			name:      ARGOCD_APP_NAME
 			namespace: ArgoCDNamespace
 			labels: "app.kubernetes.io/name":                NAME
 			annotations: "kargo.akuity.io/authorized-stage": "\(CTRL_NS):\(STAGE)"
@@ -577,7 +593,7 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 		Repository: (CONFIG_REPO_NAME):    REPOSITORY_RESOURCE
 		Warehouse: (WAREHOUSE):            WAREHOUSE_RESOURCE
 		Stage: (STAGE):                    STAGE_RESOURCE
-		Application: (NAME):               APPLICATION_RESOURCE
+		Application: (ARGOCD_APP_NAME):    APPLICATION_RESOURCE
 	}
 }
 
