@@ -872,18 +872,22 @@ namespace, the primitive-role → Quay-team and → app-client binding, and the
   below), so the committed `holos/deploy/` manifest carries **no** CA material.
 - the **Kargo webhook receiver token bootstrap**: a `Job`
   (`my-project-quay-webhook-bootstrap`, in the `my-project` namespace) that
-  generates the Kargo receiver Secret's shared token. The remaining **Quay-side**
-  data plane this scaffold needs — the `my-project/my-project-config`
-  **repository** (the `quay.holos.run` Repository CR is reconciled by the
-  controller but is **not** emitted by this component yet — only the Organization
-  is), the Argo CD pull-robot/repository Secret in `argocd`, and the `repo_push`
-  webhook **registration** that POSTs to the Warehouse's Kargo receiver URL — is
-  **not** emitted by the component (the robots/pull Secrets are out of scope for
-  the `v1alpha1` CRDs, ADR-19). The earlier `my-project-quay-bootstrap` Job that
+  generates the Kargo receiver Secret's shared token.
+- a **`quay.holos.run/v1alpha1` `Repository`** per app — emitted by the
+  **Application component** (`my-app-config`, within the `my-project` org, with a
+  gated `caBundle`) and reconciled by the Holos Controller. (The bespoke
+  component, by contrast, emitted only the Organization; the Repository CR now
+  ships per app as of HOL-1356.) What remains **manual** for the Quay-side data
+  plane: the app `Repository`'s `repo_push` webhook **registration** (omitted in
+  the current phase — the Warehouse polls the config repo as the fallback — until
+  the Kargo receiver URL is published into a referenceable Secret), the push
+  robot, and the Argo CD pull-robot/repository Secret in `argocd` and the Kargo
+  image-credential Secret (the robots/pull Secrets are out of scope for the
+  `v1alpha1` CRDs, ADR-19). The earlier `my-project-quay-bootstrap` Job that
   provisioned all of it (authenticating with the removed `quay-initial-admin`
   admin token) no longer exists; only the Kargo-side receiver token Job above
   remains (it needs no Quay admin token). A push will not trigger Freight
-  discovery until the repo/robot/webhook are provisioned by hand.
+  discovery until the robot/webhook are provisioned by hand.
 
 **The separate apply step — `scripts/apply-projects`.** As of HOL-1322,
 `my-project` is **deliberately removed from the master `scripts/apply`** and is

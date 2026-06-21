@@ -138,8 +138,9 @@ Each role group confers its primitive role on **three** clients via
    by `clientId`, conferring the project-prefixed role **`<name>-<role>`**. The
    Quay client's existing `quay-client-roles` mapper emits that value into the
    `groups` claim, and the project's Quay `Organization.spec.syncedTeams[]` maps
-   each `<name>-<role>` claim value to a Quay team **by name** (owner → org
-   `admin`; editor → `member` + write; viewer → `member` + read — the
+   each `<name>-<role>` claim value to a Quay team **by name** (owner →
+   `role: admin`; editor → `role: creator` + `repositoryPermission: write`;
+   viewer → `role: member` + `repositoryPermission: read` — the
    [ADR-19](../../docs/adr/ADR-19.md) primitive-role example). This is the
    one-line-CUE → Keycloak group → `groups` claim → Quay team chain end to end.
 2. **The project's own client** (`clientRef` to the project `KeycloakClient`) —
@@ -192,9 +193,13 @@ The following are **deferred** (see [placeholders.md](placeholders.md) →
   namespaces, plus **blue-green progressive delivery** (Argo Rollouts `Rollout`
   + traffic switching) — the env namespaces are scaffolded for this but no
   cross-environment promotion stages are rendered yet.
-- The **external-secrets store/controller** prerequisite: the app
-  `ExternalSecret`s need an installed external-secrets controller and a
-  `SecretStore`/`ClusterSecretStore`, which the platform does not ship yet.
+- The **external-secrets store/controller** prerequisite. ADR-21 envisioned an
+  app `ExternalSecret` for runtime secret material, but the Application component
+  **does not emit one today** — the platform ships no external-secrets controller
+  and no `SecretStore`/`ClusterSecretStore` for it to resolve against. Standing up
+  that controller and store (and then adding the `ExternalSecret` to the app
+  resource set) is the deferred prerequisite; until then an app that needs runtime
+  secrets is provisioned by hand.
 - The self-service **`ProjectRequest` API** (ADR-1/ADR-21 left open): today a
   registration is a reviewed pull request adding a collection entry, not a
   generated-on-request tenant.

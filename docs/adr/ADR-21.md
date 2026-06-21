@@ -242,8 +242,9 @@ reference the definition rather than hard-coding `"prod"`. Rationale:
   out explicitly to avoid the trap: a Kargo `Project` is cluster-scoped, carries
   **no** `spec.namespace`, and the controller maps the Project's *name* to a
   same-named namespace it adopts
-  ([`holos/components/my-project/buildplan.cue`](../../holos/components/my-project/buildplan.cue),
-  the `PROJECT_RESOURCE` note). So a Kargo `Project` cannot adopt `prod-<name>`
+  (the bespoke `my-project` component's `PROJECT_RESOURCE` note, now generalized
+  into [`holos/components/project/buildplan.cue`](../../holos/components/project/buildplan.cue)).
+  So a Kargo `Project` cannot adopt `prod-<name>`
   unless it is itself **named** `prod-<name>` — the control namespace's name and
   the Kargo `Project`'s name are the **same string** (`prod-<name>`), and that
   string carries the `kargo.akuity.io/project` adoption label every derived entry
@@ -332,20 +333,28 @@ already enforces for namespaces.
 
 The resource lists below were written **illustratively** when the components
 were a later phase — the CR shapes and field names trace to the `my-project`
-scaffold and the ADR-19 CRDs. They are now **built**: the shipped Project and
-Application components emit exactly this resource set (see the [authoring
-guide](../../holos/docs/project-and-application-templates.md) for the as-built
-inventory and the one as-built deviation — bare-`<name>` control namespace, not
-`prod-<name>`). This ADR records *which* resources each entry composes and *how*
-they fit together; the CUE that emits them lives in the two component
-buildplans.
+scaffold and the ADR-19 CRDs. The components are now **built**, but the shipped
+components emit a **subset** of the originally-listed set: several listed items
+are **deferred and not yet emitted** — the project-level Gateway-API
+`ReferenceGrant` (item 7) and `HTTPRoute` (item 8); the app `ExternalSecret`
+(Application item 8); the blue-green progressive-delivery pipeline (Application
+item 4, today a single `argocd-update` hard cutover); and the app `Repository`'s
+`repo_push` webhook registration. The as-built per-component inventory (what is
+actually rendered today vs. deferred) and the one as-built deviation —
+bare-`<name>` control namespace, not `prod-<name>` — are in the [authoring
+guide](../../holos/docs/project-and-application-templates.md) and the Consequences
+below. This ADR records *which* resources each entry composes and *how* they fit
+together; the CUE that emits the as-built subset lives in the two component
+buildplans
+([`project`](../../holos/components/project/buildplan.cue),
+[`application`](../../holos/components/application/buildplan.cue)).
 
 ### The Project component: project-level resources per `projects.<name>` entry
 
 One Project entry renders the resources below, all anchored on the Project's
 Namespace as the security boundary. Two of them — the `AppProject` and the
 project-level `Application` — are Argo CD objects that, following the
-[`my-project` scaffold](../../holos/components/my-project/buildplan.cue), are
+the former bespoke `my-project` scaffold, are
 **namespaced into `argocd`** alongside the Argo CD controller (their *destination*
 is the Project's Namespace); the per-Project `keycloak.holos.run` CRs
 ([ADR-20](ADR-20.md), items 9–11) live in the Project's Namespace and reference a
@@ -386,7 +395,7 @@ manifests provision the identity half of its primitive-role model
    `kargo.akuity.io/project: "true"` adoption label (and the
    `kargo.akuity.io/keep-namespace` annotation) in the registry so the Kargo
    Project controller **adopts** it rather than refusing or deleting it. As in the
-   [`my-project` scaffold](../../holos/components/my-project/buildplan.cue), the
+   the former bespoke `my-project` scaffold, the
    Kargo `Project` brings its namespaced **`ProjectConfig`** (the auto-promotion
    policy and the native Quay webhook **receiver**) and the generate-once
    receiver-token bootstrap `Job` — project-level Kargo wiring shared by every
@@ -511,7 +520,7 @@ One Application entry renders these **11** resources. The Kargo `Warehouse` and
 `Stage` are namespaced into the Project's Kargo Project namespace (the Project's
 Namespace, per the single-namespace shape); the Argo CD `Application` is
 namespaced into `argocd` (its `destination` is the Project's Namespace,
-following the [`my-project` scaffold](../../holos/components/my-project/buildplan.cue));
+following the the former bespoke `my-project` scaffold);
 the `Deployment`/`Service`/`ExternalSecret`/`ConfigMap`/`ServiceAccount`/
 `RoleBinding` workload objects are rendered **into the Namespace of the Project
 named by `apps.<name>.project`**. The Kargo control plane these resources plug
@@ -610,8 +619,10 @@ Project is the security boundary (≈ a Kubernetes Namespace).
   project is one line in `holos/projects/`; the renderer composes them into the
   complete, validated manifest set.
 - **Reference scaffold and the registry guardrail.** The components generalize the
-  hand-authored
-  [`holos/components/my-project/buildplan.cue`](../../holos/components/my-project/buildplan.cue)
+  former hand-authored `holos/components/my-project/buildplan.cue` (now deleted —
+  HOL-1357; its responsibilities live in
+  [`holos/components/project/buildplan.cue`](../../holos/components/project/buildplan.cue)
+  and [`holos/components/application/buildplan.cue`](../../holos/components/application/buildplan.cue))
   — the `my-project` instance is what one `projects.<name>` (plus one
   `apps.<name>`) entry must reproduce. The Project component **must integrate with
   the central [`holos/namespaces.cue`](../../holos/namespaces.cue) registry**

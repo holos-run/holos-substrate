@@ -62,14 +62,15 @@ explicitly deferred:
   Kargo `Stage` pipeline) instead of the current single `argocd-update` hard
   cutover (ADR-21, *The Application component*, item 4) — are follow-on work the
   scaffolded namespaces make possible, not yet built.
-- **External-secrets store/controller prerequisite.** The Application component's
-  `ExternalSecret`s resolve runtime secret material in the project namespace, but
+- **External-secrets store/controller prerequisite.** ADR-21 envisioned an app
+  `ExternalSecret` (ADR-21, Application resource 8) for runtime secret material in
+  the project namespace, but the Application component **does not emit one today**:
   the platform ships **no** external-secrets installation, no
-  `SecretStore`/`ClusterSecretStore`, and no per-namespace enablement yet. Standing
-  up the external-secrets controller and the store the apps' `ExternalSecret`s
-  target is a prerequisite for that resource to converge (ADR-21, Project resource
-  1). The namespace registry models only namespace metadata
-  (`_ambient`/labels/annotations) today.
+  `SecretStore`/`ClusterSecretStore`, and no per-namespace enablement, so there is
+  nothing for an `ExternalSecret` to resolve against. Standing up the
+  external-secrets controller and store, and then adding the `ExternalSecret` to
+  the app resource set, is the deferred prerequisite. The namespace registry models
+  only namespace metadata (`_ambient`/labels/annotations) today.
 - **Self-service `ProjectRequest` API.** A registration is currently a reviewed
   pull request adding a `holos/projects/*.cue` (and optionally `holos/apps/*.cue`)
   entry. The first-class `Project` CRD and a `ProjectRequest` API that generates
