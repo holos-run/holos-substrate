@@ -215,13 +215,14 @@ kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
 #     scripts/apply-my-project and moves here so upgraded clusters do not retain
 #     the inert cross-namespace RBAC and the dead privileged Secret.
 #
-# The stale owner KeycloakUser CR rename (`bob` → `bob-<hash8>`) is pruned LATER,
-# INSIDE the project loop AFTER the new hashed CR is applied and gated Ready (see
-# prune_stale_keycloak_users) — NOT here.  Pruning it here would run before the
-# new CR is applied, so on the FIRST upgrade run the old `bob` would be deleted
-# (or skipped) before bob-<hash8> exists, leaving a window with no manager (or
-# both); deferring the prune to after the new CR is Ready closes that window
-# (codex round-2 finding).
+# The stale owner KeycloakUser CR from the HOL-1357 rename (`bob` → `bob-<hash8>`)
+# is DELIBERATELY NOT pruned (neither here nor in the project loop): the stale
+# `bob` CR created the realm user (status.created=true), and the KeycloakUser
+# finalizer deletes the user it created on CR deletion, so pruning it would
+# deprovision bob@example.com.  The orphan `bob` CR is inert and reconciles the
+# same desired state the new adopt:true CR asserts, so the two coexist; see the
+# NOTE in the project loop below.  Only the inert Quay bootstrap material (no
+# realm-user finalizer) is pruned here.
 #
 # All deletes are --ignore-not-found, so this is a no-op on a fresh cluster or a
 # second run.  Guarded on the my-project namespace existing (the only cluster that
