@@ -218,9 +218,26 @@ reference the definition rather than hard-coding `"prod"`. Rationale:
   registry control objects (its org, its IAM groups, its owner) outlive any one
   environment and matter most for production; co-locating them with `prod-<name>`
   keeps the authoritative copy where the production delivery path already runs.
-- **The cluster-scoped Kargo `Project` adopts `prod-<name>`** as its namespace
-  (carrying the `kargo.akuity.io/project` adoption label every derived entry
-  already has), so the Kargo control plane and the control CRs share one home.
+- **The cluster-scoped Kargo `Project` is named `prod-<name>`** so it adopts the
+  `prod-<name>` namespace. This is a consequence of Kargo 1.10's model, called
+  out explicitly to avoid the trap: a Kargo `Project` is cluster-scoped, carries
+  **no** `spec.namespace`, and the controller maps the Project's *name* to a
+  same-named namespace it adopts
+  ([`holos/components/my-project/buildplan.cue`](../../holos/components/my-project/buildplan.cue),
+  the `PROJECT_RESOURCE` note). So a Kargo `Project` cannot adopt `prod-<name>`
+  unless it is itself **named** `prod-<name>` — the control namespace's name and
+  the Kargo `Project`'s name are the **same string** (`prod-<name>`), and that
+  string carries the `kargo.akuity.io/project` adoption label every derived entry
+  already has. The implication for the component phase (HOL-1355): the Kargo
+  `Project`/`ProjectConfig` and the Argo CD `authorized-stage` annotation key on
+  the **`prod-<name>`** name, not the bare logical `<name>` — a deliberate
+  divergence from the Revision 1–2 `my-project` scaffold (where the Kargo Project,
+  the namespace, and the logical project name all coincided as `my-project`).
+  Everything else that references "the project" by its logical `<name>` (the Quay
+  org, the Keycloak group paths `projects/<name>/...`, the Argo CD `AppProject`
+  name) keeps the bare `<name>`; only the Kargo `Project` and its namespace take
+  the `prod-` prefix, because only they are bound to a Kubernetes namespace by
+  Kargo's name-equals-namespace rule.
 
 The `ci-<name>` and `qa-<name>` namespaces hold only **per-environment
 workloads** (an Application's `Deployment`/`Service`/etc. for that environment);

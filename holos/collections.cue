@@ -102,36 +102,21 @@ apps: appcoll.apps
 		}
 	}
 
-	// Per-app validation, keyed by app NAME.  Keying by name (not a single shared
-	// field) is essential: a shared field would unify across apps and make two
-	// apps with different images/ports conflict — breaking multi-app support.
-	//
-	// What this forces on the render path NOW (a violation is a render error
-	// because it produces _|_, which holos surfaces even from a hidden field):
-	//   - the apps.<name>.project → #RegisteredProject CROSS-REFERENCE (a dangling
-	//     project is `conflicting values`),
-	//   - the name/image/port VALUE constraints when the field is present (a
-	//     malformed app name or an empty image is `out of bound`).
-	//
-	// What it does NOT force here, and why: a MISSING required field
-	// (project!/image!/port! omitted entirely) leaves the app value INCOMPLETE,
-	// not _|_, and holos render tolerates an incomplete HIDDEN field that no
-	// rendered manifest exports.  Concreteness of a required field is therefore
-	// enforced when an app is actually CONSUMED — i.e. when the Application
-	// component (HOL-1356) renders the app's Deployment/Service from these fields,
-	// the export forces project/image/port to be concrete.  The ! markers on #App
-	// declare the contract; the consuming component is where a render exports it.
-	// (host is optional, so it is not read.)  This is an honest boundary of the
-	// foundation phase: the cross-reference and present-value validation the AC
-	// mandates hold now; required-field presence rides the consumer.
-	_apps: {
+	// tokens: per-app, an INTERPOLATION of the app's required fields
+	// (name|project|image|port).  Keyed by app NAME so distinct apps never unify
+	// into a cross-app conflict (the multi-app-collision trap).  Interpolation is
+	// the lever for FULL required-field validation: the namespaces component folds
+	// each app's token into its project's control-namespace (prod-<name>)
+	// annotation and EXPORTS it (holos/namespaces.cue), and exporting an
+	// interpolation of an INCOMPLETE value (a required app field omitted entirely)
+	// is a render error.  So tokens makes even a MISSING required field fail at
+	// render — not just the _|_-producing cases (a dangling apps.<name>.project →
+	// #RegisteredProject conflict, or a malformed name / empty image / out-of-range
+	// port) that the hidden _collectionsValidated reference already catches via
+	// bottom.  (host is optional, so it is omitted from the token.)
+	tokens: {
 		for NAME, A in apps {
-			(NAME): {
-				_p: A.project
-				_i: A.image
-				_n: A.port
-				_m: A.name
-			}
+			(NAME): "\(A.name)|\(A.project)|\(A.image)|\(A.port)"
 		}
 	}
 }

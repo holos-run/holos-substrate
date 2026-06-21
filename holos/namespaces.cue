@@ -332,6 +332,27 @@ namespaces: {
 				metadata: {
 					labels: "kargo.akuity.io/project":             "true"
 					annotations: "kargo.akuity.io/keep-namespace": "true"
+
+					// On the CONTROL namespace (prod-<name>,
+					// #ProjectControlEnvironment), record the project's validated
+					// apps as an annotation built from #CollectionsValidated.tokens
+					// (the per-app name|project|image|port INTERPOLATION).  This is
+					// what puts the apps contract on the render path: the namespaces
+					// component EXPORTS this annotation, and exporting an
+					// interpolation of an INCOMPLETE value (a required app field
+					// omitted entirely) is a render error — so a malformed OR
+					// MISSING-required-field app fails here, alongside the
+					// _|_-producing cases the collections.cue hidden reference
+					// already catches.  Only this project's apps are folded in (the
+					// app's `project` selects its control namespace), so an app
+					// annotates exactly one namespace and the value is deterministic.
+					// When a project has no apps the annotation is absent, so the
+					// committed tree stays diff-clean until apps are registered.
+					if ENV == #ProjectControlEnvironment {
+						for ANAME, A in apps if A.project == PROJECT {
+							annotations: "app.holos.run/app.\(ANAME)": #CollectionsValidated.tokens[ANAME]
+						}
+					}
 				}
 			}
 		}

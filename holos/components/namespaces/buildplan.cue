@@ -9,18 +9,23 @@ package holos
 userDefinedBuildPlan: {
 	metadata: name: "namespaces"
 
-	// _collectionsValidated puts the project/app collection contract on the
-	// holos render path.  holos render platform evaluates this BuildPlan, so
-	// referencing #CollectionsValidated (holos/collections.cue) here forces every
-	// collection constraint that produces a _|_ — a dangling app→project
-	// reference (conflict), a malformed app/project name or empty image/bad port
-	// (out of bound), and an ownerless project — to fail the render.  The field is
-	// hidden and unifies the empty struct, so it adds NOTHING to the rendered
-	// Namespace manifests (and emits no namespaced resource into this
-	// bootstrap-ordering component — see the note in collections.cue on why the
-	// missing-required-field case is enforced at consumption, not here).  This
-	// component is the natural anchor: it already derives the project namespaces
-	// from the same `projects` collection.
+	// _collectionsValidated puts the _|_-producing half of the project/app
+	// collection contract on the holos render path.  holos render platform
+	// evaluates this BuildPlan, so referencing #CollectionsValidated
+	// (holos/collections.cue) from this hidden field forces every constraint that
+	// produces a _|_ — an ownerless project, a dangling app→project reference
+	// (conflict), and a malformed app/project name / empty image / out-of-range
+	// port (out of bound) — to fail the render.  The field is hidden, so it adds
+	// NOTHING to the rendered Namespace manifests and emits no namespaced resource
+	// into this bootstrap-ordering component.
+	//
+	// The remaining half — a MISSING required app field (incomplete, not _|_,
+	// which a hidden reference tolerates) — is forced by EXPORT, not this
+	// reference: holos/namespaces.cue folds each app's #CollectionsValidated.tokens
+	// interpolation into its project's prod-<name> control-namespace annotation,
+	// and exporting an interpolation of an incomplete value is a render error.
+	// Both halves live in this always-rendered component because it already
+	// derives the project namespaces from the same `projects`/`apps` collections.
 	_collectionsValidated: #CollectionsValidated
 
 	spec: artifacts: manifests: {
