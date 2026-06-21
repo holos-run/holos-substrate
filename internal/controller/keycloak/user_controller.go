@@ -3,6 +3,8 @@ package keycloak
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -63,6 +65,11 @@ type UserClient interface {
 	// an already-absent link as success — the release path's cleanup of a link this
 	// CR added to an adopted user.
 	DeleteFederatedIdentityIfExists(ctx context.Context, userID, provider string) error
+	// ListFederatedIdentities returns the user's existing federated-identity links,
+	// so a prune can verify the current link's upstream subject matches the one this
+	// CR created before deleting it (never deleting a link recreated out of band to a
+	// different subject).
+	ListFederatedIdentities(ctx context.Context, userID string) ([]keycloak.FederatedIdentity, error)
 }
 
 // UserClientFactory builds a UserClient from a resolved Keycloak credential, the
@@ -273,6 +280,53 @@ func (r *UserReconciler) reconcileSideEffectsThenSucceed(ctx context.Context, lo
 	return r.succeed(ctx, logger, user, reason, message, extraChanged)
 }
 
+// managedGroupSep separates the fields of a status.managedGroups entry, which
+// records "<groupPath>|<groupUUID>" so a membership prune can verify the group
+// currently at the path is still the same object this CR joined the user to. A
+// group deleted and recreated at the same path gets a fresh UUID, so the prune
+// skips it rather than revoking membership from a replacement group this CR never
+// joined (the path-vs-UUID guard, mirroring the KeycloakGroup reconciler).
+const managedGroupSep = "|"
+
+// parseManagedGroups decodes status.managedGroups ("path|uuid" entries) into a
+// map keyed by group path. A legacy bare-path entry (no separator, written before
+// this UUID-pinning landed) decodes with an empty UUID, which the prune treats as
+// "verify by current lookup" — it is upgraded to a pinned entry on the next join.
+func parseManagedGroups(entries []string) map[string]string {
+	out := map[string]string{}
+	for _, e := range entries {
+		path, uuid, found := strings.Cut(e, managedGroupSep)
+		if path == "" {
+			continue
+		}
+		if !found {
+			out[path] = "" // legacy bare-path entry
+			continue
+		}
+		out[path] = uuid
+	}
+	return out
+}
+
+// serializeManagedGroups encodes the managed group set back to the "path|uuid"
+// status slice, sorted by path for stable output (nil when empty so the omitempty
+// status field round-trips cleanly).
+func serializeManagedGroups(managed map[string]string) []string {
+	if len(managed) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(managed))
+	for p := range managed {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		out = append(out, p+managedGroupSep+managed[p])
+	}
+	return out
+}
+
 // reconcileMemberships reconciles the user's group memberships to the desired set
 // declared in spec.groups: it joins every declared group and removes any group
 // this CR previously managed (status.managedGroups) that is no longer desired —
@@ -280,16 +334,21 @@ func (r *UserReconciler) reconcileSideEffectsThenSucceed(ctx context.Context, lo
 // place (the add-only gap). status.managedGroups is rewritten to the new desired
 // set, updated live as each side effect lands so a mid-loop failure leaves status
 // reflecting exactly the memberships currently in Keycloak.
+//
+// Each managed entry pins the group UUID, so a prune only revokes membership when
+// the group currently at the path still has the recorded UUID: a group deleted and
+// recreated at the same path out of band is skipped rather than having the
+// replacement's membership revoked (the path-vs-UUID guard).
 func (r *UserReconciler) reconcileMemberships(ctx context.Context, kc UserClient, user *keycloakv1alpha1.KeycloakUser, userID string) error {
 	desired := map[string]bool{}
 	for _, p := range user.Spec.Groups {
 		desired[p] = true
 	}
 
-	managed := newStringSet(user.Status.ManagedGroups)
-	defer func() { user.Status.ManagedGroups = managed.sorted() }()
+	managed := parseManagedGroups(user.Status.ManagedGroups)
+	defer func() { user.Status.ManagedGroups = serializeManagedGroups(managed) }()
 
-	// Join every declared group (idempotent on Keycloak's side).
+	// Join every declared group (idempotent on Keycloak's side), pinning its UUID.
 	for _, path := range user.Spec.Groups {
 		group, err := kc.GetGroupByPath(ctx, path)
 		recordKeycloakAPI(opGetGroupByPath, err)
@@ -301,11 +360,11 @@ func (r *UserReconciler) reconcileMemberships(ctx context.Context, kc UserClient
 		if addErr != nil {
 			return fmt.Errorf("adding Keycloak user %q to group %q: %w", user.Spec.Email, path, addErr)
 		}
-		managed.add(path)
+		managed[path] = group.ID
 	}
 
 	// Prune memberships this CR previously managed but that are no longer desired.
-	for _, path := range managed.sorted() {
+	for path, recordedUUID := range managed {
 		if desired[path] {
 			continue
 		}
@@ -313,18 +372,25 @@ func (r *UserReconciler) reconcileMemberships(ctx context.Context, kc UserClient
 		recordKeycloakAPI(opGetGroupByPath, ignoreNotFound(err))
 		if keycloak.IsNotFound(err) {
 			// The group is gone; the membership went with it. Stop tracking it.
-			managed.remove(path)
+			delete(managed, path)
 			continue
 		}
 		if err != nil {
 			return fmt.Errorf("resolving group %q to prune membership for Keycloak user %q: %w", path, user.Spec.Email, err)
+		}
+		// UUID-pinned prune: only revoke when the group at the path is still the one
+		// this CR joined. A recreated group (different UUID) is not ours to revoke;
+		// stop tracking the stale entry without touching the replacement.
+		if recordedUUID != "" && group.ID != recordedUUID {
+			delete(managed, path)
+			continue
 		}
 		rmErr := kc.RemoveUserFromGroupIfMember(ctx, userID, group.ID)
 		recordKeycloakAPI(opRemoveUserFromGroup, rmErr)
 		if rmErr != nil {
 			return fmt.Errorf("removing Keycloak user %q from stale group %q: %w", user.Spec.Email, path, rmErr)
 		}
-		managed.remove(path)
+		delete(managed, path)
 	}
 	return nil
 }
@@ -353,29 +419,29 @@ func (r *UserReconciler) reconcileMemberships(ctx context.Context, kc UserClient
 func (r *UserReconciler) reconcileIdentityProviderLink(ctx context.Context, kc UserClient, user *keycloakv1alpha1.KeycloakUser, userID string) error {
 	link := user.Spec.IdentityProviderLink
 
-	// Determine the provider this CR should now manage an Admin-API link for: only
-	// a subject-keyed link (userId set) is managed; a removed link or an email-only
-	// auto-link (userId omitted, realm-flow-driven) manages none.
-	desiredProvider := ""
+	// Determine the provider+subject this CR should now manage an Admin-API link
+	// for: only a subject-keyed link (userId set) is managed; a removed link or an
+	// email-only auto-link (userId omitted, realm-flow-driven) manages none.
+	desiredAlias, desiredSubject := "", ""
 	if link != nil && link.UserID != "" {
-		desiredProvider = link.Alias
+		desiredAlias, desiredSubject = link.Alias, link.UserID
 	}
 
 	// Reconcile-to-desired-set: if this CR previously managed a link to a different
-	// provider (or to none now), delete that stale link before recording the new
-	// state — otherwise removing/switching identityProviderLink would leave a stale
-	// federated identity that still grants IdP login and that finalization no longer
-	// knows to prune.
-	if prev := user.Status.ManagedIdentityProvider; prev != "" && prev != desiredProvider {
-		rmErr := kc.DeleteFederatedIdentityIfExists(ctx, userID, prev)
-		recordKeycloakAPI(opDeleteFederatedID, rmErr)
-		if rmErr != nil {
-			return fmt.Errorf("removing stale federated-identity link %q for Keycloak user %q: %w", prev, user.Spec.Email, rmErr)
+	// provider/subject (or to none now), delete that stale link before recording the
+	// new state — otherwise removing/switching identityProviderLink would leave a
+	// stale federated identity that still grants IdP login and that finalization no
+	// longer knows to prune. The delete is subject-verified so a link recreated out
+	// of band to a different upstream subject is never deleted.
+	prevAlias, prevSubject := parseManagedIdentityProvider(user.Status.ManagedIdentityProvider)
+	if prevAlias != "" && (prevAlias != desiredAlias || prevSubject != desiredSubject) {
+		if err := r.deleteFederatedIfSubjectMatches(ctx, kc, user, userID, prevAlias, prevSubject); err != nil {
+			return err
 		}
 		user.Status.ManagedIdentityProvider = ""
 	}
 
-	if desiredProvider == "" {
+	if desiredAlias == "" {
 		return nil
 	}
 
@@ -389,7 +455,67 @@ func (r *UserReconciler) reconcileIdentityProviderLink(ctx context.Context, kc U
 	if err != nil {
 		return fmt.Errorf("creating federated-identity link to %q for Keycloak user %q: %w", link.Alias, user.Spec.Email, err)
 	}
-	user.Status.ManagedIdentityProvider = link.Alias
+	user.Status.ManagedIdentityProvider = serializeManagedIdentityProvider(desiredAlias, desiredSubject)
+	return nil
+}
+
+// managedIDPSep separates the alias and the upstream subject (userId) in the
+// status.managedIdentityProvider entry ("<alias>|<userId>"), so a prune can verify
+// the current link's subject matches the one this CR created before deleting it.
+const managedIDPSep = "|"
+
+// parseManagedIdentityProvider decodes status.managedIdentityProvider into its
+// alias and managed upstream subject. A legacy bare-alias entry (no separator,
+// written before subject-pinning landed) decodes with an empty subject, which the
+// prune treats as "delete the current link for the alias" (the prior behavior).
+func parseManagedIdentityProvider(entry string) (alias, subject string) {
+	if entry == "" {
+		return "", ""
+	}
+	alias, subject, _ = strings.Cut(entry, managedIDPSep)
+	return alias, subject
+}
+
+// serializeManagedIdentityProvider encodes the managed alias+subject for status.
+func serializeManagedIdentityProvider(alias, subject string) string {
+	return alias + managedIDPSep + subject
+}
+
+// deleteFederatedIfSubjectMatches deletes the user's federated-identity link for
+// alias only when the link currently present points at the recorded upstream
+// subject — so a link recreated out of band to a different subject (another
+// actor's federation) is never deleted. When the recorded subject is empty (a
+// legacy entry) it falls back to the unconditional delete the prior behavior used.
+// An already-absent link is success.
+func (r *UserReconciler) deleteFederatedIfSubjectMatches(ctx context.Context, kc UserClient, user *keycloakv1alpha1.KeycloakUser, userID, alias, subject string) error {
+	if subject != "" {
+		links, err := kc.ListFederatedIdentities(ctx, userID)
+		recordKeycloakAPI(opListFederatedIDs, err)
+		if err != nil {
+			return fmt.Errorf("listing federated-identity links to verify %q for Keycloak user %q: %w", alias, user.Spec.Email, err)
+		}
+		found := false
+		for _, l := range links {
+			if l.IdentityProvider != alias {
+				continue
+			}
+			found = true
+			if l.UserID != subject {
+				// The link was recreated to a different upstream subject out of band;
+				// it is not the one this CR created. Do not delete another actor's link.
+				return nil
+			}
+		}
+		if !found {
+			// No link for this alias remains; nothing to delete.
+			return nil
+		}
+	}
+	rmErr := kc.DeleteFederatedIdentityIfExists(ctx, userID, alias)
+	recordKeycloakAPI(opDeleteFederatedID, rmErr)
+	if rmErr != nil {
+		return fmt.Errorf("removing federated-identity link %q for Keycloak user %q: %w", alias, user.Spec.Email, rmErr)
+	}
 	return nil
 }
 
@@ -484,17 +610,17 @@ func (r *UserReconciler) reconcileDelete(ctx context.Context, logger logr.Logger
 // pruneManagedIdentityProvider removes the federated-identity link this CR added
 // to an adopted user (status.managedIdentityProvider), then clears the managed
 // status. It is used on adopted release, where the surviving user is not deleted
-// so the link this CR created must be removed explicitly. An already-absent link
-// is treated as success.
+// so the link this CR created must be removed explicitly. The delete is
+// subject-verified: a link recreated out of band to a different upstream subject
+// is left intact. An already-absent link is treated as success.
 func (r *UserReconciler) pruneManagedIdentityProvider(ctx context.Context, kc UserClient, user *keycloakv1alpha1.KeycloakUser) error {
-	if user.Status.ManagedIdentityProvider == "" || user.Status.UserID == "" {
+	alias, subject := parseManagedIdentityProvider(user.Status.ManagedIdentityProvider)
+	if alias == "" || user.Status.UserID == "" {
 		user.Status.ManagedIdentityProvider = ""
 		return nil
 	}
-	err := kc.DeleteFederatedIdentityIfExists(ctx, user.Status.UserID, user.Status.ManagedIdentityProvider)
-	recordKeycloakAPI(opDeleteFederatedID, err)
-	if err != nil {
-		return fmt.Errorf("revoking federated-identity link %q for Keycloak user %q on release: %w", user.Status.ManagedIdentityProvider, user.Spec.Email, err)
+	if err := r.deleteFederatedIfSubjectMatches(ctx, kc, user, user.Status.UserID, alias, subject); err != nil {
+		return err
 	}
 	user.Status.ManagedIdentityProvider = ""
 	return nil
@@ -503,13 +629,16 @@ func (r *UserReconciler) pruneManagedIdentityProvider(ctx context.Context, kc Us
 // pruneManagedGroups removes the user from every group this CR joined it to
 // (status.managedGroups), then clears the managed status. It is used on adopted
 // release, where the surviving user is not deleted so its memberships must be
-// removed explicitly. A group already gone is treated as success.
+// removed explicitly. It is UUID-pinned like reconcileMemberships: a group
+// recreated at the same path (different UUID) is skipped rather than having the
+// replacement's membership revoked, and an already-gone group is treated as
+// success.
 func (r *UserReconciler) pruneManagedGroups(ctx context.Context, kc UserClient, user *keycloakv1alpha1.KeycloakUser) error {
 	if user.Status.UserID == "" {
 		user.Status.ManagedGroups = nil
 		return nil
 	}
-	for _, path := range user.Status.ManagedGroups {
+	for path, recordedUUID := range parseManagedGroups(user.Status.ManagedGroups) {
 		group, err := kc.GetGroupByPath(ctx, path)
 		recordKeycloakAPI(opGetGroupByPath, ignoreNotFound(err))
 		if keycloak.IsNotFound(err) {
@@ -517,6 +646,10 @@ func (r *UserReconciler) pruneManagedGroups(ctx context.Context, kc UserClient, 
 		}
 		if err != nil {
 			return fmt.Errorf("resolving group %q to revoke membership on release: %w", path, err)
+		}
+		if recordedUUID != "" && group.ID != recordedUUID {
+			// A different group occupies the path now; not ours to revoke.
+			continue
 		}
 		rmErr := kc.RemoveUserFromGroupIfMember(ctx, user.Status.UserID, group.ID)
 		recordKeycloakAPI(opRemoveUserFromGroup, rmErr)

@@ -312,11 +312,13 @@ func (r *ClientReconciler) desiredClient(kclient *keycloakv1alpha1.KeycloakClien
 }
 
 // updateClient converges the managed fields (type, redirect URIs, web origins,
-// enabled, and — for a public client — the PKCE S256 attribute) of an existing
-// client losslessly via UpdateClientFields, which preserves every unmanaged
-// ClientRepresentation key (protocol, service-account flags, default scopes, and
-// any non-PKCE attributes). The PKCE attribute is merged (not a full attribute
-// replace) so it is enforced without clobbering unmanaged attributes.
+// enabled, and the PKCE code-challenge attribute) of an existing client losslessly
+// via UpdateClientFields, which preserves every unmanaged ClientRepresentation key
+// (protocol, service-account flags, default scopes, and any non-PKCE attributes).
+// A public client gets the S256 PKCE attribute MERGED in; a confidential client
+// gets that attribute actively REMOVED so an adopted/pre-existing confidential
+// client carrying a stale S256 converges to no-PKCE (rather than keeping a stale
+// PKCE requirement the merge-only path would never clear).
 func (r *ClientReconciler) updateClient(ctx context.Context, kc ClientClient, kclient *keycloakv1alpha1.KeycloakClient, clientUUID string) error {
 	enabled := true
 	public := kclient.Spec.Type == keycloakv1alpha1.KeycloakClientTypePublic
@@ -330,6 +332,10 @@ func (r *ClientReconciler) updateClient(ctx context.Context, kc ClientClient, kc
 	}
 	if public {
 		fields.Attributes = map[string]string{keycloak.PKCECodeChallengeMethodAttr: keycloak.PKCEMethodS256}
+	} else {
+		// Confidential: actively clear any stale PKCE code-challenge attribute so an
+		// adopted client that previously required PKCE converges to no-PKCE.
+		fields.RemoveAttributes = []string{keycloak.PKCECodeChallengeMethodAttr}
 	}
 	err := kc.UpdateClientFields(ctx, clientUUID, fields)
 	recordKeycloakAPI(opUpdateClient, err)

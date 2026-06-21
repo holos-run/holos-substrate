@@ -297,7 +297,7 @@ func TestUserReconcileIdentityProviderLinkRemovalPrunes(t *testing.T) {
 	if !fake.federated(got.Status.UserID, "corp-oidc") {
 		t.Fatalf("IdP link not created initially")
 	}
-	if got.Status.ManagedIdentityProvider != "corp-oidc" {
+	if got.Status.ManagedIdentityProvider == "" {
 		t.Fatalf("managed IdP provider not recorded, got %q", got.Status.ManagedIdentityProvider)
 	}
 
@@ -316,6 +316,108 @@ func TestUserReconcileIdentityProviderLinkRemovalPrunes(t *testing.T) {
 	after := getUser(t, ctx, key)
 	if after.Status.ManagedIdentityProvider != "" {
 		t.Errorf("managed IdP provider not cleared, got %q", after.Status.ManagedIdentityProvider)
+	}
+}
+
+func TestUserReconcileMembershipPruneIsUUIDPinned(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-user-prune-uuid"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	user := &keycloakv1alpha1.KeycloakUser{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "frank"},
+		Spec: keycloakv1alpha1.KeycloakUserSpec{
+			Email:       "frank@example.com",
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Groups:      []string{"projects/p/roles/owner"},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	fake := newFakeKeycloakClient("projects/p/roles/owner")
+	r, _ := newUserReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(user)
+	reconcileUserToSteady(t, ctx, r, key)
+	got := getUser(t, ctx, key)
+	userID := got.Status.UserID
+
+	// Simulate the group being deleted and recreated at the same path out of band
+	// (a fresh UUID), and a foreign membership added to the replacement.
+	delete(fake.groups, normPath("projects/p/roles/owner"))
+	newGroupID := fake.addGroup("projects/p/roles/owner")
+	fake.groupMembers[userID+"/"+newGroupID] = true
+
+	// Drop the group from spec; the prune must NOT revoke the replacement's
+	// membership because its UUID differs from the recorded one.
+	got.Spec.Groups = nil
+	if err := shared.k8sClient.Update(ctx, got); err != nil {
+		t.Fatalf("update user spec: %v", err)
+	}
+	if _, err := reconcileUser(ctx, r, key); err != nil {
+		t.Fatalf("reconcile (prune): %v", err)
+	}
+	if !fake.memberOf(userID, newGroupID) {
+		t.Errorf("UUID-pinned prune revoked membership from a replacement group it never joined")
+	}
+}
+
+func TestUserReconcileIdentityProviderLinkSubjectVerifiedPrune(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-user-idp-subject"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	user := &keycloakv1alpha1.KeycloakUser{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "grace"},
+		Spec: keycloakv1alpha1.KeycloakUserSpec{
+			Email:                "grace@example.com",
+			InstanceRef:          keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			IdentityProviderLink: &keycloakv1alpha1.IdentityProviderLink{Alias: "corp-oidc", UserID: "sub-grace"},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	fake := newFakeKeycloakClient()
+	r, _ := newUserReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(user)
+	reconcileUserToSteady(t, ctx, r, key)
+	got := getUser(t, ctx, key)
+	userID := got.Status.UserID
+	if !fake.federated(userID, "corp-oidc") {
+		t.Fatalf("IdP link not created")
+	}
+
+	// Simulate the link being recreated out of band to a DIFFERENT upstream subject.
+	fake.setFederatedSubject(userID, "corp-oidc", "sub-someone-else")
+
+	// Remove the link from spec; the prune must NOT delete the foreign link because
+	// its subject no longer matches the one this CR created.
+	got.Spec.IdentityProviderLink = nil
+	if err := shared.k8sClient.Update(ctx, got); err != nil {
+		t.Fatalf("update user spec: %v", err)
+	}
+	if _, err := reconcileUser(ctx, r, key); err != nil {
+		t.Fatalf("reconcile (prune link): %v", err)
+	}
+	if !fake.federated(userID, "corp-oidc") {
+		t.Errorf("subject-verified prune deleted a link recreated out of band to a different subject")
+	}
+	after := getUser(t, ctx, key)
+	if after.Status.ManagedIdentityProvider != "" {
+		t.Errorf("managed IdP provider not cleared after switch, got %q", after.Status.ManagedIdentityProvider)
 	}
 }
 

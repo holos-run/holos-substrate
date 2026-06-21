@@ -260,6 +260,47 @@ func TestClientReconcileConfidentialSecretDelivery(t *testing.T) {
 	}
 }
 
+func TestClientReconcileConfidentialClearsPKCE(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-client-pkce-clear"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	// An adopted confidential client that already carries a stale PKCE S256
+	// attribute must converge to no-PKCE: the update requests removal of the PKCE
+	// attribute (and does not set it), and a public client still sets it.
+	kclient := &keycloakv1alpha1.KeycloakClient{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "conf"},
+		Spec: keycloakv1alpha1.KeycloakClientSpec{
+			ClientID:    "https://conf.holos.localhost",
+			Type:        keycloakv1alpha1.KeycloakClientTypeConfidential,
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			SecretRef:   &keycloakv1alpha1.ClientSecretReference{Name: "conf-oidc", Key: "clientSecret"},
+			Adopt:       true,
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, kclient); err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	fake := newFakeKeycloakClient()
+	fake.seedClient("https://conf.holos.localhost", "conf-uuid") // pre-existing, with stale S256
+	r, _ := newClientReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(kclient)
+	reconcileClientToSteady(t, ctx, r, key)
+
+	if !fake.updatePKCECleared("conf-uuid") {
+		t.Errorf("confidential client update did not request PKCE attribute removal; fields = %+v", fake.lastUpdateFields["conf-uuid"])
+	}
+	if fake.updatePKCESet("conf-uuid") != "" {
+		t.Errorf("confidential client update must not set the PKCE attribute, got %q", fake.updatePKCESet("conf-uuid"))
+	}
+}
+
 func TestClientReconcileSecretCollisionMissingKeyFails(t *testing.T) {
 	if shared == nil {
 		t.Skip("envtest not provisioned")

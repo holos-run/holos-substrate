@@ -85,9 +85,13 @@ type fakeKeycloakClient struct {
 	// groupMembers records each "<userID>/<groupID>" the reconciler joined, so a
 	// test asserts membership assignment and pruning.
 	groupMembers map[string]bool
-	// federatedLinks records each "<userID>/<provider>" link created, so a test
-	// asserts the IdP federated-identity link was made.
-	federatedLinks map[string]bool
+	// federatedLinks records, per "<userID>/<provider>", the upstream subject
+	// (userId) of the link created, so a test asserts the link was made and that the
+	// subject-verified prune respects an out-of-band recreated link.
+	federatedLinks map[string]string
+	// lastUpdateFields records, per clientUUID, the most recent ClientFields passed
+	// to UpdateClientFields, so a test asserts PKCE set/removal on update.
+	lastUpdateFields map[string]keycloak.ClientFields
 
 	// clientRolesByClient records, per "<clientUUID>", the set of role names
 	// created on that client, so a test asserts client-role convergence.
@@ -120,11 +124,12 @@ func newFakeKeycloakClient(existingGroups ...string) *fakeKeycloakClient {
 		roleAssignments:    map[string]bool{},
 		users:              map[string]*keycloak.User{},
 		groupMembers:       map[string]bool{},
-		federatedLinks:     map[string]bool{},
+		federatedLinks:     map[string]string{},
 		createdClientRoles: map[string]map[string]bool{},
 		roleMappers:        map[string]bool{},
 		clientSecrets:      map[string]string{},
 		createdClientAttrs: map[string]map[string]string{},
+		lastUpdateFields:   map[string]keycloak.ClientFields{},
 	}
 	for _, p := range existingGroups {
 		f.addGroup(p)
@@ -427,7 +432,7 @@ func (f *fakeKeycloakClient) CreateFederatedIdentityIfNotExists(ctx context.Cont
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("FederatedLink:" + userID + "/" + provider)
-	f.federatedLinks[userID+"/"+provider] = true
+	f.federatedLinks[userID+"/"+provider] = link.UserID
 	return nil
 }
 
@@ -437,6 +442,28 @@ func (f *fakeKeycloakClient) DeleteFederatedIdentityIfExists(ctx context.Context
 	f.record("FederatedUnlink:" + userID + "/" + provider)
 	delete(f.federatedLinks, userID+"/"+provider)
 	return nil
+}
+
+func (f *fakeKeycloakClient) ListFederatedIdentities(ctx context.Context, userID string) ([]keycloak.FederatedIdentity, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("ListFederated:" + userID)
+	var out []keycloak.FederatedIdentity
+	prefix := userID + "/"
+	for k, subject := range f.federatedLinks {
+		if strings.HasPrefix(k, prefix) {
+			out = append(out, keycloak.FederatedIdentity{IdentityProvider: k[len(prefix):], UserID: subject})
+		}
+	}
+	return out, nil
+}
+
+// setFederatedSubject seeds/overrides the upstream subject of a link, simulating
+// an out-of-band recreation to a different subject.
+func (f *fakeKeycloakClient) setFederatedSubject(userID, provider, subject string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.federatedLinks[userID+"/"+provider] = subject
 }
 
 // --- KeycloakClient reconciler seam ---
@@ -468,6 +495,7 @@ func (f *fakeKeycloakClient) UpdateClientFields(ctx context.Context, clientUUID 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("UpdateClient:" + clientUUID)
+	f.lastUpdateFields[clientUUID] = fields
 	return f.updateClientErr
 }
 
@@ -547,7 +575,29 @@ func (f *fakeKeycloakClient) memberOf(userID, groupID string) bool {
 func (f *fakeKeycloakClient) federated(userID, provider string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.federatedLinks[userID+"/"+provider]
+	_, ok := f.federatedLinks[userID+"/"+provider]
+	return ok
+}
+
+// updatePKCECleared reports whether the last UpdateClientFields for clientUUID
+// requested removal of the PKCE code-challenge attribute.
+func (f *fakeKeycloakClient) updatePKCECleared(clientUUID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, k := range f.lastUpdateFields[clientUUID].RemoveAttributes {
+		if k == keycloak.PKCECodeChallengeMethodAttr {
+			return true
+		}
+	}
+	return false
+}
+
+// updatePKCESet reports the PKCE attribute value the last UpdateClientFields for
+// clientUUID set, or "" when none.
+func (f *fakeKeycloakClient) updatePKCESet(clientUUID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastUpdateFields[clientUUID].Attributes[keycloak.PKCECodeChallengeMethodAttr]
 }
 
 // clientExists reports whether an OIDC client with the clientId currently exists.

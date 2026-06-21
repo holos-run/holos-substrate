@@ -246,22 +246,27 @@ spec:
                 type: boolean
               managedGroups:
                 description: |-
-                  ManagedGroups records the Keycloak group paths this CR has joined the user
-                  to, so a membership removed from spec.groups is actively revoked on the next
-                  reconcile (reconcile-to-desired-set rather than add-only) and an adopted
-                  user's release prunes exactly the memberships this CR added.
+                  ManagedGroups records the group memberships this CR has joined the user to,
+                  each entry encoded as "<groupPath>|<groupUUID>", so a membership removed from
+                  spec.groups is actively revoked on the next reconcile (reconcile-to-desired-set
+                  rather than add-only) and an adopted user's release prunes exactly the
+                  memberships this CR added. The UUID pins the membership so a group recreated at
+                  the same path out of band is not pruned as if it were the controller-added one.
+                  The controller manages these entries; do not hand-edit them.
                 items:
                   type: string
                 type: array
                 x-kubernetes-list-type: set
               managedIdentityProvider:
                 description: |-
-                  ManagedIdentityProvider records the IdP alias this CR created a
-                  federated-identity link to (spec.identityProviderLink.alias), so on CR
-                  removal an adopted user's release prunes exactly the link this CR added
-                  rather than leaving a stale federation behind. Empty when no managed link
-                  exists (no spec.identityProviderLink, or an email-only auto-link entry that
-                  is realm-flow-driven and not an Admin-API link this CR owns).
+                  ManagedIdentityProvider records the federated-identity link this CR created,
+                  encoded as "<alias>|<upstreamUserId>" (the IdP alias and the upstream subject
+                  from spec.identityProviderLink), so on switch or CR removal the prune deletes
+                  exactly the link this CR added — and only when the current link still points
+                  at that subject, never a link recreated out of band to a different subject.
+                  Empty when no managed link exists (no spec.identityProviderLink, or an
+                  email-only auto-link entry that is realm-flow-driven and not an Admin-API link
+                  this CR owns). The controller manages this value; do not hand-edit it.
                 type: string
               observedGeneration:
                 description: |-

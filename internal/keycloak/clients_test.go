@@ -512,3 +512,36 @@ func TestUpdateClientFieldsMergesPKCEAttribute(t *testing.T) {
 		t.Errorf("PKCE attribute not merged: %v", attrs)
 	}
 }
+
+func TestUpdateClientFieldsRemovesAttribute(t *testing.T) {
+	var putBody map[string]any
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + clientsBase + "/uuid-1": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"uuid-1","clientId":"https://conf","attributes":{"pkce.code.challenge.method":"S256","keep":"yes"}}`)
+		},
+		"PUT " + clientsBase + "/uuid-1": func(w http.ResponseWriter, req *http.Request) {
+			body, _ := io.ReadAll(req.Body)
+			putBody = decodeJSONObject(t, body)
+			w.WriteHeader(http.StatusNoContent)
+		},
+	}}
+	c, _ := newTestClient(t, m)
+
+	err := c.UpdateClientFields(context.Background(), "uuid-1", ClientFields{
+		RemoveAttributes: []string{PKCECodeChallengeMethodAttr},
+	})
+	if err != nil {
+		t.Fatalf("UpdateClientFields: %v", err)
+	}
+	attrs, ok := putBody["attributes"].(map[string]any)
+	if !ok {
+		t.Fatalf("PUT body has no attributes map: %v", putBody)
+	}
+	if _, present := attrs[PKCECodeChallengeMethodAttr]; present {
+		t.Errorf("PKCE attribute was not removed: %v", attrs)
+	}
+	if attrs["keep"] != "yes" {
+		t.Errorf("unmanaged attribute clobbered by removal: %v", attrs)
+	}
+}

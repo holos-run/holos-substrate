@@ -35,6 +35,12 @@ type ClientFields struct {
 	// attributes Keycloak or another owner stored. Only the supplied keys are
 	// written.
 	Attributes map[string]string
+	// RemoveAttributes lists attribute keys to DELETE from the client's existing
+	// attributes map, so a managed attribute (e.g. the PKCE code-challenge method on
+	// a client converging to no-PKCE) is actively cleared rather than left stale by
+	// the merge-only Attributes path. Removing a key already absent is a no-op. A
+	// key present in both Attributes and RemoveAttributes is set (Attributes wins).
+	RemoveAttributes []string
 }
 
 // apply writes the set (non-nil) fields onto raw, leaving every other key
@@ -56,10 +62,13 @@ func (f ClientFields) apply(raw RawClient) {
 	if f.WebOrigins != nil {
 		raw["webOrigins"] = *f.WebOrigins
 	}
-	if f.Attributes != nil {
+	if f.Attributes != nil || len(f.RemoveAttributes) > 0 {
 		attrs, _ := raw["attributes"].(map[string]any)
 		if attrs == nil {
 			attrs = map[string]any{}
+		}
+		for _, k := range f.RemoveAttributes {
+			delete(attrs, k)
 		}
 		for k, v := range f.Attributes {
 			attrs[k] = v
