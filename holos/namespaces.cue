@@ -110,6 +110,45 @@ namespaces: [NAME=string]: corev1.#Namespace & {
 // render.
 #ProjectNameNoEnvPrefix: !~"^(\(strings.Join(#Environments, "|")))-"
 
+// #ReservedNamespaceNames is the set of platform-infrastructure namespace names a
+// project may NOT take as its name.  A project's derived BARE control namespace is
+// the bare project name <name>; without this guard a project named e.g. "argocd",
+// "keycloak", or "quay" would derive a control namespace that UNIFIES with the
+// existing static platform namespace of that name (rather than failing), and the
+// Project component's owner-admin RoleBinding would then grant that project's
+// owners admin over the platform namespace — a privilege escalation.  Enumerated
+// explicitly (not computed from `namespaces`, which would be circular: the project
+// derivations contribute to that same map) and asserted in
+// holos/collections.cue's #CollectionsValidated.  Keep this in lock-step with the
+// static `namespaces` entries below: adding a platform namespace that a tenant
+// could plausibly name-collide with adds an entry here.  (The env-prefixed
+// derived names ci-/qa-/prod-<name> are covered by #ProjectNameNoEnvPrefix, and
+// the my-project static entry is covered by the bespoke component owning it; the
+// reserved set below is the OTHER static, non-project platform namespaces.)
+#ReservedNamespaceNames: [
+	"argocd",
+	"cert-manager",
+	"cnpg-system",
+	"echo",
+	"holos-controller",
+	"istio-gateways",
+	"istio-system",
+	"kargo",
+	"kargo-cluster-secrets",
+	"kargo-echo",
+	"kargo-shared-resources",
+	"kargo-system-resources",
+	"keycloak",
+	"quay",
+]
+
+// #ProjectNameNotReserved REJECTS a project name equal to any reserved
+// platform-namespace name (#ReservedNamespaceNames).  Built as a pattern that is
+// the project name unified with "not equal to" each reserved name; expressed as a
+// regexp anchored full-string NON-match of the alternation so a single constraint
+// covers the whole set and stays single-sourced.
+#ProjectNameNotReserved: !~"^(\(strings.Join(#ReservedNamespaceNames, "|")))$"
+
 namespaces: {
 	// istio-system hosts the mesh dataplane and control plane themselves:
 	// istiod, istio-cni, and ztunnel.  It is deliberately NOT enrolled in

@@ -127,6 +127,21 @@ apps: appcoll.apps
 		}
 	}
 
+	// No project name may equal a reserved platform-namespace name (argocd,
+	// keycloak, quay, …).  The Project component derives a BARE <name> control
+	// namespace; a project named e.g. "argocd" would derive a control namespace
+	// that UNIFIES with the existing static argocd namespace and (via the owner-
+	// admin RoleBinding) grant the project's owners admin over that platform
+	// namespace.  Same hard-failure mechanism as the env-prefix check above:
+	// #ProjectNameNotReserved (holos/namespaces.cue, single-sourced from
+	// #ReservedNamespaceNames) makes a reserved name's entry bottom and fails the
+	// render through the namespaces component's _collectionsValidated reference.
+	projectNamesNotReserved: {
+		for PROJECT, _ in projects {
+			(PROJECT): PROJECT & #ProjectNameNotReserved
+		}
+	}
+
 	// tokens: per-app, an INTERPOLATION of the app's required fields
 	// (name|project|image|port).  Keyed by app NAME so distinct apps never unify
 	// into a cross-app conflict (the multi-app-collision trap).  Interpolation is

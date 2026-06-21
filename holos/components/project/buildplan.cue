@@ -3,6 +3,8 @@ package holos
 import (
 	"strings"
 	"regexp"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/base64"
 
 	kargowarehouse "kargo.akuity.io/warehouse/v1alpha1"
@@ -640,17 +642,27 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 			(EMAIL): {
 				apiVersion: "keycloak.holos.run/v1alpha1"
 				kind:       "KeycloakUser"
-				// _userName is the DNS-safe metadata.name derived from the FULL email
-				// (local part AND domain): lowercase the whole address and replace
-				// every run of chars outside [a-z0-9] with a single "-", then trim a
-				// leading/trailing "-".  Including the domain is REQUIRED for
-				// uniqueness — deriving from the local part alone would map distinct
-				// owners alice@example.com and alice@example.org to the same name
-				// "alice", a render conflict (and a single CR with two emails).  The
-				// email itself is carried in spec.email; this is only the object
-				// name, bounded to a valid DNS label by the metadata.name unification.
-				let _sanitized = regexp.ReplaceAll("[^a-z0-9]+", strings.ToLower(EMAIL), "-")
-				let _userName = regexp.ReplaceAll("^-+|-+$", _sanitized, "")
+				// _userName is the DNS-safe, COLLISION-RESISTANT, LENGTH-BOUNDED
+				// metadata.name derived from the email.  A pure sanitize-the-email
+				// scheme is neither: alice.foo@ and alice+foo@ both normalize to
+				// "alice-foo-example-com" (a render conflict), and a long-but-valid
+				// email overflows the 63-char DNS-label limit.  So the name is a
+				// readable prefix (the email local part, lowercased, non-[a-z0-9] runs
+				// collapsed to "-", trimmed, and truncated to ≤40 chars) plus a "-"
+				// and the first 8 hex chars of sha256(EMAIL) — a deterministic suffix
+				// that distinguishes any two distinct emails and keeps the whole name
+				// ≤49 chars (well under 63).  The email itself is carried in
+				// spec.email; this is only the object name.
+				let _local = regexp.ReplaceAll("^-+|-+$", strings.ToLower(regexp.ReplaceAll("[^a-z0-9]+", strings.SplitN(EMAIL, "@", 2)[0], "-")), "")
+				// Truncate the readable prefix to ≤40 chars; for an empty/all-symbol
+				// local part fall back to "user" so the name still starts with a
+				// letter (DNS-label valid).
+				let _prefix = [
+					if (regexp.FindSubmatch("^([a-z0-9][a-z0-9-]{0,39})", _local) != _|_) {regexp.FindSubmatch("^([a-z0-9][a-z0-9-]{0,39})", _local)[1]},
+					"user",
+				][0]
+				let _hash8 = regexp.FindSubmatch("^(.{8})", hex.Encode(sha256.Sum256(EMAIL)))[1]
+				let _userName = "\(_prefix)-\(_hash8)"
 				metadata: {
 					name:      _userName & =~"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
 					namespace: CTRL_NS
