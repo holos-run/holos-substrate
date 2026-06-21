@@ -126,11 +126,26 @@ ROLLOUT_TIMEOUT_SECONDS="$(duration_seconds "${ROLLOUT_TIMEOUT}")" || exit 1
 # operator rollout after the database keeps the dependency chain linear.
 # keycloak trails the operator: its k8s.keycloak.org CRs need the operator
 # reconciling and its cert-manager.io Certificate needs the cert-manager
-# webhook admitting (hence the retried apply, like local-ca).  keycloak-config
-# trails keycloak: its keycloak-config-cli Job reconciles the holos realm
-# against the live admin API, so the Keycloak server must be Ready and the realm
-# shell imported (both gated by wait_keycloak) before it runs; its own gate
-# waits on the Job completing.  quay trails
+# webhook admitting (hence the retried apply, like local-ca).  The keycloak
+# component renders BOTH realm shells — the holos KeycloakRealmImport and the
+# esso KeycloakRealmImport (the enterprise-SSO realm the holos realm brokers to,
+# HOL-1366/HOL-1368) — so both import Done conditions are gated by wait_keycloak.
+# keycloak-esso-config trails keycloak and PRECEDES keycloak-config: it runs the
+# esso realm's bootstrap Jobs — the esso-secret-bootstrap Job (generate-once of
+# the shared esso-idp-oidc client_secret and the esso-user-alice password) and
+# the keycloak-esso-config keycloak-config-cli Job (which imports the esso
+# realm's holos broker client + alice user, reading those Secrets) — so the
+# shared esso-idp-oidc Secret exists in the keycloak namespace before the holos
+# keycloak-config Job consumes it (HOL-1369 wired ESSO_IDP_CLIENT_SECRET into the
+# holos CONFIG_JOB).  Its gate (wait_keycloak_esso_config) waits on the bootstrap
+# Job, the reconcile Job, and the esso-idp-oidc Secret, mirroring
+# wait_keycloak_config.  keycloak-config trails keycloak-esso-config: its
+# keycloak-config-cli Job reconciles the holos realm against the live admin API
+# (now including the esso OIDC identity provider whose clientSecret comes from
+# esso-idp-oidc), so the Keycloak server must be Ready, both realm shells
+# imported (gated by wait_keycloak), and the esso config + shared secret in place
+# (gated by wait_keycloak_esso_config) before it runs; its own gate waits on the
+# Job completing.  quay trails
 # keycloak-config: it needs the quay-db Cluster reachable (gated Ready in the
 # cnpg-clusters step) and attaches routes to the shared Gateway, so
 # appending it keeps the established order stable.  argocd-crds and argocd
@@ -203,6 +218,7 @@ COMPONENTS=(
   keycloak-operator-crds
   keycloak-operator
   keycloak
+  keycloak-esso-config
   keycloak-config
   quay
   argocd-crds
@@ -362,11 +378,14 @@ pre_keycloak() {
 
 # keycloak: the Layer 1 smoke check.  First the Keycloak CR Ready condition
 # — the server started against the CNPG database with its TLS certificate —
-# then the KeycloakRealmImport Done condition, so the script cannot exit
-# successfully while the holos realm import Job is still running or has
-# failed (a failed import never reaches Done and times out here; the
-# operator's import Job only starts once the server is Ready, hence the
-# wait order).  The first reconcile pulls the multi-arch
+# then the KeycloakRealmImport Done condition for BOTH realm shells the
+# component imports (holos and esso), so the script cannot exit successfully
+# while either realm import Job is still running or has failed (a failed import
+# never reaches Done and times out here; the operator's import Job only starts
+# once the server is Ready, hence the wait order).  The esso realm
+# (HOL-1366/HOL-1368) is the enterprise-SSO realm the holos realm brokers to; it
+# must be imported before keycloak-esso-config runs its bootstrap Jobs against
+# it.  The first reconcile pulls the multi-arch
 # quay.io/keycloak/keycloak image and runs the database schema migrations,
 # so both waits get the more generous KEYCLOAK_TIMEOUT.  Route attachment
 # is level-triggered; verify the traffic path separately (see
@@ -376,6 +395,166 @@ wait_keycloak() {
     wait keycloak/keycloak --for=condition=Ready --timeout="${KEYCLOAK_TIMEOUT}"
   kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
     wait keycloakrealmimport/holos --for=condition=Done --timeout="${KEYCLOAK_TIMEOUT}"
+  kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
+    wait keycloakrealmimport/esso --for=condition=Done --timeout="${KEYCLOAK_TIMEOUT}"
+}
+
+# keycloak-esso-config: ensure every apply runs the esso realm bootstrap fresh,
+# mirroring pre_keycloak_config.  This component carries two Jobs:
+#
+#   * esso-secret-bootstrap — generate-once of the shared esso-idp-oidc
+#     client_secret and the esso-user-alice password.  Its name is constant (no
+#     config hash), so a prior Complete OR Failed Job is never re-run by apply; a
+#     Failed run that never created esso-idp-oidc would wedge
+#     wait_keycloak_esso_config (and, two steps later, the holos keycloak-config
+#     Job that reads esso-idp-oidc).  The Job is idempotent (it exits 0 leaving
+#     existing Secrets untouched), and the Secrets survive its deletion, so the
+#     generate-once guarantee holds.
+#   * keycloak-esso-config — the keycloak-config-cli reconcile Job (its name
+#     carries a content hash), which imports the esso realm's holos broker client
+#     and alice user, reading both bootstrap Secrets.  Like keycloak-config, a
+#     completed hashed Job is never re-run by apply, so deleting every such Job by
+#     label makes each apply create a fresh, idempotent reconcile.
+#
+# Pre-apply the bootstrap ServiceAccount + RBAC before deleting the Jobs:
+# `kubectl apply -f <dir>` applies a component's files in alphabetical order, so
+# job-esso-secret-bootstrap.yaml is created before
+# serviceaccount-esso-secret-bootstrap.yaml — on a fresh cluster the Job's pod
+# would fail admission ("error looking up service account") until the SA lands.
+# Pre-applying the identity here closes that race (the same pattern
+# pre_keycloak_config uses for the quay-user-password bootstrap); the main apply
+# then re-applies it idempotently.  --cascade=foreground with --wait blocks until
+# the old Job AND its pod are fully gone, so a still-running CLI pod from an
+# interrupted prior apply cannot race the fresh reconcile.
+pre_keycloak_esso_config() {
+  local esso_dir="${COMPONENTS_DIR}/keycloak-esso-config"
+  kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
+    -f "${esso_dir}/serviceaccount-esso-secret-bootstrap.yaml" \
+    -f "${esso_dir}/role-esso-secret-bootstrap.yaml" \
+    -f "${esso_dir}/rolebinding-esso-secret-bootstrap.yaml"
+  kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
+    delete job -l app.kubernetes.io/name=esso-secret-bootstrap \
+    --ignore-not-found --cascade=foreground --wait --request-timeout=60s
+  kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
+    delete job -l app.kubernetes.io/name=keycloak-esso-config \
+    --ignore-not-found --cascade=foreground --wait --request-timeout=60s
+}
+
+# keycloak-esso-config: the esso realm bootstrap smoke check, mirroring
+# wait_keycloak_config.  Gate the secret-bootstrap Job FIRST so a genuine
+# bootstrap failure (or missing Secret) is reported by name before the reconcile
+# wait can mask it: the reconcile Job mounts esso-idp-oidc/client_secret and
+# esso-user-alice/password via REQUIRED secretKeyRefs, so a bootstrap that never
+# created a Secret leaves the reconcile pod stuck Pending.  Then gate the
+# reconcile Job (resolved by name from the committed manifest, its name carries
+# the config hash).  Finally verify the esso-idp-oidc Secret exists in the
+# keycloak namespace — the actual contract the holos keycloak-config Job (the
+# next COMPONENTS step) depends on — even when the bootstrap Job has been GC'd.
+# Each Job is polled (not `kubectl wait --for=condition=Complete`) so a Failed
+# Job fails on the next poll instead of blocking the full ROLLOUT_TIMEOUT;
+# --ignore-not-found tolerates a GC'd Job (ttlSecondsAfterFinished) and falls
+# through to the Secret check, while a persistent lookup failure (RBAC, API
+# error) fails the gate.
+wait_keycloak_esso_config() {
+  # 1. The esso-secret-bootstrap Job: generate-once of esso-idp-oidc and
+  #    esso-user-alice.  pre_keycloak_esso_config recreates it on every apply.
+  local boot_state boot_lookup_failures=0
+  local boot_deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+  while true; do
+    if boot_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
+      get job/esso-secret-bootstrap --ignore-not-found --request-timeout=10s \
+      -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
+      boot_lookup_failures=0
+      if [[ -z "${boot_state}" ]] || grep -q '^Complete=True$' <<<"${boot_state}"; then
+        break
+      fi
+      if grep -q '^Failed=True$' <<<"${boot_state}"; then
+        echo "ERROR: job/esso-secret-bootstrap failed; inspect it with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} --namespace keycloak describe job/esso-secret-bootstrap" >&2
+        return 1
+      fi
+    else
+      boot_lookup_failures=$((boot_lookup_failures + 1))
+      if ((boot_lookup_failures >= 3)); then
+        echo "ERROR: cannot query job/esso-secret-bootstrap: ${boot_lookup_failures} consecutive lookup failures." >&2
+        return 1
+      fi
+    fi
+    if ((SECONDS >= boot_deadline)); then
+      echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for job/esso-secret-bootstrap to complete." >&2
+      return 1
+    fi
+    sleep 5
+  done
+
+  # 2. The keycloak-esso-config reconcile Job.  Resolve its name from the single
+  #    committed manifest the apply just used (its name carries the config hash),
+  #    so the gate waits on exactly that Job.  Exactly one
+  #    job-keycloak-esso-config-*.yaml renders per apply.
+  local job_file job_files=("${COMPONENTS_DIR}/keycloak-esso-config"/job-keycloak-esso-config-*.yaml)
+  if [[ ${#job_files[@]} -ne 1 || ! -e "${job_files[0]}" ]]; then
+    echo "ERROR: expected exactly one keycloak-esso-config reconcile job manifest, found ${#job_files[@]}." >&2
+    return 1
+  fi
+  job_file="${job_files[0]}"
+  local job_name
+  job_name=$(kubectl --context "${KUBE_CONTEXT}" \
+    get -f "${job_file}" -o jsonpath='{.metadata.name}' --request-timeout=10s 2>/dev/null) || true
+  if [[ -z "${job_name}" ]]; then
+    # The cluster read failed (e.g. the Job was already TTL-GC'd between apply
+    # and gate); fall back to the name in the manifest itself.
+    job_name=$(awk '/^metadata:/{m=1} m&&/^  name:/{print $2; exit}' "${job_file}")
+  fi
+  if [[ -z "${job_name}" ]]; then
+    echo "ERROR: could not determine keycloak-esso-config Job name from ${job_file}." >&2
+    return 1
+  fi
+  local job="job/${job_name}" job_state lookup_failures=0
+  local deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+  while true; do
+    if job_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
+      get "${job}" --ignore-not-found --request-timeout=10s \
+      -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
+      lookup_failures=0
+      if [[ -z "${job_state}" ]] || grep -q '^Complete=True$' <<<"${job_state}"; then
+        break
+      fi
+      if grep -q '^Failed=True$' <<<"${job_state}"; then
+        echo "ERROR: ${job} failed; inspect it with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} --namespace keycloak describe ${job}" >&2
+        return 1
+      fi
+    else
+      lookup_failures=$((lookup_failures + 1))
+      if ((lookup_failures >= 3)); then
+        echo "ERROR: cannot query ${job}: ${lookup_failures} consecutive lookup failures." >&2
+        return 1
+      fi
+    fi
+    if ((SECONDS >= deadline)); then
+      echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for ${job} to complete." >&2
+      return 1
+    fi
+    sleep 5
+  done
+
+  # 3. Defense in depth: verify the esso-idp-oidc Secret exists in the keycloak
+  #    namespace.  This is the contract the next step's holos keycloak-config Job
+  #    reads (ESSO_IDP_CLIENT_SECRET), so confirm it even when the bootstrap Job
+  #    has been GC'd.
+  local secret_deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+  while true; do
+    if kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
+      get secret esso-idp-oidc --request-timeout=10s >/dev/null 2>&1; then
+      break
+    fi
+    if ((SECONDS >= secret_deadline)); then
+      echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for the esso-idp-oidc Secret in namespace keycloak; inspect the bootstrap Job with:" >&2
+      echo "       kubectl --context ${KUBE_CONTEXT} --namespace keycloak describe job/esso-secret-bootstrap" >&2
+      return 1
+    fi
+    sleep 5
+  done
 }
 
 # keycloak-config: ensure every apply runs a fresh realm reconcile.  A completed
