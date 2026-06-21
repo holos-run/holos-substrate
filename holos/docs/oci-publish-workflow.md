@@ -153,10 +153,13 @@ Application per component by `source.path`. The build packages the **committed**
 tree at `HEAD` (`git archive HEAD:holos/deploy`), **not** the working tree — so
 an uncommitted or unstaged local render can never leak into the mutable `:dev`
 bootstrap tag (the platform Argo CD bootstraps from must be a reviewed, committed
-render), a stray local file never appears, and the archive is deterministic
-(sorted member order, zeroed ownership, the commit's timestamp). `config-build`
-fails loudly if `holos/deploy/` is absent from `HEAD` rather than pushing an
-empty bundle.
+render), a stray local file never appears, and the archive is **byte-reproducible**
+— sorted member order, zeroed ownership, a pinned `--mtime` epoch (a tree-ish has
+no commit timestamp, so without the pin `git archive` would stamp the current
+time and mint a new digest on every build), and `gzip -n` to drop gzip's own
+timestamp. Identical committed config therefore always produces an identical
+tarball. `config-build` fails loudly if `holos/deploy/` is absent from `HEAD`
+rather than pushing an empty bundle.
 
 ### Registry transport and credentials
 

@@ -196,13 +196,19 @@ do_build() {
   # `git archive HEAD:holos/deploy` reads the exact bytes recorded at HEAD, so an
   # uncommitted or unstaged local render can NEVER leak into the mutable :dev
   # bootstrap tag (the artifact Argo CD bootstraps the whole platform from must
-  # be a reviewed, committed render).  It also gives a deterministic, reproducible
-  # archive for free: members are emitted in sorted tree order with zeroed
-  # ownership and the commit's timestamp, independent of the working tree's mtimes
-  # or stray local files.  The `HEAD:holos/deploy` tree-ish roots the archive at
-  # the deploy tree's contents, so the tarball layout is
+  # be a reviewed, committed render).  The `HEAD:holos/deploy` tree-ish roots the
+  # archive at the deploy tree's contents, so the tarball layout is
   # `clusters/k3d-holos/components/<component>/...` -- the path Phase 3's child
   # Applications reference via source.path.
+  #
+  # Determinism: a tree-ish (HEAD:holos/deploy, as opposed to a commit) has no
+  # commit timestamp, so `git archive` would stamp every tar entry with the
+  # *current* time, minting a different artifact digest on every build of the
+  # same committed tree.  Pin `--mtime` to a fixed epoch so the archive is
+  # byte-reproducible (members are already emitted in sorted tree order with
+  # zeroed ownership); `gzip -n` drops gzip's own timestamp/name for the same
+  # reason.  Identical committed config therefore always produces an identical
+  # tarball.
   #
   # Fail loudly if holos/deploy/ is absent from HEAD (never committed), rather
   # than pushing an empty bootstrap bundle.
@@ -219,7 +225,7 @@ do_build() {
   echo "Bundling committed holos/deploy/ (HEAD) -> ${ARTIFACT_TARBALL} ..." >&2
   (
     cd "${REPO_ROOT}"
-    git archive --format=tar HEAD:holos/deploy
+    git archive --format=tar --mtime='1970-01-01 00:00:00 UTC' HEAD:holos/deploy
   ) | gzip -n > "${ARTIFACT_TARBALL}"
 
   echo "Built ${count} files into ${ARTIFACT_TARBALL}." >&2
