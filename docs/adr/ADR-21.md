@@ -12,6 +12,7 @@
 | -------- | ---------- | ----------- | -------------- |
 | 1        | 2026-06-17 | @jeffmccune | Initial design |
 | 2        | 2026-06-20 | @jeffmccune | HOL-1340: record that a Project's rendered manifests also include the per-Project **`keycloak.holos.run`** resources ([ADR-20](ADR-20.md)) — the nested `roles`/`custodians` `KeycloakGroup` tree, the owner's `KeycloakUser`, and the `KeycloakClient`/client-role group→claim wiring — alongside the Quay `Organization` ([ADR-19](ADR-19.md)); retie the project `ReferenceGrant` to the **`security.holos.run`** grant ([ADR-22](ADR-22.md)) authorizing each Keycloak CR's cross-namespace reference to the central `KeycloakInstance`; record the **AC #2 decision** that the umbrella-Project logical concept needs **no new ADR** (ADR-1 + ADR-21 are its home); add the **end-to-end worked example** (`projects: "my-project": owners: "bob@example.com": _` → Keycloak groups → `groups` claim → Quay `syncedTeams`). Resolves ADR-20's "Relationship to Projects/Applications" open question consistently in both ADRs. Design record only. |
+| 3        | 2026-06-20 | @jeffmccune | HOL-1354: **the foundation phase is built** (the `holos/projects/*.cue` and `holos/apps/*.cue` collections, the `#Project`/`#App` schemas, the explicit ancestor/import wiring in `holos/collections.cue`, and the env-prefixed namespace derivation in `holos/namespaces.cue`). Revise the **namespace topology**: a Project is realized as **one Namespace per environment** — `ci-<name>`, `qa-<name>`, `prod-<name>` derived from the `projects` collection (`#Environments`/`#ProjectNamespace`) — **superseding** Revisions 1–2's single-`my-project`-Namespace mapping. Record the **control-namespace decision**: the project-scoped, env-independent control-plane CRs (the Quay `Organization`, the `keycloak.holos.run` CRs, the cluster-scoped Kargo `Project`) live in the **`prod-<name>`** control namespace (`#ProjectControlEnvironment`), with rationale. Record the **"scaffold envs, wire one delivery path"** scope decision. Status stays `Proposed` (the Project/Application components and the my-project migration are later phases — HOL-1355..HOL-1358). |
 
 ## Context and Problem Statement
 
@@ -115,20 +116,137 @@ components are written in this phase — this is a design record only.**
 [ADR-1](ADR-1.md) adopts the **GCP resource hierarchy**: resources live in a
 **Project**, and the Project is the base-level entity that owns them and is the
 unit of isolation and access control. This ADR maps that model onto Kubernetes
-by making the Project the **Namespace security boundary**: a `Project` named
-`my-project` is realized as the Kubernetes Namespace `my-project`, and every
-Application that belongs to that Project renders its workload resources **into
-that same Namespace**. The Namespace *is* the GCP Project's containment boundary
-— RBAC, `ReferenceGrant` scope, and the Argo CD `AppProject` `destinations` all
-key on it.
+by making the Project a **Namespace security boundary**: a Project's workload
+resources render into a Namespace that *is* the GCP Project's containment
+boundary — RBAC, `ReferenceGrant` scope, and the Argo CD `AppProject`
+`destinations` all key on it.
 
-This mirrors the established `my-project` posture, where the Kargo Project
-namespace **doubles as the workload namespace**
-([`holos/namespaces.cue`](../../holos/namespaces.cue), the `my-project` entry):
-there is no separate `kargo-project-*` sibling. The Project component
-generalizes exactly that single-namespace shape — one Namespace per Project,
-holding both the project-level control resources and every member Application's
-workloads.
+> **Revision 3 (HOL-1354): one Namespace *per environment*, not one Namespace
+> per Project.** Revisions 1–2 mapped a `Project` named `my-project` onto a
+> single Kubernetes Namespace `my-project`. As the foundation phase was built
+> (HOL-1354) this single-Namespace mapping is **superseded** by a
+> **multi-environment topology**: each `projects.<name>` entry derives **one
+> Namespace per environment** — `ci-<name>`, `qa-<name>`, `prod-<name>` — so a
+> Project spans a `ci`/`qa`/`prod` promotion ladder rather than a single
+> namespace. The set of environments and the `<env>-<name>` naming are declared
+> **once** as the reusable [`holos/namespaces.cue`](../../holos/namespaces.cue)
+> definitions `#Environments` (the ordered `["ci", "qa", "prod"]` list) and
+> `#ProjectNamespace` (the `(project, env) → "<env>-<name>"` mapping, DNS-label
+> validated), which the Project and Application components consume so the prefix
+> convention lives in a single place. The text below that still says "the
+> Project's Namespace" (singular) reads, under this revision, as **the relevant
+> environment's namespace** — `prod-<name>` for the project-scoped control
+> resources (see *Where the project-scoped control-plane CRs live* below), and
+> the target environment's `<env>-<name>` for an Application's per-environment
+> workloads.
+
+#### The env-prefixed namespace derivation (the registry generalization)
+
+Generalizing a per-instance registry entry into a collection-driven one is the
+constraint Revision 1 flagged as "the design's hardest" (*Consequences*).
+HOL-1354 resolves it. [`holos/namespaces.cue`](../../holos/namespaces.cue)
+derives, for every `projects.<name>` entry, the three `{ci,qa,prod}-<name>`
+registry entries via a comprehension over `#Environments`, each carrying the
+**same shape as the hand-written `my-project` entry**: `_ambient: true`, the
+`kargo.akuity.io/project: "true"` adoption label, and the
+`kargo.akuity.io/keep-namespace: "true"` annotation. `#RegisteredNamespace`
+continues to enumerate **every** entry — the static ones and the derived ones —
+so a component still turns a namespace-literal typo into a render failure. The
+no-inline-`Namespace` guardrail
+([component guidelines](../../holos/docs/component-guidelines.md)) holds: the
+**`namespaces` component** renders the actual `Namespace` manifests from the
+registry; the Project component only references the derived names. The static
+`my-project` entry is **retained** in this phase — the bespoke `my-project`
+component still references it until it migrates onto the templates (HOL-1357) —
+so the derived `prod-my-project` etc. are additive, non-conflicting entries.
+
+#### Where the two collections live and how they mix at render time
+
+The collections are authored as **their own importable CUE packages** in
+`holos/` subdirectories — `holos/projects/` (`package projects`) and
+`holos/apps/` (`package apps`) — **not** as `package holos` files. This is
+forced by how CUE resolves build-plan ancestry: only **root-level**
+`holos/*.cue` `package holos` files are loaded as ancestors of a
+`holos/components/<name>/` instance; a `package holos` file inside a
+subdirectory is **not** an ancestor (so it would be invisible to
+`namespaces.cue` and to the components). The explicit wiring is
+[`holos/collections.cue`](../../holos/collections.cue) — a root-level
+`package holos` file (an ancestor, like `namespaces.cue`) that **imports** both
+collection packages and **binds** `projects`/`apps` (and re-exports
+`#RegisteredProject`/`#Project`/`#App`) into the root `holos` scope. From there
+`namespaces.cue` derives the namespaces, and the Project/Application components
+(phases 2–3) read the root `projects`/`apps` fields with **no per-component
+import**. The cross-collection reference `apps.<name>.project → a projects key`
+is ordinary CUE unification: the `apps` package imports `projects` and
+constrains `project` to `projects.#RegisteredProject`, so an app naming a
+non-existent project (or a malformed project/app name) is a **render-time**
+failure, the same discipline `#RegisteredNamespace` applies to namespaces.
+
+This still mirrors the established `my-project` posture in one respect — the
+Kargo Project namespace **doubles as a workload namespace**
+([`holos/namespaces.cue`](../../holos/namespaces.cue)); there is no separate
+`kargo-project-*` sibling. What Revision 3 changes is the *count*: the Project
+component generalizes that adopt-and-deploy shape across the **three
+environment namespaces**, not a single one.
+
+#### Where the project-scoped control-plane CRs live
+
+Some of a Project's resources are **project-scoped and environment-independent**:
+they describe the Project as a whole, not one deployment of it. These are the
+Quay `Organization` (one org per project, ADR-19), the per-Project
+`keycloak.holos.run` CRs (the `roles`/`custodians` groups, the owner
+`KeycloakUser`, the optional `KeycloakClient` — ADR-20), and the cluster-scoped
+Kargo `Project` (whose adopted namespace anchors the project's Kargo control
+plane). Replicating them per environment would be wrong — three Quay orgs or
+three copies of the identity tree for one logical project.
+
+**Decision: they live in the `prod-<name>` namespace, the Project's designated
+*control* namespace.** This is exposed as `#ProjectControlEnvironment` (`"prod"`)
+in [`holos/namespaces.cue`](../../holos/namespaces.cue) so the components
+reference the definition rather than hard-coding `"prod"`. Rationale:
+
+- **Reuse a real environment, register no extra namespace.** `prod-<name>` is an
+  always-present delivery namespace already derived for every project. Choosing
+  it as the control namespace means the control CRs need **no** additional,
+  specially-cased un-prefixed `<name>` namespace in the registry — fewer moving
+  parts, one fewer naming convention. (The considered alternative — an
+  un-prefixed `<name>` control namespace — was rejected for exactly this reason:
+  it adds a fourth namespace per project whose only job is to hold control CRs,
+  and it reintroduces the bare `<name>` the single-Namespace mapping this
+  revision supersedes.)
+- **Production is the natural long-lived home.** A project's identity and
+  registry control objects (its org, its IAM groups, its owner) outlive any one
+  environment and matter most for production; co-locating them with `prod-<name>`
+  keeps the authoritative copy where the production delivery path already runs.
+- **The cluster-scoped Kargo `Project` adopts `prod-<name>`** as its namespace
+  (carrying the `kargo.akuity.io/project` adoption label every derived entry
+  already has), so the Kargo control plane and the control CRs share one home.
+
+The `ci-<name>` and `qa-<name>` namespaces hold only **per-environment
+workloads** (an Application's `Deployment`/`Service`/etc. for that environment);
+they reference the control CRs in `prod-<name>` rather than re-declaring them.
+
+#### Scope: scaffold all environments, wire one delivery path
+
+The multi-environment topology raises the bar from Revisions 1–2's single
+namespace to three per project, and the question is how much of the
+three-environment promotion ladder the component phases must wire end-to-end.
+**Decision (HOL-1354): scaffold all three environment namespaces, but wire only
+one delivery path through them for now.** Every project derives its full
+`ci-/qa-/prod-<name>` namespace set (so the topology, RBAC boundaries, and Kargo
+adoption labels exist for all three from the start), and the project-scoped
+control CRs land in `prod-<name>` as above — but the Project/Application
+components (HOL-1355/HOL-1356) initially render a **single** working delivery
+path (the existing `my-project` publish → Freight → promotion → sync loop,
+generalized) rather than a full multi-stage `ci → qa → prod` Kargo promotion
+pipeline across the three namespaces. Standing up the cross-environment
+promotion stages (and the blue-green progressive-delivery primitives the
+Application resource set still lacks — *The Application component*, item 4) is
+follow-on work the scaffolded namespaces make possible, not a prerequisite of
+this foundation. This keeps the foundation phase deliverable and verifiable (one
+path that demonstrably renders and promotes) while the namespace topology is
+already general enough that adding the remaining environments' delivery is
+additive, not a re-architecture.
 
 ### Two CUE collections and the one-line registration UX
 
@@ -726,12 +844,19 @@ without full org admin.)
   of its own — it inherits the Project's Namespace, `AppProject` destinations, and
   RBAC. This keeps the tenant boundary single and legible (ADR-1) but means
   finer-than-Project isolation between two apps in one Project is not modeled.
-- **A new central-registry integration burden.** The Project component must feed
-  the [`holos/namespaces.cue`](../../holos/namespaces.cue) registry from a rendered
+- **A new central-registry integration burden — resolved in HOL-1354.** The
+  Project component must feed the
+  [`holos/namespaces.cue`](../../holos/namespaces.cue) registry from a rendered
   collection while honoring the no-inline-Namespace guardrail and the mandatory
   `_ambient` position — generalizing a per-instance registry entry into a
-  collection-driven one is the design's hardest constraint, called out here for the
-  component phase to solve.
+  collection-driven one was called out as the design's hardest constraint. The
+  foundation phase (HOL-1354) **solves it**: `namespaces.cue` derives the
+  `{ci,qa,prod}-<name>` entries from the `projects` collection via a comprehension
+  over `#Environments`, each reproducing the static `my-project` entry's
+  `_ambient`/label/annotation shape, and `#RegisteredNamespace` enumerates the
+  derived entries alongside the static ones (see *The env-prefixed namespace
+  derivation* in the Design). The registry stays the single owner of `Namespace`
+  manifests; the component only references the derived names.
 - **Depends on the controller and the Quay CRDs.** The Project's `Organization`
   and the Application's `Repository` are reconciled by the shipped Holos Controller
   ([ADR-18](ADR-18.md)) against the `quay.holos.run` group ([ADR-19](ADR-19.md)).
