@@ -224,6 +224,16 @@ components have been removed. Git history preserves them.
   Kargo↔Keycloak OIDC (PKCE) integration: the public kargo client and
   groups-claim role mapping, issuer-cert trust via the local-ca cabundle, and
   the verification/maintenance runbook.
+- [docs/runbooks/esso-keycloak-idp.md](docs/runbooks/esso-keycloak-idp.md) —
+  operational runbook for the **esso enterprise-SSO realm + holos OIDC broker**
+  (HOL-1366): the two-realm topology on the single Keycloak instance, how the
+  esso realm is provisioned by `scripts/apply` (operator `KeycloakRealmImport` +
+  keycloak-config-cli + a generate-once bootstrap Job, **no holos-controller
+  dependency**), how to log in as alice (`87654321` / `alice@example.com`,
+  password from the `esso-user-alice` Secret), the `trustEmail: true` custom
+  first-broker-login **auto-link** flow, and rotating the shared `esso-idp-oidc`
+  broker secret. Companion to [ADR-20](docs/adr/ADR-20.md) and
+  [keycloak-clients.md](holos/docs/keycloak-clients.md).
 - [docs/runbooks/quay-keycloak-oidc.md](docs/runbooks/quay-keycloak-oidc.md) —
   operational runbook for the Quay↔Keycloak OIDC SSO integration: the
   **OIDC sole-identity-store** model (`AUTHENTICATION_TYPE: OIDC`, ADR-15

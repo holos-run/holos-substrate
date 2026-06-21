@@ -117,14 +117,20 @@ into the live realm. The reconciliation mechanism is now the
 component — an idempotent
 [keycloak-config-cli](https://github.com/adorsys/keycloak-config-cli) `Job`
 that converges the realm against the live admin API on every `scripts/apply`.
-It manages the platform's realm roles, the `authenticated` default group, and
-the Argo CD OIDC client declaratively, so realm changes land by editing the
-import document and re-applying rather than by manual admin-console edits. The
-`KeycloakRealmImport` CR still bootstraps the realm shell on a clean cluster;
-the `keycloak-config` Job layers managed objects onto it and keeps them
-converged. Realm objects the Job does not declare are left untouched
-(keycloak-config-cli's default no-delete managed-import behavior; full-realm
-purge is deliberately not enabled).
+It manages the platform's realm roles, the `authenticated` default group, the
+OIDC clients (`argocd`/`quay`/`kargo`), and — as of HOL-1369 — the realm's
+`identityProviders[]` (the `esso` OIDC broker) and its custom first-broker-login
+auto-link flow, all declaratively, so realm changes land by editing the import
+document and re-applying rather than by manual admin-console edits. The
+`KeycloakRealmImport` CR still bootstraps the realm shell on a clean cluster (and
+owns only the realm's `enabled` flag, declaring no identity providers, so the two
+paths own disjoint fields); the `keycloak-config` Job layers managed objects onto
+it and keeps them converged. Realm objects the Job does not declare are left
+untouched (keycloak-config-cli's default no-delete managed-import behavior;
+full-realm purge is deliberately not enabled). The brokering topology — the
+second `esso` enterprise-SSO realm and the holos OIDC broker — is documented in
+the [esso ↔ holos IdP runbook](../../docs/runbooks/esso-keycloak-idp.md) and
+[ADR-20](../../docs/adr/ADR-20.md).
 
 ## Quay OIDC login against the Keycloak `holos` realm
 

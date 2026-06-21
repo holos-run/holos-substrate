@@ -233,6 +233,101 @@ solely from `SUPER_USERS`, never from the `groups` claim. See the README's
 [Quay OIDC SSO and roles](../README.md#quay-oidc-sso-and-roles) section for the
 operator-facing summary.
 
+## The `esso` realm and the holos esso IdP
+
+Everything above concerns the `holos` realm. The platform runs a **second**
+realm, `esso`, on the same Keycloak instance, and the `holos` realm **brokers**
+logins from it. The two-realm topology is recorded in
+[ADR-20](../../docs/adr/ADR-20.md) and operated through the
+[esso ↔ holos IdP runbook](../../docs/runbooks/esso-keycloak-idp.md); this is the
+client/reconciliation summary.
+
+### Two-realm topology
+
+`esso` models an **upstream Enterprise SSO** identity provider —
+authentication-only. It is served at
+`https://auth.holos.internal/realms/esso` by the same `Keycloak` CR and the same
+`auth.holos.internal` `HTTPRoute` (no new route — every realm shares the one
+hostname). `esso` **authenticates**; the `holos` realm **authorizes** entirely
+through its own groups/roles ([ADR-3](../../docs/adr/ADR-3.md)). The esso realm is
+reconciled by its **own** keycloak-config-cli Job — the `realm-esso-config`
+component
+([`components/keycloak/realm-esso-config/buildplan.cue`](../components/keycloak/realm-esso-config/buildplan.cue)),
+whose import document carries `realm: "esso"` only, so it never contends with the
+holos realm-config Job. The realm shell (`enabled`) is bootstrapped by a separate
+`KeycloakRealmImport` CR in the
+[`instance`](../components/keycloak/instance/buildplan.cue) component.
+
+### The confidential esso (broker relying-party) client
+
+In the **esso** realm, the `realm-esso-config` Job declares one confidential
+client the holos realm's broker authenticates as:
+
+- `clientId: https://auth.holos.internal/realms/holos` — the holos realm's own
+  issuer URL, by Keycloak's broker convention.
+- `publicClient: false`, `standardFlowEnabled: true` — confidential (it holds a
+  secret), browser Authorization Code flow only; `serviceAccountsEnabled` and
+  `directAccessGrantsEnabled` off.
+- `redirectUris: ["https://auth.holos.internal/realms/holos/broker/esso/endpoint"]`
+  — the holos realm's broker endpoint for the `esso` alias.
+- `secret: "$(env:ESSO_IDP_CLIENT_SECRET)"` — substituted at import time from the
+  shared `esso-idp-oidc` Secret (below); never committed.
+
+### The holos esso identity provider (the broker)
+
+In the **holos** realm, the `keycloak-config` Job declares the OIDC identity
+provider (`identityProviders[]` in
+[`realm-config/buildplan.cue`](../components/keycloak/realm-config/buildplan.cue)) —
+this is the broker half:
+
+- `alias: "esso"`, `providerId: "oidc"`, `enabled: true`.
+- `trustEmail: true` — lets the auto-link flow match a federated login to a
+  pre-provisioned holos user by the esso-verified email.
+- `firstBrokerLoginFlowAlias` points at a **custom** (`builtIn: false`)
+  first-broker-login flow (alias `first broker login auto-link`), declared as an
+  `authenticationFlows[]` pair — `idp-review-profile` then a subflow running
+  `idp-create-user-if-unique` + `idp-auto-link`. This is **not** a redefinition
+  of Keycloak's built-in `first broker login`, which keycloak-config-cli refuses
+  to add executions to (the `Cannot find stored execution by authenticator
+  'idp-auto-link'` failure HOL-1369 fixed). With `trustEmail: true`, a login
+  whose esso-asserted email matches a pre-provisioned holos user links
+  **silently** — no profile prompt, no manual account-link confirmation.
+- `config.clientId: https://auth.holos.internal/realms/holos` and
+  `config.clientSecret: "$(env:ESSO_IDP_CLIENT_SECRET)"`, with OIDC endpoints
+  discovered from `https://auth.holos.internal/realms/esso/.well-known/openid-configuration`
+  and `validateSignature: "true"` (verifies the esso-issued ID token against the
+  esso realm's JWKS).
+
+**Ownership / scope discipline.** The `holos` realm's `identityProviders[]` and
+the custom first-broker-login `authenticationFlows[]` are owned by the **holos
+realm-config Job** (so the IdP `clientSecret` can be injected at runtime), while
+the `KeycloakRealmImport` CR owns only the realm's `enabled` flag and declares no
+identity providers. The two reconciliation paths own disjoint fields and never
+contend — see the *Keycloak Configuration as Code* guardrail in
+[`AGENTS.md`](../../AGENTS.md).
+
+### The shared `esso-idp-oidc` secret bootstrap
+
+Both ends of the broker authenticate with **one** secret value. The
+`esso-secret-bootstrap` Job (in the `realm-esso-config` component) generates it
+**once** into the `keycloak` namespace as the `esso-idp-oidc` Secret (key
+`client_secret`) and never rotates it — the **single source**:
+
+- the esso confidential client reads it (the esso realm-config Job's
+  `ESSO_IDP_CLIENT_SECRET` env var → `secret` placeholder); and
+- the holos esso IdP reads the **same** Secret (the holos realm-config Job's
+  `ESSO_IDP_CLIENT_SECRET` env var → `config.clientSecret` placeholder).
+
+The same bootstrap Job also generates **`esso-user-alice`** (key `password`) for
+the single pre-provisioned esso user, **alice** (username `87654321`, email
+`alice@example.com`). Both Secrets are created if absent, never overwritten, and
+never committed (the *Runtime Secret Handling* guardrail). This is the same
+generate-once pattern as the `quay-oidc` bootstrap above. The apply order
+(`keycloak` → `keycloak-esso-config` → `keycloak-config`) ensures `esso-idp-oidc`
+exists before the holos `keycloak-config` Job consumes it; the full bring-up and
+rotation procedure is in the
+[esso ↔ holos IdP runbook](../../docs/runbooks/esso-keycloak-idp.md).
+
 ## Guardrail checklist: adding a new PKCE client
 
 When adding another OIDC client to the realm, work through this checklist. The
@@ -302,6 +397,12 @@ copy from.
 - [Quay↔Keycloak OIDC runbook](../../docs/runbooks/quay-keycloak-oidc.md) — the
   operational companion: wiring, the two superuser realm users, secret rotation,
   and the `code exchange: 400` PKCE-verification note.
+- [esso ↔ holos IdP runbook](../../docs/runbooks/esso-keycloak-idp.md) — the
+  operational companion for the `esso` enterprise-SSO realm and the holos esso
+  OIDC broker: provisioning, logging in as alice, the auto-link flow, and
+  rotating the shared `esso-idp-oidc` secret.
+- [ADR-20 — Keycloak API group + two-realm topology](../../docs/adr/ADR-20.md) —
+  the decision record for the `esso` realm and the `holos` OIDC broker.
 - [Quay Resource Controller credentials runbook](../../docs/runbooks/quay-resource-controller-credentials.md)
   — the manual procedure for minting the future controller's OAuth-Application
   credential.
