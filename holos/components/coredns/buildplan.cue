@@ -12,8 +12,9 @@ package holos
 //   stub resolver, musl libc inside Alpine pods, and Istio ztunnel's DNS
 //   proxy for ambient-enrolled namespaces — short-circuit *.localhost to
 //   127.0.0.1/::1 *in-process*, before the query ever reaches CoreDNS.  An
-//   in-cluster client therefore could not resolve auth.holos.localhost to
-//   anything useful (the root cause behind HOL-1360: Keycloak could not
+//   in-cluster client therefore could not resolve a public auth hostname on
+//   that loopback TLD to anything useful (the root cause behind HOL-1360:
+//   Keycloak could not
 //   resolve its own issuer/JWKS URL from a musl-linked workload).  Migrating
 //   to .internal (an ICANN-reserved private-use TLD with no special resolver
 //   behavior — musl, glibc, and Go all issue an ordinary DNS query) lets
