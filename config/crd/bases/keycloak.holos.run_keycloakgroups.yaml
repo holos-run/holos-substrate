@@ -79,19 +79,44 @@ spec:
               clientRoles:
                 description: |-
                   ClientRoles optionally lists the client roles every member of this group
-                  holds. Each entry is a (clientRef, role) pair. A member of the group thereby
-                  holds the named client roles, which reach the owning client's own token via
-                  that client's per-client client-role mapper. Cross-service relying parties
-                  key on the group name in the shared groups claim, not on these roles.
+                  holds. Each entry names its target client by EXACTLY ONE of clientRef (a
+                  same-namespace KeycloakClient CR) or clientId (a Keycloak clientId directly —
+                  the ADR-20 "Quay use case", for the platform-reserved Quay client where no
+                  tenant CR exists), plus the role name. A member of the group thereby holds the
+                  named client roles, which reach the target client's token via that client's
+                  per-client client-role mapper. The direct clientId path is tightly bounded
+                  (only the Quay client, only this role group's own project-prefixed role) so it
+                  cannot confer a foreign or platform role. Cross-service relying parties key on
+                  the group name in the shared groups claim, not on these roles.
                 items:
                   description: |-
                     ClientRoleReference names a client role a group confers on its members: the
-                    role named by Role scoped to the KeycloakClient named by ClientRef. A member
-                    of a group carrying this reference holds that client role, which reaches the
-                    owning client's own token via that client's per-client client-role mapper
-                    (ADR-20). It is shared by KeycloakGroup (the roles a group confers) and
-                    KeycloakClient (the roles a client defines).
+                    role named by Role scoped to a Keycloak client. A member of a group carrying
+                    this reference holds that client role, which reaches the named client's token
+                    via that client's per-client client-role mapper (ADR-20). It is shared by
+                    KeycloakGroup (the roles a group confers) and KeycloakClient (the roles a
+                    client defines).
+
+                    The target client is named by EXACTLY ONE of ClientRef (a same-namespace
+                    KeycloakClient CR) or ClientID (a Keycloak clientId directly). ClientID exists
+                    for the ADR-20 "Quay use case": a project role group confers a project-prefixed
+                    client role (e.g. my-project-owner) on the platform-reserved Quay client
+                    (https://quay.holos.localhost) — for which a tenant KeycloakClient CR may not
+                    exist (the reserved-name guard forbids one) — so the role surfaces in Quay's
+                    groups claim via the platform's already-deployed quay-client-roles mapper. Only
+                    project-prefixed client roles may be conferred on a reserved client; the
+                    platform's own reserved client-role names are still refused (the claim-value
+                    boundary in ADR-20 "Ownership / disjointness").
                   properties:
+                    clientId:
+                      description: |-
+                        ClientID names the target Keycloak clientId directly (e.g.
+                        https://quay.holos.localhost), bypassing same-namespace KeycloakClient CR
+                        resolution. It is the mechanism for conferring a project-prefixed role on a
+                        platform-reserved client (the ADR-20 "Quay use case") where no tenant
+                        KeycloakClient CR exists or may exist. Mutually exclusive with ClientRef.
+                      minLength: 1
+                      type: string
                     clientRef:
                       description: |-
                         ClientRef is the metadata.name of the KeycloakClient resource the role is
@@ -101,6 +126,7 @@ spec:
                         spec.clientId, mirroring how a Repository resolves its OrganizationRef to an
                         Organization's spec.name (api/quay/v1alpha1). This keeps the reference a
                         valid object name even though the underlying Keycloak clientId is a URL.
+                        Mutually exclusive with ClientID.
                       minLength: 1
                       type: string
                     role:
@@ -110,9 +136,11 @@ spec:
                       minLength: 1
                       type: string
                   required:
-                  - clientRef
                   - role
                   type: object
+                  x-kubernetes-validations:
+                  - message: exactly one of clientRef or clientId must be set
+                    rule: has(self.clientRef) != has(self.clientId)
                 type: array
                 x-kubernetes-list-type: atomic
               custodians:

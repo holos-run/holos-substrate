@@ -77,6 +77,12 @@ type GroupClient interface {
 	// GetClientRole fetches one client role by name (notably its UUID, needed to
 	// assign it to a group); a missing role reports keycloak.IsNotFound.
 	GetClientRole(ctx context.Context, clientUUID, roleName string) (*keycloak.ClientRole, error)
+	// CreateClientRoleIfNotExists creates a client role on the client, treating an
+	// already-existing role as success (idempotent). The group reconciler ensures
+	// the conferred role exists before assigning it — required for the Quay use
+	// case, where the project-prefixed role on the platform-reserved Quay client is
+	// not created by any KeycloakClient CR (none exists for the reserved client).
+	CreateClientRoleIfNotExists(ctx context.Context, clientUUID string, role keycloak.ClientRole) error
 	// AssignClientRoleToGroup grants the client role to the group; re-assigning an
 	// already-held role is idempotent on Keycloak's side.
 	AssignClientRoleToGroup(ctx context.Context, groupID, clientUUID string, role keycloak.ClientRole) error
@@ -402,10 +408,13 @@ func (s *stringSet) sorted() []string {
 // and unassigns any role this CR previously managed (recorded in
 // status.managedClientRoles) that is no longer desired — so a role removed from
 // the spec is actively revoked rather than left active (the add-only gap). Each
-// declared entry resolves the referenced KeycloakClient CR to its Keycloak
-// clientId, finds the OIDC client, gets the named client role, and assigns it (the
-// join that makes a member of the group hold the client role the client's role
-// mapper emits into the groups claim, ADR-20). status.managedClientRoles is
+// declared entry resolves its target clientId (a same-namespace KeycloakClient CR
+// via clientRef, or a named clientId directly via clientId — the Quay use case),
+// finds the OIDC client, gets the named client role, and assigns it (the join that
+// makes a member of the group hold the client role the client's role mapper emits
+// into the groups claim, ADR-20). A project-prefixed role may be conferred on a
+// platform-reserved client, but the platform's own reserved client-role names on
+// it are refused (the claim-value boundary). status.managedClientRoles is
 // rewritten to the new desired set so the next reconcile knows what it owns.
 func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient, group *keycloakv1alpha1.KeycloakGroup, groupID string) error {
 	// Resolve the desired roles, keyed "<clientId>/<role>", to the OIDC client UUID
@@ -417,9 +426,34 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 	desired := map[string]roleTarget{}
 	desiredKeys := make([]string, 0, len(group.Spec.ClientRoles))
 	for _, ref := range group.Spec.ClientRoles {
-		clientID, err := r.resolveClientID(ctx, group.Namespace, ref.ClientRef)
+		clientID, err := r.resolveClientID(ctx, group.Namespace, ref)
 		if err != nil {
 			return err
+		}
+		// Privilege-escalation guard, keyed on the RESOLVED clientId regardless of
+		// which field named it (clientId or clientRef) — so a tenant cannot bypass the
+		// direct-path bounds by crafting a same-namespace KeycloakClient CR whose
+		// spec.clientId is a platform/built-in client (e.g. realm-management) and
+		// conferring a privileged role like realm-admin through clientRef:
+		//   - a reserved platform/built-in client (reservedClientIDs) may be reached
+		//     ONLY via the tightly-bounded direct clientId path (validateDirectClientRole:
+		//     Quay-only allowlist, project==namespace, exact <project>-<leaf> role). A
+		//     clientRef resolving to a reserved client is refused outright — tenants
+		//     confer roles only on a project client they own, never on a platform one.
+		//   - any non-reserved client reached via the direct clientId path is still
+		//     refused by validateDirectClientRole's allowlist (only the Quay client is
+		//     a permitted direct target), so the direct path cannot reach an arbitrary
+		//     client either.
+		// A non-reserved client reached via clientRef is the ordinary project-client
+		// case, bounded by the same-namespace CR claim model.
+		directTarget := ref.ClientID != ""
+		switch {
+		case directTarget:
+			if err := validateDirectClientRole(group.Namespace, group.Spec.Path, clientID, ref.Role); err != nil {
+				return err
+			}
+		case reservedClientIDs[clientID]:
+			return fmt.Errorf("client %q (resolved from clientRef %q) is platform-reserved and may not be targeted by a KeycloakGroup clientRef; a reserved client's client roles are conferred only via the bounded direct clientId path", clientID, ref.ClientRef)
 		}
 		oidc, err := kc.FindClientByClientID(ctx, clientID)
 		recordKeycloakAPI(opFindClientByClientID, err)
@@ -427,7 +461,21 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 			return fmt.Errorf("finding Keycloak client %q for role %q: %w", clientID, ref.Role, err)
 		}
 		if oidc == nil {
-			return fmt.Errorf("no Keycloak client %q (from clientRef %q) exists", clientID, ref.ClientRef)
+			return fmt.Errorf("no Keycloak client %q (from %s) exists", clientID, clientRefDescription(ref))
+		}
+		// Ensure the conferred role exists ONLY on the direct path. For a named
+		// reserved client (the Quay use case) no KeycloakClient CR exists to create
+		// the role, so the group reconciler creates it (idempotent). For a clientRef
+		// target the referenced KeycloakClient's own reconciler owns its role
+		// vocabulary (spec.clientRoles); the group must NOT silently expand it, so the
+		// role is resolved get-only and a missing role is a hard error the operator
+		// fixes by declaring it on the KeycloakClient.
+		if directTarget {
+			createRoleErr := kc.CreateClientRoleIfNotExists(ctx, oidc.ID, keycloak.ClientRole{Name: ref.Role})
+			recordKeycloakAPI(opCreateClientRole, createRoleErr)
+			if createRoleErr != nil {
+				return fmt.Errorf("ensuring client role %q on Keycloak client %q: %w", ref.Role, clientID, createRoleErr)
+			}
 		}
 		role, err := kc.GetClientRole(ctx, oidc.ID, ref.Role)
 		recordKeycloakAPI(opGetClientRole, err)
@@ -512,11 +560,92 @@ func splitManagedRole(key string) (clientID, role string, ok bool) {
 	return key[:idx], key[idx+1:], true
 }
 
-// resolveClientID resolves a clientRef (a KeycloakClient object name in namespace)
-// to the underlying Keycloak clientId (the KeycloakClient's spec.clientId), so the
-// reference stays a valid Kubernetes object name even though the Keycloak clientId
-// is a URL (ADR-20, ClientRoleReference).
-func (r *GroupReconciler) resolveClientID(ctx context.Context, namespace, clientRef string) (string, error) {
+// validateDirectClientRole bounds the direct clientId path (clientRoles[].clientId)
+// so it cannot be used to escalate privilege (ADR-20 "Claim value via a client
+// role", "Ownership / disjointness"). It enforces three constraints, refused
+// before any Keycloak write:
+//  1. the target clientId is on the directClientRoleTargets allowlist (only the
+//     platform Quay client) — naming any other client directly (e.g.
+//     realm-management, argocd) is rejected, so the path cannot reach a privileged
+//     client;
+//  2. the role name is not one of the platform's own reserved client-role names
+//     (platform-admin/project-admin), so a platform role binding is never
+//     overwritten;
+//  3. the path's `<project>` segment equals the CR's own namespace. This is the
+//     authoritative ownership binding: a project's CRs live in a namespace named
+//     after the project (the my-project convention; namespace == project), and
+//     Kubernetes RBAC governs who may create a KeycloakGroup in a given namespace
+//     (and a ReferenceGrant governs cross-namespace use of the central instance).
+//     So a tenant in namespace `my-project` cannot declare
+//     `projects/other-project/roles/owner` to confer `other-project-owner` — the
+//     path's project would have to be `my-project`. Without this, the guard would
+//     prove only string consistency, not project ownership.
+//  4. the role name is EXACTLY this role group's own name `<project>-<leaf>`,
+//     parsed from a `projects/<project>/roles/<leaf>` path. The match is exact
+//     (not a prefix) so a prefix collision cannot confer another project's role —
+//     e.g. project `my` (path projects/my/roles/owner) cannot confer
+//     `my-project-owner` (which belongs to project `my-project`), and a non-role
+//     path (projects/<project>/custodians/<leaf>) is refused outright since only a
+//     roles/* group confers a claim value.
+func validateDirectClientRole(namespace, groupPath, clientID, role string) error {
+	if !directClientRoleTargets[clientID] {
+		return fmt.Errorf("clientId %q may not be named directly by a KeycloakGroup clientRoles entry; only the platform Quay client is a permitted direct target (use a same-namespace KeycloakClient and clientRef for other clients)", clientID)
+	}
+	if reservedClientRoleNames[role] {
+		return fmt.Errorf("client role %q on reserved client %q is platform-reserved and cannot be conferred by a KeycloakGroup", role, clientID)
+	}
+	project, leaf, ok := projectRoleFromGroupPath(groupPath)
+	if !ok {
+		return fmt.Errorf("cannot confer a role on reserved client %q from group path %q: only a projects/<project>/roles/<leaf> group may confer a project role on a reserved client", clientID, groupPath)
+	}
+	if project != namespace {
+		return fmt.Errorf("cannot confer a role on reserved client %q: group path project %q must equal the resource namespace %q (the project↔namespace ownership boundary), so a tenant cannot confer another project's role", clientID, project, namespace)
+	}
+	if want := project + "-" + leaf; role != want {
+		return fmt.Errorf("client role %q on reserved client %q must be exactly this role group's name %q (project %q + role %q) so a group cannot confer another project's role", role, clientID, want, project, leaf)
+	}
+	return nil
+}
+
+// projectRoleFromGroupPath parses a role-group path of the exact form
+// projects/<project>/roles/<leaf> (any leading/trailing slashes tolerated),
+// returning <project>, <leaf>, and ok=true. Any other shape — a different depth, a
+// non-"projects" root, a non-"roles" tier (e.g. custodians), or an empty segment —
+// returns ok=false, so the caller refuses the direct path rather than enforcing a
+// loose prefix.
+func projectRoleFromGroupPath(path string) (project, leaf string, ok bool) {
+	segs := strings.Split(strings.Trim(path, "/"), "/")
+	if len(segs) != 4 || segs[0] != "projects" || segs[2] != "roles" {
+		return "", "", false
+	}
+	if segs[1] == "" || segs[3] == "" {
+		return "", "", false
+	}
+	return segs[1], segs[3], true
+}
+
+// clientRefDescription renders a human-readable description of which field named
+// the target client, for error messages (clientId X or clientRef Y).
+func clientRefDescription(ref keycloakv1alpha1.ClientRoleReference) string {
+	if ref.ClientID != "" {
+		return fmt.Sprintf("clientId %q", ref.ClientID)
+	}
+	return fmt.Sprintf("clientRef %q", ref.ClientRef)
+}
+
+// resolveClientID resolves a ClientRoleReference to the underlying Keycloak
+// clientId (ADR-20, ClientRoleReference). When ref.ClientID is set it names the
+// Keycloak clientId directly (the "Quay use case" — conferring a project-prefixed
+// role on the platform-reserved Quay client, for which no same-namespace
+// KeycloakClient CR exists). Otherwise ref.ClientRef names a same-namespace
+// KeycloakClient CR whose spec.clientId is the target, so the reference stays a
+// valid Kubernetes object name even though the Keycloak clientId is a URL. The CRD
+// CEL rule guarantees exactly one of the two is set.
+func (r *GroupReconciler) resolveClientID(ctx context.Context, namespace string, ref keycloakv1alpha1.ClientRoleReference) (string, error) {
+	if ref.ClientID != "" {
+		return ref.ClientID, nil
+	}
+	clientRef := ref.ClientRef
 	kclient := &keycloakv1alpha1.KeycloakClient{}
 	key := types.NamespacedName{Namespace: namespace, Name: clientRef}
 	if err := r.Get(ctx, key, kclient); err != nil {

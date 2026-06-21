@@ -223,11 +223,12 @@ let APPLICATION_RESOURCE = {
 // values are now PRODUCED by the keycloak.holos.run CRs this component emits below
 // (HOL-1348): the role/custodian KeycloakGroups, the owner KeycloakUser, and the
 // project KeycloakClient, reconciled by the shipped Holos Controller (ADR-20,
-// Partially Implemented).  CAVEAT (the "Keycloak data plane" note below): today
-// the reconcilers surface those values in the PROJECT's own client token, not the
-// platform Quay client's token, so the synced teams here are created/bound but
-// their membership is not yet populated from the project role groups — folding the
-// role onto the reserved Quay client is ADR-20 Rev 3 follow-up.
+// Partially Implemented).  As of HOL-1350 (ADR-20 Rev 4) the role groups confer
+// the my-project-<role> client role on the platform Quay client directly (the
+// "Keycloak data plane" note below), so those values surface in the platform Quay
+// client's groups claim via the already-deployed quay-client-roles mapper and the
+// synced teams' membership populates from the project role groups — the Quay-claim
+// gap is closed.
 //
 // The two enums are distinct (ADR-19 "Two distinct Quay concepts"): `role` is the
 // team's ORG role (admin | creator | member), `repositoryPermission` is an
@@ -664,17 +665,24 @@ let STAGE_RESOURCE = kargostage.#Stage & {
 // claim (the platform's quay-client-roles precedent).  A member of roles/owner
 // thereby surfaces my-project-owner in the token.
 //
-// The KeycloakClient is the PROJECT's own URL-named client
-// (https://my-project.holos.localhost), NOT the platform Quay client
-// (https://quay.holos.localhost): the latter is platform-reserved and the
-// KeycloakClient reconciler rejects a tenant CR that targets it
-// (reservedClientIDs in internal/controller/keycloak/client_controller.go).  The
-// project client carries the my-project-<role> client roles and its own
-// client-role→groups mapper, the ADR-20 "project's own service" path the
-// implemented reconcilers support.  (Folding the SAME role into the platform Quay
-// client's token — the ADR-20 "Quay use case" with no project client — needs the
-// controller to assign a role on the reserved quay client, which the shipped
-// reconcilers do not yet do; tracked as follow-up.)
+// The role is conferred on TWO clients (ADR-20 Rev 4, HOL-1350):
+//
+//   - the platform Quay client (https://quay.holos.localhost) — the ADR-20 "Quay
+//     use case".  A KeycloakGroup names this reserved clientId DIRECTLY via
+//     clientRoles[].clientId (not clientRef — the KeycloakClient reconciler still
+//     rejects a tenant CR that targets the reserved client, reservedClientIDs in
+//     internal/controller/keycloak/client_controller.go, so no CR exists for it).
+//     The group reconciler ensures the project-prefixed role on the reserved
+//     client and assigns it WITHOUT seizing the client object (only project-
+//     prefixed roles are controller-claimed; the platform's own platform-admin/
+//     project-admin roles stay reserved).  Quay's already-deployed quay-client-
+//     roles mapper then folds my-project-<role> into Quay's groups claim, so the
+//     Organization's syncedTeams[].oidcGroup membership populates.
+//   - the project's own URL-named client (https://my-project.holos.localhost) via
+//     clientRef — the ADR-20 "project's own service" path, so the role also
+//     reaches the project client's own token.  The KeycloakClient reconciler
+//     creates that client, its my-project-<role> roles, and its own
+//     client-role→groups mapper.
 
 // KEYCLOAK_NAMESPACE is the central KeycloakInstance's namespace; the project CRs
 // reference it cross-namespace (gated by the keycloak-instance component's
@@ -702,6 +710,17 @@ let PROJECT_CLIENT_NAME = "my-project"
 // PROJECT_CLIENT_ID is the project client's URL-shaped clientId (the platform
 // convention; ADR-20).  Distinct from the reserved https://quay.holos.localhost.
 let PROJECT_CLIENT_ID = "https://my-project.holos.localhost"
+
+// QUAY_CLIENT_ID is the platform Quay client's reserved clientId (realm-config's
+// QUAY_CLIENT_ID).  The role groups confer the my-project-<role> client role on it
+// directly via clientRoles[].clientId (NOT clientRef — no tenant KeycloakClient CR
+// exists for the reserved client; the reserved-name guard forbids one), closing
+// the ADR-20 Rev 4 "Quay use case" gap: the role surfaces in Quay's groups claim
+// via the platform's already-deployed quay-client-roles mapper, so the
+// Organization's syncedTeams[].oidcGroup membership populates (HOL-1350).  Only the
+// project-prefixed role name is controller-claimed on this client; the client
+// OBJECT stays keycloak-config-cli's.
+let QUAY_CLIENT_ID = "https://quay.holos.localhost"
 
 // The primitive role triad and the flat client-role / claim value each maps to
 // (my-project-<role>), consistent with the Organization syncedTeams[].oidcGroup
@@ -754,8 +773,18 @@ let KEYCLOAK_CLIENT_RESOURCE = {
 
 // KEYCLOAK_ROLE_GROUP_RESOURCES are the nested role groups
 // projects/my-project/roles/{owner,editor,viewer}.  Each confers the matching
-// my-project-<role> client role on the project client (clientRoles) and delegates
-// membership management to the same-tier custodian group (custodians).
+// my-project-<role> client role on TWO clients and delegates membership management
+// to the same-tier custodian group (custodians):
+//
+//   - the platform Quay client (clientId: https://quay.holos.localhost), so the
+//     role surfaces in Quay's groups claim via the already-deployed
+//     quay-client-roles mapper — the ADR-20 Rev 4 "Quay use case" that populates
+//     the Organization's syncedTeams[].oidcGroup membership (HOL-1350).  Named by
+//     clientId directly because no tenant KeycloakClient CR exists for the
+//     reserved client.
+//   - the project's own client (clientRef: my-project), the ADR-20 "project's own
+//     service" path, so the role also reaches https://my-project.holos.localhost's
+//     own token.
 let KEYCLOAK_ROLE_GROUP_RESOURCES = {
 	for r in ROLES {
 		(r): {
@@ -769,10 +798,16 @@ let KEYCLOAK_ROLE_GROUP_RESOURCES = {
 			spec: {
 				path:        "projects/\(NAME)/roles/\(r)"
 				instanceRef: INSTANCE_REF
-				clientRoles: [{
-					clientRef: PROJECT_CLIENT_NAME
-					role:      CLIENT_ROLE[r]
-				}]
+				clientRoles: [
+					{
+						clientId: QUAY_CLIENT_ID
+						role:     CLIENT_ROLE[r]
+					},
+					{
+						clientRef: PROJECT_CLIENT_NAME
+						role:      CLIENT_ROLE[r]
+					},
+				]
 				custodians: [{
 					path: "projects/\(NAME)/custodians/\(r)"
 				}]

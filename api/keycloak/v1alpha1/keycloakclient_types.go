@@ -100,10 +100,14 @@ type KeycloakClientSpec struct {
 	// oidc-usermodel-client-role-mapper emits the role name into the shared groups
 	// claim (the group→claim mechanism, ADR-20). Each entry's ClientRef is this
 	// KeycloakClient's own metadata.name (the object name, not the URL-shaped
-	// clientId — see ClientRoleReference).
+	// clientId — see ClientRoleReference). The role is always defined on THIS
+	// client, so an entry's clientId — meaningful only for KeycloakGroup, where it
+	// names a foreign target client — is forbidden here: the CEL rule rejects it so
+	// an accepted spec never carries a silently-ignored target field.
 	//
 	// +optional
 	// +listType=atomic
+	// +kubebuilder:validation:XValidation:rule="self.all(r, !has(r.clientId))",message="clientRoles on a KeycloakClient may not set clientId; a client defines roles on itself (use clientRef naming this client)"
 	ClientRoles []ClientRoleReference `json:"clientRoles,omitempty"`
 
 	// SecretRef names where a confidential client's generated secret is delivered
