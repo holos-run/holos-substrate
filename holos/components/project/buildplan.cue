@@ -673,6 +673,22 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 					instanceRef: INSTANCE_REF
 					groups: ["projects/\(NAME)/roles/owner"]
 					identityProviderLink: alias: "holos"
+					// adopt: true — a Keycloak user is realm-GLOBAL by email, but
+					// these KeycloakUser CRs are per-PROJECT (each project emits one
+					// for its owner).  The same human owning two projects yields two
+					// CRs for the same spec.email; with the default adopt: false the
+					// second would hit Ready=False (reason Conflict) and fail
+					// scripts/apply-projects — a normal multi-project ownership case.
+					// adopt: true lets each project's CR converge the shared realm
+					// user (same email → same user) without seizing-and-deleting it:
+					// an adopted user is RELEASED, never deleted, on CR removal
+					// (api/keycloak/v1alpha1 KeycloakUserSpec.Adopt), so two projects
+					// adopting one owner is benign and non-destructive.  The group
+					// memberships are additive (each CR adds its own
+					// projects/<name>/roles/owner), so a shared owner ends up in both
+					// projects' owner groups, which is the intended cross-project
+					// ownership semantics.
+					adopt: true
 				}
 			}
 		}
