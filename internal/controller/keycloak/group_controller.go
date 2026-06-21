@@ -430,19 +430,30 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 		if err != nil {
 			return err
 		}
-		// The direct clientId path (the Quay use case) is the only path that may name
-		// a client with no same-namespace KeycloakClient CR — including platform
-		// clients. It is tightly bounded so it cannot be turned into a privilege-
-		// escalation primitive (e.g. minting realm-admin on realm-management, or
-		// another project's role): the target must be on the allowlist of permitted
-		// reserved consumer clients AND the role must be this group's own project-
-		// prefixed name. The clientRef path is bounded by the same-namespace CR claim
-		// model and needs no extra check here.
+		// Privilege-escalation guard, keyed on the RESOLVED clientId regardless of
+		// which field named it (clientId or clientRef) — so a tenant cannot bypass the
+		// direct-path bounds by crafting a same-namespace KeycloakClient CR whose
+		// spec.clientId is a platform/built-in client (e.g. realm-management) and
+		// conferring a privileged role like realm-admin through clientRef:
+		//   - a reserved platform/built-in client (reservedClientIDs) may be reached
+		//     ONLY via the tightly-bounded direct clientId path (validateDirectClientRole:
+		//     Quay-only allowlist, project==namespace, exact <project>-<leaf> role). A
+		//     clientRef resolving to a reserved client is refused outright — tenants
+		//     confer roles only on a project client they own, never on a platform one.
+		//   - any non-reserved client reached via the direct clientId path is still
+		//     refused by validateDirectClientRole's allowlist (only the Quay client is
+		//     a permitted direct target), so the direct path cannot reach an arbitrary
+		//     client either.
+		// A non-reserved client reached via clientRef is the ordinary project-client
+		// case, bounded by the same-namespace CR claim model.
 		directTarget := ref.ClientID != ""
-		if directTarget {
+		switch {
+		case directTarget:
 			if err := validateDirectClientRole(group.Namespace, group.Spec.Path, clientID, ref.Role); err != nil {
 				return err
 			}
+		case reservedClientIDs[clientID]:
+			return fmt.Errorf("client %q (resolved from clientRef %q) is platform-reserved and may not be targeted by a KeycloakGroup clientRef; a reserved client's client roles are conferred only via the bounded direct clientId path", clientID, ref.ClientRef)
 		}
 		oidc, err := kc.FindClientByClientID(ctx, clientID)
 		recordKeycloakAPI(opFindClientByClientID, err)

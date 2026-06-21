@@ -56,9 +56,21 @@ const groupsClaimName = "groups"
 // quay-client-roles mapper). Only the platform's own reserved client-role NAMES
 // stay off-limits (reservedClientRoleNames below).
 var reservedClientIDs = map[string]bool{
+	// Platform OIDC clients owned by keycloak-config-cli.
 	"argocd":                       true,
 	"kargo":                        true,
 	"https://quay.holos.localhost": true,
+	// Keycloak built-in clients. realm-management hosts the realm-admin /
+	// manage-* roles, so it is the prime privilege-escalation target and must never
+	// be claimed by a tenant CR. account/account-console/broker/
+	// security-admin-console are the realm's built-in clients; reserving them keeps
+	// a tenant from defining or conferring roles on Keycloak's own clients. These
+	// names are realm-stable across Keycloak versions.
+	"realm-management":       true,
+	"account":                true,
+	"account-console":        true,
+	"broker":                 true,
+	"security-admin-console": true,
 }
 
 // reservedClientRoleNames are the platform's own client-role names on a reserved

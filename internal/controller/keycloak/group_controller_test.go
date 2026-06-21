@@ -1214,3 +1214,68 @@ func TestGroupDirectClientRoleGuards(t *testing.T) {
 		})
 	}
 }
+
+// TestGroupClientRefToReservedClientRejected covers the clientRef escalation path
+// (HOL-1350 review round 3 gate check): a tenant must not be able to confer a role
+// on a platform/built-in client (e.g. realm-management → realm-admin) by crafting
+// a same-namespace KeycloakClient CR whose spec.clientId is that reserved client
+// and referencing it via clientRef. The guard keys on the RESOLVED clientId, so a
+// clientRef resolving to a reserved client is refused before any Keycloak write —
+// reserved clients are reachable only via the bounded direct clientId path.
+func TestGroupClientRefToReservedClientRejected(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-group-refescalation"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	// A tenant-crafted KeycloakClient CR whose clientId is the privileged built-in
+	// realm-management client. (The KeycloakClient reconciler's own reserved-name
+	// guard would reject reconciling THIS CR, but the group reconciler must not
+	// trust the CR's spec.clientId to reach the real client regardless.)
+	createIgnoreExists(t, ctx, &keycloakv1alpha1.KeycloakClient{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "evil"},
+		Spec: keycloakv1alpha1.KeycloakClientSpec{
+			ClientID:    "realm-management",
+			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+		},
+	})
+
+	group := &keycloakv1alpha1.KeycloakGroup{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "refescalation"},
+		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Path:        "projects/" + ns + "/roles/owner",
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			ClientRoles: []keycloakv1alpha1.ClientRoleReference{
+				{ClientRef: "evil", Role: "realm-admin"},
+			},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, group); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+
+	fake := newFakeKeycloakClient()
+	// The real privileged client and its role exist in Keycloak.
+	fake.seedClient("realm-management", "rm-uuid")
+	fake.seedClientRole("rm-uuid", "realm-admin", "ra-uuid")
+	r, _ := newGroupReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(group)
+	_, _ = reconcileGroup(ctx, r, key) // finalizer
+	if _, err := reconcileGroup(ctx, r, key); err == nil {
+		t.Fatalf("expected the reserved-client clientRef guard to fail the reconcile")
+	}
+	got := getGroup(t, ctx, key)
+	status, reason, _ := conditionStatus(got.Status.Conditions, ConditionReady)
+	if status != metav1.ConditionFalse || reason != ReasonKeycloakError {
+		t.Errorf("Ready = (%v, %v), want (False, %s)", status, reason, ReasonKeycloakError)
+	}
+	// The guard must reject before assigning the privileged role.
+	if fake.roleAssigned("grp-1", "rm-uuid", "realm-admin") {
+		t.Errorf("reserved-client clientRef guard must reject before any Keycloak write; calls = %v", fake.calls)
+	}
+}
