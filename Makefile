@@ -106,6 +106,25 @@ publish: ## Render, Kustomize-package, and oras push the manifests artifact (set
 	@test -n "$(APP_IMAGE)" || { echo "ERROR: set APP_IMAGE=<registry>/<app>:<tag> or <registry>/<app>@sha256:<digest>"; exit 1; }
 	scripts/publish "$(APP_IMAGE)" "$(PUBLISH_REPO)"
 
+# The config-build / config-push targets wrap scripts/publish-config: bundle the
+# committed holos/deploy/ tree AS-IS into a single OCI artifact (no render, no
+# digest injection, no Kustomize) and publish it under a mutable :dev tag as the
+# platform-config bundle the App-of-Apps bootstrap consumes (HOL-1373/HOL-1374).
+# The build/push split mirrors docker-build/docker-push: config-build produces a
+# local tarball with NO network I/O; config-push oras-pushes it. This bundle is
+# distinct from the publish target above (per-app, input-addressed manifests for
+# Kargo) — see holos/docs/oci-publish-workflow.md. CONFIG_REPO/CONFIG_TAG default
+# to the in-cluster Quay config repo, mirroring the IMAGE_REPO default.
+CONFIG_REPO ?= quay.holos.internal/holos/holos-paas-config
+CONFIG_TAG  ?= dev
+.PHONY: config-build
+config-build: ## Bundle holos/deploy/ into a local OCI artifact tarball (no network).
+	scripts/publish-config --build "$(CONFIG_REPO):$(CONFIG_TAG)"
+
+.PHONY: config-push
+config-push: config-build ## Build then oras push the holos/deploy/ bundle to $(CONFIG_REPO):$(CONFIG_TAG).
+	scripts/publish-config --push "$(CONFIG_REPO):$(CONFIG_TAG)"
+
 # The image targets use buildx so the builder stage runs on the native host
 # (BUILDPLATFORM) and the Go toolchain cross-compiles to $(PLATFORM) — no target
 # architecture emulation is required. docker-build loads the result into the
