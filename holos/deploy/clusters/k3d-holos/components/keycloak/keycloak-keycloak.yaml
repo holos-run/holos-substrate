@@ -17,7 +17,7 @@ spec:
     vendor: postgres
   hostname:
     backchannelDynamic: true
-    hostname: https://auth.holos.localhost
+    hostname: https://auth.holos.internal
     strict: false
   http:
     httpsPort: 8443

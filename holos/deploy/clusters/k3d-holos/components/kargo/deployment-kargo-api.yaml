@@ -22,7 +22,7 @@ spec:
   template:
     metadata:
       annotations:
-        configmap/checksum: d0b36e4c2b61fc94730aead2417db5cf5d47bc458c476b4d090bc6513be1ebe0
+        configmap/checksum: 62f186b089a57be67a02119cfecd79b6ae70e92db0d5b63eb9491d307eb9055e
         secret/checksum: d1de5656a573b5d57005b49b298a3441cfb54788b06b84fb66979d84ba7389a1
       labels:
         app.kubernetes.io/component: api

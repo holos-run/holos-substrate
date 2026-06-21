@@ -9,7 +9,7 @@ spec:
   host: keycloak-service.keycloak.svc.cluster.local
   trafficPolicy:
     tls:
-      credentialName: wildcard-holos-localhost
+      credentialName: wildcard-holos-internal
       mode: SIMPLE
       sni: keycloak-service.keycloak.svc.cluster.local
       subjectAltNames:

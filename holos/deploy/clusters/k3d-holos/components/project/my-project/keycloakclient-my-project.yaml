@@ -6,7 +6,7 @@ metadata:
   name: my-project
   namespace: my-project
 spec:
-  clientId: https://my-project.holos.localhost
+  clientId: https://my-project.holos.internal
   clientRoles:
   - clientRef: my-project
     role: my-project-owner
@@ -18,10 +18,10 @@ spec:
     name: holos-keycloak
     namespace: keycloak
   redirectUris:
-  - https://my-project.holos.localhost/oauth2/callback
+  - https://my-project.holos.internal/oauth2/callback
   secretRef:
     key: client_secret
     name: my-project-oidc
   type: confidential
   webOrigins:
-  - https://my-project.holos.localhost
+  - https://my-project.holos.internal

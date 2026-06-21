@@ -1,0 +1,16 @@
+apiVersion: v1
+data:
+    holos.internal.server: |
+        holos.internal:53 {
+            errors
+            rewrite continue {
+                name regex (.*)\.holos\.internal default-istio.istio-gateways.svc.cluster.local
+                answer auto
+            }
+            forward . 127.0.0.1:53
+            cache 30
+        }
+kind: ConfigMap
+metadata:
+    name: coredns-custom
+    namespace: kube-system

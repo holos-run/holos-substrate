@@ -14,5 +14,5 @@ spec:
       discoveryLimit: 20
       imageSelectionStrategy: Lexical
       insecureSkipTLSVerify: true
-      repoURL: quay.holos.localhost/my-project/my-app-config
+      repoURL: quay.holos.internal/my-project/my-app-config
       strictSemvers: true

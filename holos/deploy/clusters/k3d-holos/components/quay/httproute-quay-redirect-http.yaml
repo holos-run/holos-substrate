@@ -5,7 +5,7 @@ metadata:
   namespace: quay
 spec:
   hostnames:
-  - quay.holos.localhost
+  - quay.holos.internal
   parentRefs:
   - name: default
     namespace: istio-gateways

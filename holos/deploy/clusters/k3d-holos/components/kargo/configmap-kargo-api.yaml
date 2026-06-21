@@ -7,7 +7,7 @@ data:
   OIDC_ADDITIONAL_SCOPES: ""
   OIDC_CLIENT_ID: kargo
   OIDC_ENABLED: "true"
-  OIDC_ISSUER_URL: https://auth.holos.localhost/realms/holos
+  OIDC_ISSUER_URL: https://auth.holos.internal/realms/holos
   OIDC_USERNAME_CLAIM: email
   PERMISSIVE_CORS_POLICY_ENABLED: "false"
   ROLLOUTS_INTEGRATION_ENABLED: "false"

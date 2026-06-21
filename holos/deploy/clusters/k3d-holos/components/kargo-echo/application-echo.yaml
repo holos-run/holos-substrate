@@ -14,7 +14,7 @@ spec:
     project: default
     source:
         path: .
-        repoURL: oci://quay.holos.localhost/holos/holos-paas-manifests
+        repoURL: oci://quay.holos.internal/holos/holos-paas-manifests
     syncPolicy:
         automated:
             prune: true

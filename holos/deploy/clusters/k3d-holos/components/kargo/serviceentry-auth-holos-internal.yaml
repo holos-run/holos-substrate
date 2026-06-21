@@ -1,13 +1,15 @@
 apiVersion: networking.istio.io/v1
 kind: ServiceEntry
 metadata:
-  name: quay-holos-localhost
-  namespace: quay
+  labels:
+    app.kubernetes.io/name: kargo
+  name: auth-holos-internal
+  namespace: kargo
 spec:
   endpoints:
   - address: default-istio.istio-gateways.svc.cluster.local
   hosts:
-  - quay.holos.localhost
+  - auth.holos.internal
   ports:
   - name: tls
     number: 443

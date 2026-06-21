@@ -13,4 +13,4 @@ spec:
   - group: '*'
     kind: '*'
   sourceRepos:
-  - oci://quay.holos.localhost/my-project/*
+  - oci://quay.holos.internal/my-project/*

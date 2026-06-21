@@ -5,7 +5,7 @@ metadata:
   namespace: keycloak
 spec:
   hostnames:
-  - auth.holos.localhost
+  - auth.holos.internal
   parentRefs:
   - name: default
     namespace: istio-gateways
