@@ -1,0 +1,8 @@
+apiVersion: v1
+data:
+  esso.json: '{"realm":"esso","clients":[{"clientId":"https://auth.holos.internal/realms/holos","name":"Holos
+    realm (OIDC broker relying party)","enabled":true,"protocol":"openid-connect","publicClient":false,"standardFlowEnabled":true,"serviceAccountsEnabled":false,"directAccessGrantsEnabled":false,"secret":"$(env:ESSO_IDP_CLIENT_SECRET)","redirectUris":["https://auth.holos.internal/realms/holos/broker/esso/endpoint"],"webOrigins":[]}],"users":[{"username":"87654321","email":"alice@example.com","firstName":"Alice","lastName":"Doe","enabled":true,"emailVerified":true,"credentials":[{"type":"password","value":"$(env:ALICE_PASSWORD)","temporary":false}]}]}'
+kind: ConfigMap
+metadata:
+  name: keycloak-esso-realm-config
+  namespace: keycloak
