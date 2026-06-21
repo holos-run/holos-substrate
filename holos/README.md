@@ -852,8 +852,9 @@ namespace, the primitive-role → Quay-team and → app-client binding, and the
   destinations to the `my-project` namespace; the Application has an OCI source
   (`oci://quay.holos.localhost/my-project/my-project-config`) and the
   `kargo.akuity.io/authorized-stage: my-project:project-config` annotation
-  authorizing the Stage to patch its `targetRevision`. The Application is
-  hand-authored (not the deferred `argoAppDisabled` projection — see
+  authorizing the Stage to patch its `targetRevision`. This Application is an
+  **OCI**-source Application rendered by the Project component (not the deferred
+  `argoAppDisabled` git-source projection — see
   [docs/placeholders.md](docs/placeholders.md#argocd-gitops-delivery)) and its
   `targetRevision` is deliberately omitted so Kargo owns that field.
 - the **Kargo control plane**: a `Project` (the namespace boundary), a
@@ -894,10 +895,16 @@ namespace, the primitive-role → Quay-team and → app-client binding, and the
 applied by the dedicated [`scripts/apply-projects`](../scripts/apply-projects)
 instead. That script reads the local-ca PEM (the `cert-manager/local-ca` Secret,
 or `$(mkcert -CAROOT)/rootCA.pem`), renders the platform with it injected via the
-`ca_bundle_pem` CUE tag (the `scripts/publish` `--inject` pattern), and applies
-the `my-project` Namespace + the rendered component (Organization, Argo CD
-AppProject/Application, the Kargo control plane, and the webhook-token bootstrap)
-with `kubectl apply --server-side`. It runs **after** `scripts/local-ca` and
+`ca_bundle_pem` CUE tag (the `scripts/publish` `--inject` pattern), and applies —
+with `kubectl apply --server-side` — the `keycloak-instance` component (the central
+`KeycloakInstance` + its `security.holos.run` `ReferenceGrant`), the rendered
+**Project** component (the Quay `Organization`, the per-project `keycloak.holos.run`
+CRs — role/custodian `KeycloakGroup`s, owner `KeycloakUser`, project
+`KeycloakClient` — the Argo CD `AppProject`/`Application`, the Kargo control plane,
+the owner `RoleBinding`, and the webhook-token bootstrap), and each rendered
+**Application** component's control-plane bundle (the app `KeycloakClient`, the Quay
+`Repository`, the Kargo `Warehouse`/`Stage`, and the app's Argo CD `Application`);
+the app's workload bundle is delivered by Argo CD from the published OCI artifact. It runs **after** `scripts/local-ca` and
 **after** the manual Quay superuser-credential setup
 (`scripts/apply-svc-quay-resource-controller-creds` plus the `platform-automation`
 org / OAuth token per the runbooks) — the Argo CD and Kargo CRDs and controllers
