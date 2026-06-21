@@ -105,7 +105,7 @@ the docker-push-to-deploy goal, not a complete model of Quay's API.
 
 Both resources are **namespaced** custom resources in the `quay.holos.run/v1alpha1`
 API group, reconciled by the Holos Controller against the in-cluster Quay registry
-(`quay.holos.localhost`). They model **only** what the docker-push-to-deploy goal
+(`quay.holos.internal`). They model **only** what the docker-push-to-deploy goal
 requires. The schemas below are the **as-built** Go types
 (`api/quay/v1alpha1/organization_types.go`, `repository_types.go`,
 `common_types.go`); the YAML is illustrative of those types.
@@ -159,7 +159,7 @@ Each resource's spec carries an optional `credentialsSecretRef` (a
 
 ### CA bundle (`caBundle`) — a standardized, cross-Kind field
 
-The in-cluster Quay registry (`quay.holos.localhost`) serves TLS with a
+The in-cluster Quay registry (`quay.holos.internal`) serves TLS with a
 certificate signed by the platform's **per-cluster mkcert local CA**, not a
 public root. That CA is not in the controller pod's system trust store, so the
 reconcilers' first attempt to reach Quay failed with
@@ -225,7 +225,7 @@ spec:
   # Conventionally set to metadata.name (the controller does not default it).
   name: my-project
   # Quay requires every namespace to have a unique email.
-  email: my-project@holos.localhost
+  email: my-project@holos.internal
   # The Quay superuser credential Secret (defaults to holos-controller-quay-creds
   # in the controller's holos-controller namespace).
   credentialsSecretRef:
@@ -459,7 +459,7 @@ spec:
   # Optional repo_push webhook. Exactly ONE of url or urlSecretRef.
   webhook:
     # (a) inline URL, OR
-    url: https://kargo.holos.localhost/webhook/quay/<receiver-id>
+    url: https://kargo.holos.internal/webhook/quay/<receiver-id>
     # (b) a Secret in THIS resource's namespace holding the URL (use for the
     # hard-to-guess Kargo receiver URL that must not be committed):
     # urlSecretRef:

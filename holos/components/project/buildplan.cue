@@ -30,7 +30,7 @@ import (
 //
 // A project's keycloak.holos.run role KeycloakGroups confer the project-prefixed
 // client role <name>-<role> on the platform Quay client
-// (https://quay.holos.localhost) DIRECTLY via clientRoles[].clientId — the
+// (https://quay.holos.internal) DIRECTLY via clientRoles[].clientId — the
 // ADR-20 Rev 4 "Quay use case" (HOL-1350) that surfaces <name>-<role> in Quay's
 // groups claim (the already-deployed quay-client-roles mapper) so the
 // Organization's spec.syncedTeams[].oidcGroup MEMBERSHIP populates.  That direct
@@ -100,7 +100,7 @@ let ROLES = ["owner", "editor", "viewer"]
 // QUAY_CLIENT_ID).  The role groups confer <name>-<role> on it directly via
 // clientRoles[].clientId (no tenant KeycloakClient CR exists for the reserved
 // client; the reserved-name guard forbids one), the ADR-20 Rev 4 Quay use case.
-let QUAY_CLIENT_ID = "https://quay.holos.localhost"
+let QUAY_CLIENT_ID = "https://quay.holos.internal"
 
 // KEYCLOAK_NAMESPACE is the central KeycloakInstance's namespace; the project CRs
 // reference it cross-namespace (gated by the keycloak-instance component's
@@ -143,10 +143,10 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 
 	// CONFIG_REPO is the rendered-manifests OCI repository the publish workflow
 	// pushes to, scoped under the project's Quay org path so the AppProject can
-	// constrain sourceRepos to oci://quay.holos.localhost/<name>/*.  The oci://
+	// constrain sourceRepos to oci://quay.holos.internal/<name>/*.  The oci://
 	// form (CONFIG_REPO_OCI) must stay byte-identical between the Application
 	// source and the Stage's argocd-update source (Kargo matches by exact string).
-	let CONFIG_REPO = "quay.holos.localhost/\(NAME)/\(NAME)-config"
+	let CONFIG_REPO = "quay.holos.internal/\(NAME)/\(NAME)-config"
 	let CONFIG_REPO_OCI = "oci://\(CONFIG_REPO)"
 
 	// CONFIG_TAG_REGEX scopes the Warehouse subscription to the input-addressed
@@ -164,7 +164,7 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 	// object name the role groups' clientRoles[].clientRef resolves — NOT the URL
 	// clientId).  PROJECT_CLIENT_ID is its URL-shaped clientId.
 	let PROJECT_CLIENT_NAME = NAME
-	let PROJECT_CLIENT_ID = "https://\(NAME).holos.localhost"
+	let PROJECT_CLIENT_ID = "https://\(NAME).holos.internal"
 
 	// PROJECT_CLIENT_SECRET is where the controller delivers the confidential
 	// client's generated secret (generate-once, in the control namespace, never
@@ -196,7 +196,7 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 			labels: "app.kubernetes.io/name": NAME
 		}
 		spec: {
-			sourceRepos: ["oci://quay.holos.localhost/\(NAME)/*"]
+			sourceRepos: ["oci://quay.holos.internal/\(NAME)/*"]
 			destinations: [{
 				server:    "https://kubernetes.default.svc"
 				namespace: CTRL_NS
@@ -263,7 +263,7 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 		}
 		spec: {
 			name:  NAME
-			email: "\(NAME)@holos.localhost"
+			email: "\(NAME)@holos.internal"
 			credentialsSecretRef: name: "holos-controller-quay-creds"
 			adopt: false
 			syncedTeams: [
@@ -582,7 +582,7 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 	// projects/<name>/roles/{owner,editor,viewer}.  Each confers <name>-<role> on
 	// TWO clients and delegates membership management to the same-tier custodian:
 	//
-	//   - the platform Quay client (clientId: https://quay.holos.localhost) — the
+	//   - the platform Quay client (clientId: https://quay.holos.internal) — the
 	//     ADR-20 Rev 4 Quay use case.  This direct-clientId path requires the CR's
 	//     namespace to equal the bare project name <name> and the role to be
 	//     exactly <name>-<role> (validateDirectClientRole); both hold because the
@@ -591,7 +591,7 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 	//     <name>-<role> into Quay's groups claim, populating the Organization's
 	//     syncedTeams[].oidcGroup membership.
 	//   - the project's own client (clientRef: <name>), so the role also reaches
-	//     https://<name>.holos.localhost's token.
+	//     https://<name>.holos.internal's token.
 	//   - EACH app contained by this project (apps where app.project == NAME): the
 	//     `for app in apps` comprehension below appends a clientRoles entry
 	//     {clientRef: <app-name>, role: <leaf>} per app, so the same project role

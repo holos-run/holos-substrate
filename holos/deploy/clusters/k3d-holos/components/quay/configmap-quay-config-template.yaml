@@ -1,7 +1,7 @@
 apiVersion: v1
 data:
   config.yaml: |
-    SERVER_HOSTNAME: quay.holos.localhost
+    SERVER_HOSTNAME: quay.holos.internal
     PREFERRED_URL_SCHEME: https
     EXTERNAL_TLS_TERMINATION: true
     SETUP_COMPLETE: true
@@ -29,8 +29,8 @@ data:
     TEAM_RESYNC_STALE_TIME: 30m
     AUTHENTICATION_TYPE: OIDC
     KEYCLOAK_LOGIN_CONFIG:
-      OIDC_SERVER: https://auth.holos.localhost/realms/holos/
-      CLIENT_ID: https://quay.holos.localhost
+      OIDC_SERVER: https://auth.holos.internal/realms/holos/
+      CLIENT_ID: https://quay.holos.internal
       CLIENT_SECRET: __OIDC_CLIENT_SECRET__
       SERVICE_NAME: Holos SSO
       LOGIN_SCOPES:

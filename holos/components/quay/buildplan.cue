@@ -10,7 +10,7 @@ import (
 // quay renders the Quay registry as a plain Deployment backed by the
 // quay-db CNPG Postgres Cluster (components/cnpg-clusters) and a minimal
 // single-pod Redis, with registry blob storage on a local-path PVC, exposed
-// at https://quay.holos.localhost through the shared Gateway
+// at https://quay.holos.internal through the shared Gateway
 // (components/istio-gateway).  This component brings up the UI and the v2
 // registry API.  Quay runs AUTHENTICATION_TYPE OIDC (HOL-1293): the Keycloak
 // holos realm is the sole identity store and superuser access is granted by
@@ -73,15 +73,15 @@ let NAMESPACE = "quay" & #RegisteredNamespace
 let NAME = "quay"
 let PORT = 8080
 
-// quay.holos.localhost matches the shared Gateway's *.holos.localhost
+// quay.holos.internal matches the shared Gateway's *.holos.internal
 // listener hostname and resolves to 127.0.0.1 on the host per
 // docs/local-cluster.md, and the Keycloak realm's reconciled quay client
 // (managed by the keycloak-config Job) lists the three explicit
-// https://quay.holos.localhost/oauth2/keycloak/callback{,/attach,/cli} paths
+// https://quay.holos.internal/oauth2/keycloak/callback{,/attach,/cli} paths
 // as its redirect URIs (HOL-1317).
-// k3d-registry.holos.localhost is deliberately NOT used: that name belongs to
+// k3d-registry.holos.internal is deliberately NOT used: that name belongs to
 // the k3d bootstrap registry on port 5000 (scripts/local-k3d).
-let HOSTNAME = "quay.holos.localhost"
+let HOSTNAME = "quay.holos.internal"
 
 // The shared Gateway's namespace and name (components/istio-gateway).
 // GATEWAY_NAME feeds both the HTTPRoute parentRefs and the ServiceEntry
@@ -99,10 +99,10 @@ let GATEWAY_NAME = "default"
 // Keycloak's published issuer, so the value here must carry the slash to match.
 // OIDC_CLIENT_ID is the confidential "quay" client managed in the realm
 // (components/keycloak/realm-config; HOL-1218).  Its value is the client's
-// Keycloak clientId, which HOL-1294 changed to https://quay.holos.localhost to
+// Keycloak clientId, which HOL-1294 changed to https://quay.holos.internal to
 // match the production example — CLIENT_ID in KEYCLOAK_LOGIN_CONFIG must equal
 // it exactly or the token exchange fails the client_id check.
-let ISSUER_HOSTNAME = "auth.holos.localhost"
+let ISSUER_HOSTNAME = "auth.holos.internal"
 
 // The issuer value must not have a trailing slash
 let OIDC_ISSUER = "https://\(ISSUER_HOSTNAME)/realms/holos"
@@ -118,15 +118,15 @@ let OIDC_SECRET_KEY = "client_secret"
 
 // CA_CERT_SECRET carries the local-ca root certificate in its ca.crt key.
 // Quay performs its OIDC discovery/JWKS/token calls to OIDC_ISSUER
-// (https://auth.holos.localhost) server-side with TLS verification ON and has
+// (https://auth.holos.internal) server-side with TLS verification ON and has
 // no per-OIDC "insecure skip verify" knob (unlike Argo CD), so it must trust
-// the local CA that signed the shared Gateway's *.holos.localhost certificate.
+// the local CA that signed the shared Gateway's *.holos.internal certificate.
 // A cert-manager Certificate issued by the local-ca ClusterIssuer
 // (components/local-ca) writes this Secret into the quay namespace with the
 // signing CA in ca.crt; the Quay container mounts that key under
 // /conf/stack/extra_ca_certs so the Quay entrypoint installs it into the
 // system trust bundle on start.  Mounting a per-namespace cert-manager Secret
-// (rather than the Gateway's wildcard-holos-localhost Secret, which lives in
+// (rather than the Gateway's wildcard-holos-internal Secret, which lives in
 // the istio-gateways namespace) keeps the trust anchor local to this pod's
 // namespace — a pod can only mount Secrets from its own namespace.
 let CA_CERT_SECRET = "quay-local-ca"
@@ -185,7 +185,7 @@ let REDIS_METADATA = {
 //     OIDC provider Quay authenticates against.
 //   - KEYCLOAK_LOGIN_CONFIG points Quay at the holos realm's confidential
 //     "quay" client (components/keycloak/realm-config), whose Keycloak clientId
-//     is https://quay.holos.localhost (HOL-1294) — CLIENT_ID must match it
+//     is https://quay.holos.internal (HOL-1294) — CLIENT_ID must match it
 //     exactly.  OIDC_ISSUER is the realm issuer URL with a REQUIRED trailing
 //     slash — Quay's config validator normalises the issuer to
 //     TrimSuffix(issuer,"/")+"/", so the slash must be present here to match
@@ -904,7 +904,7 @@ let DEPLOYMENT = {
 							// The local-ca root cert, mounted where the Quay
 							// entrypoint's certs_install step picks up extra
 							// trust anchors, so server-side OIDC TLS to
-							// auth.holos.localhost validates.  A subdir mount of
+							// auth.holos.internal validates.  A subdir mount of
 							// /conf/stack — it coexists with the config volume's
 							// config.yaml the initContainer renders.
 							name:      "local-ca"
@@ -1027,20 +1027,21 @@ let HTTPROUTE_REDIRECT = {
 
 // In-cluster clients must reach the registry by its public hostname:
 // Quay pins its OCI token-auth realm to
-// https://quay.holos.localhost/v2/auth (PREFERRED_URL_SCHEME +
+// https://quay.holos.internal/v2/auth (PREFERRED_URL_SCHEME +
 // SERVER_HOSTNAME above), so a client that connects via the in-cluster
 // Service DNS name is still redirected to the public hostname to fetch a
-// token — every v2 client needs quay.holos.localhost to resolve and route
-// inside the cluster.  Plain DNS cannot provide that: *.localhost names
-// resolve to loopback both upstream of CoreDNS (the host resolver
-// implements RFC 6761) and inside ztunnel's DNS proxy
-// (AMBIENT_DNS_CAPTURE is enabled, and ztunnel's resolver special-cases
-// *.localhost before forwarding), so a CoreDNS rewrite never sees queries
-// from ambient-enrolled pods.  This ServiceEntry fixes both layers at
-// once: it makes quay.holos.localhost a service the mesh knows, so ztunnel
+// token — every v2 client needs quay.holos.internal to resolve and route
+// inside the cluster.  On the .internal TLD CoreDNS (components/coredns)
+// now resolves *.holos.internal authoritatively for in-cluster clients —
+// .internal is an ordinary DNS name with no RFC 6761 loopback short-circuit,
+// so neither the host resolver nor ztunnel's DNS proxy special-cases it
+// (unlike the retired .localhost names, which short-circuited to loopback
+// in-process before any resolver saw the query).  This ServiceEntry is
+// retained in this phase (HOL-1364, conservative scope) alongside CoreDNS:
+// it makes quay.holos.internal a service the mesh knows, so ztunnel
 // answers enrolled pods' queries with the auto-allocated VIP and routes
 // connections to that VIP to the shared Gateway, which terminates TLS for
-// *.holos.localhost and routes by SNI/Host to the HTTPRoute above —
+// *.holos.internal and routes by SNI/Host to the HTTPRoute above —
 // in-cluster clients traverse the exact host path, credentials and all.
 // protocol TLS keeps ztunnel at L4 (the Gateway terminates TLS);
 // resolution DNS tracks the Gateway Service by name so the entry survives
@@ -1054,7 +1055,7 @@ let SERVICE_ENTRY = {
 	apiVersion: "networking.istio.io/v1"
 	kind:       "ServiceEntry"
 	metadata: {
-		name:      "quay-holos-localhost"
+		name:      "quay-holos-internal"
 		namespace: NAMESPACE
 	}
 	spec: {
@@ -1071,19 +1072,22 @@ let SERVICE_ENTRY = {
 	}
 }
 
-// AUTH_SERVICE_ENTRY makes the Keycloak issuer hostname auth.holos.localhost a
+// AUTH_SERVICE_ENTRY makes the Keycloak issuer hostname auth.holos.internal a
 // service the mesh resolves so Quay's server-side OIDC calls (discovery, JWKS,
 // token exchange against OIDC_ISSUER) reach Keycloak in-cluster — the same
 // pattern as SERVICE_ENTRY above and the argocd component's identically-named
 // entry (components/argocd/controller).  The quay namespace is ambient-enrolled
-// (holos/namespaces.cue), and *.localhost names resolve to loopback both
-// upstream of CoreDNS (RFC 6761 host resolver) and inside ztunnel's DNS proxy
-// (AMBIENT_DNS_CAPTURE special-cases *.localhost before forwarding), so a plain
-// DNS override never reaches enrolled pods.  This entry makes the hostname a
+// (holos/namespaces.cue), and Quay's OIDC backchannel must resolve and route the
+// issuer hostname in-cluster.  On the .internal TLD CoreDNS (components/coredns)
+// now resolves *.holos.internal authoritatively — .internal is an ordinary DNS
+// name with no RFC 6761 loopback short-circuit, so neither the host resolver nor
+// ztunnel's DNS proxy special-cases it (unlike the retired .localhost names).
+// This entry is retained in this phase (HOL-1364, conservative scope) alongside
+// CoreDNS; it makes the hostname a
 // mesh service: ztunnel answers the Quay pod's query with the auto-allocated
 // VIP and routes to the shared Gateway, which terminates TLS for
-// *.holos.localhost and routes by SNI/Host to the keycloak HTTPRoute, so the
-// issuer serves https://auth.holos.localhost/realms/holos/ end-to-end and the
+// *.holos.internal and routes by SNI/Host to the keycloak HTTPRoute, so the
+// issuer serves https://auth.holos.internal/realms/holos/ end-to-end and the
 // iss claim matches.  protocol TLS keeps ztunnel at L4 (the Gateway terminates
 // TLS); resolution DNS tracks the Gateway Service by name so the entry survives
 // ClusterIP changes.  exportTo is left at its mesh-wide default — harmless, as
@@ -1092,7 +1096,7 @@ let AUTH_SERVICE_ENTRY = {
 	apiVersion: "networking.istio.io/v1"
 	kind:       "ServiceEntry"
 	metadata: {
-		name:      "auth-holos-localhost"
+		name:      "auth-holos-internal"
 		namespace: NAMESPACE
 	}
 	spec: {

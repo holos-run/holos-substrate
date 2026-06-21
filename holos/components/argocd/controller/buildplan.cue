@@ -14,9 +14,9 @@ import (
 // component per the component guidelines (crds.install: false below).  The
 // version pin and shared names live in ../argocd.cue.
 //
-// The UI is exposed at https://argocd.holos.localhost through the shared
+// The UI is exposed at https://argocd.holos.internal through the shared
 // Gateway (components/istio-gateway): the Gateway terminates TLS with its
-// wildcard-holos-localhost Certificate (no per-service Certificate
+// wildcard-holos-internal Certificate (no per-service Certificate
 // needed), and the HTTPRoute pair below attaches the argocd-server Service
 // to it — the quay pattern.  server.insecure: "true" makes argocd-server
 // serve plain HTTP behind the Gateway; the argocd namespace is
@@ -32,21 +32,21 @@ import (
 // client; configs.rbac maps the realm roles to Argo CD roles
 // (platform-owner → admin, platform-viewer/editor → readonly).  The
 // backchannel OIDC path (discovery/JWKS/token) runs in-cluster: the
-// SERVICE_ENTRY below makes the issuer hostname auth.holos.localhost a
+// SERVICE_ENTRY below makes the issuer hostname auth.holos.internal a
 // service the mesh resolves to the shared Istio gateway, so argocd-server
 // reaches Keycloak through the same Gateway→Keycloak re-encrypt path
-// browsers use (the quay-holos-localhost ServiceEntry pattern — a plain
-// CoreDNS rewrite cannot work because ztunnel's DNS proxy special-cases
-// *.localhost before CoreDNS sees the query, see the SERVICE_ENTRY comment),
+// browsers use (the quay-holos-internal ServiceEntry pattern — see the
+// SERVICE_ENTRY comment for why the entry is retained even though, on the
+// .internal TLD, CoreDNS now resolves the issuer hostname authoritatively),
 // and "oidc.tls.insecure.skip.verify" accepts the per-machine local-CA cert
 // on that hop (the local-only MVP posture documented below).
 
 let NAME = "argocd"
 
-// argocd.holos.localhost matches the shared Gateway's *.holos.localhost
+// argocd.holos.internal matches the shared Gateway's *.holos.internal
 // listener hostname and resolves to 127.0.0.1 on the host per
 // docs/local-cluster.md.
-let HOSTNAME = "argocd.holos.localhost"
+let HOSTNAME = "argocd.holos.internal"
 
 // The shared Gateway's namespace (components/istio-gateway).
 let GATEWAY_NAMESPACE = "istio-gateways"
@@ -61,7 +61,7 @@ let GATEWAY_NAME = "default"
 // The Keycloak issuer hostname (components/keycloak/instance HOSTNAME and the
 // OIDC_CONFIG issuer below).  argocd-server's OIDC backchannel must resolve
 // and route this name in-cluster — see SERVICE_ENTRY.
-let ISSUER_HOSTNAME = "auth.holos.localhost"
+let ISSUER_HOSTNAME = "auth.holos.internal"
 
 // The chart names the API/UI Service argocd-server and serves HTTP on
 // service port 80 (server.service.servicePortHttp, the chart default) when
@@ -135,7 +135,7 @@ let HTTPROUTE_REDIRECT = {
 // client: Argo CD's UI and CLI cannot hold a secret, so they use the
 // Authorization Code flow with PKCE (S256) and carry NO clientSecret.  The
 // issuer is Keycloak's public hostname (its hostname.hostname is
-// https://auth.holos.localhost, so the iss claim matches), the holos realm
+// https://auth.holos.internal, so the iss claim matches), the holos realm
 // discovery endpoint.  clientID "argocd" is the public client the
 // keycloak-config component provisions.
 //
@@ -154,7 +154,7 @@ let HTTPROUTE_REDIRECT = {
 // group/realm-role membership Argo CD's RBAC keys on.
 let OIDC_CONFIG = {
 	name:                     "Keycloak"
-	issuer:                   "https://auth.holos.localhost/realms/holos"
+	issuer:                   "https://auth.holos.internal/realms/holos"
 	clientID:                 "argocd"
 	enablePKCEAuthentication: true
 	requestedScopes: ["openid", "profile", "email"]
@@ -182,24 +182,26 @@ let POLICIES = [
 	"g, authenticated, role:readonly",
 ]
 
-// SERVICE_ENTRY makes the Keycloak issuer hostname auth.holos.localhost a
+// SERVICE_ENTRY makes the Keycloak issuer hostname auth.holos.internal a
 // service the mesh resolves, so argocd-server's server-side OIDC calls
 // (discovery/JWKS/token) reach Keycloak in-cluster.  This is the
-// quay-holos-localhost ServiceEntry pattern (components/quay/buildplan.cue),
-// applied here for the same reason: the argocd namespace is ambient-enrolled
-// (holos/namespaces.cue), and *.localhost names resolve to loopback both
-// upstream of CoreDNS (the host resolver implements RFC 6761) and inside
-// ztunnel's DNS proxy (AMBIENT_DNS_CAPTURE is enabled and ztunnel's resolver
-// special-cases *.localhost before forwarding), so a CoreDNS rewrite never
-// sees queries from enrolled pods — a plain DNS override cannot fix this.
-// The ServiceEntry fixes both layers at once: it makes the hostname a
-// service the mesh knows, so ztunnel answers enrolled pods' queries with the
-// auto-allocated VIP and routes connections to that VIP to the shared
-// Gateway, which terminates TLS for *.holos.localhost and routes by
+// quay-holos-internal ServiceEntry pattern (components/quay/buildplan.cue),
+// applied here for the same reason: argocd-server's server-side OIDC calls
+// must resolve and route the issuer hostname in-cluster, then traverse the
+// shared Gateway's TLS path so the iss claim matches.  On the .internal TLD
+// CoreDNS (components/coredns) now answers *.holos.internal authoritatively
+// for in-cluster clients — unlike the retired .localhost names, .internal is
+// an ordinary DNS name with no RFC 6761 loopback short-circuit, so neither
+// the host resolver nor ztunnel's DNS proxy special-cases it.  The
+// ServiceEntry is retained in this phase (HOL-1364, conservative scope)
+// alongside CoreDNS: it makes the hostname a service the mesh knows, so
+// ztunnel answers enrolled pods' queries with the auto-allocated VIP and
+// routes connections to that VIP to the shared Gateway, which terminates TLS
+// for *.holos.internal and routes by
 // SNI/Host to the keycloak HTTPRoute — argocd-server traverses the exact
 // host path browsers use, and the existing Gateway→Keycloak DestinationRule
 // re-encrypts to the backend, so the issuer serves
-// https://auth.holos.localhost/realms/holos end-to-end and the iss claim
+// https://auth.holos.internal/realms/holos end-to-end and the iss claim
 // matches OIDC_CONFIG.issuer.  protocol TLS keeps ztunnel at L4 (the Gateway
 // terminates TLS, then re-encrypts); resolution DNS tracks the Gateway
 // Service by name so the entry survives ClusterIP changes — the
@@ -211,7 +213,7 @@ let SERVICE_ENTRY = {
 	apiVersion: "networking.istio.io/v1"
 	kind:       "ServiceEntry"
 	metadata: {
-		name:      "auth-holos-localhost"
+		name:      "auth-holos-internal"
 		namespace: ArgoCDNamespace
 	}
 	spec: {
@@ -339,7 +341,7 @@ userDefinedBuildPlan: {
 								// into argocd-initial-admin-secret (in-cluster,
 								// not committed) and the UI is reachable only
 								// through the shared Gateway at
-								// argocd.holos.localhost (→ 127.0.0.1, never off
+								// argocd.holos.internal (→ 127.0.0.1, never off
 								// the host).  Keycloak SSO + the groups-claim
 								// RBAC below is the authoritative path for every
 								// real user; when a production cluster is

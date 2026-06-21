@@ -170,7 +170,7 @@ WorkQueue stream and acks the sender — no parsing.
 implemented as the `webhook-receiver` subcommand of the `holos-paas` binary
 (`internal/webhook/receiver/`, HOL-1196), shipped as an arm64 distroless image
 (HOL-1197), and deployed as the `webhook-receiver` Holos component on the shared
-Gateway at `hooks.holos.localhost` (HOL-1198). It published the raw body to
+Gateway at `hooks.holos.internal` (HOL-1198). It published the raw body to
 `webhooks.<source>` on the `WEBHOOKS` WorkQueue stream. The subcommand, its
 package, and the component were removed in HOL-1241 — see the superseded note
 above.
@@ -193,7 +193,7 @@ above.
 
 Both verified live on the k3d-holos cluster in HOL-1198. For the MVP the
 receiver is **unauthenticated**: from outside the cluster it is exposed only at
-`hooks.holos.localhost` through the shared Gateway, and its in-cluster ClusterIP
+`hooks.holos.internal` through the shared Gateway, and its in-cluster ClusterIP
 Service has no ingress policy (consistent with the no-in-cluster-auth posture).
 Edge signature verification is a deferred future enhancement
 ([HOL-1200](https://linear.app/holos-run/issue/HOL-1200)).

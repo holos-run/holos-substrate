@@ -43,15 +43,15 @@ reference.`
 
 // deployCheat is the task-oriented summary shown by `holos-paas cheat deploy`.
 const deployCheat = `# Publish a release for Kargo to promote (ADR-16)
-holos-paas deploy --app-image quay.holos.localhost/holos/holos-paas:v1.2.3
+holos-paas deploy --app-image quay.holos.internal/holos/holos-paas:v1.2.3
 
 # Preview the underlying scripts/publish invocation without running it
-holos-paas deploy --app-image quay.holos.localhost/holos/holos-paas:v1.2.3 --dry-run
+holos-paas deploy --app-image quay.holos.internal/holos/holos-paas:v1.2.3 --dry-run
 
 # Publish to a non-default manifests repository
 holos-paas deploy \
-  --app-image quay.holos.localhost/holos/holos-paas@sha256:... \
-  --manifests-repo quay.holos.localhost/holos/holos-paas-manifests`
+  --app-image quay.holos.internal/holos/holos-paas@sha256:... \
+  --manifests-repo quay.holos.internal/holos/holos-paas-manifests`
 
 // deployOptions holds the parsed deploy flags. It is the single source of truth
 // for translating flags into a scripts/publish invocation; invocation() is pure

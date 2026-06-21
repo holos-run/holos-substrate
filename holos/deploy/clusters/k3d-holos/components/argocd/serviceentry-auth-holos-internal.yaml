@@ -1,13 +1,13 @@
 apiVersion: networking.istio.io/v1
 kind: ServiceEntry
 metadata:
-  name: auth-holos-localhost
-  namespace: quay
+  name: auth-holos-internal
+  namespace: argocd
 spec:
   endpoints:
   - address: default-istio.istio-gateways.svc.cluster.local
   hosts:
-  - auth.holos.localhost
+  - auth.holos.internal
   ports:
   - name: tls
     number: 443

@@ -248,7 +248,7 @@ namespaces: {
 	// posture — see holos/docs/placeholders.md), so the Gateway→api hop relies
 	// on the mesh: the namespace is ambient-enrolled, ztunnel captures traffic
 	// over HBONE with mTLS, and the API is reachable from the host only through
-	// the shared Gateway at kargo.holos.localhost.  The Kargo CRDs are
+	// the shared Gateway at kargo.holos.internal.  The Kargo CRDs are
 	// cluster-scoped and carry no namespace; the kargo-crds component installs
 	// them independently of this namespace.
 	kargo: _ambient: true

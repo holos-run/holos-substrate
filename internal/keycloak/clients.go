@@ -92,7 +92,7 @@ type OIDCClient struct {
 	// the {clientUUID} path segment of every per-client admin endpoint, distinct
 	// from ClientID.
 	ID string `json:"id,omitempty"`
-	// ClientID is the human/URL identifier, e.g. https://quay.holos.localhost —
+	// ClientID is the human/URL identifier, e.g. https://quay.holos.internal —
 	// the value find-by-clientId queries on.
 	ClientID string `json:"clientId,omitempty"`
 	// Name is the client's display name.

@@ -61,7 +61,7 @@ let WAREHOUSE = "manifests"
 // argocd-update matches the Application source by EXACT repoURL string, so the
 // two forms below must stay consistent with each other and with the publish
 // workflow's default.
-let MANIFESTS_REPO = "quay.holos.localhost/holos/holos-paas-manifests"
+let MANIFESTS_REPO = "quay.holos.internal/holos/holos-paas-manifests"
 let MANIFESTS_REPO_OCI = "oci://\(MANIFESTS_REPO)"
 
 // MANIFESTS_TAG_REGEX matches the input-addressed tags scripts/publish mints:
@@ -92,7 +92,7 @@ let MANIFESTS_TAG_REGEX = "^render-[0-9a-f]{12}-[0-9a-f]{12}$"
 // zero-padded counter or timestamp prefix) or a Digest strategy against a
 // mutable tag; tracked as future work in the component docs.
 //
-// insecureSkipTLSVerify: true — the in-cluster Quay serves *.holos.localhost
+// insecureSkipTLSVerify: true — the in-cluster Quay serves *.holos.internal
 // with a mkcert-signed certificate that is not in the Kargo controller's trust
 // store, the same reason the Argo CD repository Secret sets insecure: "true"
 // (holos/docs/argocd-application-source.md).  freightCreationPolicy: Automatic

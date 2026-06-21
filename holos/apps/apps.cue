@@ -7,7 +7,7 @@
 //
 //	apps: "my-app": {
 //		project: "my-project"
-//		image:   "quay.holos.localhost/my-project/my-app@sha256:..."
+//		image:   "quay.holos.internal/my-project/my-app@sha256:..."
 //		port:    8080
 //	}
 //

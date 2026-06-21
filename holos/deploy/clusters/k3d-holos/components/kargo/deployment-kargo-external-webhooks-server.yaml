@@ -22,7 +22,7 @@ spec:
   template:
     metadata:
       annotations:
-        configmap/checksum: f9e9b4280b69d1a793d4e9abed4f4d404422f867f646f0bdbf18680368db68ed
+        configmap/checksum: 24d80bcca44fe474c64814efc421e394f417f47b4db2df0989d3ef5e8a16614d
       labels:
         app.kubernetes.io/component: external-webhooks-server
         app.kubernetes.io/instance: kargo

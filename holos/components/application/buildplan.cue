@@ -12,7 +12,7 @@ import (
 // the full application-level resource set contained by the app's Project
 // (ADR-21 *The Application component*).  An Application is, in its simplest
 // form, an OCI image run as a k8s Deployment fronted by a Service and exposed
-// via a Gateway-API HTTPRoute on the shared *.holos.localhost wildcard
+// via a Gateway-API HTTPRoute on the shared *.holos.internal wildcard
 // certificate, delivered by Kargo + Argo CD.  But its PRIMARY PURPOSE is
 // identity: it manages a keycloak.holos.run KeycloakClient for the app and maps
 // the project's primitive roles (owner/editor/viewer) onto matching app client
@@ -120,9 +120,9 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 	PORT: int
 
 	// HOST is the OPTIONAL external hostname the HTTPRoute exposes the app at
-	// (apps.<name>.host); when unset it defaults to <name>.holos.localhost (the
+	// (apps.<name>.host); when unset it defaults to <name>.holos.internal (the
 	// convention; per-env hostname selection is a future extension).
-	HOST: string | *"\(NAME).holos.localhost"
+	HOST: string | *"\(NAME).holos.internal"
 
 	// An app MUST NOT be named the same as its project.  Every app resource here
 	// is named with the bare app name in the project's control namespace, and the
@@ -186,7 +186,7 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 	// CONFIG_REPO is the full registry/org/repo path; CONFIG_REPO_OCI is its oci://
 	// form, which must stay byte-identical between the Application source and the
 	// Stage's argocd-update source (Kargo matches by exact string).
-	let CONFIG_REPO = "quay.holos.localhost/\(PROJECT)/\(CONFIG_REPO_NAME)"
+	let CONFIG_REPO = "quay.holos.internal/\(PROJECT)/\(CONFIG_REPO_NAME)"
 	let CONFIG_REPO_OCI = "oci://\(CONFIG_REPO)"
 
 	// CONFIG_TAG_REGEX scopes the Warehouse subscription to the input-addressed
@@ -299,8 +299,8 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 	// HTTPROUTE_RESOURCE attaches to the shared `default` Gateway in
 	// istio-gateways (cross-namespace attachment is allowed because the listener
 	// sets allowedRoutes.namespaces.from: All — istio-gateway component).  TLS is
-	// the shared *.holos.localhost wildcard certificate at the Gateway listener;
-	// the app references NO cert of its own.  HOST (default <name>.holos.localhost)
+	// the shared *.holos.internal wildcard certificate at the Gateway listener;
+	// the app references NO cert of its own.  HOST (default <name>.holos.internal)
 	// matches the wildcard listener hostname and resolves to 127.0.0.1 on the host
 	// per docs/local-cluster.md.
 	let HTTPROUTE_RESOURCE = {

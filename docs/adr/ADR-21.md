@@ -160,7 +160,7 @@ components** (the per-phase revision rows track what landed).
 > 4. **The project `KeycloakClient` is rendered *unconditionally*.** The Design
 >    below describes it as conditional ("only when the Project runs its own OIDC
 >    service"); as built the Project component always emits the project
->    `KeycloakClient` (`https://<name>.holos.localhost`), which carries the
+>    `KeycloakClient` (`https://<name>.holos.internal`), which carries the
 >    project-prefixed role bindings, so the "conditional" framing is superseded.
 >
 > The body is retained for the design rationale; treat its resource placement,
@@ -348,7 +348,7 @@ means a member of this `owners` map; the field is plural to admit more than one.
 // holos/apps/my-app.cue
 apps: "my-app": {
 	project: "my-project"
-	image:   "quay.holos.localhost/my-project/my-app@sha256:…"
+	image:   "quay.holos.internal/my-project/my-app@sha256:…"
 	port:    8080
 }
 ```
@@ -520,7 +520,7 @@ manifests provision the identity half of its primitive-role model
    of to hold a primitive role) and `projects/<project>/custodians/{owner,editor,viewer}`
    (whose members manage the matching `roles/*` group's membership via FGAP-v2
    delegation). Its `clientRoleBindings` names the **consumer client** — the Quay
-   client `https://quay.holos.localhost` for the [ADR-19](ADR-19.md) `syncedTeams`
+   client `https://quay.holos.internal` for the [ADR-19](ADR-19.md) `syncedTeams`
    case — so each `roles/<role>` group carries the `my-project-<role>` client role
    that the consumer's existing `oidc-usermodel-client-role-mapper` emits into the
    `groups` claim. This CR is the **authoritative** owner of the role→claim binding
@@ -776,7 +776,7 @@ projects/my-project/roles/{owner,editor,viewer}
 projects/my-project/custodians/{owner,editor,viewer}
 ```
 
-Its `clientRoleBindings` names the **Quay client** `https://quay.holos.localhost`
+Its `clientRoleBindings` names the **Quay client** `https://quay.holos.internal`
 as the consumer (the [ADR-19](ADR-19.md) `syncedTeams` case needs **no** project
 `KeycloakClient`), so the controller assigns a `my-project-<role>` **client role on
 the Quay client** to each `roles/<role>` group.

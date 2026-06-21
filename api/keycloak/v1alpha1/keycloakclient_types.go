@@ -54,7 +54,7 @@ type ClientSecretReference struct {
 // +kubebuilder:validation:XValidation:rule="self.type == 'confidential' ? has(self.secretRef) : !has(self.secretRef)",message="secretRef is required for a confidential client and forbidden for a public client"
 type KeycloakClientSpec struct {
 	// ClientID is the Keycloak client ID, named by its URL (e.g.
-	// https://quay.holos.localhost). It is immutable: it is the client's durable
+	// https://quay.holos.internal). It is immutable: it is the client's durable
 	// identity in the realm's global client namespace, so the ownership claim and
 	// the finalizer always target exactly the client this CR provisioned.
 	//

@@ -14,9 +14,9 @@ spec:
           - name: my-project-my-app
             namespace: argocd
             sources:
-            - desiredRevision: ${{ imageFrom("quay.holos.localhost/my-project/my-app-config").Digest
+            - desiredRevision: ${{ imageFrom("quay.holos.internal/my-project/my-app-config").Digest
                 }}
-              repoURL: oci://quay.holos.localhost/my-project/my-app-config
+              repoURL: oci://quay.holos.internal/my-project/my-app-config
               updateTargetRevision: true
         uses: argocd-update
   requestedFreight:

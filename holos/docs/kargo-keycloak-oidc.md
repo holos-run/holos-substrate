@@ -2,7 +2,7 @@
 
 The Kargo control plane ([`components/kargo/`](../components/kargo/buildplan.cue))
 authenticates its API/UI against the Keycloak `holos` realm with OIDC, so the
-only way into `https://kargo.holos.localhost` is a Keycloak login — there is no
+only way into `https://kargo.holos.internal` is a Keycloak login — there is no
 local admin account. The Keycloak `kargo` client was provisioned in HOL-1250
 and the Kargo-side wiring landed in HOL-1251; this document records the
 as-built shape and how to maintain it. Verify it live with the procedure in
@@ -13,7 +13,7 @@ as-built shape and how to maintain it. Verify it live with the procedure in
 Kargo is a **public OIDC client** of the Keycloak `holos` realm: it uses the
 Authorization Code flow with **PKCE (S256)** and holds **no client secret**.
 `api.oidc.enabled: true` points the API at the issuer
-`https://auth.holos.localhost/realms/holos` and the public `kargo` client; the
+`https://auth.holos.internal/realms/holos` and the public `kargo` client; the
 bundled Dex broker is off (`api.oidc.dex.enabled: false`) because Keycloak is a
 first-class OIDC provider. The realm roles a user holds arrive in a single
 `groups` claim, and `api.oidc.admins/viewers/users` map those role names to
@@ -31,7 +31,7 @@ Kargo instead follows the **Quay `CA_CERTIFICATE` pattern**
 cert-manager `Certificate` materialises the `local-ca` root into the kargo
 namespace, and the API's `parse-cabundle` initContainer installs it into the
 system trust store. The backchannel-reachability piece — making
-`auth.holos.localhost` resolve and route in-cluster — is copied almost verbatim
+`auth.holos.internal` resolve and route in-cluster — is copied almost verbatim
 from Argo CD's `ServiceEntry`.
 
 ## Components involved
@@ -52,8 +52,8 @@ and [keycloak-clients.md](keycloak-clients.md)):
   client secret and no bootstrap Job.
 - `serviceAccountsEnabled: false`, `directAccessGrantsEnabled: false` — a public
   client holds no secret, so the confidential-only flows must be off.
-- `redirectUris: ["https://kargo.holos.localhost/*"]`,
-  `webOrigins: ["https://kargo.holos.localhost"]` — the web-UI OAuth callback.
+- `redirectUris: ["https://kargo.holos.internal/*"]`,
+  `webOrigins: ["https://kargo.holos.internal"]` — the web-UI OAuth callback.
 - **Two `groups`-claim protocol mappers**, both writing the same `groups` claim
   into the ID, access, and userinfo tokens:
   - `groups` (`oidc-group-membership-mapper`) — Keycloak **group** names
@@ -81,20 +81,24 @@ three pieces that must land together:
    mounts the whole Secret via `api.cabundle.secretName: kargo-local-ca` and its
    `parse-cabundle` initContainer installs every cert it finds into the trust
    store.
-3. **A `ServiceEntry`** (`auth-holos-localhost`) for the issuer hostname → the
-   shared Istio Gateway. The kargo namespace is ambient-enrolled, and
-   `*.localhost` resolves to loopback both upstream of CoreDNS and inside
-   ztunnel's DNS proxy, so a plain DNS override cannot reach Keycloak from an
-   enrolled pod. The `ServiceEntry` makes `auth.holos.localhost` a service the
-   mesh resolves to the Gateway (`default-istio.istio-gateways.svc.cluster.local`,
-   port 443, `resolution: DNS`), which terminates TLS for `*.holos.localhost`
+3. **A `ServiceEntry`** (`auth-holos-internal`) for the issuer hostname → the
+   shared Istio Gateway. The kargo namespace is ambient-enrolled. On the
+   `.internal` TLD, CoreDNS (`components/coredns`) now resolves
+   `*.holos.internal` authoritatively in-cluster — `.internal` is an ordinary
+   DNS name with no RFC 6761 loopback short-circuit, unlike the retired
+   `.localhost` names that resolvers (including ztunnel's DNS proxy)
+   short-circuited to loopback in-process before any DNS server saw the query.
+   The `ServiceEntry` is retained alongside CoreDNS in this phase (HOL-1364,
+   conservative scope): it makes `auth.holos.internal` a service the mesh
+   resolves to the Gateway (`default-istio.istio-gateways.svc.cluster.local`,
+   port 443, `resolution: DNS`), which terminates TLS for `*.holos.internal`
    and routes by SNI/Host to the keycloak `HTTPRoute`. The API thus traverses
    the exact host path browsers use, and the `iss` claim matches
    `api.oidc.issuerURL` end-to-end. This is the Argo CD `SERVICE_ENTRY` pattern.
 
 All three render through the component's `Resources` generator and the
 kubectl-slice transformer into `certificate-kargo-local-ca.yaml`,
-`serviceentry-auth-holos-localhost.yaml`, and the OIDC config in
+`serviceentry-auth-holos-internal.yaml`, and the OIDC config in
 `configmap-kargo-api.yaml` / `deployment-kargo-api.yaml` under
 [`holos/deploy/clusters/k3d-holos/components/kargo/`](../deploy/clusters/k3d-holos/components/kargo/).
 
@@ -206,9 +210,9 @@ This is the live login test (the same end-to-end check from HOL-1251):
 
 1. Create the local cluster with DNS and trusted TLS per
    [docs/local-cluster.md](../../docs/local-cluster.md), then `scripts/apply`.
-2. In Keycloak (`https://auth.holos.localhost`, `holos` realm), give a user the
+2. In Keycloak (`https://auth.holos.internal`, `holos` realm), give a user the
    `platform-owner` realm role and ensure the account has an **email** set.
-3. Browse to `https://kargo.holos.localhost` and log in via Keycloak. You are
+3. Browse to `https://kargo.holos.internal` and log in via Keycloak. You are
    redirected to Keycloak, authenticate, and land back in the Kargo UI.
 4. Confirm **system-wide admin** access (the `platform-owner` → `admins`
    mapping): all projects and system-level configuration are visible and
@@ -242,7 +246,7 @@ This is the live login test (the same end-to-end check from HOL-1251):
   the `kargo` client in the realm-config component, once the CLI's callback
   port/path is confirmed.
 - **Local CA / local issuer only.** Trust rests on the machine-local mkcert
-  `local-ca` root and the `*.holos.localhost` issuer. A real (non-local) CA and
+  `local-ca` root and the `*.holos.internal` issuer. A real (non-local) CA and
   a public issuer hostname for a production deployment are future hardening —
   see the [Production deployment area](placeholders.md#production-deployment-area)
   placeholder.

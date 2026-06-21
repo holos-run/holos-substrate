@@ -71,7 +71,7 @@ The `#App` schema ([`holos/apps/apps.cue`](../apps/apps.cue)) requires:
 | `project`  | yes      | The project the app belongs to. Must be a key in the `projects` collection — an app naming a non-existent project is a **render-time** failure (the `apps` package unifies `project` with `projects.#RegisteredProject`). |
 | `image`    | yes      | The container image reference (non-empty).                            |
 | `port`     | yes      | The container TCP port (`1..65535`).                                  |
-| `host`     | no       | The external hostname. Defaults to `<app-name>.holos.localhost`.     |
+| `host`     | no       | The external hostname. Defaults to `<app-name>.holos.internal`.     |
 
 A project supports **zero to many** applications; each app binds to exactly one
 project via `project` (GCP-model containment — the project *is* the namespace
@@ -129,12 +129,12 @@ realized as `keycloak.holos.run` resources the Holos Controller
   members manage the matching `roles/*` group's membership.
 - The owner's **`KeycloakUser`** (pre-created by email, first-login auto-linked)
   added to `projects/<name>/roles/owner`.
-- The project's own **`KeycloakClient`** (`https://<name>.holos.localhost`).
+- The project's own **`KeycloakClient`** (`https://<name>.holos.internal`).
 
 Each role group confers its primitive role on **three** clients via
 `clientRoles[]`:
 
-1. **The platform Quay client** (`https://quay.holos.localhost`) — named directly
+1. **The platform Quay client** (`https://quay.holos.internal`) — named directly
    by `clientId`, conferring the project-prefixed role **`<name>-<role>`**. The
    Quay client's existing `quay-client-roles` mapper emits that value into the
    `groups` claim, and the project's Quay `Organization.spec.syncedTeams[]` maps
@@ -172,7 +172,7 @@ bundles:
 
 - **Workload** (Argo CD syncs from the published `<app>-config` OCI artifact):
   `Deployment`, `Service`, `HTTPRoute` (attaching to the shared Gateway at
-  `<host>`, default `<app>.holos.localhost`), `ConfigMap`, `ServiceAccount`, and
+  `<host>`, default `<app>.holos.internal`), `ConfigMap`, `ServiceAccount`, and
   a view `RoleBinding` — all in the project's control namespace.
 - **Control plane** (operator-applied, never Argo-synced): the app's
   `KeycloakClient`, the Quay `Repository` (within the project's `Organization`),

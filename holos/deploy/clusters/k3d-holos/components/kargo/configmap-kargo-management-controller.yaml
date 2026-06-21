@@ -1,7 +1,7 @@
 apiVersion: v1
 data:
   CLUSTER_SECRETS_NAMESPACE: kargo-cluster-secrets
-  EXTERNAL_WEBHOOK_SERVER_BASE_URL: https://kargo-webhooks.holos.localhost
+  EXTERNAL_WEBHOOK_SERVER_BASE_URL: https://kargo-webhooks.holos.internal
   KARGO_NAMESPACE: kargo
   LOG_FORMAT: JSON
   LOG_LEVEL: INFO

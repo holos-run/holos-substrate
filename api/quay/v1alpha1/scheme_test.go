@@ -39,7 +39,7 @@ func TestGroupVersion(t *testing.T) {
 // Organization and Repository — a non-trivial smoke test that the generated
 // code copies nested pointer fields (the Repository webhook) independently.
 func TestDeepCopyRoundTrip(t *testing.T) {
-	url := "https://kargo.holos.localhost/webhook/quay/abc"
+	url := "https://kargo.holos.internal/webhook/quay/abc"
 	repo := &Repository{
 		Spec: RepositorySpec{
 			OrganizationRef: "my-project",

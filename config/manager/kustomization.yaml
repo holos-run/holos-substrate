@@ -5,5 +5,5 @@ resources:
   - metrics_service.yaml
 images:
   - name: controller
-    newName: quay.holos.localhost/holos/holos-controller
+    newName: quay.holos.internal/holos/holos-controller
     newTag: dev

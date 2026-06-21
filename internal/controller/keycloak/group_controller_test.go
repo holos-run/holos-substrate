@@ -60,7 +60,7 @@ func TestGroupReconcileCreate(t *testing.T) {
 	kclient := &keycloakv1alpha1.KeycloakClient{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "consumer"},
 		Spec: keycloakv1alpha1.KeycloakClientSpec{
-			ClientID:    "https://app.holos.localhost",
+			ClientID:    "https://app.holos.internal",
 			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
 			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
 		},
@@ -85,7 +85,7 @@ func TestGroupReconcileCreate(t *testing.T) {
 	}
 
 	fake := newFakeKeycloakClient("projects/my-project/custodians/owner")
-	fake.seedClient("https://app.holos.localhost", "client-uuid")
+	fake.seedClient("https://app.holos.internal", "client-uuid")
 	fake.seedClientRole("client-uuid", "my-project-owner", "role-uuid")
 	fake.seedClient(adminPermissionsClientID, "perm-client-uuid")
 	r, recorder := newGroupReconciler(fake, ns)
@@ -399,7 +399,7 @@ func TestGroupClientRolePrune(t *testing.T) {
 	createIgnoreExists(t, ctx, &keycloakv1alpha1.KeycloakClient{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "consumer"},
 		Spec: keycloakv1alpha1.KeycloakClientSpec{
-			ClientID:    "https://app.holos.localhost",
+			ClientID:    "https://app.holos.internal",
 			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
 			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
 		},
@@ -420,7 +420,7 @@ func TestGroupClientRolePrune(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	fake := newFakeKeycloakClient()
-	fake.seedClient("https://app.holos.localhost", "client-uuid")
+	fake.seedClient("https://app.holos.internal", "client-uuid")
 	fake.seedClientRole("client-uuid", "rp-owner", "role-owner")
 	fake.seedClientRole("client-uuid", "rp-extra", "role-extra")
 	r, _ := newGroupReconciler(fake, ns)
@@ -449,7 +449,7 @@ func TestGroupClientRolePrune(t *testing.T) {
 	if !fake.roleAssigned(gid, "client-uuid", "rp-owner") {
 		t.Errorf("rp-owner should remain assigned")
 	}
-	if mcr := getGroup(t, ctx, key).Status.ManagedClientRoles; len(mcr) != 1 || mcr[0] != "https://app.holos.localhost/rp-owner" {
+	if mcr := getGroup(t, ctx, key).Status.ManagedClientRoles; len(mcr) != 1 || mcr[0] != "https://app.holos.internal/rp-owner" {
 		t.Errorf("status.managedClientRoles = %v, want only the owner role", mcr)
 	}
 }
@@ -816,7 +816,7 @@ func TestGroupClientRolePartialFailureTracked(t *testing.T) {
 	createIgnoreExists(t, ctx, &keycloakv1alpha1.KeycloakClient{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "consumer"},
 		Spec: keycloakv1alpha1.KeycloakClientSpec{
-			ClientID:    "https://app.holos.localhost",
+			ClientID:    "https://app.holos.internal",
 			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
 			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
 		},
@@ -837,7 +837,7 @@ func TestGroupClientRolePartialFailureTracked(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	fake := newFakeKeycloakClient()
-	fake.seedClient("https://app.holos.localhost", "client-uuid")
+	fake.seedClient("https://app.holos.internal", "client-uuid")
 	fake.seedClientRole("client-uuid", "pf-a", "role-a")
 	fake.seedClientRole("client-uuid", "pf-fail", "role-fail")
 	// Fail the assignment of the second role only.
@@ -853,7 +853,7 @@ func TestGroupClientRolePartialFailureTracked(t *testing.T) {
 	got := getGroup(t, ctx, key)
 	found := false
 	for _, m := range got.Status.ManagedClientRoles {
-		if m == "https://app.holos.localhost/pf-a" {
+		if m == "https://app.holos.internal/pf-a" {
 			found = true
 		}
 	}
@@ -917,7 +917,7 @@ func TestGroupAdoptedDeletePrunesManaged(t *testing.T) {
 	createIgnoreExists(t, ctx, &keycloakv1alpha1.KeycloakClient{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "consumer"},
 		Spec: keycloakv1alpha1.KeycloakClientSpec{
-			ClientID:    "https://app.holos.localhost",
+			ClientID:    "https://app.holos.internal",
 			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
 			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
 		},
@@ -937,7 +937,7 @@ func TestGroupAdoptedDeletePrunesManaged(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	fake := newFakeKeycloakClient("projects/ap/roles/owner", "projects/ap/custodians/owner") // role group pre-exists → adopted
-	fake.seedClient("https://app.holos.localhost", "client-uuid")
+	fake.seedClient("https://app.holos.internal", "client-uuid")
 	fake.seedClientRole("client-uuid", "ap-owner", "role-owner")
 	fake.seedClient(adminPermissionsClientID, "perm-client-uuid")
 	r, _ := newGroupReconciler(fake, ns)
@@ -1029,7 +1029,7 @@ func TestGroupConfersRoleOnNamedReservedClient(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	const quayClientID = "https://quay.holos.localhost"
+	const quayClientID = "https://quay.holos.internal"
 	group := &keycloakv1alpha1.KeycloakGroup{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "owner"},
 		Spec: keycloakv1alpha1.KeycloakGroupSpec{
@@ -1100,7 +1100,7 @@ func TestGroupReservedRoleOnReservedClientRejected(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	const quayClientID = "https://quay.holos.localhost"
+	const quayClientID = "https://quay.holos.internal"
 	group := &keycloakv1alpha1.KeycloakGroup{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "reservedrole"},
 		Spec: keycloakv1alpha1.KeycloakGroupSpec{
@@ -1159,19 +1159,19 @@ func TestGroupDirectClientRoleGuards(t *testing.T) {
 	}{
 		{"non-allowlisted client", "my-project", "projects/my-project/roles/owner", "realm-management", "my-project-realm-admin"},
 		{"another reserved client", "my-project", "projects/my-project/roles/owner", "argocd", "my-project-owner"},
-		{"cross-project role on quay", "my-project", "projects/my-project/roles/owner", "https://quay.holos.localhost", "other-project-owner"},
+		{"cross-project role on quay", "my-project", "projects/my-project/roles/owner", "https://quay.holos.internal", "other-project-owner"},
 		// Prefix collision: project "my" (path projects/my/roles/owner, namespace
 		// "my") must NOT be able to confer "my-project-owner", which belongs to
 		// project "my-project". The exact <project>-<leaf> match (not a prefix)
 		// rejects it.
-		{"prefix-collision cross-project", "my", "projects/my/roles/owner", "https://quay.holos.localhost", "my-project-owner"},
+		{"prefix-collision cross-project", "my", "projects/my/roles/owner", "https://quay.holos.internal", "my-project-owner"},
 		// A non-role (custodian) group must not confer a claim value on the reserved
 		// client even with a name that matches its own path's leaf.
-		{"non-role custodian path", "my-project", "projects/my-project/custodians/owner", "https://quay.holos.localhost", "my-project-owner"},
+		{"non-role custodian path", "my-project", "projects/my-project/custodians/owner", "https://quay.holos.internal", "my-project-owner"},
 		// Project↔namespace mismatch: a CR in namespace "intruder" naming a path for
 		// project "my-project" is refused even with a correct <project>-<leaf> role,
 		// because the path project must equal the CR namespace.
-		{"project-namespace mismatch", "intruder", "projects/my-project/roles/owner", "https://quay.holos.localhost", "my-project-owner"},
+		{"project-namespace mismatch", "intruder", "projects/my-project/roles/owner", "https://quay.holos.internal", "my-project-owner"},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

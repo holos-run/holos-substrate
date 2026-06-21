@@ -49,10 +49,10 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 		// URL-shaped clientId — the reconciler derives the clientId from the
 		// referenced CR's spec.clientId (see ClientRoleReference).
 		Spec: KeycloakClientSpec{
-			ClientID:     "https://my-app.holos.localhost",
+			ClientID:     "https://my-app.holos.internal",
 			Type:         KeycloakClientTypeConfidential,
 			InstanceRef:  KeycloakInstanceReference{Name: "holos", Namespace: "holos-controller"},
-			RedirectURIs: []string{"https://my-app.holos.localhost/oauth2/callback"},
+			RedirectURIs: []string{"https://my-app.holos.internal/oauth2/callback"},
 			ClientRoles:  []ClientRoleReference{{ClientRef: "my-app", Role: "editor"}},
 			SecretRef:    &ClientSecretReference{Name: "my-app-oidc", Key: "client_secret"},
 			CABundle:     []byte("-----BEGIN CERTIFICATE-----"),

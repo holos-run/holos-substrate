@@ -10,7 +10,7 @@
 # Container image coordinates for the controller. Defaults target the local k3d
 # in-cluster registry so a pushed image is pullable by the cluster (mirrors the
 # holos-paas IMAGE_* defaults in the root Makefile).
-CONTROLLER_IMAGE_REPO ?= quay.holos.localhost/holos/holos-controller
+CONTROLLER_IMAGE_REPO ?= quay.holos.internal/holos/holos-controller
 CONTROLLER_IMAGE_TAG  ?= dev
 CONTROLLER_IMAGE      ?= $(CONTROLLER_IMAGE_REPO):$(CONTROLLER_IMAGE_TAG)
 CONTROLLER_PLATFORM   ?= linux/arm64

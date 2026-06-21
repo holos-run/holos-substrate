@@ -5,7 +5,7 @@ metadata:
   namespace: argocd
 spec:
   hostnames:
-  - argocd.holos.localhost
+  - argocd.holos.internal
   parentRefs:
   - name: default
     namespace: istio-gateways

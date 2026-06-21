@@ -37,6 +37,20 @@ platform: {
 				labels: namespaces: "true"
 			}}).output
 
+			// coredns emits the coredns-custom ConfigMap (kube-system) that
+			// makes *.holos.internal resolve to the shared Istio gateway
+			// Service from inside the cluster, so in-cluster relying parties
+			// reach a service by the same public hostname a browser uses.
+			// This is the in-cluster half of the .internal migration
+			// (HOL-1364): .internal carries no RFC 6761 loopback short-circuit
+			// (unlike the retired .localhost names), so CoreDNS can answer it
+			// authoritatively.  No CRD or controller dependency — it edits the
+			// k3s CoreDNS custom-config ConfigMap, which already exists.
+			(#ComponentTemplate & {inputs: {
+				component: "coredns"
+				cluster:   CLUSTER.name
+			}}).output
+
 			// gateway-api renders the Gateway API standard channel CRDs.  CRDs
 			// are isolated components labeled crds: "true" so they apply before
 			// the controllers that depend on them.
@@ -297,7 +311,7 @@ platform: {
 			// quay-redis Deployment, Service, and AuthorizationPolicy, the
 			// registry blob-storage PVC, the secret-keys bootstrap Job with
 			// its scoped RBAC, and the HTTPRoute pair attaching it to the
-			// shared Gateway at quay.holos.localhost.  Applies after
+			// shared Gateway at quay.holos.internal.  Applies after
 			// keycloak in
 			// scripts/apply: it needs the quay-db Cluster reachable (gated
 			// Ready in the cnpg-clusters step), and appending it keeps the
@@ -331,7 +345,7 @@ platform: {
 			// controller, repo server, API/UI server, and single-instance
 			// redis — from the upstream argo-cd Helm chart with a laptop
 			// footprint, plus the HTTPRoute pair attaching the UI to the
-			// shared Gateway at argocd.holos.localhost.  Render-only in this
+			// shared Gateway at argocd.holos.internal.  Render-only in this
 			// phase (HOL-1186): integration into scripts/apply with health
 			// gates lands in the next phase (HOL-1187).
 			(#ComponentTemplate & {inputs: {
@@ -370,7 +384,7 @@ platform: {
 			// external webhooks servers — from the upstream Kargo Helm chart
 			// with a laptop footprint and a simplified no-auth posture for the
 			// local single-user cluster (HOL-1238).  The API/UI is exposed at
-			// kargo.holos.localhost through the shared Gateway.  Registered
+			// kargo.holos.internal through the shared Gateway.  Registered
 			// after kargo-crds: its workloads need the kargo.akuity.io types
 			// established first (the crds-before-controllers guardrail).  The
 			// controller drives Argo CD via the argocd-update promotion step,

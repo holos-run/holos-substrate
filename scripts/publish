@@ -39,9 +39,9 @@
 #                    digest before rendering.  Defaults to $APP_IMAGE.
 #   [oci-repo]       The OCI repository to push the manifests artifact to
 #                    (no tag/digest suffix), e.g.
-#                    quay.holos.localhost/holos/holos-paas-manifests.
+#                    quay.holos.internal/holos/holos-paas-manifests.
 #                    Defaults to $PUBLISH_REPO, then to
-#                    quay.holos.localhost/holos/holos-paas-manifests.
+#                    quay.holos.internal/holos/holos-paas-manifests.
 #
 # Environment overrides:
 #   APP_IMAGE        Default app image reference when the positional arg is
@@ -63,7 +63,7 @@
 #                    in-cluster Quay's mkcert-signed certificate
 #                    (argocd-application-source.md).  When unset, transport is
 #                    decided per host: `--insecure` auto-enables for a
-#                    `*.holos.localhost` host.  When set, it applies to BOTH the
+#                    `*.holos.internal` host.  When set, it applies to BOTH the
 #                    source and destination registries.
 #   ORAS_PLAIN_HTTP  Set to a non-empty value to pass `--plain-http` to oras
 #                    for a registry served over plain HTTP (e.g. a bare
@@ -124,12 +124,12 @@ fi
 # Inputs
 # ---------------------------------------------------------------------------
 APP_IMAGE="${1:-${APP_IMAGE:-}}"
-PUBLISH_REPO="${2:-${PUBLISH_REPO:-quay.holos.localhost/holos/holos-paas-manifests}}"
+PUBLISH_REPO="${2:-${PUBLISH_REPO:-quay.holos.internal/holos/holos-paas-manifests}}"
 
 if [[ -z "${APP_IMAGE}" ]]; then
   echo "ERROR: no app image reference given." >&2
   echo "       Usage: scripts/publish <app-image-ref> [oci-repo]" >&2
-  echo "       e.g.   scripts/publish quay.holos.localhost/holos/echo:v1" >&2
+  echo "       e.g.   scripts/publish quay.holos.internal/holos/echo:v1" >&2
   exit 1
 fi
 
@@ -145,7 +145,7 @@ APP_IMAGE_HOST="${APP_IMAGE%%/*}"
 
 # transport_flags HOST -> echoes the oras transport flag(s) for that host:
 #   --plain-http for a bare localhost dev registry (HTTP, no TLS);
-#   --insecure   for *.holos.localhost (mkcert-signed cert not in the trust
+#   --insecure   for *.holos.internal (mkcert-signed cert not in the trust
 #                store), matching the Argo CD repo Secret's insecure: "true".
 # The ORAS_PLAIN_HTTP / ORAS_INSECURE overrides, when set, apply to BOTH the
 # source and destination (an explicit operator decision); plain HTTP takes
@@ -161,7 +161,7 @@ transport_flags() {
   fi
   if [[ -z "${ORAS_INSECURE+x}" ]]; then
     case "${host}" in
-      *.holos.localhost) insecure=1 ;;
+      *.holos.internal) insecure=1 ;;
     esac
   fi
   if [[ -n "${plain}" ]]; then

@@ -14,7 +14,7 @@ spec:
   project: my-project
   source:
     path: .
-    repoURL: oci://quay.holos.localhost/my-project/my-project-config
+    repoURL: oci://quay.holos.internal/my-project/my-project-config
   syncPolicy:
     automated:
       prune: true

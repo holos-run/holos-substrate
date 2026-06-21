@@ -6,7 +6,7 @@ data:
   exec.enabled: "false"
   oidc.config: |
     name: Keycloak
-    issuer: https://auth.holos.localhost/realms/holos
+    issuer: https://auth.holos.internal/realms/holos
     clientID: argocd
     enablePKCEAuthentication: true
     requestedScopes:
@@ -114,7 +114,7 @@ data:
   timeout.hard.reconciliation: 0s
   timeout.reconciliation: 120s
   timeout.reconciliation.jitter: 60s
-  url: https://argocd.holos.localhost
+  url: https://argocd.holos.internal
 kind: ConfigMap
 metadata:
   labels:

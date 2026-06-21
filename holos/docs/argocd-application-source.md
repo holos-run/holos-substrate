@@ -29,7 +29,7 @@ gzipped tarball of plain manifests, layer media type
 
 ```bash
 tar -czf manifests.tar.gz -C <rendered-manifests-dir> .
-oras push quay.holos.localhost/holos/<repo>:<tag> \
+oras push quay.holos.internal/holos/<repo>:<tag> \
   manifests.tar.gz:application/vnd.oci.image.layer.v1.tar+gzip
 ```
 
@@ -45,7 +45,7 @@ are acceptable for human-driven smoke tests. Resolve a tag to its digest at
 publish time:
 
 ```bash
-oras resolve quay.holos.localhost/holos/<repo>:<tag>
+oras resolve quay.holos.internal/holos/<repo>:<tag>
 ```
 
 Kargo's `argocd-update` promotion step ([ADR-16](../../docs/adr/ADR-16.md))
@@ -76,7 +76,7 @@ metadata:
     argocd.argoproj.io/secret-type: repository
 stringData:
   name: <repo-name>
-  url: oci://quay.holos.localhost/holos/<repo>
+  url: oci://quay.holos.internal/holos/<repo>
   type: oci
   username: holos+robot
   password: <robot token>
@@ -85,7 +85,7 @@ stringData:
 
 `insecure: "true"` skips TLS verification on the repo-server's connection
 to the registry. It is required because the Gateway serves
-`*.holos.localhost` with a certificate signed by the machine-local mkcert
+`*.holos.internal` with a certificate signed by the machine-local mkcert
 CA (`scripts/local-ca`), which is generated per machine, never committed,
 and not in the repo-server image's trust store — verified live: without
 the field, sync fails with `x509: certificate signed by unknown
@@ -99,9 +99,9 @@ on trusting the cluster network, acceptable for the local MVP.
 ## How the repo-server reaches Quay (in-cluster reachability)
 
 In-cluster clients use the **same URL as the host**:
-`https://quay.holos.localhost`, through the shared Gateway. This is not
+`https://quay.holos.internal`, through the shared Gateway. This is not
 optional — Quay pins its OCI token-auth realm to
-`https://quay.holos.localhost/v2/auth` (`SERVER_HOSTNAME` +
+`https://quay.holos.internal/v2/auth` (`SERVER_HOSTNAME` +
 `PREFERRED_URL_SCHEME` in
 [components/quay/buildplan.cue](../components/quay/buildplan.cue)), so a
 client that connects to the in-cluster Service
@@ -109,33 +109,37 @@ client that connects to the in-cluster Service
 hostname for every token fetch. The plain-Service-DNS option is therefore
 structurally broken for the v2 API, not merely inconvenient.
 
-Plain DNS cannot make the public hostname resolve inside pods:
-`*.localhost` names loopback at two independent layers — the upstream
-resolver behind CoreDNS (RFC 6761 behavior in the host's resolver), and
-ztunnel's DNS proxy for ambient-enrolled namespaces (`AMBIENT_DNS_CAPTURE`
-is enabled; ztunnel's resolver special-cases `*.localhost` before
-forwarding, so a CoreDNS rewrite never sees enrolled pods' queries).
+In-cluster resolution of the public hostname is provided by CoreDNS. The
+platform's public hostnames live on the `.internal` TLD (an ICANN-reserved
+private-use TLD), **not** `.localhost`. This is deliberate: `.localhost` is
+reserved for loopback (RFC 6761), so resolvers — the host's stub resolver,
+musl libc inside Alpine pods, and ztunnel's DNS proxy for ambient-enrolled
+namespaces (`AMBIENT_DNS_CAPTURE`) — short-circuit `*.localhost` to
+`127.0.0.1`/`::1` in-process before the query ever reaches CoreDNS, making
+the public hostname unresolvable from in-cluster relying parties (the root
+cause behind HOL-1360). `.internal` carries no such special resolver
+behavior: musl, glibc, and Go all issue an ordinary DNS query, so the
+`components/coredns` rewrite answers `*.holos.internal` authoritatively
+in-cluster — mapping it to the shared Istio gateway Service
+(`default-istio.istio-gateways.svc.cluster.local`).
 
-The committed fix is the `quay-holos-localhost` **ServiceEntry** in the
-quay component: it makes `quay.holos.localhost` a service the mesh knows,
-so ztunnel answers enrolled pods' DNS queries with an auto-allocated VIP
-and routes connections to that VIP to the shared Gateway
-(`default-istio.istio-gateways.svc.cluster.local`), which terminates TLS
-for `*.holos.localhost` and routes by SNI/Host to Quay. In-cluster clients
-traverse the host's HTTPS path — same URL, same credentials, same routes
-(the ServiceEntry declares only 443, so the Gateway's port-80 redirect
-listener stays host-only; every v2 client speaks HTTPS anyway).
+Alongside CoreDNS, the `quay-holos-internal` **ServiceEntry** in the quay
+component is retained (HOL-1364, conservative scope — deletion is a
+follow-up once CoreDNS resolution is verified): it makes
+`quay.holos.internal` a service the mesh knows, so ztunnel answers enrolled
+pods' DNS queries with an auto-allocated VIP and routes connections to that
+VIP to the shared Gateway, which terminates TLS for `*.holos.internal` and
+routes by SNI/Host to Quay. In-cluster clients traverse the host's HTTPS
+path — same URL, same credentials, same routes (the ServiceEntry declares
+only 443, so the Gateway's port-80 redirect listener stays host-only; every
+v2 client speaks HTTPS anyway).
 
-Caveat: clients that special-case `*.localhost` **themselves** never issue
-the DNS query, so the ServiceEntry cannot help them — notably curl ≥ 7.78
-and anything built on libcurl (git's HTTPS transport included) hardcode
-`localhost` and `*.localhost` to loopback. Verified live in the
-repo-server pod: `git ls-remote https://quay.holos.localhost/…` tried
-`::1`/`127.0.0.1` while `getent hosts quay.holos.localhost` (glibc's
-normal resolver path) returned the mesh VIP in the same pod. Argo CD is a
-static Go binary using the pure-Go resolver, which likewise queries DNS —
-verified by the sync itself. Check the client's resolver behavior before
-pointing other in-cluster consumers at `*.holos.localhost` hostnames.
+Because `.internal` is an ordinary DNS name, the old `*.localhost`
+caveat — clients like curl/libcurl (git's HTTPS transport included) that
+hardcode `localhost`/`*.localhost` to loopback and never issue the DNS
+query — no longer applies: those clients now perform a normal lookup for
+`*.holos.internal`, which CoreDNS resolves. Argo CD's static Go binary
+(pure-Go resolver) queries DNS and reaches Quay via the sync itself.
 
 ## Applications are ordinary namespaced objects
 

@@ -33,10 +33,10 @@ let NAMESPACE = KeycloakNamespace
 // minimal and matches the reference platform.
 let SERVICE = "\(NAME)-service"
 
-// auth.holos.localhost matches the shared Gateway's *.holos.localhost
+// auth.holos.internal matches the shared Gateway's *.holos.internal
 // listener hostname and resolves to 127.0.0.1 on the host per
 // docs/local-cluster.md.
-let HOSTNAME = "auth.holos.localhost"
+let HOSTNAME = "auth.holos.internal"
 
 let HTTPS_PORT = 8443
 let TLS_SECRET = "\(NAME)-tls"
@@ -269,7 +269,7 @@ let HTTPROUTE_REDIRECT = {
 //
 // Unlike the reference platform (which sets insecureSkipVerify), the
 // gateway verifies the backend certificate against the local CA:
-// credentialName references the wildcard-holos-localhost Secret the
+// credentialName references the wildcard-holos-internal Secret the
 // istio-gateway component's Certificate writes in this same namespace —
 // cert-manager CA issuers include the signing CA in the issued Secret's
 // ca.crt key, and Istio's SDS reads ca.crt from a TLS-type Secret as the
@@ -292,7 +292,7 @@ let DESTINATION_RULE = {
 		exportTo: ["."]
 		trafficPolicy: tls: {
 			mode:           "SIMPLE"
-			credentialName: "wildcard-holos-localhost"
+			credentialName: "wildcard-holos-internal"
 			sni:            "\(SERVICE).\(NAMESPACE).svc.cluster.local"
 			subjectAltNames: ["\(SERVICE).\(NAMESPACE).svc.cluster.local"]
 		}

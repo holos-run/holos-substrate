@@ -97,7 +97,7 @@ available.
 >   and carries the signature header through verbatim. Until verification lands
 >   the endpoint relies on network reachability plus the configurable
 >   max-body-size bound: from outside the cluster it is exposed only at
->   `hooks.holos.localhost` (→ `127.0.0.1`) through the shared Gateway, never off
+>   `hooks.holos.internal` (→ `127.0.0.1`) through the shared Gateway, never off
 >   the local machine, but its in-cluster ClusterIP `Service` carries no ingress
 >   policy, so any in-cluster workload can also enqueue a body — accepted under
 >   the MVP's no-in-cluster-auth posture, not a boundary for untrusted tenants.

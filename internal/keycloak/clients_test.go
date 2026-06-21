@@ -14,11 +14,11 @@ func TestFindClientByClientIDFound(t *testing.T) {
 	h := &recordingHandler{
 		t: t, wantMethod: http.MethodGet, wantPath: clientsBase,
 		status:   http.StatusOK,
-		respBody: `[{"id":"uuid-1","clientId":"https://quay.holos.localhost","publicClient":false}]`,
+		respBody: `[{"id":"uuid-1","clientId":"https://quay.holos.internal","publicClient":false}]`,
 	}
 	c, _ := newTestClient(t, h)
 
-	cl, err := c.FindClientByClientID(context.Background(), "https://quay.holos.localhost")
+	cl, err := c.FindClientByClientID(context.Background(), "https://quay.holos.internal")
 	if err != nil {
 		t.Fatalf("FindClientByClientID: %v", err)
 	}

@@ -1,13 +1,15 @@
 apiVersion: networking.istio.io/v1
 kind: ServiceEntry
 metadata:
-  name: auth-holos-localhost
-  namespace: argocd
+  labels:
+    app.kubernetes.io/name: kargo
+  name: kargo-webhooks-holos-internal
+  namespace: kargo
 spec:
   endpoints:
   - address: default-istio.istio-gateways.svc.cluster.local
   hosts:
-  - auth.holos.localhost
+  - kargo-webhooks.holos.internal
   ports:
   - name: tls
     number: 443
