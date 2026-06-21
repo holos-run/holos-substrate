@@ -445,12 +445,14 @@ pre_keycloak_esso_config() {
 # bootstrap failure (or missing Secret) is reported by name before the reconcile
 # wait can mask it: the reconcile Job mounts esso-idp-oidc/client_secret and
 # esso-user-alice/password via REQUIRED secretKeyRefs, so a bootstrap that never
-# created a Secret leaves the reconcile pod stuck Pending.  Then gate the
+# created a Secret leaves the reconcile pod stuck Pending.  Then verify BOTH
+# bootstrap Secrets (esso-idp-oidc and esso-user-alice) exist directly — before
+# waiting on the reconcile Job — so a GC'd bootstrap Job that left a Secret
+# missing is reported by name here rather than surfacing as an opaque reconcile
+# timeout (esso-idp-oidc is additionally the contract the next COMPONENTS step's
+# holos keycloak-config Job reads as ESSO_IDP_CLIENT_SECRET).  Then gate the
 # reconcile Job (resolved by name from the committed manifest, its name carries
-# the config hash).  Finally verify the esso-idp-oidc Secret exists in the
-# keycloak namespace — the actual contract the holos keycloak-config Job (the
-# next COMPONENTS step) depends on — even when the bootstrap Job has been GC'd.
-# Each Job is polled (not `kubectl wait --for=condition=Complete`) so a Failed
+# the config hash).  Each Job is polled (not `kubectl wait --for=condition=Complete`) so a Failed
 # Job fails on the next poll instead of blocking the full ROLLOUT_TIMEOUT;
 # --ignore-not-found tolerates a GC'd Job (ttlSecondsAfterFinished) and falls
 # through to the Secret check, while a persistent lookup failure (RBAC, API
@@ -487,7 +489,30 @@ wait_keycloak_esso_config() {
     sleep 5
   done
 
-  # 2. The keycloak-esso-config reconcile Job.  Resolve its name from the single
+  # 2. Defense in depth: verify BOTH bootstrap Secrets exist in the keycloak
+  #    namespace before waiting on the reconcile Job.  These are the reconcile
+  #    Job's REQUIRED secretKeyRefs, so a GC'd bootstrap Job (tolerated above)
+  #    that left one missing is reported by name here instead of as an opaque
+  #    reconcile timeout.  esso-idp-oidc is additionally the contract the next
+  #    COMPONENTS step's holos keycloak-config Job reads.
+  local esso_secret
+  for esso_secret in esso-idp-oidc esso-user-alice; do
+    local esso_secret_deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+    while true; do
+      if kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
+        get secret "${esso_secret}" --request-timeout=10s >/dev/null 2>&1; then
+        break
+      fi
+      if ((SECONDS >= esso_secret_deadline)); then
+        echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for the ${esso_secret} Secret in namespace keycloak; inspect the bootstrap Job with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} --namespace keycloak describe job/esso-secret-bootstrap" >&2
+        return 1
+      fi
+      sleep 5
+    done
+  done
+
+  # 3. The keycloak-esso-config reconcile Job.  Resolve its name from the single
   #    committed manifest the apply just used (its name carries the config hash),
   #    so the gate waits on exactly that Job.  Exactly one
   #    job-keycloak-esso-config-*.yaml renders per apply.
@@ -533,24 +558,6 @@ wait_keycloak_esso_config() {
     fi
     if ((SECONDS >= deadline)); then
       echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for ${job} to complete." >&2
-      return 1
-    fi
-    sleep 5
-  done
-
-  # 3. Defense in depth: verify the esso-idp-oidc Secret exists in the keycloak
-  #    namespace.  This is the contract the next step's holos keycloak-config Job
-  #    reads (ESSO_IDP_CLIENT_SECRET), so confirm it even when the bootstrap Job
-  #    has been GC'd.
-  local secret_deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
-  while true; do
-    if kubectl --context "${KUBE_CONTEXT}" --namespace keycloak \
-      get secret esso-idp-oidc --request-timeout=10s >/dev/null 2>&1; then
-      break
-    fi
-    if ((SECONDS >= secret_deadline)); then
-      echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for the esso-idp-oidc Secret in namespace keycloak; inspect the bootstrap Job with:" >&2
-      echo "       kubectl --context ${KUBE_CONTEXT} --namespace keycloak describe job/esso-secret-bootstrap" >&2
       return 1
     fi
     sleep 5
