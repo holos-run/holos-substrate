@@ -53,18 +53,18 @@ The published artifact is consumed exactly as documented in
 
 ```bash
 # By tag (resolved to a digest before rendering):
-scripts/publish quay.holos.localhost/holos/echo:v1
+scripts/publish quay.holos.internal/holos/echo:v1
 
 # By digest, to an explicit target repo:
 scripts/publish \
-  quay.holos.localhost/holos/echo@sha256:9afa…5ba \
-  quay.holos.localhost/holos/holos-paas-manifests
+  quay.holos.internal/holos/echo@sha256:9afa…5ba \
+  quay.holos.internal/holos/holos-paas-manifests
 
 # Via make (APP_IMAGE required; PUBLISH_REPO optional):
-make publish APP_IMAGE=quay.holos.localhost/holos/echo:v1
+make publish APP_IMAGE=quay.holos.internal/holos/echo:v1
 
 # Capture the pushed digest for downstream use:
-DIGEST=$(scripts/publish quay.holos.localhost/holos/echo:v1)
+DIGEST=$(scripts/publish quay.holos.internal/holos/echo:v1)
 echo "$DIGEST"   # sha256:1a88…dad
 ```
 
@@ -72,9 +72,9 @@ On success the script prints progress and the consumption hint to **stderr** and
 the bare artifact digest to **stdout**:
 
 ```
-Published quay.holos.localhost/holos/holos-paas-manifests@sha256:1a88…dad (tag render-6727d8e9f33c-9afa9311ba1d)
+Published quay.holos.internal/holos/holos-paas-manifests@sha256:1a88…dad (tag render-6727d8e9f33c-9afa9311ba1d)
 Consume it as an Argo CD OCI source by digest:
-  repoURL:        oci://quay.holos.localhost/holos/holos-paas-manifests
+  repoURL:        oci://quay.holos.internal/holos/holos-paas-manifests
   targetRevision: sha256:1a88…dad
 ```
 
@@ -148,7 +148,7 @@ Provide credentials to `scripts/publish` either way:
 
 | Registry | Transport | Default in `scripts/publish` |
 | --- | --- | --- |
-| `quay.holos.localhost` (in-cluster Quay) | HTTPS with a mkcert-signed cert not in the default trust store | `--insecure` (skip TLS verify) auto-enabled for `*.holos.localhost` |
+| `quay.holos.internal` (in-cluster Quay) | HTTPS with a mkcert-signed cert not in the default trust store | `--insecure` (skip TLS verify) auto-enabled for `*.holos.internal` |
 | `localhost:<port>` (bare dev registry) | plain HTTP | `--plain-http` auto-enabled for `localhost`/`127.0.0.1` |
 | any other host | HTTPS with a trusted cert | neither flag |
 
@@ -167,7 +167,7 @@ reachability):
 ```yaml
 spec:
   source:
-    repoURL: oci://quay.holos.localhost/holos/holos-paas-manifests
+    repoURL: oci://quay.holos.internal/holos/holos-paas-manifests
     targetRevision: sha256:1a88…dad   # the digest scripts/publish printed
     path: .                           # manifests sit at the tarball root
 ```
@@ -242,7 +242,7 @@ rollout that the in-cluster NATS deployer subscriber used to drive
   pipeline itself:
   - a **`Warehouse`** (`freightCreationPolicy: Automatic`, `interval: 1m`) with
     an `image` subscription to the bare rendered-manifests repo
-    `quay.holos.localhost/holos/holos-paas-manifests`, scoped by
+    `quay.holos.internal/holos/holos-paas-manifests`, scoped by
     `allowTags: ^render-[0-9a-f]{12}-[0-9a-f]{12}$` to the input-addressed tags
     this workflow mints. It uses `imageSelectionStrategy: Lexical`, not SemVer
     (the tags are not semver) and not NewestBuild (ORAS rendered-manifests
@@ -304,7 +304,7 @@ uncommitted** credential Secrets are required (the repo's runtime-secret posture
 
    ```bash
    kubectl --context k3d-holos -n kargo-echo create secret generic quay-manifests-creds \
-     --from-literal=repoURL=quay.holos.localhost/holos/holos-paas-manifests \
+     --from-literal=repoURL=quay.holos.internal/holos/holos-paas-manifests \
      --from-literal=username=holos+robot \
      --from-literal=password='<robot token>'
    kubectl --context k3d-holos -n kargo-echo label secret quay-manifests-creds \
@@ -322,7 +322,7 @@ kubectl --context "$KCTX" -n argocd get application echo \
 # 1. Publish a new rendered-manifests artifact for echo (HOL-1239).  Use the
 #    in-cluster Quay app image repo; the default PUBLISH_REPO is the manifests
 #    repo the Warehouse watches.
-DIGEST=$(scripts/publish quay.holos.localhost/holos/echo:v1)
+DIGEST=$(scripts/publish quay.holos.internal/holos/echo:v1)
 echo "published $DIGEST"
 
 # 2. The Warehouse discovers the artifact and creates Freight (within ~interval).
@@ -455,14 +455,14 @@ kubectl --context "$KCTX" -n my-project get projectconfig my-project \
 
 The full delivery loop the scaffold will drive, once a project-scoped
 `my-project-config` artifact is published to the repo the Warehouse watches
-(`quay.holos.localhost/my-project/my-project-config` — the second positional
+(`quay.holos.internal/my-project/my-project-config` — the second positional
 argument to `scripts/publish`, the publish target):
 
 ```bash
 # 1. (future) Publish a PROJECT-SCOPED my-project-config artifact — see the
 #    callout above; scripts/publish does not produce one today.
 #    DIGEST=$(scripts/publish <app-image-ref> \
-#      quay.holos.localhost/my-project/my-project-config)
+#      quay.holos.internal/my-project/my-project-config)
 
 # 2. The repo_push webhook POSTs to the Kargo receiver; the Warehouse discovers
 #    the artifact and creates Freight (immediately via the webhook, or within

@@ -27,7 +27,7 @@ cat <<'EOF'
 
 INSTRUCTIONS:
 
-1. Navigate to: https://quay.holos.localhost/organization/platform-automation?tab=OAuthApplications
+1. Navigate to: https://quay.holos.internal/organization/platform-automation?tab=OAuthApplications
 
 2. Log in as the svc-quay-resource-controller Keycloak user
 
@@ -66,7 +66,7 @@ fi
 
 # The Quay API base URL the controller's credential resolver reads from the
 # Secret's url key. Override QUAY_URL for a non-default Quay endpoint.
-QUAY_URL="${QUAY_URL:-https://quay.holos.localhost}"
+QUAY_URL="${QUAY_URL:-https://quay.holos.internal}"
 
 NAMESPACE="holos-controller"
 SECRET_NAME="holos-controller-quay-creds"

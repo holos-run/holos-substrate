@@ -19,7 +19,7 @@
 
 ## Context and Problem Statement
 
-The Quay registry (`quay.holos.localhost`) initially authenticated only
+The Quay registry (`quay.holos.internal`) initially authenticated only
 against its local database, with no SSO. Platform
 users already have identities in the Keycloak `holos` realm and sign in to
 Argo CD through it ([ADR-3](ADR-3.md)); requiring a second, registry-local
@@ -212,7 +212,7 @@ user to choose or edit it:
 On first login Quay creates the user's **personal namespace**, named for the
 `preferred_username` claim. In Quay a user's personal namespace **is** their
 per-user organization scope: repositories the user owns live under
-`quay.holos.localhost/<preferred_username>/...`. This is the per-user
+`quay.holos.internal/<preferred_username>/...`. This is the per-user
 namespace-scoping interpretation of the original issue's AC3 — the namespace
 is scoped to the user id from the token, and the user cannot rename it because
 the username is not editable.

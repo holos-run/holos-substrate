@@ -9,7 +9,7 @@ to the real documentation.
 
 ArgoCD itself is installed: the `argocd-crds` and `argocd` components
 ([`components/argocd/`](../components/argocd/argocd.cue)) deploy the core
-install via `scripts/apply`, with the UI at `https://argocd.holos.localhost`,
+install via `scripts/apply`, with the UI at `https://argocd.holos.internal`,
 and the `Application` source pattern the delivery will use — OCI
 rendered-manifests artifacts in the in-cluster Quay registry — is decided,
 verified, and documented in
@@ -186,8 +186,8 @@ adds the sync, replace this stub with a link to the real documentation.
 
 ## Node-level registry trust for in-cluster pulls
 
-Pushes to `quay.holos.localhost` from the host work (the host resolves
-`*.holos.localhost` and trusts the mkcert root CA), but containerd on the
+Pushes to `quay.holos.internal` from the host work (the host resolves
+`*.holos.internal` and trusts the mkcert root CA), but containerd on the
 k3d nodes can neither resolve nor trust the registry hostname, so pods
 cannot run images pushed to Quay. The gap must close before the cluster can
 pull and run the application images published to Quay — likely k3d
@@ -207,7 +207,7 @@ the thin webhook receiver's deferred edge signature verification
 That pipeline was **retired in HOL-1241**: ADR-9/10/11/14 are now `Deprecated`
 and superseded by [ADR-16](../../docs/adr/ADR-16.md), and the
 `nats`/`webhook-receiver`/`webhook-subscriber` components, their Go code, and the
-`wss://nats.holos.localhost` debug endpoint were removed. Deployment is now
+`wss://nats.holos.internal` debug endpoint were removed. Deployment is now
 driven by Kargo plus the client-side build-and-publish workflow
 ([`oci-publish-workflow.md`](oci-publish-workflow.md)) — there is no inbound
 webhook ingress to authenticate and no in-cluster NATS surface to harden, so both

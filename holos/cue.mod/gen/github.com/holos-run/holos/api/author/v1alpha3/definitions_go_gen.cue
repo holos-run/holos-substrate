@@ -179,7 +179,7 @@ import (
 	// Domain represents the primary domain the Platform operates in.  This field
 	// is intended as a sensible default for component authors to reference and
 	// platform operators to define.
-	Domain: string & (string | *"holos.localhost")
+	Domain: string & (string | *"holos.internal")
 }
 
 // Organization represents organizational metadata useful across the platform.

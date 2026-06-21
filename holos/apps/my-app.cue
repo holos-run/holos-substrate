@@ -28,8 +28,8 @@
 //   - port: 8080 — agnhost netexec's default listen port; the Service and
 //     HTTPRoute target it.
 //
-// host is omitted, so the HTTPRoute defaults to my-app.holos.localhost (the
-// Application component's convention), which matches the *.holos.localhost
+// host is omitted, so the HTTPRoute defaults to my-app.holos.internal (the
+// Application component's convention), which matches the *.holos.internal
 // wildcard listener and resolves to 127.0.0.1 on the host (docs/local-cluster.md).
 package apps
 

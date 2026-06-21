@@ -168,18 +168,18 @@ SSO"** with the username and the retrieved password.
 ## Procedure: mint the OAuth-Application credential
 
 Perform these steps once, by hand. They require a reachable
-`quay.holos.localhost` (local CA + DNS per
+`quay.holos.internal` (local CA + DNS per
 [docs/local-cluster.md](../local-cluster.md)) and the
 `svc-quay-resource-controller` password retrieved above.
 
 ### 1. Sign in as the service account via "Holos SSO"
 
-Open `https://quay.holos.localhost/` and click **Sign in with Holos SSO** (the
+Open `https://quay.holos.internal/` and click **Sign in with Holos SSO** (the
 `SERVICE_NAME` from Quay's `KEYCLOAK_LOGIN_CONFIG`). Authenticate in Keycloak as
 `svc-quay-resource-controller` with the password from its Secret. The local
 username/password form is disabled (`FEATURE_DIRECT_LOGIN: false`), so SSO is the
 only login path. First login auto-provisions the user's personal namespace at
-`quay.holos.localhost/svc-quay-resource-controller/...`.
+`quay.holos.internal/svc-quay-resource-controller/...`.
 
 ### 2. Create the `platform-automation` organization (step by step)
 
@@ -199,7 +199,7 @@ Perform these steps in the Quay UI while still signed in as
 1. Click the **+** menu in the top navigation bar → **New Organization**.
 2. In **Organization Name**, enter exactly `platform-automation`.
 3. Enter an **Organization Email** that is distinct from the service account's
-   own email, e.g. `svc-quay-resource-controller+platform-automation@holos.localhost`
+   own email, e.g. `svc-quay-resource-controller+platform-automation@holos.internal`
    (Quay requires every namespace to have a unique email).
 4. Click **Create Organization**. Because you are signed in as
    `svc-quay-resource-controller`, that user becomes the org's owner/admin —
@@ -265,20 +265,20 @@ TOKEN='<the generated token>'
 curl -sS -o /dev/null -w '%{http_code}\n' \
   -H "Authorization: Bearer ${TOKEN}" \
   -H 'Content-Type: application/json' \
-  -d '{"name":"smoke-test-org","email":"svc-quay-resource-controller+smoke@holos.localhost"}' \
-  https://quay.holos.localhost/api/v1/organization/
+  -d '{"name":"smoke-test-org","email":"svc-quay-resource-controller+smoke@holos.internal"}' \
+  https://quay.holos.internal/api/v1/organization/
 # => 201
 
 # Confirm the superuser API answers (super:user scope) — expect HTTP 200:
 curl -sS -o /dev/null -w '%{http_code}\n' \
   -H "Authorization: Bearer ${TOKEN}" \
-  https://quay.holos.localhost/api/v1/superuser/users/
+  https://quay.holos.internal/api/v1/superuser/users/
 # => 200
 
 # Clean up the throwaway org:
 curl -sS -o /dev/null -w '%{http_code}\n' -X DELETE \
   -H "Authorization: Bearer ${TOKEN}" \
-  https://quay.holos.localhost/api/v1/organization/smoke-test-org
+  https://quay.holos.internal/api/v1/organization/smoke-test-org
 # => 204
 ```
 
@@ -292,7 +292,7 @@ controller token can read it through the **normal** (non-`superuser`) endpoint:
 # Against an org svc-quay-resource-controller neither owns nor is a member of:
 curl -sS -o /dev/null -w '%{http_code}\n' \
   -H "Authorization: Bearer ${TOKEN}" \
-  https://quay.holos.localhost/api/v1/organization/<other-owners-org>
+  https://quay.holos.internal/api/v1/organization/<other-owners-org>
 # => 200 with FEATURE_SUPERUSERS_FULL_ACCESS: true; 403 without it
 ```
 
@@ -314,7 +314,7 @@ Secret (the value is never committed — the runtime-secret guardrail in
 [`holos/docs/secret-handling.md`](../../holos/docs/secret-handling.md)):
 
 ```bash
-# Prompts for the token; QUAY_URL defaults to https://quay.holos.localhost:
+# Prompts for the token; QUAY_URL defaults to https://quay.holos.internal:
 scripts/apply-svc-quay-resource-controller-creds
 ```
 

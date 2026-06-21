@@ -61,7 +61,7 @@ resource's `spec.credentialsSecretRef` (a `{name, key}` reference), defaulting t
 
   | Key | Required | Meaning |
   |-----|----------|---------|
-  | `url` | yes | the Quay API base URL (e.g. `https://quay.holos.localhost`). |
+  | `url` | yes | the Quay API base URL (e.g. `https://quay.holos.internal`). |
   | `token` | yes | the superuser OAuth-Application access token. |
   | `username` | no | informational — the identity the token acts as (`svc-quay-resource-controller`). |
 
@@ -94,7 +94,7 @@ runtime-secret guardrail, [`AGENTS.md`](../../AGENTS.md) Conventions /
 
    ```bash
    scripts/apply-svc-quay-resource-controller-creds
-   # prompts for the token; sets QUAY_URL (default https://quay.holos.localhost)
+   # prompts for the token; sets QUAY_URL (default https://quay.holos.internal)
    ```
 
    It produces, in the `holos-controller` namespace:
@@ -272,7 +272,7 @@ scripts/apply-projects
 ```
 
 **TLS trust comes from the resource's `caBundle`, not the pod's system store.**
-The in-cluster Quay (`quay.holos.localhost`) serves a certificate signed by the
+The in-cluster Quay (`quay.holos.internal`) serves a certificate signed by the
 per-cluster mkcert local CA, which is **not** in the controller pod's system
 trust store. The controller therefore establishes TLS to Quay by trusting the
 **`spec.caBundle`** the `my-project` Organization carries (the standardized

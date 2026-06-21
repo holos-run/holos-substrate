@@ -186,6 +186,7 @@ ROLLOUT_TIMEOUT_SECONDS="$(duration_seconds "${ROLLOUT_TIMEOUT}")" || exit 1
 # Keycloak admin credential Secret on every master apply.
 COMPONENTS=(
   namespaces
+  coredns
   gateway-api
   cert-manager-crds
   istio-base
@@ -807,7 +808,7 @@ wait_kargo_crds() {
 # slow — ROLLOUT_TIMEOUT covers it.  The internal webhooks server's TLS cert is
 # issued by cert-manager (the chart's self-signed Issuer/Certificate), so this
 # gate also confirms the cert-manager webhook admitted those resources.  Route
-# attachment is level-triggered; verify the kargo.holos.localhost traffic path
+# attachment is level-triggered; verify the kargo.holos.internal traffic path
 # separately (see holos/README.md).
 wait_kargo() {
   kubectl --context "${KUBE_CONTEXT}" --namespace kargo \
@@ -921,7 +922,7 @@ fi
 # plain server-side apply never prunes resources whose manifests were removed
 # from the deploy tree — so a cluster that previously applied the pipeline would
 # keep its StatefulSet, Deployments, Services, HTTPRoutes, and the unauthenticated
-# hooks.holos.localhost / nats.holos.localhost surfaces running indefinitely.
+# hooks.holos.internal / nats.holos.internal surfaces running indefinitely.
 # Every resource the pipeline created lived entirely inside one of these three
 # dedicated namespaces, so deleting the namespaces removes the workloads,
 # routes, and policies in one cascade; the Gateway listeners they attached to

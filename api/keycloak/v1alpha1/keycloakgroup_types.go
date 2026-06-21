@@ -15,7 +15,7 @@ import (
 // KeycloakClient CR) or ClientID (a Keycloak clientId directly). ClientID exists
 // for the ADR-20 "Quay use case": a project role group confers a project-prefixed
 // client role (e.g. my-project-owner) on the platform-reserved Quay client
-// (https://quay.holos.localhost) — for which a tenant KeycloakClient CR may not
+// (https://quay.holos.internal) — for which a tenant KeycloakClient CR may not
 // exist (the reserved-name guard forbids one) — so the role surfaces in Quay's
 // groups claim via the platform's already-deployed quay-client-roles mapper. Only
 // project-prefixed client roles may be conferred on a reserved client; the
@@ -38,7 +38,7 @@ type ClientRoleReference struct {
 	ClientRef string `json:"clientRef,omitempty"`
 
 	// ClientID names the target Keycloak clientId directly (e.g.
-	// https://quay.holos.localhost), bypassing same-namespace KeycloakClient CR
+	// https://quay.holos.internal), bypassing same-namespace KeycloakClient CR
 	// resolution. It is the mechanism for conferring a project-prefixed role on a
 	// platform-reserved client (the ADR-20 "Quay use case") where no tenant
 	// KeycloakClient CR exists or may exist. Mutually exclusive with ClientRef.

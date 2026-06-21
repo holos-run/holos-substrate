@@ -4,7 +4,7 @@
 # Documentation: https://github.com/holos-run/holos/blob/main/doc/md/topics/local-cluster.mdx
 #
 # Install a local mkcert root CA into the k3d cluster so cert-manager can
-# issue trusted TLS certificates for *.holos.localhost.
+# issue trusted TLS certificates for *.holos.internal.
 #
 # The local-ca Secret (cert-manager namespace) is the integration point for
 # the local-ca ClusterIssuer (holos/components/local-ca).  This script creates

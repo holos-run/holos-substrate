@@ -196,7 +196,7 @@ spec:
   interval: 5m            # poll fallback; the webhook makes it near-instant
   subscriptions:
   - chart:                # see §5: package rendered manifests as an OCI Helm chart
-      repoURL: oci://quay.holos.localhost/acme-store/checkout-config
+      repoURL: oci://quay.holos.internal/acme-store/checkout-config
       semverConstraint: ">=0.0.0"
 ---
 apiVersion: kargo.akuity.io/v1alpha1
@@ -226,8 +226,8 @@ spec:
           - name: checkout
             namespace: argocd
             sources:
-            - repoURL: oci://quay.holos.localhost/acme-store/checkout-config
-              desiredRevision: ${{ chartFrom("oci://quay.holos.localhost/acme-store/checkout-config").Version }}
+            - repoURL: oci://quay.holos.internal/acme-store/checkout-config
+              desiredRevision: ${{ chartFrom("oci://quay.holos.internal/acme-store/checkout-config").Version }}
               updateTargetRevision: true
 ```
 

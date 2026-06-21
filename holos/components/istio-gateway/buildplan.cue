@@ -30,12 +30,12 @@ let CERTIFICATE = {
 	apiVersion: "cert-manager.io/v1"
 	kind:       "Certificate"
 	metadata: {
-		name:      "wildcard-holos-localhost"
+		name:      "wildcard-holos-internal"
 		namespace: NAMESPACE
 	}
 	spec: {
-		secretName: "wildcard-holos-localhost"
-		dnsNames: ["*.holos.localhost"]
+		secretName: "wildcard-holos-internal"
+		dnsNames: ["*.holos.internal"]
 		issuerRef: {
 			group: "cert-manager.io"
 			kind:  "ClusterIssuer"
@@ -56,12 +56,12 @@ let GATEWAY = {
 		listeners: [{
 			name: "http"
 			port: 80
-			// *.holos.localhost is the local k3d-holos cluster's domain
+			// *.holos.internal is the local k3d-holos cluster's domain
 			// (docs/local-cluster.md).  When a production cluster is
 			// registered, parameterize the hostname per cluster — see the
 			// production deployment area placeholder in
 			// holos/docs/placeholders.md.
-			hostname: "*.holos.localhost"
+			hostname: "*.holos.internal"
 			protocol: "HTTP"
 			// Any platform namespace may attach HTTPRoutes to the shared
 			// Gateway.  Acceptable while every namespace is platform-managed;
@@ -74,7 +74,7 @@ let GATEWAY = {
 			port: 443
 			// Same domain and route-attachment policy as the http listener
 			// above; see its comments.
-			hostname: "*.holos.localhost"
+			hostname: "*.holos.internal"
 			protocol: "HTTPS"
 			tls: {
 				mode: "Terminate"

@@ -1,7 +1,7 @@
 # Build Registry
 
 The make tasks assume a local registry is accessible.  When the
-quay.holos.localhost or k3d-registry.holos.localhost registries are used the
+quay.holos.internal or k3d-registry.holos.internal registries are used the
 buildx container cannot resolve them by default.  Fix this with host networking
 for buildx.
 

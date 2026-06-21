@@ -121,7 +121,7 @@ platform service:
 17. `keycloak` — the Keycloak server instance: the `Keycloak` CR backed by
     the `keycloak-db` Postgres `Cluster`, its TLS `Certificate`, the
     declarative `holos` realm import, the `HTTPRoute` attaching it to the
-    shared Gateway at `auth.holos.localhost`, and the `DestinationRule`
+    shared Gateway at `auth.holos.internal`, and the `DestinationRule`
     that re-encrypts the Gateway→Keycloak hop
 18. `keycloak-config` — the realm-reconciliation `Job` that converges the
     `holos` realm declaratively on every apply: the
@@ -135,14 +135,14 @@ platform service:
 19. `quay` — the Quay registry: the Quay `Deployment` backed by the
     `quay-db` Postgres `Cluster` and a minimal `quay-redis` Deployment,
     with blob storage on a local-path PVC and the `HTTPRoute` pair
-    attaching it to the shared Gateway at `quay.holos.localhost`
+    attaching it to the shared Gateway at `quay.holos.internal`
 20. `argocd-crds` — the Argo CD CRDs (`crds: "true"`): `applications`,
     `applicationsets`, and `appprojects` in group `argoproj.io`
 21. `argocd` — the Argo CD core install: the application-controller
     `StatefulSet`, the repo-server, server, and redis `Deployment`s, the
     `HTTPRoute` pair attaching the UI to the shared Gateway at
-    `argocd.holos.localhost`, and the `ServiceEntry` that resolves the
-    Keycloak issuer hostname `auth.holos.localhost` in-cluster for the
+    `argocd.holos.internal`, and the `ServiceEntry` that resolves the
+    Keycloak issuer hostname `auth.holos.internal` in-cluster for the
     OIDC backchannel (see
     [Argo CD admin credentials and verification](#argo-cd-admin-credentials-and-verification))
 
@@ -286,9 +286,9 @@ Verify Keycloak on the live cluster after `scripts/apply`:
 
 ```bash
 kubectl -n keycloak wait keycloak/keycloak --for=condition=Ready --timeout=600s
-curl -fsSI https://auth.holos.localhost/        # trusted chain via the mkcert root
-curl -fs https://auth.holos.localhost/realms/holos/.well-known/openid-configuration | jq .issuer
-# log in to https://auth.holos.localhost/admin/ with the credentials above
+curl -fsSI https://auth.holos.internal/        # trusted chain via the mkcert root
+curl -fs https://auth.holos.internal/realms/holos/.well-known/openid-configuration | jq .issuer
+# log in to https://auth.holos.internal/admin/ with the credentials above
 ```
 
 State lives in the `keycloak-db` Postgres `Cluster`, not the pod: deleting
@@ -321,7 +321,7 @@ realm. What it reconciles:
   every realm user is bound to it on creation (the baseline Argo CD
   read-access subject);
 - the public PKCE **`argocd` OIDC client** (`publicClient: true`, no secret,
-  `pkce.code.challenge.method: S256`, the `argocd.holos.localhost` callback
+  `pkce.code.challenge.method: S256`, the `argocd.holos.internal` callback
   redirect URIs), with two protocol mappers that both write a `groups`
   claim: a group-membership mapper (bare names, e.g. `authenticated`) and a
   realm-role mapper (e.g. `platform-owner`), so a single `groups` claim
@@ -329,7 +329,7 @@ realm. What it reconciles:
 - the confidential **`quay` OIDC client** (`publicClient: false`, client-secret
   auth **without** PKCE — `pkce.code.challenge.method` is the empty/"none" method,
   HOL-1317 disabled PKCE because Quay 3.17.3 replays a stale `code_verifier` after
-  logout; the three explicit `quay.holos.localhost/oauth2/keycloak/callback`
+  logout; the three explicit `quay.holos.internal/oauth2/keycloak/callback`
   redirect URIs) and its `platform-admin` /
   `project-admin` **client roles**,
   with mappers that write group memberships, the `quay` client-role names, the
@@ -421,7 +421,7 @@ essentials:
   token's `preferred_username` claim with no prompt to confirm or edit it
   (`FEATURE_USERNAME_CONFIRMATION: false`); first login auto-provisions
   (`FEATURE_USER_CREATION: true`) the user's personal namespace
-  (`quay.holos.localhost/<preferred_username>/...`), which is their per-user
+  (`quay.holos.internal/<preferred_username>/...`), which is their per-user
   organization scope and cannot be renamed.
 - **Roles → teams.** The `quay` client roles `platform-admin` and
   `project-admin` (and per-project roles by the same convention) are folded
@@ -475,7 +475,7 @@ kubectl -n quay wait pod/quay-echo --for=condition=Ready --timeout=120s
 # and export it as TOKEN before running this block.
 : "${TOKEN:?export a superuser OAuth-Application token as TOKEN first (see the runbook above)}"
 UUID=$(curl -fsS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -X POST https://quay.holos.localhost/api/v1/repository/holos/sample/notification/ \
+  -X POST https://quay.holos.internal/api/v1/repository/holos/sample/notification/ \
   -d '{"event": "repo_push", "method": "webhook",
        "config": {"url": "http://quay-echo.quay.svc:8080/"},
        "eventConfig": {}, "title": "verify-webhook"}' | jq -er '.uuid // empty')
@@ -483,11 +483,11 @@ UUID=$(curl -fsS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application
 # even when the block is pasted into an interactive shell — if the create
 # above failed, instead of POSTing to .../notification//test:
 curl -fsS -o /dev/null -H "Authorization: Bearer $TOKEN" -X POST \
-  "https://quay.holos.localhost/api/v1/repository/holos/sample/notification/${UUID:?notification create failed}/test"
+  "https://quay.holos.internal/api/v1/repository/holos/sample/notification/${UUID:?notification create failed}/test"
 
 # Then a real push (docker login per docs/local-cluster.md "Verify Quay"):
-docker pull busybox && docker tag busybox quay.holos.localhost/holos/sample:test2
-docker push quay.holos.localhost/holos/sample:test2
+docker pull busybox && docker tag busybox quay.holos.internal/holos/sample:test2
+docker push quay.holos.internal/holos/sample:test2
 
 kubectl -n quay logs quay-echo
 ```
@@ -503,7 +503,7 @@ Clean up when done:
 
 ```bash
 curl -fsS -H "Authorization: Bearer $TOKEN" \
-  -X DELETE "https://quay.holos.localhost/api/v1/repository/holos/sample/notification/${UUID:?}"
+  -X DELETE "https://quay.holos.internal/api/v1/repository/holos/sample/notification/${UUID:?}"
 kubectl -n quay delete pod/quay-echo svc/quay-echo
 ```
 
@@ -521,8 +521,8 @@ kubectl -n quay wait cluster/quay-db --for=condition=Ready --timeout=300s
 
 After recovery: `docker login` with the robot credentials still works, the
 previously pushed tag is still pullable
-(`docker rmi quay.holos.localhost/holos/sample:test` then
-`docker pull quay.holos.localhost/holos/sample:test`), and any webhook
+(`docker rmi quay.holos.internal/holos/sample:test` then
+`docker pull quay.holos.internal/holos/sample:test`), and any webhook
 notification configured above is still listed via the API.
 
 Sizing note: Quay's gunicorn pools enforce per-pool minimums that override
@@ -533,7 +533,7 @@ OOMKills against its memory limit. See the env comment in
 
 ### Argo CD admin credentials and verification
 
-The Argo CD UI is served at `https://argocd.holos.localhost` through the
+The Argo CD UI is served at `https://argocd.holos.internal` through the
 shared Gateway, which terminates TLS with the wildcard certificate — the
 server itself runs with `server.insecure: "true"` and a plain-HTTP backend,
 like the other routed services. Real users authenticate via **Keycloak
@@ -560,8 +560,8 @@ disabled and render no workloads):
 kubectl -n argocd wait deployment argocd-redis argocd-repo-server argocd-server \
   --for=condition=Available --timeout=300s
 kubectl -n argocd rollout status statefulset/argocd-application-controller --timeout=300s
-curl -fsSI https://argocd.holos.localhost/   # trusted chain via the mkcert root
-# log in to https://argocd.holos.localhost/ as admin with the password above
+curl -fsSI https://argocd.holos.internal/   # trusted chain via the mkcert root
+# log in to https://argocd.holos.internal/ as admin with the password above
 ```
 
 The `argocd` namespace is ambient-enrolled (`_ambient: true` in
@@ -576,7 +576,7 @@ Application projection is enabled (see
 **Keycloak SSO (OIDC/PKCE).** Argo CD authenticates real users against the
 Keycloak `holos` realm using the Authorization Code flow with PKCE (S256),
 configured in `argocd-cm` `oidc.config`: `issuer:
-https://auth.holos.localhost/realms/holos`, `clientID: argocd`,
+https://auth.holos.internal/realms/holos`, `clientID: argocd`,
 `enablePKCEAuthentication: true`, and **no** client secret (the public
 `argocd` client provisioned by `keycloak-config`). `argocd-rbac-cm`
 `policy.csv` maps the `groups` claim — which carries both Keycloak group
@@ -592,7 +592,7 @@ names and realm-role names — to Argo CD roles:
 with `policy.default: ""` (no implicit access) and `scopes: "[groups]"`.
 The `argocd-server` OIDC **backchannel** (discovery/JWKS/token) must reach
 the issuer in-cluster: the component ships a `ServiceEntry` that makes
-`auth.holos.localhost` resolve to the shared Istio ingress gateway, so the
+`auth.holos.internal` resolve to the shared Istio ingress gateway, so the
 backchannel re-enters through the same Gateway→Keycloak path browsers use
 and the `iss` claim matches the configured issuer. The backchannel sets
 `oidc.tls.insecure.skip.verify: "true"` to accept the per-machine
@@ -602,8 +602,8 @@ trust (see the production deployment area placeholder in
 [docs/placeholders.md](docs/placeholders.md#production-deployment-area)).
 
 To verify SSO end to end: create a user in the `holos` realm
-(`https://auth.holos.localhost/admin/`), grant the `platform-owner` realm
-role, open `https://argocd.holos.localhost`, click **LOG IN VIA Keycloak**,
+(`https://auth.holos.internal/admin/`), grant the `platform-owner` realm
+role, open `https://argocd.holos.internal`, click **LOG IN VIA Keycloak**,
 complete the login, and confirm you land as an admin; a `platform-viewer`
 user lands read-only. Check `kubectl -n argocd logs deploy/argocd-server`
 shows no OIDC discovery/JWKS or x509 errors. The step-by-step walkthrough
@@ -619,7 +619,7 @@ the pattern's contract (artifact layout, credential Secret shape, how the
 repo-server reaches Quay, tag-vs-digest guidance). The procedure below
 proves the path end to end with a throwaway artifact and Application;
 re-run it after any change to the argocd or quay components, or to the
-`quay-holos-localhost` ServiceEntry. It assumes a push-capable robot
+`quay-holos-internal` ServiceEntry. It assumes a push-capable robot
 credential and the `holos/sample` org/repo exist (see
 [Quay credentials and data-plane provisioning](#quay-credentials-and-data-plane-provisioning);
 the robot and `holos/sample` org/repo are provisioned by hand) and the
@@ -645,9 +645,9 @@ data:
 YAML
 tar -czf "${WORK}/manifests.tar.gz" -C "${WORK}/manifests" .
 ROBOT_TOKEN=$(kubectl -n quay get secret quay-robot-pull -o jsonpath='{.data.\.dockerconfigjson}' \
-  | base64 -d | jq -r '.auths["quay.holos.localhost"].auth' | base64 -d | cut -d: -f2-)
+  | base64 -d | jq -r '.auths["quay.holos.internal"].auth' | base64 -d | cut -d: -f2-)
 (cd "${WORK}" && oras push --username 'holos+robot' --password-stdin \
-  quay.holos.localhost/holos/argocd-smoke:v1 \
+  quay.holos.internal/holos/argocd-smoke:v1 \
   manifests.tar.gz:application/vnd.oci.image.layer.v1.tar+gzip <<<"${ROBOT_TOKEN:?}")
 ```
 
@@ -668,7 +668,7 @@ metadata:
     argocd.argoproj.io/secret-type: repository
 stringData:
   name: argocd-smoke
-  url: oci://quay.holos.localhost/holos/argocd-smoke
+  url: oci://quay.holos.internal/holos/argocd-smoke
   type: oci
   username: holos+robot
   password: "${ROBOT_TOKEN:?}"
@@ -685,7 +685,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: oci://quay.holos.localhost/holos/argocd-smoke
+    repoURL: oci://quay.holos.internal/holos/argocd-smoke
     targetRevision: v1
     path: .
   destination:
@@ -729,10 +729,10 @@ data:
 YAML
 tar -czf "${WORK}/manifests.tar.gz" -C "${WORK}/manifests" .
 (cd "${WORK}" && oras push --username 'holos+robot' --password-stdin \
-  quay.holos.localhost/holos/argocd-smoke:v2 \
+  quay.holos.internal/holos/argocd-smoke:v2 \
   manifests.tar.gz:application/vnd.oci.image.layer.v1.tar+gzip <<<"${ROBOT_TOKEN:?}")
 DIGEST=$(oras resolve --username 'holos+robot' --password-stdin \
-  quay.holos.localhost/holos/argocd-smoke:v2 <<<"${ROBOT_TOKEN:?}")
+  quay.holos.internal/holos/argocd-smoke:v2 <<<"${ROBOT_TOKEN:?}")
 kubectl -n argocd patch application argocd-smoke --type merge \
   -p "{\"spec\":{\"source\":{\"targetRevision\":\"${DIGEST:?}\"}}}"
 # Two waits: the revision wait alone races the apply — sync.revision
@@ -812,7 +812,7 @@ promotes them through its Project/Warehouse/Stage resources.
 > **Retired:** The earlier NATS event-driven pipeline — the `nats`
 > JetStream backbone, the `webhook-receiver`, and the `webhook-subscriber`
 > components, together with their Go code, the pipeline protobuf, the
-> `wss://nats.holos.localhost` debug endpoint, and the `scripts/nats-webhooks`
+> `wss://nats.holos.internal` debug endpoint, and the `scripts/nats-webhooks`
 > reader — was removed in HOL-1241. Nothing else used NATS, so it is gone
 > entirely. ADR-9/10/11/14 that described that pipeline are now
 > `Deprecated`. The contract documentation that lived here (the `WEBHOOKS`/
@@ -848,9 +848,9 @@ namespace, the primitive-role → Quay-team and → app-client binding, and the
   namespace — unlike the echo spike, which splits them across
   `components/kargo-project-echo/` and `components/kargo-echo/`.
 - an **Argo CD `AppProject` + `Application`** (in `argocd`) — the AppProject
-  scopes `sourceRepos` to `oci://quay.holos.localhost/my-project/*` and
+  scopes `sourceRepos` to `oci://quay.holos.internal/my-project/*` and
   destinations to the `my-project` namespace; the Application has an OCI source
-  (`oci://quay.holos.localhost/my-project/my-project-config`) and the
+  (`oci://quay.holos.internal/my-project/my-project-config`) and the
   `kargo.akuity.io/authorized-stage: my-project:project-config` annotation
   authorizing the Stage to patch its `targetRevision`. This Application is an
   **OCI**-source Application rendered by the Project component (not the deferred

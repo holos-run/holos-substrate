@@ -31,7 +31,7 @@ spec:
       containers:
         - name: manager
           # The image is replaced by the config/manager kustomization images
-          # transformer (controller -> quay.holos.localhost/holos/holos-controller).
+          # transformer (controller -> quay.holos.internal/holos/holos-controller).
           image: controller:dev
           imagePullPolicy: Always
           args:

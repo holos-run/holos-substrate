@@ -3,12 +3,12 @@
 # and modified locally since; this copy has diverged from upstream (see git log).
 # Documentation: https://github.com/holos-run/holos/blob/main/doc/md/topics/local-cluster.mdx
 #
-# Configure macOS DNS to resolve *.holos.localhost to 127.0.0.1 via dnsmasq.
+# Configure macOS DNS to resolve *.holos.internal to 127.0.0.1 via dnsmasq.
 # This is necessary for requests to reach the local k3d cluster.
 #
 # NOTE: This script is macOS-only. It uses Homebrew, launchctl, /etc/resolver,
 # and mDNSResponder — all macOS-specific. Linux users should configure dnsmasq
-# (or systemd-resolved) themselves to point *.holos.localhost at 127.0.0.1.
+# (or systemd-resolved) themselves to point *.holos.internal at 127.0.0.1.
 # The MVP demo target is an Apple Silicon Mac (ADR-7).
 #
 # Prerequisites:
@@ -50,9 +50,9 @@ mkdir -p "${BREW_PREFIX}/etc/dnsmasq.d"
 
 # Idempotent — overwriting an existing config with the same content is safe;
 # the daemon reload below picks up any changes on re-runs.
-cat <<EOF >"${BREW_PREFIX}/etc/dnsmasq.d/holos.localhost.conf"
+cat <<EOF >"${BREW_PREFIX}/etc/dnsmasq.d/holos.internal.conf"
 # Refer to https://holos.run/docs/tutorial/local/k3d/
-address=/holos.localhost/127.0.0.1
+address=/holos.internal/127.0.0.1
 EOF
 
 # -e tests existence regardless of permissions (correct intent for LaunchDaemon).
@@ -67,7 +67,7 @@ else
   fi
   sudo cp "$plist" /Library/LaunchDaemons/homebrew.mxcl.dnsmasq.plist
   # No cache flush here: at this point the daemon is not yet loaded and
-  # /etc/resolver/holos.localhost is not yet written, so there is nothing to
+  # /etc/resolver/holos.internal is not yet written, so there is nothing to
   # flush. The `killall -HUP mDNSResponder` at the end of every run is what
   # reloads resolver state once the daemon and resolver entry are in place.
   echo "dnsmasq installed"
@@ -80,14 +80,14 @@ sudo launchctl unload /Library/LaunchDaemons/homebrew.mxcl.dnsmasq.plist || true
 sudo launchctl load /Library/LaunchDaemons/homebrew.mxcl.dnsmasq.plist
 
 sudo mkdir -p /etc/resolver
-# nameserver line is sufficient; macOS routes *.holos.localhost to 127.0.0.1
+# nameserver line is sufficient; macOS routes *.holos.internal to 127.0.0.1
 # based on the resolver file name alone.
-sudo tee /etc/resolver/holos.localhost > /dev/null <<EOF
+sudo tee /etc/resolver/holos.internal > /dev/null <<EOF
 nameserver 127.0.0.1
 EOF
 # Flush the directory-services cache now that the resolver entry is in place,
 # then HUP mDNSResponder to reload resolver state. The flush runs here — after
-# the daemon is loaded and /etc/resolver/holos.localhost is written — where it
+# the daemon is loaded and /etc/resolver/holos.internal is written — where it
 # can actually drop stale entries.
 sudo dscacheutil -flushcache
 sudo killall -HUP mDNSResponder

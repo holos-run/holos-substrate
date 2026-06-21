@@ -153,8 +153,8 @@ userDefinedBuildPlan: {
 					// Cross-namespace attachment to the shared Gateway is
 					// allowed because its listener sets
 					// allowedRoutes.namespaces.from: All (istio-gateway
-					// component).  echo.holos.localhost matches the listener
-					// hostname *.holos.localhost and resolves to 127.0.0.1 on
+					// component).  echo.holos.internal matches the listener
+					// hostname *.holos.internal and resolves to 127.0.0.1 on
 					// the host per docs/local-cluster.md.
 					HTTPRoute: (NAME): {
 						apiVersion: "gateway.networking.k8s.io/v1"
@@ -165,7 +165,7 @@ userDefinedBuildPlan: {
 								name:      "default"
 								namespace: "istio-gateways"
 							}]
-							hostnames: ["echo.holos.localhost"]
+							hostnames: ["echo.holos.internal"]
 							rules: [{
 								// Route only the exact paths the smoke test
 								// uses.  serve-hostname has no dangerous

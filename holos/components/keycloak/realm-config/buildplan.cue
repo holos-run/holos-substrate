@@ -81,10 +81,10 @@ let REALM = "holos"
 // secret, so they use the Authorization Code flow with PKCE (S256) instead.
 let ARGOCD_CLIENT_ID = "argocd"
 
-// auth.holos.localhost is the Keycloak hostname (../instance/buildplan.cue);
-// argocd.holos.localhost is the Argo CD UI hostname (components/argocd).  Both
+// auth.holos.internal is the Keycloak hostname (../instance/buildplan.cue);
+// argocd.holos.internal is the Argo CD UI hostname (components/argocd).  Both
 // resolve to 127.0.0.1 on the host per docs/local-cluster.md.
-let ARGOCD_PUBLIC_URL = "https://argocd.holos.localhost"
+let ARGOCD_PUBLIC_URL = "https://argocd.holos.internal"
 
 // The Kargo OIDC client (HOL-1250; the Kargo consumer side that authenticates
 // against it is wired in HOL-1251).  Like Argo CD this is a public PKCE client:
@@ -93,9 +93,9 @@ let ARGOCD_PUBLIC_URL = "https://argocd.holos.localhost"
 // client above, NOT the confidential quay client.
 let KARGO_CLIENT_ID = "kargo"
 
-// kargo.holos.localhost is the Kargo UI hostname (components/kargo/buildplan.cue
+// kargo.holos.internal is the Kargo UI hostname (components/kargo/buildplan.cue
 // HOSTNAME) and resolves to 127.0.0.1 on the host per docs/local-cluster.md.
-let KARGO_PUBLIC_URL = "https://kargo.holos.localhost"
+let KARGO_PUBLIC_URL = "https://kargo.holos.internal"
 
 // The two protocol mappers that populate the groups claim Argo CD's RBAC keys
 // on (HOL-1211).  Both write claim.name "groups" into the ID and access
@@ -113,12 +113,12 @@ let GROUPS_CLAIM = "groups"
 // bootstrap Job below and substituted into the realm import at run time by
 // keycloak-config-cli's $(env:...) expansion, so no secret is ever committed.
 //
-// The clientId is the Quay public URL (https://quay.holos.localhost), matching
+// The clientId is the Quay public URL (https://quay.holos.internal), matching
 // the production example's QUAY_CLIENT_ID.  The three protocol mappers and the
 // client-role declarations key off this same QUAY_CLIENT_ID let, so the value is
 // changed in exactly one place.  Quay's HOL-1293 OIDC phase sets its CLIENT_ID to
 // the same value.
-let QUAY_CLIENT_ID = "https://quay.holos.localhost"
+let QUAY_CLIENT_ID = "https://quay.holos.internal"
 
 // HOL-1294: the quay client's clientId is changed from "quay" to the public-URL
 // form above.  keycloak-config-cli runs in no-delete mode (see the header), so on
@@ -131,9 +131,9 @@ let QUAY_CLIENT_ID = "https://quay.holos.localhost"
 // disabled entry, and it can be dropped once no cluster carries the old client.
 let QUAY_LEGACY_CLIENT_ID = "quay"
 
-// quay.holos.localhost is the Quay UI/registry hostname (components/quay) and
+// quay.holos.internal is the Quay UI/registry hostname (components/quay) and
 // resolves to 127.0.0.1 on the host per docs/local-cluster.md.
-let QUAY_PUBLIC_URL = "https://quay.holos.localhost"
+let QUAY_PUBLIC_URL = "https://quay.holos.internal"
 
 // QUAY_OIDC_SECRET is the Secret carrying the shared OIDC client secret.  The
 // QUAY_OIDC bootstrap Job (below) generates it once and writes it to BOTH the
@@ -303,7 +303,7 @@ let REALM_CONFIG = {
 			// not a human) — hence the "svc-" prefix.
 			username:      SVC_QUAY_RC_USERNAME
 			enabled:       true
-			email:         "\(SVC_QUAY_RC_USERNAME)@holos.localhost"
+			email:         "\(SVC_QUAY_RC_USERNAME)@holos.internal"
 			emailVerified: true
 			credentials: [{type: "password", value: "$(env:\(SVC_QUAY_RC_PASSWORD_ENV))", temporary: false}]
 			realmRoles: ["platform-owner"]
@@ -312,7 +312,7 @@ let REALM_CONFIG = {
 			// Human administrator (unprefixed username) for Quay administration.
 			username:      QUAY_ADMIN_USERNAME
 			enabled:       true
-			email:         "\(QUAY_ADMIN_USERNAME)@holos.localhost"
+			email:         "\(QUAY_ADMIN_USERNAME)@holos.internal"
 			emailVerified: true
 			credentials: [{type: "password", value: "$(env:\(QUAY_ADMIN_PASSWORD_ENV))", temporary: false}]
 			realmRoles: ["platform-owner"]

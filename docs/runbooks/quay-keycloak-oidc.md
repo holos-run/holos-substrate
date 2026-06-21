@@ -18,7 +18,7 @@ OAuth-Application credential is the
 
 ## Overview
 
-Quay (`quay.holos.localhost`) runs `AUTHENTICATION_TYPE: OIDC` — the Keycloak
+Quay (`quay.holos.internal`) runs `AUTHENTICATION_TYPE: OIDC` — the Keycloak
 `holos` realm is the **sole** identity store (ADR-15 Revision 4, HOL-1293).
 There is no local `admin` user; every Quay identity is a realm user. Users sign
 in with the "Holos SSO" button through the OAuth 2.0 Authorization Code flow;
@@ -75,7 +75,7 @@ The `quay` client is defined in
   overwrites any prior `S256` on a previously-PKCE cluster. See
   [PKCE on the `quay` client](#pkce-on-the-quay-client).
 - `redirectUris` — the three explicit Quay OAuth callback paths under
-  `https://quay.holos.localhost/oauth2/keycloak/callback` (`…/callback`,
+  `https://quay.holos.internal/oauth2/keycloak/callback` (`…/callback`,
   `…/callback/attach`, `…/callback/cli`) from the HOL-1317 client JSON, replacing
   the earlier `/*` wildcard (see
   [Redirect-URI convention](#redirect-uri-convention)).
@@ -125,13 +125,13 @@ missing or doubled slash causes issuer-mismatch token-exchange failures.
 ### Redirect-URI convention
 
 Quay's OIDC callback URL is
-`https://quay.holos.localhost/oauth2/<service-id>/callback`, where
+`https://quay.holos.internal/oauth2/<service-id>/callback`, where
 `<service-id>` is the lowercase prefix of the login-config key before
 `_LOGIN_CONFIG` — here `keycloak` (from `KEYCLOAK_LOGIN_CONFIG`), giving
-`https://quay.holos.localhost/oauth2/keycloak/callback`. The Keycloak client's
+`https://quay.holos.internal/oauth2/keycloak/callback`. The Keycloak client's
 `redirectUris` is the three explicit callback paths from the HOL-1317 client
 JSON — `…/oauth2/keycloak/callback`, `…/callback/attach`, and `…/callback/cli`
-— replacing the earlier `https://quay.holos.localhost/*` wildcard. If Quay adds a
+— replacing the earlier `https://quay.holos.internal/*` wildcard. If Quay adds a
 new callback service-id, register its exact path here too.
 
 ### Reconciliation and the apply-order gate
@@ -200,7 +200,7 @@ the retrieved password.
 
 ### Verify superuser access
 
-Sign in to `https://quay.holos.localhost/` as `quay-admin` (or
+Sign in to `https://quay.holos.internal/` as `quay-admin` (or
 `svc-quay-resource-controller`) via "Holos SSO". A superuser sees the **Super
 User Admin Panel** in the Quay UI. To verify over the API, generate a token for
 the user (an OAuth Application token with `super:user` scope — see the
@@ -211,7 +211,7 @@ superuser endpoint answers — expect **HTTP 200**:
 TOKEN='<a token generated for a SUPER_USERS member>'
 curl -sS -o /dev/null -w '%{http_code}\n' \
   -H "Authorization: Bearer ${TOKEN}" \
-  https://quay.holos.localhost/api/v1/superuser/users/
+  https://quay.holos.internal/api/v1/superuser/users/
 # => 200
 ```
 
@@ -278,7 +278,7 @@ for the authoritative procedure. In brief:
 
 This is the manual verification that "Holos SSO login works and a `SUPER_USERS`
 member has superuser access." It requires a live cluster, a reachable
-`quay.holos.localhost` (local CA + DNS per
+`quay.holos.internal` (local CA + DNS per
 [docs/local-cluster.md](../local-cluster.md)), and a realm user to sign in as.
 
 1. **Use a seeded superuser** (or seed your own realm user). The keycloak phase
@@ -286,11 +286,11 @@ member has superuser access." It requires a live cluster, a reachable
    per [Retrieve a superuser password](#retrieve-a-superuser-password). To test
    a non-superuser, create another realm user and note its `preferred_username`.
 
-2. **Log in through "Holos SSO".** Open `https://quay.holos.localhost`, click the
+2. **Log in through "Holos SSO".** Open `https://quay.holos.internal`, click the
    **Holos SSO** button (the `SERVICE_NAME` from `KEYCLOAK_LOGIN_CONFIG`),
    authenticate in Keycloak, and confirm Quay redirects back and logs you in. A
    first login auto-provisions the user's personal namespace
-   (`quay.holos.localhost/<preferred_username>/...`); the username is taken
+   (`quay.holos.internal/<preferred_username>/...`); the username is taken
    verbatim from the token with no confirmation prompt. If login fails with
    `Got non-2XX response for code exchange: 400`, see
    [the troubleshooting section](#troubleshooting-got-non-2xx-response-for-code-exchange-400).
@@ -387,7 +387,7 @@ typically see and the remediation:
 | 1b | **PKCE mismatch — only one end has it** — the `quay` client's `pkce.code.challenge.method` was re-set to `S256` while Quay still sets `USE_PKCE: false`, or vice versa | `invalid_grant` / `code_verifier_missing` | Confirm **both** ends agree on *no* PKCE: `pkce.code.challenge.method: ""` on the `quay` client **and** `USE_PKCE: false` in `KEYCLOAK_LOGIN_CONFIG`. Re-render, re-apply. |
 | 2 | **Client secret mismatch / empty** — the `quay-oidc` Secret differs between namespaces, or wasn't substituted | `invalid_client` | Compare the secret in both namespaces (see [Inspect or rotate](#inspect-or-rotate-the-quay-oidc-secret)). If they differ, rotate so both match; then restart the Quay Deployment. |
 | 3 | **Public/confidential mismatch** — the `quay` client flipped to `publicClient: true`, or Quay stopped sending the secret | `invalid_client` | Confirm `publicClient: false` on the Keycloak client and `CLIENT_SECRET` present in Quay's config. Re-render/apply. |
-| 4 | **Redirect-URI mismatch** — the callback URL isn't one of the registered `redirectUris` | `invalid_grant` (redirect_uri) | Confirm the Keycloak client's explicit `redirectUris` include the callback in use — e.g. `https://quay.holos.localhost/oauth2/keycloak/callback` (HOL-1317 registers `…/callback`, `…/callback/attach`, `…/callback/cli`). A new Quay callback service-id needs its exact path added. See [Redirect-URI convention](#redirect-uri-convention). |
+| 4 | **Redirect-URI mismatch** — the callback URL isn't one of the registered `redirectUris` | `invalid_grant` (redirect_uri) | Confirm the Keycloak client's explicit `redirectUris` include the callback in use — e.g. `https://quay.holos.internal/oauth2/keycloak/callback` (HOL-1317 registers `…/callback`, `…/callback/attach`, `…/callback/cli`). A new Quay callback service-id needs its exact path added. See [Redirect-URI convention](#redirect-uri-convention). |
 | 5 | **Issuer / trailing-slash mismatch** — `OIDC_SERVER` doesn't end in `/`, or points at the wrong issuer | issuer mismatch / discovery failure | Confirm `OIDC_SERVER` ends in a single trailing `/` and equals Keycloak's advertised `issuer`. See [Issuer trailing-slash requirement](#issuer-trailing-slash-requirement). |
 | 6 | **Code reuse / expiry / clock skew** — the authorization code was already exchanged, expired, or node clocks differ | `invalid_grant` | Retry the login (a stale/replayed code is single-use). If persistent, check node time sync (NTP) between the Quay and Keycloak nodes. |
 

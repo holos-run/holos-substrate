@@ -26,7 +26,7 @@ package holos
 //     realm roles to Kargo access levels (platform-owner → system-wide admin,
 //     platform-viewer → read-only, platform-editor/authenticated → baseline
 //     read).  The backchannel OIDC path (discovery/JWKS/token) runs in-cluster:
-//     the SERVICE_ENTRY below makes the issuer hostname auth.holos.localhost a
+//     the SERVICE_ENTRY below makes the issuer hostname auth.holos.internal a
 //     service the mesh resolves to the shared Istio Gateway (the argocd
 //     pattern), and the CA_CERTIFICATE below materialises the local-CA root
 //     into the kargo namespace so the API trusts the issuer cert without any
@@ -36,9 +36,9 @@ package holos
 //     rotate — Keycloak SSO is the only way in.  The chart still renders an
 //     EMPTY Secret/kargo-api (no token signing key is required for OIDC); the
 //     kubectl-slice below keeps it because the API Deployment references it.
-//   - Exposes the API/UI at https://kargo.holos.localhost through the shared
+//   - Exposes the API/UI at https://kargo.holos.internal through the shared
 //     Istio Gateway (components/istio-gateway), the argocd pattern: the Gateway
-//     terminates TLS with its wildcard-holos-localhost Certificate (no
+//     terminates TLS with its wildcard-holos-internal Certificate (no
 //     per-service Certificate needed) and the HTTPRoute pair below attaches the
 //     kargo-api Service to it.  api.tls.enabled: false makes the API serve
 //     plain HTTP behind the Gateway; the kargo namespace is ambient-enrolled
@@ -50,7 +50,7 @@ package holos
 //     the Kubernetes API server trusts the webhook over TLS without the
 //     reference's external-CA webhook patches.
 //   - Exposes the EXTERNAL webhooks server at
-//     https://kargo-webhooks.holos.localhost through the same shared Gateway
+//     https://kargo-webhooks.holos.internal through the same shared Gateway
 //     (HOL-1271): the WEBHOOK_HTTPROUTE pair attaches the
 //     kargo-external-webhooks-server Service to the Gateway and
 //     externalWebhooksServer.host sets the EXTERNAL_WEBHOOK_SERVER_BASE_URL the
@@ -101,22 +101,22 @@ let NAMESPACE = "kargo" & #RegisteredNamespace
 // the argocd-update step.
 let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 
-// kargo.holos.localhost matches the shared Gateway's *.holos.localhost
+// kargo.holos.internal matches the shared Gateway's *.holos.internal
 // listener hostname and resolves to 127.0.0.1 on the host per
 // docs/local-cluster.md.
-let HOSTNAME = "kargo.holos.localhost"
+let HOSTNAME = "kargo.holos.internal"
 
-// kargo-webhooks.holos.localhost is the hostname the external-webhooks server
+// kargo-webhooks.holos.internal is the hostname the external-webhooks server
 // advertises in ProjectConfig.status.webhookReceivers[].url and the hostname
 // the shared Gateway routes to the kargo-external-webhooks-server Service.  It
-// matches the same *.holos.localhost wildcard listener and resolves to
+// matches the same *.holos.internal wildcard listener and resolves to
 // 127.0.0.1 on the host (docs/local-cluster.md).  Giving the external-webhooks
 // server its OWN hostname (rather than a /webhooks path under
-// kargo.holos.localhost) keeps the receiver URL self-contained — the chart
+// kargo.holos.internal) keeps the receiver URL self-contained — the chart
 // derives the base URL from externalWebhooksServer.host below, and the
 // WEBHOOK_SERVICE_ENTRY makes it resolvable for in-cluster callers (Quay in the
 // quay namespace).
-let WEBHOOK_HOSTNAME = "kargo-webhooks.holos.localhost"
+let WEBHOOK_HOSTNAME = "kargo-webhooks.holos.internal"
 
 // The shared Gateway's namespace and name (components/istio-gateway).  Nothing
 // ties these literals to the istio-gateway component at render time, so a
@@ -128,19 +128,19 @@ let GATEWAY_NAME = "default"
 // The Keycloak issuer hostname (components/keycloak/instance HOSTNAME and the
 // api.oidc.issuerURL below).  The API's OIDC backchannel must resolve and route
 // this name in-cluster — see SERVICE_ENTRY.
-let ISSUER_HOSTNAME = "auth.holos.localhost"
+let ISSUER_HOSTNAME = "auth.holos.internal"
 
 // CA_CERT_SECRET carries the local-ca root certificate in its ca.crt key.  The
 // Kargo API performs its OIDC discovery/JWKS/token calls to the issuer
-// (https://auth.holos.localhost) server-side with TLS verification ON and has
+// (https://auth.holos.internal) server-side with TLS verification ON and has
 // no per-OIDC "insecure skip verify" knob (unlike Argo CD), so it must trust
-// the local CA that signed the shared Gateway's *.holos.localhost certificate.
+// the local CA that signed the shared Gateway's *.holos.internal certificate.
 // A cert-manager Certificate issued by the local-ca ClusterIssuer
 // (components/local-ca) writes this Secret into the kargo namespace with the
 // signing CA in ca.crt; api.cabundle.secretName below points the chart at it,
 // and the chart's parse-cabundle initContainer installs every cert in the
 // Secret into the API's system trust store on start.  Mounting a per-namespace
-// cert-manager Secret (rather than the Gateway's wildcard-holos-localhost
+// cert-manager Secret (rather than the Gateway's wildcard-holos-internal
 // Secret, which lives in the istio-gateways namespace) keeps the trust anchor
 // local to this pod's namespace — a pod can only mount Secrets from its own
 // namespace.
@@ -228,7 +228,7 @@ let HTTPROUTE_REDIRECT = {
 }
 
 // WEBHOOK_HTTPROUTE attaches the Kargo external-webhooks server to the shared
-// Gateway's https listener for kargo-webhooks.holos.localhost — the same
+// Gateway's https listener for kargo-webhooks.holos.internal — the same
 // HTTPRoute shape as HTTPROUTE above, pointed at the
 // kargo-external-webhooks-server Service.  The webhook receiver endpoint
 // accepts POSTs from Quay at the hard-to-guess URL Kargo derives from the
@@ -292,17 +292,21 @@ let WEBHOOK_HTTPROUTE_REDIRECT = {
 	}
 }
 
-// WEBHOOK_SERVICE_ENTRY makes kargo-webhooks.holos.localhost a service the mesh
+// WEBHOOK_SERVICE_ENTRY makes kargo-webhooks.holos.internal a service the mesh
 // resolves, so in-cluster callers — notably the Quay webhook Job in the quay
 // namespace (HOL-1272) — reach the external-webhooks server through the shared
-// Gateway exactly as the host would.  This is the quay.holos.localhost
-// ServiceEntry pattern (components/quay/buildplan.cue) and the auth.holos.localhost
-// SERVICE_ENTRY above, applied here for the same reason: *.localhost names
-// resolve to loopback both upstream of CoreDNS (RFC 6761) and inside ztunnel's
-// DNS proxy, so a CoreDNS rewrite never sees queries from ambient-enrolled
-// pods.  The ServiceEntry fixes both layers at once — ztunnel answers enrolled
+// Gateway exactly as the host would.  This is the quay.holos.internal
+// ServiceEntry pattern (components/quay/buildplan.cue) and the auth.holos.internal
+// SERVICE_ENTRY above, applied here for the same reason: in-cluster callers must
+// resolve and route the receiver hostname through the shared Gateway's TLS path.
+// On the .internal TLD CoreDNS (components/coredns) now resolves *.holos.internal
+// authoritatively — .internal is an ordinary DNS name with no RFC 6761 loopback
+// short-circuit, so neither the host resolver nor ztunnel's DNS proxy
+// special-cases it (unlike the retired .localhost names).  The ServiceEntry is
+// retained in this phase (HOL-1364, conservative scope) alongside CoreDNS.  It
+// makes the hostname a service the mesh knows — ztunnel answers enrolled
 // pods' queries with the auto-allocated VIP and routes connections to that VIP
-// to the shared Gateway, which terminates TLS for *.holos.localhost and routes
+// to the shared Gateway, which terminates TLS for *.holos.internal and routes
 // by Host to WEBHOOK_HTTPROUTE.  protocol TLS keeps ztunnel at L4 (the Gateway
 // terminates TLS); resolution DNS tracks the Gateway Service by name so the
 // entry survives ClusterIP changes.  Lives in the kargo namespace (where the
@@ -313,7 +317,7 @@ let WEBHOOK_SERVICE_ENTRY = {
 	apiVersion: "networking.istio.io/v1"
 	kind:       "ServiceEntry"
 	metadata: {
-		name:      "kargo-webhooks-holos-localhost"
+		name:      "kargo-webhooks-holos-internal"
 		namespace: NAMESPACE
 		labels: "app.kubernetes.io/name": NAME
 	}
@@ -362,22 +366,24 @@ let CA_CERTIFICATE = {
 	}
 }
 
-// SERVICE_ENTRY makes the Keycloak issuer hostname auth.holos.localhost a
+// SERVICE_ENTRY makes the Keycloak issuer hostname auth.holos.internal a
 // service the mesh resolves, so the Kargo API's server-side OIDC calls
 // (discovery/JWKS/token) reach Keycloak in-cluster.  This is the argocd
 // SERVICE_ENTRY pattern (components/argocd/controller/buildplan.cue), applied
 // here for the same reason: the kargo namespace is ambient-enrolled
-// (holos/namespaces.cue), and *.localhost names resolve to loopback both
-// upstream of CoreDNS (the host resolver implements RFC 6761) and inside
-// ztunnel's DNS proxy (which special-cases *.localhost before forwarding), so a
-// CoreDNS rewrite never sees queries from enrolled pods — a plain DNS override
-// cannot fix this.  The ServiceEntry fixes both layers at once: it makes the
+// (holos/namespaces.cue), and the API's OIDC backchannel must resolve and route
+// the issuer hostname in-cluster.  On the .internal TLD CoreDNS
+// (components/coredns) now resolves *.holos.internal authoritatively — .internal
+// is an ordinary DNS name with no RFC 6761 loopback short-circuit, so neither
+// the host resolver nor ztunnel's DNS proxy special-cases it (unlike the retired
+// .localhost names).  The ServiceEntry is retained in this phase (HOL-1364,
+// conservative scope) alongside CoreDNS.  It makes the
 // hostname a service the mesh knows, so ztunnel answers enrolled pods' queries
 // with the auto-allocated VIP and routes connections to that VIP to the shared
-// Gateway, which terminates TLS for *.holos.localhost and routes by SNI/Host to
+// Gateway, which terminates TLS for *.holos.internal and routes by SNI/Host to
 // the keycloak HTTPRoute — the API traverses the exact host path browsers use,
 // and the existing Gateway→Keycloak DestinationRule re-encrypts to the backend,
-// so the issuer serves https://auth.holos.localhost/realms/holos end-to-end and
+// so the issuer serves https://auth.holos.internal/realms/holos end-to-end and
 // the iss claim matches api.oidc.issuerURL.  protocol TLS keeps ztunnel at L4
 // (the Gateway terminates TLS, then re-encrypts); resolution DNS tracks the
 // Gateway Service by name so the entry survives ClusterIP changes — the
@@ -389,7 +395,7 @@ let SERVICE_ENTRY = {
 	apiVersion: "networking.istio.io/v1"
 	kind:       "ServiceEntry"
 	metadata: {
-		name:      "auth-holos-localhost"
+		name:      "auth-holos-internal"
 		namespace: NAMESPACE
 		labels: "app.kubernetes.io/name": NAME
 	}
@@ -668,7 +674,7 @@ userDefinedBuildPlan: {
 							// from tls.terminatedUpstream below.
 							host: WEBHOOK_HOSTNAME
 							// The shared Gateway terminates TLS for
-							// kargo-webhooks.holos.localhost (WEBHOOK_HTTPROUTE); the
+							// kargo-webhooks.holos.internal (WEBHOOK_HTTPROUTE); the
 							// server serves plain HTTP behind it, exactly as the
 							// kargo-api server does (api.tls above).  tls.enabled:
 							// false switches the chart's Service port from 443 to 80

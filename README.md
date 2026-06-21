@@ -9,8 +9,8 @@ rendered-manifests pattern.
 
 Follow [docs/local-cluster.md](docs/local-cluster.md) — the canonical
 guide from zero to a running platform — then verify the smoke test
-answers at `https://echo.holos.localhost/` and Keycloak serves the
-`holos` realm at `https://auth.holos.localhost/`. In summary:
+answers at `https://echo.holos.internal/` and Keycloak serves the
+`holos` realm at `https://auth.holos.internal/`. In summary:
 
 ```bash
 scripts/local-dns    # one-time DNS setup (macOS, requires sudo)
@@ -38,13 +38,13 @@ on Apple Silicon**, so the Make targets default to `PLATFORM=linux/arm64`;
 override `PLATFORM` for other architectures.
 
 ```bash
-make docker-build                    # build quay.holos.localhost/holos/holos-paas:dev (linux/arm64)
+make docker-build                    # build quay.holos.internal/holos/holos-paas:dev (linux/arm64)
 make docker-push                     # build and push to the local k3d registry
 make docker-build IMAGE_TAG=v0.1.0   # override the tag
 make docker-build PLATFORM=linux/amd64
 ```
 
-`IMAGE_REPO` defaults to `quay.holos.localhost/holos/holos-paas`, the
+`IMAGE_REPO` defaults to `quay.holos.internal/holos/holos-paas`, the
 in-cluster registry created by `scripts/local-k3d` (see
 [docs/local-cluster.md](docs/local-cluster.md)). Images pushed there are
 pullable by the k3d cluster, so `make docker-push` makes the image available
@@ -54,7 +54,7 @@ cross-built single-`PLATFORM` image is published directly.
 Verify the image locally without the cluster:
 
 ```bash
-docker run --rm quay.holos.localhost/holos/holos-paas:dev --help
+docker run --rm quay.holos.internal/holos/holos-paas:dev --help
 ```
 
 ### Build version
@@ -115,7 +115,7 @@ set, and `IMAGE_REPO`/`IMAGE_TAG` (or `CONTROLLER_IMAGE_REPO`/
 `CONTROLLER_IMAGE_TAG`) to publish elsewhere. Verify both platforms landed:
 
 ```bash
-docker buildx imagetools inspect quay.holos.localhost/holos/holos-paas:dev
+docker buildx imagetools inspect quay.holos.internal/holos/holos-paas:dev
 ```
 
 ### Publishing images from CI

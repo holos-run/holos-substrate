@@ -45,7 +45,7 @@ const groupsClaimName = "groups"
 // reservedClientIDs are the platform-reserved Keycloak clientIds a tenant
 // KeycloakClient refuses to MANAGE as a client object (ADR-20). They are the
 // platform OIDC clients owned by the keycloak-config-cli realm config (argocd,
-// kargo) and the in-cluster Quay client (https://quay.holos.localhost); a
+// kargo) and the in-cluster Quay client (https://quay.holos.internal); a
 // namespaced tenant CR must not create or reconfigure the client object itself.
 //
 // The guard applies to the CLIENT OBJECT only. Per ADR-20 "Claim value via a
@@ -57,9 +57,9 @@ const groupsClaimName = "groups"
 // stay off-limits (reservedClientRoleNames below).
 var reservedClientIDs = map[string]bool{
 	// Platform OIDC clients owned by keycloak-config-cli.
-	"argocd":                       true,
-	"kargo":                        true,
-	"https://quay.holos.localhost": true,
+	"argocd":                      true,
+	"kargo":                       true,
+	"https://quay.holos.internal": true,
 	// Keycloak built-in clients. realm-management hosts the realm-admin /
 	// manage-* roles, so it is the prime privilege-escalation target and must never
 	// be claimed by a tenant CR. account/account-console/broker/
@@ -97,7 +97,7 @@ var reservedClientRoleNames = map[string]bool{
 // same-namespace KeycloakClient CR via clientRef instead, which the claim model
 // already bounds.
 var directClientRoleTargets = map[string]bool{
-	"https://quay.holos.localhost": true,
+	"https://quay.holos.internal": true,
 }
 
 // ClientClient is the seam the KeycloakClient reconciler drives Keycloak through.

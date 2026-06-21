@@ -3,10 +3,10 @@
 
 # Container image coordinates. Override IMAGE_REPO/IMAGE_TAG to publish
 # elsewhere; the default targets the local k3d in-cluster registry
-# (quay.holos.localhost/holos, see docs/local-cluster.md) so a pushed image
+# (quay.holos.internal/holos, see docs/local-cluster.md) so a pushed image
 # is pullable by the cluster. PLATFORM defaults to linux/arm64 because the local
 # k3d cluster runs on Apple Silicon; override for other architectures.
-IMAGE_REPO ?= quay.holos.localhost/holos/holos-paas
+IMAGE_REPO ?= quay.holos.internal/holos/holos-paas
 IMAGE_TAG  ?= dev
 IMAGE      ?= $(IMAGE_REPO):$(IMAGE_TAG)
 PLATFORM   ?= linux/arm64
@@ -100,7 +100,7 @@ version-bump-minor: ## Tag an annotated minor-version bump (vX.Y.0).
 # push the result as an OCI artifact (see holos/docs/oci-publish-workflow.md).
 # APP_IMAGE is required (tag or digest); PUBLISH_REPO defaults to the in-cluster
 # Quay manifests repo, mirroring the IMAGE_REPO default above.
-PUBLISH_REPO ?= quay.holos.localhost/holos/holos-paas-manifests
+PUBLISH_REPO ?= quay.holos.internal/holos/holos-paas-manifests
 .PHONY: publish
 publish: ## Render, Kustomize-package, and oras push the manifests artifact (set APP_IMAGE=<ref>).
 	@test -n "$(APP_IMAGE)" || { echo "ERROR: set APP_IMAGE=<registry>/<app>:<tag> or <registry>/<app>@sha256:<digest>"; exit 1; }
@@ -132,7 +132,7 @@ docker-push: ## Build for $(PLATFORM) and push $(IMAGE) to the registry.
 # docker-buildx-builder bootstraps idempotently.
 #
 # The builder runs with --driver-opt network=host because the default IMAGE lives
-# in the local quay.holos.localhost / k3d-registry.holos.localhost registries,
+# in the local quay.holos.internal / k3d-registry.holos.internal registries,
 # which a docker-container builder cannot resolve from its isolated network
 # without host networking (see docs/build-registry.md). TLS trust for the
 # mkcert-signed local registry comes from the host Docker daemon's trust store
