@@ -16,7 +16,7 @@ spec:
       containers:
       - env:
         - name: KEYCLOAK_URL
-          value: https://keycloak-service:8443
+          value: http://keycloak-service:8080
         - name: KEYCLOAK_USER
           valueFrom:
             secretKeyRef:
@@ -51,8 +51,6 @@ spec:
           value: "true"
         - name: KEYCLOAK_AVAILABILITYCHECK_TIMEOUT
           value: 120s
-        - name: KEYCLOAK_SSLVERIFY
-          value: "false"
         - name: IMPORT_FILES_LOCATIONS
           value: /config/holos.json
         - name: IMPORT_VARSUBSTITUTION_ENABLED
