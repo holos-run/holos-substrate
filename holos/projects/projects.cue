@@ -33,10 +33,24 @@ package projects
 // label limit once prefixed and fail render there.
 #DNSLabel: =~"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
 
-// #Owner is a single project owner.  Keyed by email in the owners map; the
+// #Email is the shape an owner-map key must take — a deliberately simple
+// "<local>@<domain>.<tld>" pattern (a non-empty local part, an "@", a dotted
+// domain).  It is not a full RFC 5322 grammar (CUE regexps cannot express one,
+// and the platform does not need it); it exists to reject the obvious mistakes
+// the owners map would otherwise admit — an empty key "" or a bare token like
+// "notanemail" — at RENDER time, before that malformed identity flows into the
+// owner's KeycloakUser (ADR-20) or an access grant.
+#Email: =~"^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$"
+
+// #Owner is a single project owner.  Keyed by #Email in the owners map; the
 // value is open (the one-line registration writes `owners: "<email>": _`) so a
 // later phase may attach owner attributes without breaking existing entries.
-#Owner: {...}
+// `email` is set from the map key (not authored in the registration) and
+// validated against #Email by the owners constraint.
+#Owner: {
+	email: #Email
+	...
+}
 
 // #Project is the schema every projects.<name> entry unifies with.  It is
 // intentionally minimal for this foundational phase: the one required field is
@@ -50,11 +64,22 @@ package projects
 	// namespace names from it.
 	name: #DNSLabel
 
-	// owners maps an owner's email address to that owner's (open) record.  At
-	// least the registration `owners: "<email>": _` is required; the schema does
-	// not force a minimum count here (a project with no owners is a degenerate
-	// but render-valid entry — the Project component decides what to do with it).
-	owners: [string]: #Owner
+	// owners maps an owner's email address to that owner's (open) record.  The
+	// key must be #Email-shaped; an empty or malformed key fails at render.  As
+	// with the name fields, the pattern label [#Email] alone does not reject a
+	// non-matching key (CUE skips the constraint rather than erroring), so each
+	// key is captured into the value's `email` field and unified with #Email
+	// there — turning a bad owner key (e.g. "" or "notanemail") into a
+	// render-time conflict on owners.<key>.email.
+	//
+	// The "at least one owner" minimum is NOT enforced here on #Project: a
+	// len(owners) & >0 constraint inside the definition makes the abstract
+	// schema itself unsatisfiable (its default owners is the empty struct), so
+	// the minimum is enforced on the CONCRETE collection entries instead — see
+	// the projects map constraint below.
+	owners: [EMAIL=string]: #Owner & {
+		email: EMAIL & #Email
+	}
 }
 
 // projects is the collection: an open map keyed by project name.  Each entry
@@ -65,6 +90,20 @@ package projects
 // constraint), so the key is unified into name to force the failure.
 projects: [NAME=string]: #Project & {
 	name: NAME & #DNSLabel
+}
+
+// A registered project MUST name at least one owner — an ownerless project is
+// rejected at render, not silently admitted (it would have no KeycloakUser to
+// pre-provision and no one to bind project access to).  Enforced as a separate
+// validation comprehension over the CONCRETE entries (not as a constraint on
+// #Project or on the projects pattern label, either of which evaluates against
+// the empty default owners struct and is unsatisfiable / cannot resolve the
+// field): for each entry, len(owners) is unified with >0, so a project with an
+// empty owners map fails here at render.
+_projectsHaveOwners: {
+	for NAME, P in projects {
+		(NAME): len(P.owners) & >0
+	}
 }
 
 // #RegisteredProject is the disjunction of every registered project name —
