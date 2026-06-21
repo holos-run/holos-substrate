@@ -67,7 +67,7 @@
 #                    `--insecure` TLS path.
 #
 # Prerequisites:
-#   --build needs: git, tar  (no oras, no network)
+#   --build needs: git, gzip  (no oras, no network)
 #   --push  needs: oras
 #
 # NOTE: prerequisite checks are inline rather than a copy of the check_prereq
@@ -180,7 +180,7 @@ run_oras_dest() {
 # --build: tar the holos/deploy/ tree (no network I/O)
 # ---------------------------------------------------------------------------
 do_build() {
-  for tool in git tar; do
+  for tool in git gzip; do
     if ! command -v "${tool}" >/dev/null 2>&1; then
       echo "ERROR: '${tool}' not found on PATH." >&2
       exit 1
@@ -192,37 +192,37 @@ do_build() {
     exit 1
   fi
 
-  # Enumerate the committed (tracked) deploy files with git so the bundle holds
-  # exactly the rendered tree under version control -- no stray local files, no
-  # gitignored artifacts -- and so the member order is deterministic (sorted by
-  # path) for a reproducible tarball.  Paths are relative to holos/deploy/ so the
-  # tarball root is `clusters/...`.
-  local files
-  files="$(
-    cd "${DEPLOY_DIR}"
-    git ls-files -z . | LC_ALL=C sort -z | tr '\0' '\n'
-  )"
-  if [[ -z "${files}" ]]; then
-    echo "ERROR: no committed files found under ${DEPLOY_DIR}." >&2
+  # Bundle the **committed** holos/deploy/ tree from HEAD -- not the working tree.
+  # `git archive HEAD:holos/deploy` reads the exact bytes recorded at HEAD, so an
+  # uncommitted or unstaged local render can NEVER leak into the mutable :dev
+  # bootstrap tag (the artifact Argo CD bootstraps the whole platform from must
+  # be a reviewed, committed render).  It also gives a deterministic, reproducible
+  # archive for free: members are emitted in sorted tree order with zeroed
+  # ownership and the commit's timestamp, independent of the working tree's mtimes
+  # or stray local files.  The `HEAD:holos/deploy` tree-ish roots the archive at
+  # the deploy tree's contents, so the tarball layout is
+  # `clusters/k3d-holos/components/<component>/...` -- the path Phase 3's child
+  # Applications reference via source.path.
+  #
+  # Fail loudly if holos/deploy/ is absent from HEAD (never committed), rather
+  # than pushing an empty bootstrap bundle.
+  local count
+  if ! count="$(
+        cd "${REPO_ROOT}"
+        git ls-tree -r --name-only HEAD -- holos/deploy | grep -c .
+      )" || [[ "${count}" -eq 0 ]]; then
+    echo "ERROR: holos/deploy/ is not committed at HEAD." >&2
     echo "       Run scripts/render and commit holos/deploy/ first." >&2
     exit 1
   fi
 
-  echo "Bundling holos/deploy/ -> ${ARTIFACT_TARBALL} ..." >&2
-  # --no-recursion + an explicit file list (from git) gives a deterministic,
-  # tracked-only archive.  --sort=name and a fixed --mtime keep the tar headers
-  # stable across runs.  Tar from holos/deploy/ so the layout at the tarball
-  # root is `clusters/k3d-holos/components/<component>/...`.
-  printf '%s\n' "${files}" \
-    | tar -czf "${ARTIFACT_TARBALL}" \
-        -C "${DEPLOY_DIR}" \
-        --no-recursion \
-        --sort=name \
-        --mtime='1970-01-01 00:00:00 UTC' \
-        --owner=0 --group=0 --numeric-owner \
-        --files-from=-
+  echo "Bundling committed holos/deploy/ (HEAD) -> ${ARTIFACT_TARBALL} ..." >&2
+  (
+    cd "${REPO_ROOT}"
+    git archive --format=tar HEAD:holos/deploy
+  ) | gzip -n > "${ARTIFACT_TARBALL}"
 
-  echo "Built $(printf '%s\n' "${files}" | grep -c .) files into ${ARTIFACT_TARBALL}." >&2
+  echo "Built ${count} files into ${ARTIFACT_TARBALL}." >&2
   echo "Push it with: scripts/publish-config --push" >&2
 }
 

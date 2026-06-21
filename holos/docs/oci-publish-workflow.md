@@ -149,10 +149,14 @@ spec:
 
 The bundle contains the **full** `holos/deploy/` tree (every component, all 30+
 under `clusters/k3d-holos/components/`), so the App-of-Apps can fan out one child
-Application per component by `source.path`. Only files **tracked by git** under
-`holos/deploy/` are included (enumerated via `git ls-files`), so a stray local
-file never leaks into the bootstrap artifact, and the member order is sorted for
-a reproducible tar.
+Application per component by `source.path`. The build packages the **committed**
+tree at `HEAD` (`git archive HEAD:holos/deploy`), **not** the working tree — so
+an uncommitted or unstaged local render can never leak into the mutable `:dev`
+bootstrap tag (the platform Argo CD bootstraps from must be a reviewed, committed
+render), a stray local file never appears, and the archive is deterministic
+(sorted member order, zeroed ownership, the commit's timestamp). `config-build`
+fails loudly if `holos/deploy/` is absent from `HEAD` rather than pushing an
+empty bundle.
 
 ### Registry transport and credentials
 
