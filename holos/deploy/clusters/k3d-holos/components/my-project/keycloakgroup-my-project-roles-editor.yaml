@@ -7,6 +7,8 @@ metadata:
   namespace: my-project
 spec:
   clientRoles:
+  - clientId: https://quay.holos.localhost
+    role: my-project-editor
   - clientRef: my-project
     role: my-project-editor
   custodians:
