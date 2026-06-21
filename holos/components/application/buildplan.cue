@@ -545,68 +545,110 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 		}
 	}
 
-	resources: #Resources & {
-		Deployment: (NAME):  DEPLOYMENT_RESOURCE
-		Service: (NAME):     SERVICE_RESOURCE
-		HTTPRoute: (NAME):   HTTPROUTE_RESOURCE
-		ConfigMap: (NAME):   CONFIG_MAP_RESOURCE
+	// --- Two SEPARABLE bundles: workload (Argo-CD-synced) vs control plane ----
+	//
+	// The app's resources split by DELIVERY PATH, and the two bundles MUST render
+	// into separate artifact directories so they are independently packageable:
+	//
+	//   - workloadResources — the Deployment/Service/HTTPRoute/ConfigMap/
+	//     ServiceAccount/RoleBinding the app's Argo CD Application SYNCS from the
+	//     published <app>-config OCI artifact.  scripts/publish packages ONLY this
+	//     bundle as <app>-config, and the Application's source.path is "." (the
+	//     workload bundle is the artifact root).
+	//   - controlPlaneResources — the Quay Repository, the app KeycloakClient, the
+	//     Kargo Warehouse/Stage, and the Argo CD Application ITSELF, applied by the
+	//     operator path (scripts/apply-projects).  These must NOT be in the
+	//     <app>-config artifact: if Argo CD synced them it would try to MANAGE the
+	//     Repository/KeycloakClient/Warehouse/Stage and the Application object that
+	//     points at itself — the second-manager / sync-scope problem (the codex
+	//     round-3 confirming finding).  Keeping them in a SEPARATE artifact
+	//     directory the publish workflow never packages is the fix.
+	workloadResources: #Resources & {
+		Deployment: (NAME):     DEPLOYMENT_RESOURCE
+		Service: (NAME):        SERVICE_RESOURCE
+		HTTPRoute: (NAME):      HTTPROUTE_RESOURCE
+		ConfigMap: (NAME):      CONFIG_MAP_RESOURCE
 		ServiceAccount: (NAME): SERVICE_ACCOUNT_RESOURCE
 		RoleBinding: (ROLE_BINDING_RESOURCE.metadata.name): ROLE_BINDING_RESOURCE
+	}
 
+	controlPlaneResources: #Resources & {
 		KeycloakClient: (APP_CLIENT_NAME): KEYCLOAK_CLIENT_RESOURCE
-
-		Repository: (CONFIG_REPO_NAME): REPOSITORY_RESOURCE
-
-		Warehouse: (WAREHOUSE): WAREHOUSE_RESOURCE
-		Stage: (STAGE):         STAGE_RESOURCE
-		Application: (NAME):    APPLICATION_RESOURCE
+		Repository: (CONFIG_REPO_NAME):    REPOSITORY_RESOURCE
+		Warehouse: (WAREHOUSE):            WAREHOUSE_RESOURCE
+		Stage: (STAGE):                    STAGE_RESOURCE
+		Application: (NAME):               APPLICATION_RESOURCE
 	}
 }
 
 userDefinedBuildPlan: {
 	metadata: name: "application"
-	// One artifact directory per app (clusters/<cluster>/components/application/<name>/),
-	// iterating the apps collection.  A project with zero apps yields no apps
-	// entries, so this renders no artifacts and the deploy tree stays diff-clean;
-	// each registered app adds one artifact directory.
+	// TWO artifact directories per app, iterating the apps collection:
+	//
+	//   clusters/<cluster>/components/application/<app>/workload/       — the
+	//     Argo-CD-synced workload bundle (Deployment/Service/HTTPRoute/ConfigMap/
+	//     ServiceAccount/RoleBinding).  scripts/publish packages THIS subtree as
+	//     the <app>-config OCI artifact the app's Argo CD Application syncs.
+	//   clusters/<cluster>/components/application/<app>/control-plane/  — the
+	//     operator-applied control plane (Repository/KeycloakClient/Warehouse/
+	//     Stage/Application).  scripts/apply-projects applies THIS subtree; it is
+	//     NEVER published into the <app>-config artifact (else Argo CD would try to
+	//     manage these objects — the second-manager problem).
+	//
+	// Splitting the bundles into separate directories is what keeps Argo CD's sync
+	// scope to the workload only.  A project with zero apps yields no apps entries,
+	// so this renders no artifacts and the deploy tree stays diff-clean; each
+	// registered app adds two artifact directories.
 	spec: artifacts: manifests: {
 		for APP, A in apps {
-			"clusters/\(clusterName)/components/application/\(APP)": {
-				artifact: _
-				generators: [{
-					kind: "Resources"
-					// Each artifact entry in this multi-app component must use a
-					// DISTINCT generator output filename — a bare
-					// "resources.gen.yaml" reused across apps fails render with
-					// "resources.gen.yaml already set" (the project component's
-					// multi-project rationale).  APP is DNS-label-bounded, so it
-					// is a safe filename segment.
-					output: "resources-\(APP).gen.yaml"
-					resources: (#AppResources & {
-						NAME:    APP
-						PROJECT: A.project
-						IMAGE:   A.image
-						PORT:    A.port
-						if A.host != _|_ {
-							HOST: A.host
-						}
-					}).resources
-				}]
-				transformers: [
-					{
-						kind: "Kustomize"
-						inputs: [for G in generators {G.output}]
-						output: "kustomize-output-bundle-\(APP).yaml"
-						kustomize: kustomization: resources: inputs
-					},
-					{
-						kind: "Command"
-						inputs: [transformers[0].output]
-						output: artifact
-						command: args: ["holos", "kubectl-slice", "-f", "\(BuildContext.tempDir)/\(inputs[0])", "-o", "\(BuildContext.tempDir)/\(artifact)"]
-					},
-				]
+			let APP_RESOURCES = #AppResources & {
+				NAME:    APP
+				PROJECT: A.project
+				IMAGE:   A.image
+				PORT:    A.port
+				if A.host != _|_ {
+					HOST: A.host
+				}
 			}
+
+			// #AppBundle renders one named bundle of an app's resources into its own
+			// artifact directory under application/<app>/<bundle>/.  Factored so the
+			// workload and control-plane bundles share the identical generator/
+			// transformer shape and differ only by name and resource set.  Every
+			// generator/transformer output filename is scoped by APP and BUNDLE so
+			// the two bundles (and the multi-app iteration) never reuse a filename in
+			// the component's shared tempDir (the "already set" trap).
+			let mkBundle = {
+				BUNDLE:    string
+				RESOURCES: _
+				out: {
+					"clusters/\(clusterName)/components/application/\(APP)/\(BUNDLE)": {
+						artifact: _
+						generators: [{
+							kind:      "Resources"
+							output:    "resources-\(APP)-\(BUNDLE).gen.yaml"
+							resources: RESOURCES
+						}]
+						transformers: [
+							{
+								kind: "Kustomize"
+								inputs: [for G in generators {G.output}]
+								output: "kustomize-output-bundle-\(APP)-\(BUNDLE).yaml"
+								kustomize: kustomization: resources: inputs
+							},
+							{
+								kind: "Command"
+								inputs: [transformers[0].output]
+								output: artifact
+								command: args: ["holos", "kubectl-slice", "-f", "\(BuildContext.tempDir)/\(inputs[0])", "-o", "\(BuildContext.tempDir)/\(artifact)"]
+							},
+						]
+					}
+				}
+			}
+
+			(mkBundle & {BUNDLE: "workload", RESOURCES:      APP_RESOURCES.workloadResources}).out
+			(mkBundle & {BUNDLE: "control-plane", RESOURCES: APP_RESOURCES.controlPlaneResources}).out
 		}
 	}
 }

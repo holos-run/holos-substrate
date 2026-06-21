@@ -412,6 +412,22 @@ created by either script and must be provisioned by hand:
 > project-scoped artifact exists, and the step-4 `Synced` result is reachable
 > only for such an artifact.
 
+> **The per-app `<app>-config` artifact is the Application component's
+> `workload/` bundle (HOL-1356).** The Application component
+> ([`holos/components/application/buildplan.cue`](../components/application/buildplan.cue))
+> renders each `apps.<name>` entry into **two** separate artifact directories:
+> `components/application/<app>/workload/` (the
+> `Deployment`/`Service`/`HTTPRoute`/`ConfigMap`/`ServiceAccount`/`RoleBinding`)
+> and `components/application/<app>/control-plane/` (the Quay `Repository`, the
+> app `KeycloakClient`, the Kargo `Warehouse`/`Stage`, and the Argo CD
+> `Application`). The publish workflow packages **only the `workload/` subtree**
+> as the `<app>-config` artifact the app's Argo CD `Application` syncs — the
+> control-plane objects are applied by the operator path
+> (`scripts/apply-projects`) and are **never** in the synced artifact, so Argo CD
+> never tries to manage the `Repository`/`KeycloakClient`/Kargo objects or the
+> `Application` that points at itself. This is the project-scoped, namespace-fit
+> bundle the whole-platform render is not.
+
 What you **can** verify today is that the scaffold is in place:
 
 ```bash

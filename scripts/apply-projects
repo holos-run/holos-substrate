@@ -311,10 +311,20 @@ gate_ready() {
 # An app's namespace is the app's `project` — read from the rendered manifests'
 # metadata.namespace (== the project == the bare control namespace).
 
-# app_namespace APP_DIR APP — echo the app's control namespace (its project).
+# The Application component renders each app into TWO subdirectories:
+#   <app_dir>control-plane/ — the operator-applied control plane (Repository,
+#     KeycloakClient, Warehouse, Stage, Argo CD Application).  This script applies
+#     ONLY this subtree.
+#   <app_dir>workload/       — the Deployment/Service/HTTPRoute/ConfigMap/SA/
+#     RoleBinding the app's Argo CD Application SYNCS from the published
+#     <app>-config artifact.  This script NEVER applies it (Argo CD owns it), so
+#     it never becomes a second manager of the workload objects.
+
+# app_namespace APP_DIR APP — echo the app's control namespace (its project),
+# read from the rendered control-plane Repository's metadata.namespace.
 app_namespace() {
   local app_dir="$1" app="$2"
-  local repo_file="${app_dir}repository-${app}-config.yaml"
+  local repo_file="${app_dir}control-plane/repository-${app}-config.yaml"
   if [[ ! -f "${repo_file}" ]]; then
     echo "ERROR: rendered Repository manifest ${repo_file} not found for app ${app}." >&2
     return 1
@@ -323,36 +333,22 @@ app_namespace() {
     -o jsonpath='{.metadata.namespace}' -f "${repo_file}"
 }
 
-# apply_application_resources APP_DIR APP — apply one app's manifests (RBAC
-# first), WITHOUT gating.  The control namespace must already exist (its owning
-# project's namespace, applied by the project loop or by scripts/apply-my-project
+# apply_application_resources APP_DIR APP — apply ONLY the app's CONTROL-PLANE
+# subdirectory (Repository, KeycloakClient, Warehouse, Stage, Argo CD
+# Application), WITHOUT gating.  The WORKLOAD subdirectory is deliberately NOT
+# applied: the app's Argo CD Application delivers it from the published
+# <app>-config artifact, so applying it here would make this script a second
+# manager fighting Argo CD's self-heal.  Until the first scripts/publish of
+# <app>-config, the app's Argo CD Application is Missing/Unknown — expected
+# scaffolding, exactly as the my-project Application is.  The control namespace
+# must already exist (applied by the project loop, or by scripts/apply-my-project
 # for a my-project app).
 apply_application_resources() {
   local app_dir="$1" app="$2"
+  local cp_dir="${app_dir}control-plane"
   echo "==> apply application ${app} (control plane)" >&2
-  # Apply ONLY the app's CONTROL-PLANE resources here: the Quay Repository, the
-  # app KeycloakClient, the Kargo Warehouse/Stage, and the Argo CD Application.
-  # The WORKLOAD objects (Deployment, Service, HTTPRoute, ConfigMap, and the app
-  # ServiceAccount/RoleBinding the workload runs as) are DELIVERED BY THE APP'S
-  # ARGO CD APPLICATION from the published <app>-config OCI artifact — applying
-  # them here too would make this script a SECOND manager of the same objects,
-  # fighting Argo CD's self-heal (the codex round-2 finding).  So they are
-  # rendered into the deploy tree (the source the publish workflow packages into
-  # the <app>-config artifact) but NOT kubectl-applied: until the first
-  # scripts/publish of <app>-config, the app's Argo CD Application is
-  # Missing/Unknown — expected scaffolding, exactly as the my-project Application
-  # is until its first config artifact publishes.
-  local cp_files=()
-  local f
-  for f in "${app_dir}"repository-*.yaml \
-           "${app_dir}"keycloakclient-*.yaml \
-           "${app_dir}"warehouse-*.yaml \
-           "${app_dir}"stage-*.yaml \
-           "${app_dir}"application-*.yaml; do
-    [[ -e "${f}" ]] && cp_files+=(-f "${f}")
-  done
-  if ((${#cp_files[@]})); then
-    kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts "${cp_files[@]}"
+  if [[ -d "${cp_dir}" ]] && [[ -n "$(ls -A "${cp_dir}" 2>/dev/null)" ]]; then
+    kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts -f "${cp_dir}/"
   fi
 }
 
