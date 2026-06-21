@@ -63,10 +63,12 @@ let KeycloakConfigCLIImage = "docker.io/adorsys/keycloak-config-cli:6.5.1-26.5.5
 let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 
 // The operator names the Keycloak Service "<cr-name>-service"; with CR name
-// "keycloak" that is "keycloak-service", serving HTTPS on 8443 — the SAN the
-// keycloak-tls certificate covers (../instance/buildplan.cue).  The Job runs in
-// this namespace so the short Service name resolves.
-let KEYCLOAK_URL = "https://keycloak-service:8443"
+// "keycloak" that is "keycloak-service".  Keycloak runs HTTP-only behind the
+// shared Gateway (HOL-1362), so this Service exposes the port named "http"
+// (8080).  The Job runs in this namespace so the short Service name resolves,
+// and reaches the admin API over plaintext HTTP — the keycloak namespace is now
+// ambient-enrolled, so ztunnel HBONE mTLS secures this in-namespace wire hop.
+let KEYCLOAK_URL = "http://keycloak-service:8080"
 
 // The operator generates the initial admin credentials in this Secret (keys
 // username/password) on first reconcile — ../instance/buildplan.cue's admin
@@ -881,20 +883,6 @@ let CONFIG_JOB = {
 						{
 							name:  "KEYCLOAK_AVAILABILITYCHECK_TIMEOUT"
 							value: "120s"
-						},
-						// The keycloak namespace is _ambient: false
-						// (holos/namespaces.cue), so this in-namespace HTTPS hop
-						// to keycloak-service:8443 is not mesh-secured.  The
-						// backend cert is issued by the per-machine local CA
-						// (components/local-ca) and cannot be embedded at render
-						// time deterministically, so the Job cannot pin a trust
-						// anchor the way the Gateway→Keycloak DestinationRule
-						// does.  Skip verification on this single in-cluster hop,
-						// mirroring the reference platform's insecureSkipVerify on
-						// the Keycloak DestinationRule.
-						{
-							name:  "KEYCLOAK_SSLVERIFY"
-							value: "false"
 						},
 						{
 							name:  "IMPORT_FILES_LOCATIONS"
