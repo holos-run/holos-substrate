@@ -1,0 +1,10 @@
+apiVersion: k8s.keycloak.org/v2beta1
+kind: KeycloakRealmImport
+metadata:
+  name: esso
+  namespace: keycloak
+spec:
+  keycloakCRName: keycloak
+  realm:
+    enabled: true
+    realm: esso

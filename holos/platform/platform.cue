@@ -288,6 +288,25 @@ platform: {
 				labels: app: "keycloak"
 			}}).output
 
+			// keycloak-esso-config reconciles the esso realm (HOL-1368) with its
+			// own idempotent keycloak-config-cli Job: the confidential broker
+			// client (https://auth.holos.internal/realms/holos) and the single
+			// pre-provisioned alice user, plus the generate-once bootstrap Job for
+			// the shared esso-idp-oidc client secret and alice's password.
+			// Registered alongside keycloak-config: the esso realm shell is
+			// bootstrapped by the instance component's KeycloakRealmImport, and the
+			// Keycloak server Ready, before this Job converges the esso realm.  This
+			// phase only adds the rendered component; wiring its apply ordering and
+			// gate into scripts/apply is phase 4 (HOL-1370).  It takes NO dependency
+			// on the holos-controller API groups (AC #5).
+			(#ComponentTemplate & {inputs: {
+				name:      "keycloak-esso-config"
+				component: "realm-esso-config"
+				prefix:    "components/keycloak"
+				cluster:   CLUSTER.name
+				labels: app: "keycloak"
+			}}).output
+
 			// keycloak-instance emits the central keycloak.holos.run
 			// KeycloakInstance the shipped Holos Controller reconciles the rest of
 			// the keycloak.holos.run Kinds against, plus the security.holos.run
