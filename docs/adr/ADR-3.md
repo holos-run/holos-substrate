@@ -11,6 +11,7 @@
 | Revision | Date       | Author      | Info           |
 | -------- | ---------- | ----------- | -------------- |
 | 1        | 2026-06-06 | @jeffmccune | Initial design |
+| 2        | 2026-06-21 | @jeffmccune | Note that the "external identity/group system is a prerequisite, not implemented here" stance is now **modeled for local development** by a second Keycloak realm `esso` (an authentication-only upstream enterprise-SSO IdP) brokered into the `holos` realm over OIDC (broker alias `esso`), per [ADR-20](ADR-20.md) Rev 5 (HOL-1366/HOL-1367). The authorization model is **unchanged** — RBAC bindings with `Group` subjects, membership a custodian approves, all authorization in the `holos` realm — only the external authenticator is now self-hosted for local dev instead of assumed. `Status: Accepted` unchanged |
 
 ## Context and Problem Statement
 
@@ -63,6 +64,16 @@ bespoke platform workflows.
 - The platform depends on the cluster's authentication layer and on an external
   identity/group system; provisioning and custodianship of groups is a
   prerequisite, not something the platform implements.
+  - **Modeled for local development (Rev 2).** That external identity system is
+    now *modeled* for local development by a second Keycloak realm, `esso`, that
+    plays the part of an upstream enterprise-SSO IdP: it **authenticates** a
+    person and asserts a verified email, and the `holos` realm **brokers** it
+    over OIDC (broker alias `esso`) with first-broker-login auto-link by trusted
+    email, per [ADR-20](ADR-20.md) Rev 5 (HOL-1366/HOL-1367). This does **not**
+    change the authorization model above — all authorization stays in the
+    `holos` realm's groups and roles, mapped to RBAC bindings with `Group`
+    subjects with custodian-approved membership; only the external authenticator
+    is now self-hosted for local dev rather than assumed to exist.
 - Authorization granularity is bounded by what RBAC can express (verbs on
   resources, optionally namespaced). Designs that need finer-grained controls
   must model that within RBAC or justify, per [ADR-2](ADR-2.md), why the KRM and
