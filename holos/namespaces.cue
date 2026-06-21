@@ -324,6 +324,37 @@ namespaces: {
 	// my-project entry above is deliberately RETAINED in this phase (the bespoke
 	// my-project component still references it until HOL-1357); the derived
 	// prod-my-project etc. are additional, non-conflicting entries.
+	// Derived: per-project CONTROL namespace — the bare project name <name>.
+	//
+	// The Project component (HOL-1355) places a project's control-plane CRs (the
+	// keycloak.holos.run role/custodian groups + owner user + client, the Quay
+	// Organization, and the cluster-scoped Kargo Project's adopted namespace) in a
+	// namespace named EXACTLY the bare project name.  This is forced by the
+	// as-built controller guard validateDirectClientRole (HOL-1350): a role group
+	// may confer <name>-<role> on the platform Quay client directly only when its
+	// CR namespace equals the bare project name <name> — the Quay claim-population
+	// the Project's syncedTeams depend on.  This DEVIATES from ADR-21 Revision 3's
+	// prod-<name> control-namespace pick (recorded as a Deferred AC on HOL-1355,
+	// to be ratified in ADR-21 by HOL-1358); the bare-<name> control namespace is
+	// also exactly what the bespoke my-project component uses today.
+	//
+	// Gated `if PROJECT != "my-project"`: my-project already has the hand-written
+	// static bare entry above (retained until HOL-1357), and the Project component
+	// likewise skips my-project, so deriving a second bare my-project entry here
+	// would duplicate it.  The derived bare entry reproduces the env entries' shape
+	// (ambient + the Kargo adoption label/keep annotation), since the control
+	// namespace also hosts the cluster-scoped Kargo Project that adopts it.
+	for PROJECT, _ in projects if PROJECT != "my-project" {
+		let NS = PROJECT & =~"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
+		(NS): {
+			_ambient: true
+			metadata: {
+				labels: "kargo.akuity.io/project":             "true"
+				annotations: "kargo.akuity.io/keep-namespace": "true"
+			}
+		}
+	}
+
 	for PROJECT, _ in projects {
 		for ENV in #Environments {
 			let NS = (#ProjectNamespace & {project: PROJECT, env: ENV}).name

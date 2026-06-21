@@ -431,6 +431,26 @@ platform: {
 				cluster:   CLUSTER.name
 				labels: app: "my-project"
 			}}).output
+
+			// project is the collection-driven generalization of the my-project
+			// scaffold (HOL-1355): it iterates the projects collection
+			// (holos/collections.cue) and emits the full per-project control-plane
+			// resource set into components/project/<name>/ for every
+			// projects.<name> EXCEPT my-project (the bespoke component still owns
+			// it until HOL-1357).  Registered after argocd, kargo, and my-project
+			// for the same upstream-CRD/controller reasons: the AppProject/
+			// Application are argoproj.io kinds, the Kargo Project/Stage are
+			// kargo.akuity.io kinds, and the Organization/Keycloak CRs are
+			// reconciled by the Holos Controller.  Like my-project it is
+			// render-here / apply-separately — its Organization carries a
+			// per-cluster caBundle injected at apply time (scripts/apply-projects),
+			// so it is EXCLUDED from the master scripts/apply.  With only
+			// my-project registered today it renders no output.
+			(#ComponentTemplate & {inputs: {
+				component: "project"
+				cluster:   CLUSTER.name
+				labels: app: "project"
+			}}).output
 		}
 	}
 }
