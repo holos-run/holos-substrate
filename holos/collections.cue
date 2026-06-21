@@ -94,17 +94,36 @@ apps: appcoll.apps
 		}
 	}
 
-	// Every app's project/image/port/name must evaluate — forcing the
-	// apps.<name>.project → #RegisteredProject cross-reference and the
-	// name/image/port constraints.  Reading the fields into throwaway hidden
-	// bindings makes a malformed or dangling app entry a render failure even
-	// with no Application component yet.  (host is optional, so it is not read.)
-	for _, A in apps {
-		_app: {
-			_p: A.project
-			_i: A.image
-			_n: A.port
-			_m: A.name
+	// Per-app validation, keyed by app NAME.  Keying by name (not a single shared
+	// field) is essential: a shared field would unify across apps and make two
+	// apps with different images/ports conflict — breaking multi-app support.
+	//
+	// What this forces on the render path NOW (a violation is a render error
+	// because it produces _|_, which holos surfaces even from a hidden field):
+	//   - the apps.<name>.project → #RegisteredProject CROSS-REFERENCE (a dangling
+	//     project is `conflicting values`),
+	//   - the name/image/port VALUE constraints when the field is present (a
+	//     malformed app name or an empty image is `out of bound`).
+	//
+	// What it does NOT force here, and why: a MISSING required field
+	// (project!/image!/port! omitted entirely) leaves the app value INCOMPLETE,
+	// not _|_, and holos render tolerates an incomplete HIDDEN field that no
+	// rendered manifest exports.  Concreteness of a required field is therefore
+	// enforced when an app is actually CONSUMED — i.e. when the Application
+	// component (HOL-1356) renders the app's Deployment/Service from these fields,
+	// the export forces project/image/port to be concrete.  The ! markers on #App
+	// declare the contract; the consuming component is where a render exports it.
+	// (host is optional, so it is not read.)  This is an honest boundary of the
+	// foundation phase: the cross-reference and present-value validation the AC
+	// mandates hold now; required-field presence rides the consumer.
+	_apps: {
+		for NAME, A in apps {
+			(NAME): {
+				_p: A.project
+				_i: A.image
+				_n: A.port
+				_m: A.name
+			}
 		}
 	}
 }

@@ -45,21 +45,25 @@ import proj "github.com/holos-run/holos-paas/holos/projects"
 	name: #DNSLabel
 
 	// project names the Project (a key in the projects collection) this app is
-	// contained by.  Unified with projects.#RegisteredProject so a reference to a
-	// non-existent project FAILS AT RENDER, mirroring the #RegisteredNamespace
-	// discipline holos/namespaces.cue applies to namespace literals.
-	project: proj.#RegisteredProject
+	// contained by.  REQUIRED (the ! marker): an app omitting project fails at
+	// render rather than rendering an unattached app.  Unified with
+	// projects.#RegisteredProject so a reference to a non-existent project also
+	// FAILS AT RENDER, mirroring the #RegisteredNamespace discipline
+	// holos/namespaces.cue applies to namespace literals.
+	project!: proj.#RegisteredProject
 
-	// image is the container image reference the app's Deployment runs.  A
-	// digest-pinned reference is preferred (the publish workflow's posture, see
-	// holos/tags.cue _AppImage), but the schema only requires a non-empty string
-	// here — the Application component validates the deployable shape.
-	image: string & !=""
+	// image is the container image reference the app's Deployment runs.  REQUIRED
+	// (the ! marker): an app omitting image fails at render.  A digest-pinned
+	// reference is preferred (the publish workflow's posture, see holos/tags.cue
+	// _AppImage), but the schema only requires a non-empty string here — the
+	// Application component validates the deployable shape.
+	image!: string & !=""
 
 	// port is the container port the app listens on; the Service/HTTPRoute the
-	// Application component renders target it.  Constrained to the valid TCP port
-	// range so a malformed port fails at render.
-	port: int & >0 & <=65535
+	// Application component renders target it.  REQUIRED (the ! marker): an app
+	// omitting port fails at render.  Constrained to the valid TCP port range so
+	// a malformed port fails at render.
+	port!: int & >0 & <=65535
 
 	// host is the OPTIONAL external hostname the app is exposed at (the
 	// HTTPRoute's hostname).  Omitted entries get no host field; when present it
