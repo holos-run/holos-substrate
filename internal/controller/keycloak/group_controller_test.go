@@ -1149,19 +1149,27 @@ func TestGroupDirectClientRoleGuards(t *testing.T) {
 
 	cases := []struct {
 		name     string
+		path     string
 		clientID string
 		role     string
 	}{
-		{"non-allowlisted client", "realm-management", "my-project-realm-admin"},
-		{"another reserved client", "argocd", "my-project-owner"},
-		{"cross-project role on quay", "https://quay.holos.localhost", "other-project-owner"},
+		{"non-allowlisted client", "projects/my-project/roles/owner", "realm-management", "my-project-realm-admin"},
+		{"another reserved client", "projects/my-project/roles/owner", "argocd", "my-project-owner"},
+		{"cross-project role on quay", "projects/my-project/roles/owner", "https://quay.holos.localhost", "other-project-owner"},
+		// Prefix collision: project "my" (path projects/my/roles/owner) must NOT be
+		// able to confer "my-project-owner", which belongs to project "my-project".
+		// The exact <project>-<leaf> match (not a prefix) rejects it.
+		{"prefix-collision cross-project", "projects/my/roles/owner", "https://quay.holos.localhost", "my-project-owner"},
+		// A non-role (custodian) group must not confer a claim value on the reserved
+		// client even with a name that matches its own path's leaf.
+		{"non-role custodian path", "projects/my-project/custodians/owner", "https://quay.holos.localhost", "my-project-owner"},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			group := &keycloakv1alpha1.KeycloakGroup{
 				ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "directguard-" + strconv.Itoa(i)},
 				Spec: keycloakv1alpha1.KeycloakGroupSpec{
-					Path:        "projects/my-project/roles/owner",
+					Path:        tc.path,
 					InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
 					ClientRoles: []keycloakv1alpha1.ClientRoleReference{
 						{ClientID: tc.clientID, Role: tc.role},

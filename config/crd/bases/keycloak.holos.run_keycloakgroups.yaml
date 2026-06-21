@@ -79,10 +79,15 @@ spec:
               clientRoles:
                 description: |-
                   ClientRoles optionally lists the client roles every member of this group
-                  holds. Each entry is a (clientRef, role) pair. A member of the group thereby
-                  holds the named client roles, which reach the owning client's own token via
-                  that client's per-client client-role mapper. Cross-service relying parties
-                  key on the group name in the shared groups claim, not on these roles.
+                  holds. Each entry names its target client by EXACTLY ONE of clientRef (a
+                  same-namespace KeycloakClient CR) or clientId (a Keycloak clientId directly —
+                  the ADR-20 "Quay use case", for the platform-reserved Quay client where no
+                  tenant CR exists), plus the role name. A member of the group thereby holds the
+                  named client roles, which reach the target client's token via that client's
+                  per-client client-role mapper. The direct clientId path is tightly bounded
+                  (only the Quay client, only this role group's own project-prefixed role) so it
+                  cannot confer a foreign or platform role. Cross-service relying parties key on
+                  the group name in the shared groups claim, not on these roles.
                 items:
                   description: |-
                     ClientRoleReference names a client role a group confers on its members: the

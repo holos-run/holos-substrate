@@ -560,9 +560,13 @@ func splitManagedRole(key string) (clientID, role string, ok bool) {
 //  2. the role name is not one of the platform's own reserved client-role names
 //     (platform-admin/project-admin), so a platform role binding is never
 //     overwritten;
-//  3. the role name is this group's OWN project-prefixed name (derived from the
-//     group path projects/<project>/...), so a group cannot mint another project's
-//     Quay role (e.g. other-project-owner).
+//  3. the role name is EXACTLY this role group's own name `<project>-<leaf>`,
+//     parsed from a `projects/<project>/roles/<leaf>` path. The match is exact
+//     (not a prefix) so a prefix collision cannot confer another project's role —
+//     e.g. project `my` (path projects/my/roles/owner) cannot confer
+//     `my-project-owner` (which belongs to project `my-project`), and a non-role
+//     path (projects/<project>/custodians/<leaf>) is refused outright since only a
+//     roles/* group confers a claim value.
 func validateDirectClientRole(groupPath, clientID, role string) error {
 	if !directClientRoleTargets[clientID] {
 		return fmt.Errorf("clientId %q may not be named directly by a KeycloakGroup clientRoles entry; only the platform Quay client is a permitted direct target (use a same-namespace KeycloakClient and clientRef for other clients)", clientID)
@@ -570,26 +574,31 @@ func validateDirectClientRole(groupPath, clientID, role string) error {
 	if reservedClientRoleNames[role] {
 		return fmt.Errorf("client role %q on reserved client %q is platform-reserved and cannot be conferred by a KeycloakGroup", role, clientID)
 	}
-	project := projectFromGroupPath(groupPath)
-	if project == "" {
-		return fmt.Errorf("cannot confer a role on reserved client %q from group path %q: it is not a projects/<project>/... path, so no project prefix can be enforced", clientID, groupPath)
+	project, leaf, ok := projectRoleFromGroupPath(groupPath)
+	if !ok {
+		return fmt.Errorf("cannot confer a role on reserved client %q from group path %q: only a projects/<project>/roles/<leaf> group may confer a project role on a reserved client", clientID, groupPath)
 	}
-	if !strings.HasPrefix(role, project+"-") {
-		return fmt.Errorf("client role %q on reserved client %q must be prefixed with this group's project %q (expected %q-…) so a group cannot confer another project's role", role, clientID, project, project)
+	if want := project + "-" + leaf; role != want {
+		return fmt.Errorf("client role %q on reserved client %q must be exactly this role group's name %q (project %q + role %q) so a group cannot confer another project's role", role, clientID, want, project, leaf)
 	}
 	return nil
 }
 
-// projectFromGroupPath extracts <project> from a group path of the form
-// projects/<project>/... (any leading/trailing slashes tolerated). It returns ""
-// when the path is not in that shape, so the caller can refuse the direct path
-// rather than enforce an empty prefix.
-func projectFromGroupPath(path string) string {
+// projectRoleFromGroupPath parses a role-group path of the exact form
+// projects/<project>/roles/<leaf> (any leading/trailing slashes tolerated),
+// returning <project>, <leaf>, and ok=true. Any other shape — a different depth, a
+// non-"projects" root, a non-"roles" tier (e.g. custodians), or an empty segment —
+// returns ok=false, so the caller refuses the direct path rather than enforcing a
+// loose prefix.
+func projectRoleFromGroupPath(path string) (project, leaf string, ok bool) {
 	segs := strings.Split(strings.Trim(path, "/"), "/")
-	if len(segs) >= 2 && segs[0] == "projects" && segs[1] != "" {
-		return segs[1]
+	if len(segs) != 4 || segs[0] != "projects" || segs[2] != "roles" {
+		return "", "", false
 	}
-	return ""
+	if segs[1] == "" || segs[3] == "" {
+		return "", "", false
+	}
+	return segs[1], segs[3], true
 }
 
 // clientRefDescription renders a human-readable description of which field named
