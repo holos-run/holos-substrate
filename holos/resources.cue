@@ -60,6 +60,21 @@ import (
 	Keycloak?: [_]:              kc.#Keycloak
 	KeycloakRealmImport?: [_]:   kcri.#KeycloakRealmImport
 	Namespace?: [_]:             corev1.#Namespace
+	// NetworkPolicy gets an explicit but DELIBERATELY OPEN entry (the trailing
+	// `...`), like Organization / ReferenceGrant above: k8s.io/api/networking/v1
+	// is not vendored under cue.mod/gen/ (only apps/batch/core/rbac are), and the
+	// keycloak-instance component needs one to permit ztunnel HBONE (port 15008)
+	// inbound to the Keycloak pods — the operator's own keycloak-network-policy
+	// allows only the app ports (8080/9000/7800/57800) and cannot express 15008,
+	// so a meshed client's HBONE connection is dropped without this additive
+	// policy (HOL-1370).  The openness is SCOPED to this Kind, so the generic
+	// catch-all above stays CLOSED and a misspelled Kind still fails render-time
+	// validation.
+	NetworkPolicy?: [_]: {
+		kind: "NetworkPolicy"
+		metadata: name: string
+		...
+	}
 	// The quay.holos.run Organization kind (ADR-19, the shipped Holos
 	// Controller) gets an explicit but DELIBERATELY OPEN entry (the trailing
 	// `...`) rather than a vendored binding: the controller's CRDs have no

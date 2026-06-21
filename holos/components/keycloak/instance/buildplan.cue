@@ -203,6 +203,44 @@ let ESSO_REALM_IMPORT = {
 	}
 }
 
+// Ambient-mesh HBONE allow-policy (HOL-1370).  The keycloak operator creates
+// its own NetworkPolicy ("keycloak-network-policy", owned by the Keycloak CR)
+// that admits ingress ONLY on the Keycloak app ports — 8080 (http), 9000
+// (management), and 7800/57800 (JGroups, from peer pods).  In ambient mode a
+// meshed client never reaches those ports directly: ztunnel delivers the
+// connection to the pod over HBONE on port 15008 and forwards it to the app
+// port on loopback inside the pod.  The operator's policy has no 15008 rule and
+// its CRD schema cannot express one (spec.networkPolicy only narrows the
+// SOURCES of the fixed app ports), so every meshed HBONE connection is silently
+// dropped — the keycloak-config-cli Jobs (realm-config / realm-esso-config) then
+// fail with "Connection reset" and the apply times out.  NetworkPolicies are
+// additive (a union of all matching policies), so this sibling policy restores
+// HBONE without fighting the operator: it admits TCP 15008 to the same Keycloak
+// server pods, leaving the operator's app-port rules intact for the kubelet
+// probe path.  This mirrors the optional 15008 allow-policies Istio's own
+// ztunnel/cni/istiod charts ship for NetworkPolicy-enabled clusters.  Source is
+// left unrestricted because ztunnel authenticates every HBONE peer with mTLS.
+let HBONE_NETWORK_POLICY = {
+	apiVersion: "networking.k8s.io/v1"
+	kind:       "NetworkPolicy"
+	metadata: {
+		name:      "\(NAME)-allow-ztunnel-hbone"
+		namespace: NAMESPACE
+	}
+	spec: {
+		// app=keycloak is the stable label the operator stamps on the Keycloak
+		// server pods (the same selector its keycloak-network-policy targets).
+		podSelector: matchLabels: app: NAME
+		policyTypes: ["Ingress"]
+		ingress: [{
+			ports: [{
+				protocol: "TCP"
+				port:     15008
+			}]
+		}]
+	}
+}
+
 // Cross-namespace attachment to the shared Gateway is allowed because its
 // listeners set allowedRoutes.namespaces.from: All (istio-gateway
 // component).  sectionName binds this route to the https listener only:
@@ -279,6 +317,7 @@ userDefinedBuildPlan: {
 				// Keycloak and Gateway API schemas at render time.
 				resources: #Resources & {
 					Keycloak: (KEYCLOAK.metadata.name):                KEYCLOAK
+					NetworkPolicy: (HBONE_NETWORK_POLICY.metadata.name): HBONE_NETWORK_POLICY
 					KeycloakRealmImport: {
 						(REALM_IMPORT.metadata.name):      REALM_IMPORT
 						(ESSO_REALM_IMPORT.metadata.name): ESSO_REALM_IMPORT

@@ -207,6 +207,15 @@ components have been removed. Git history preserves them.
 - [holos/docs/mesh-enrollment.md](holos/docs/mesh-enrollment.md) — the
   ambient mesh enrollment convention for platform namespaces, how to verify
   it, and the exceptions.
+- [docs/runbooks/keycloak-ambient-mesh-hbone-networkpolicy.md](docs/runbooks/keycloak-ambient-mesh-hbone-networkpolicy.md)
+  — operational runbook for a recurring failure: an ambient-namespace workload
+  becomes unreachable from inside the mesh because a chart/operator-shipped
+  `NetworkPolicy` does not permit ztunnel **HBONE on TCP 15008** (the port mesh
+  traffic actually arrives on). The Keycloak operator's `keycloak-network-policy`
+  is the worked example (fixed in HOL-1370 by an additive allow-policy in the
+  `keycloak-instance` component). Includes the decisive 15008-vs-app-port probe,
+  ztunnel-log confirmation, remediation, and prevention when adding components
+  or building new clusters. Companion to the mesh-enrollment doc above.
 - [holos/docs/keycloak-clients.md](holos/docs/keycloak-clients.md) — the
   declarative Keycloak OIDC client pattern: the `keycloak-config-cli`
   reconciliation mechanism and apply-gate, public vs confidential PKCE clients
