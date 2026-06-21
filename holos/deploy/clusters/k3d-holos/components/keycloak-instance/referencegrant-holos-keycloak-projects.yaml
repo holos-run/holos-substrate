@@ -1,0 +1,22 @@
+apiVersion: security.holos.run/v1alpha1
+kind: ReferenceGrant
+metadata:
+  labels:
+    app.kubernetes.io/name: keycloak
+  name: holos-keycloak-projects
+  namespace: keycloak
+spec:
+  from:
+  - group: keycloak.holos.run
+    kind: KeycloakGroup
+    namespace: my-project
+  - group: keycloak.holos.run
+    kind: KeycloakUser
+    namespace: my-project
+  - group: keycloak.holos.run
+    kind: KeycloakClient
+    namespace: my-project
+  to:
+  - group: keycloak.holos.run
+    kind: KeycloakInstance
+    name: holos-keycloak

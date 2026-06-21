@@ -1,0 +1,16 @@
+apiVersion: keycloak.holos.run/v1alpha1
+kind: KeycloakUser
+metadata:
+  labels:
+    app.kubernetes.io/name: my-project
+  name: bob
+  namespace: my-project
+spec:
+  email: bob@example.com
+  groups:
+  - projects/my-project/roles/owner
+  identityProviderLink:
+    alias: holos
+  instanceRef:
+    name: holos-keycloak
+    namespace: keycloak

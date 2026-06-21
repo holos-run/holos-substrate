@@ -1,9 +1,12 @@
-# Runbook: Holos Controller — Quay credential wiring
+# Runbook: Holos Controller — credential wiring
 
 Operator-facing guide for running the **Holos Controller**
-([ADR-18](../adr/ADR-18.md)) and wiring it to the Quay superuser credential its
-`quay.holos.run` Organization and Repository resources ([ADR-19](../adr/ADR-19.md))
-authenticate with. The controller installs to the **`holos-controller`**
+([ADR-18](../adr/ADR-18.md)) and wiring it to the two credentials it
+authenticates with: the **Quay** superuser credential its `quay.holos.run`
+Organization and Repository resources ([ADR-19](../adr/ADR-19.md)) use, and the
+**Keycloak** admin credential its `keycloak.holos.run` resources
+([ADR-20](../adr/ADR-20.md)) use. The controller installs to the
+**`holos-controller`**
 namespace and is built/deployed with the isolated `controller-*` make targets
 (`Makefile.controller`), separate from `scripts/apply`, `scripts/render`, and the
 `holos-paas` image.
@@ -106,6 +109,54 @@ runtime-secret guardrail, [`AGENTS.md`](../../AGENTS.md) Conventions /
    `credentialsSecretRef` resolves `holos-controller-quay-creds` automatically;
    set the field only to point at a differently-named Secret.
 
+## The Keycloak admin credential: `holos-controller-keycloak-creds`
+
+The controller also reconciles the `keycloak.holos.run` API group
+([ADR-20](../adr/ADR-20.md)) — `KeycloakInstance`, `KeycloakGroup`,
+`KeycloakUser`, `KeycloakClient` — against the Keycloak Admin REST API. Unlike
+the Quay token, this credential is **not minted by hand**: it is provisioned at
+runtime by the platform's `keycloak-config` component (HOL-1348), so a plain
+`scripts/apply` leaves the controller ready to talk to Keycloak with no operator
+step.
+
+- **Credential shape (ADR-20, preferred):** a confidential **service-account
+  client** named **`svc-holos-controller`** in the `holos` realm, with *Service
+  Accounts Enabled* and the scoped `realm-management` client roles
+  `manage-clients`, `manage-users`, `query-groups`, `query-clients` (not blanket
+  realm-admin). The controller authenticates with a `client_credentials` grant.
+  The client is declared in
+  [`holos/components/keycloak/realm-config/buildplan.cue`](../../holos/components/keycloak/realm-config/buildplan.cue)
+  (`CONTROLLER_CLIENT_ID`) and reconciled by the `keycloak-config`
+  keycloak-config-cli Job.
+- **Provisioning (generate-once, never committed):** the realm-config component's
+  `CONTROLLER_CREDS_BOOTSTRAP` Job generates the client secret once and writes it
+  into two Secrets — `svc-holos-controller-oidc` (key `client_secret`) in the
+  `keycloak` namespace (read by keycloak-config-cli to set the client's secret in
+  the realm) and the controller credential Secret below — mirroring the
+  `quay-oidc` bootstrap. It never rotates the value, so it stays stable across
+  reconciles, and never commits it (the runtime-secret guardrail).
+- **The credential Secret** the controller reads
+  (`internal/controller/keycloak/credentials.go`), resolved from its own
+  `holos-controller` namespace via `POD_NAMESPACE`:
+
+  | Field | Value |
+  |-------|-------|
+  | Namespace | `holos-controller` |
+  | Secret name | `holos-controller-keycloak-creds` (default; the `KeycloakInstance` `credentialsSecretRef` default) |
+  | Keys | `clientId`, `clientSecret` (optional `tokenUrl`) |
+
+  `clientId` is `svc-holos-controller`; `clientSecret` is the generated secret.
+  The `KeycloakInstance` spec carries the `url` and `realm`, so the in-cluster
+  token endpoint is derived and `tokenUrl` is omitted. When the Secret or a
+  required key is missing the reconciler sets `Ready` `False` with reason
+  `CredentialsNotFound` and requeues.
+
+The central `KeycloakInstance` (`holos-keycloak`, in the `keycloak` namespace) and
+its `security.holos.run` `ReferenceGrant` are emitted by the `keycloak-instance`
+component and applied — with the per-cluster local-ca `caBundle` injected at apply
+time — by `scripts/apply-my-project` (the caBundle is per-cluster trust material
+that is never committed, the same pattern as the `my-project` Organization).
+
 ## Deploy and verify the controller
 
 The controller's lifecycle is driven by the isolated `controller-*` targets — they
@@ -186,23 +237,35 @@ Run the bring-up steps **in order**:
    certificate the in-cluster Quay serves TLS with, and whose PEM the next step
    injects as the Organization's `caBundle`.
 2. **`scripts/apply`** — applies the platform (including the Quay registry the
-   controller and credential mint target, and the `holos-controller` Namespace,
-   which is owned by the central namespace registry and applied here, **not** by
-   `make controller-deploy`).
-3. **`make controller-deploy`** — installs the `quay.holos.run` CRDs and the
-   manager into the `holos-controller` namespace (the *Deploy and verify the
-   controller* steps above). It targets, but does not create, that Namespace, and
-   `scripts/apply` does **not** install the CRDs; `scripts/apply-my-project` fails
-   fast if the Organization CRD is absent.
-4. **The manual credential mint** — `scripts/apply-svc-quay-resource-controller-creds`
+   controller and credential mint target, the `holos-controller` Namespace —
+   owned by the central namespace registry and applied here, **not** by
+   `make controller-deploy` — and, via the `keycloak-config` component, the
+   controller's **Keycloak admin credential**: the `svc-holos-controller`
+   service-account client and the generate-once `CONTROLLER_CREDS_BOOTSTRAP` Job
+   that writes the `holos-controller-keycloak-creds` Secret, HOL-1348). The
+   Keycloak credential therefore needs **no** manual mint.
+3. **`make controller-deploy`** — installs the `quay.holos.run`,
+   `keycloak.holos.run`, and `security.holos.run` CRDs and the manager into the
+   `holos-controller` namespace (the *Deploy and verify the controller* steps
+   above). It targets, but does not create, that Namespace, and `scripts/apply`
+   does **not** install the CRDs; `scripts/apply-my-project` fails fast if a CRD
+   it needs is absent.
+4. **The manual Quay credential mint** — `scripts/apply-svc-quay-resource-controller-creds`
    plus the `platform-automation` org / OAuth-Application token, per the
    [credentials runbook](quay-resource-controller-credentials.md). This creates
    the `holos-controller-quay-creds` Secret the Organization's
-   `credentialsSecretRef` resolves.
+   `credentialsSecretRef` resolves. (The **Keycloak** credential is provisioned at
+   runtime in step 2 and needs no manual step.)
 5. **`scripts/apply-my-project`** — reads the local-ca PEM, renders the platform
-   with it injected via the `ca_bundle_pem` CUE tag, and applies the `my-project`
-   Namespace + Organization (and the rest of the component). It gates the
-   Organization reaching `Ready`.
+   with it injected via the `ca_bundle_pem` CUE tag, and applies the central
+   `KeycloakInstance` + its `ReferenceGrant` (the `keycloak-instance` component,
+   carrying the injected `caBundle`), then the `my-project` Namespace +
+   Organization + the project's `keycloak.holos.run` CRs (the project client, the
+   role/custodian KeycloakGroups, and the owner KeycloakUser, HOL-1348) and the
+   rest of the component. It gates the Organization **and** the
+   `keycloak.holos.run` resources (the `KeycloakInstance`, the project
+   `KeycloakClient`, the role/custodian `KeycloakGroup`s, and the owner
+   `KeycloakUser`) reaching `Ready`.
 
 ```bash
 scripts/apply-my-project

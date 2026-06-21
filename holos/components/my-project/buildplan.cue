@@ -218,12 +218,16 @@ let APPLICATION_RESOURCE = {
 // api/quay/v1alpha1 SyncedTeam, the reconciler internal/controller/quay/teams.go).
 // The set here is the worked GCP-style primitive-role example from ADR-19: a
 // logical project's owner/editor/viewer OIDC groups map to three synced teams.
-// OIDC groups are referenced BY NAME ONLY (the oidcGroup string) — no Keycloak
-// dependency: the Quay API group imports no IdP type, and these
-// my-project-{owner,editor,viewer} groups are now DESIGNED as keycloak.holos.run
-// resources (ADR-20 Rev 2's KeycloakGroup/KeycloakUser/KeycloakClient, ADR-21 Rev 2's
-// per-Project rendering and worked example) but their CRD/controller IMPLEMENTATION is
-// still future, so today they are referenced here as data before they exist.
+// OIDC groups are referenced BY NAME ONLY in this Quay CR (the oidcGroup string)
+// — the Quay API group imports no IdP type.  The my-project-{owner,editor,viewer}
+// values are now PRODUCED by the keycloak.holos.run CRs this component emits below
+// (HOL-1348): the role/custodian KeycloakGroups, the owner KeycloakUser, and the
+// project KeycloakClient, reconciled by the shipped Holos Controller (ADR-20,
+// Partially Implemented).  CAVEAT (the "Keycloak data plane" note below): today
+// the reconcilers surface those values in the PROJECT's own client token, not the
+// platform Quay client's token, so the synced teams here are created/bound but
+// their membership is not yet populated from the project role groups — folding the
+// role onto the reserved Quay client is ADR-20 Rev 3 follow-up.
 //
 // The two enums are distinct (ADR-19 "Two distinct Quay concepts"): `role` is the
 // team's ORG role (admin | creator | member), `repositoryPermission` is an
@@ -641,6 +645,186 @@ let STAGE_RESOURCE = kargostage.#Stage & {
 	}
 }
 
+// --- Keycloak data plane (HOL-1348) -----------------------------------------
+//
+// The project's keycloak.holos.run CRs the shipped Holos Controller
+// (ADR-18/ADR-20) reconciles into the holos realm, so a project registration
+// produces the my-project-{owner,editor,viewer} values the Organization's
+// spec.syncedTeams[].oidcGroup above binds to Quay team roles.  All reference the
+// central KeycloakInstance (the keycloak-instance component) cross-namespace,
+// authorized by its security.holos.run ReferenceGrant in the keycloak namespace.
+//
+// Mechanism (ADR-20 "Claim value via a client role"): Keycloak's group-membership
+// mapper cannot synthesize the flat value my-project-owner from the path
+// projects/my-project/roles/owner (it emits the leaf "owner" or the full path).
+// The value is carried as a CLIENT ROLE: each roles/<role> KeycloakGroup confers
+// the client role my-project-<role> on a KeycloakClient (KeycloakGroup.clientRoles
+// → AssignClientRoleToGroup), and that client's auto-ensured
+// oidc-usermodel-client-role-mapper folds the role name into the shared groups
+// claim (the platform's quay-client-roles precedent).  A member of roles/owner
+// thereby surfaces my-project-owner in the token.
+//
+// The KeycloakClient is the PROJECT's own URL-named client
+// (https://my-project.holos.localhost), NOT the platform Quay client
+// (https://quay.holos.localhost): the latter is platform-reserved and the
+// KeycloakClient reconciler rejects a tenant CR that targets it
+// (reservedClientIDs in internal/controller/keycloak/client_controller.go).  The
+// project client carries the my-project-<role> client roles and its own
+// client-role→groups mapper, the ADR-20 "project's own service" path the
+// implemented reconcilers support.  (Folding the SAME role into the platform Quay
+// client's token — the ADR-20 "Quay use case" with no project client — needs the
+// controller to assign a role on the reserved quay client, which the shipped
+// reconcilers do not yet do; tracked as follow-up.)
+
+// KEYCLOAK_NAMESPACE is the central KeycloakInstance's namespace; the project CRs
+// reference it cross-namespace (gated by the keycloak-instance component's
+// ReferenceGrant).  Unified with #RegisteredNamespace to tie the literal to the
+// registry.
+let KEYCLOAK_NAMESPACE = "keycloak" & #RegisteredNamespace
+
+// KEYCLOAK_INSTANCE is the central KeycloakInstance these CRs reconcile against
+// (the keycloak-instance component's NAME).
+let KEYCLOAK_INSTANCE = "holos-keycloak"
+
+// INSTANCE_REF is the shared cross-namespace reference every project Keycloak CR
+// carries (ReferenceGrant-gated because namespace differs from this component's).
+let INSTANCE_REF = {
+	name:      KEYCLOAK_INSTANCE
+	namespace: KEYCLOAK_NAMESPACE
+}
+
+// PROJECT_CLIENT_NAME is the KeycloakClient CR's metadata.name — the object name
+// the role groups' clientRoles[].clientRef resolves (NOT the URL clientId; the
+// reconciler derives the clientId from the CR's spec.clientId, group_controller.go
+// resolveClientID).
+let PROJECT_CLIENT_NAME = "my-project"
+
+// PROJECT_CLIENT_ID is the project client's URL-shaped clientId (the platform
+// convention; ADR-20).  Distinct from the reserved https://quay.holos.localhost.
+let PROJECT_CLIENT_ID = "https://my-project.holos.localhost"
+
+// The primitive role triad and the flat client-role / claim value each maps to
+// (my-project-<role>), consistent with the Organization syncedTeams[].oidcGroup
+// example above.
+let ROLES = ["owner", "editor", "viewer"]
+let CLIENT_ROLE = {for r in ROLES {(r): "\(NAME)-\(r)"}}
+
+// PROJECT_CLIENT_SECRET is where the controller delivers the confidential
+// client's generated secret — a generate-once Secret in THIS namespace, created
+// at runtime by the controller and never committed (the Runtime Secret Handling
+// guardrail; the KeycloakClient reconciler's secret delivery).  Only the one key
+// the consumer reads is written.
+let PROJECT_CLIENT_SECRET = "my-project-oidc"
+
+// KEYCLOAK_CLIENT_RESOURCE is the project's confidential OIDC client.  Its
+// clientRoles declare the my-project-{owner,editor,viewer} client roles; the
+// reconciler ensures those roles and the client-role→groups mapper exist on the
+// client, so a role group conferring one of them surfaces it in the groups claim.
+// secretRef is REQUIRED for a confidential client (the CRD's CEL rule); the
+// controller delivers the generated secret there.
+let KEYCLOAK_CLIENT_RESOURCE = {
+	apiVersion: "keycloak.holos.run/v1alpha1"
+	kind:       "KeycloakClient"
+	metadata: {
+		name:      PROJECT_CLIENT_NAME
+		namespace: NAMESPACE
+		labels: "app.kubernetes.io/name": NAME
+	}
+	spec: {
+		clientId:    PROJECT_CLIENT_ID
+		type:        "confidential"
+		instanceRef: INSTANCE_REF
+		redirectUris: ["\(PROJECT_CLIENT_ID)/oauth2/callback"]
+		webOrigins: [PROJECT_CLIENT_ID]
+		// The flat claim values, declared as client roles on this client.  Each
+		// ClientRef is THIS KeycloakClient's own metadata.name (the object name,
+		// per ClientRoleReference).
+		clientRoles: [
+			for r in ROLES {
+				clientRef: PROJECT_CLIENT_NAME
+				role:      CLIENT_ROLE[r]
+			},
+		]
+		secretRef: {
+			name: PROJECT_CLIENT_SECRET
+			key:  "client_secret"
+		}
+	}
+}
+
+// KEYCLOAK_ROLE_GROUP_RESOURCES are the nested role groups
+// projects/my-project/roles/{owner,editor,viewer}.  Each confers the matching
+// my-project-<role> client role on the project client (clientRoles) and delegates
+// membership management to the same-tier custodian group (custodians).
+let KEYCLOAK_ROLE_GROUP_RESOURCES = {
+	for r in ROLES {
+		(r): {
+			apiVersion: "keycloak.holos.run/v1alpha1"
+			kind:       "KeycloakGroup"
+			metadata: {
+				name:      "my-project-roles-\(r)"
+				namespace: NAMESPACE
+				labels: "app.kubernetes.io/name": NAME
+			}
+			spec: {
+				path:        "projects/\(NAME)/roles/\(r)"
+				instanceRef: INSTANCE_REF
+				clientRoles: [{
+					clientRef: PROJECT_CLIENT_NAME
+					role:      CLIENT_ROLE[r]
+				}]
+				custodians: [{
+					path: "projects/\(NAME)/custodians/\(r)"
+				}]
+			}
+		}
+	}
+}
+
+// KEYCLOAK_CUSTODIAN_GROUP_RESOURCES are the nested custodian groups
+// projects/my-project/custodians/{owner,editor,viewer} the role groups delegate
+// membership management to (ADR-3's custodian model).  They confer no client role
+// and have no further custodian.
+let KEYCLOAK_CUSTODIAN_GROUP_RESOURCES = {
+	for r in ROLES {
+		(r): {
+			apiVersion: "keycloak.holos.run/v1alpha1"
+			kind:       "KeycloakGroup"
+			metadata: {
+				name:      "my-project-custodians-\(r)"
+				namespace: NAMESPACE
+				labels: "app.kubernetes.io/name": NAME
+			}
+			spec: {
+				path:        "projects/\(NAME)/custodians/\(r)"
+				instanceRef: INSTANCE_REF
+			}
+		}
+	}
+}
+
+// KEYCLOAK_USER_RESOURCE pre-provisions the project owner bob@example.com into
+// the owner role group, with the IdP federated-identity link so first federated
+// login auto-links this record (paired with the realm's first-broker-login
+// auto-link flow the realm-config component configures, HOL-1348).  The IdP alias
+// "holos" is the realm's broker alias; userId is omitted so the link is keyed by
+// the trusted email (the auto-link flow's email match).
+let KEYCLOAK_USER_RESOURCE = {
+	apiVersion: "keycloak.holos.run/v1alpha1"
+	kind:       "KeycloakUser"
+	metadata: {
+		name:      "bob"
+		namespace: NAMESPACE
+		labels: "app.kubernetes.io/name": NAME
+	}
+	spec: {
+		email:       "bob@example.com"
+		instanceRef: INSTANCE_REF
+		groups: ["projects/\(NAME)/roles/owner"]
+		identityProviderLink: alias: "holos"
+	}
+}
+
 userDefinedBuildPlan: {
 	metadata: name: "my-project"
 	spec: artifacts: manifests: {
@@ -666,6 +850,23 @@ userDefinedBuildPlan: {
 					ProjectConfig: (NAME):  PROJECT_CONFIG_RESOURCE
 					Warehouse: (WAREHOUSE): WAREHOUSE_RESOURCE
 					Stage: (STAGE):         STAGE_RESOURCE
+
+					// HOL-1348: the project's keycloak.holos.run CRs (reconciled by
+					// the shipped Holos Controller).  The project client, the nested
+					// role + custodian KeycloakGroups, and the owner KeycloakUser.
+					// They ride the open, Kind-scoped #Resources entries (no vendored
+					// CUE binding — see holos/resources.cue).  The my-project-oidc
+					// client Secret is NOT rendered here: the KeycloakClient
+					// reconciler delivers it at runtime (generate-once, never
+					// committed — the Runtime Secret Handling guardrail).
+					KeycloakClient: (PROJECT_CLIENT_NAME): KEYCLOAK_CLIENT_RESOURCE
+					KeycloakUser: (KEYCLOAK_USER_RESOURCE.metadata.name): KEYCLOAK_USER_RESOURCE
+					KeycloakGroup: {
+						for r in ROLES {
+							(KEYCLOAK_ROLE_GROUP_RESOURCES[r].metadata.name):      KEYCLOAK_ROLE_GROUP_RESOURCES[r]
+							(KEYCLOAK_CUSTODIAN_GROUP_RESOURCES[r].metadata.name): KEYCLOAK_CUSTODIAN_GROUP_RESOURCES[r]
+						}
+					}
 					// The my-project-quay-webhook Secret is DELIBERATELY NOT
 					// rendered here.  The bootstrap Job below is its sole creator
 					// (the quay secret-keys precedent): committing an empty-data

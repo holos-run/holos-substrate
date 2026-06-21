@@ -272,6 +272,25 @@ platform: {
 				labels: app: "keycloak"
 			}}).output
 
+			// keycloak-instance emits the central keycloak.holos.run
+			// KeycloakInstance the shipped Holos Controller reconciles the rest of
+			// the keycloak.holos.run Kinds against, plus the security.holos.run
+			// ReferenceGrant authorizing project namespaces (my-project) to
+			// reference it cross-namespace (HOL-1348, ADR-18/ADR-20).  Registered
+			// after keycloak-config: the realm must exist and the controller's
+			// admin credential Secret must be provisioned (the realm-config
+			// CONTROLLER_CREDS_BOOTSTRAP Job) before the KeycloakInstance is
+			// reconcilable.  Its caBundle is injected at apply time via the
+			// _CABundlePEM tag (never committed), so a plain `holos render
+			// platform` and scripts/render stay diff-clean.
+			(#ComponentTemplate & {inputs: {
+				name:      "keycloak-instance"
+				component: "keycloak-instance"
+				prefix:    "components/keycloak"
+				cluster:   CLUSTER.name
+				labels: app: "keycloak"
+			}}).output
+
 			// quay emits the Quay registry: the Quay Deployment (config
 			// rendered by an initContainer from the committed template plus
 			// the CNPG-generated quay-db credentials), its Service, the

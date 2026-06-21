@@ -184,6 +184,67 @@ let QUAY_ADMIN_PASSWORD_SECRET = QUAY_ADMIN_USERNAME
 let SVC_QUAY_RC_PASSWORD_ENV = "SVC_QUAY_RESOURCE_CONTROLLER_PASSWORD"
 let QUAY_ADMIN_PASSWORD_ENV = "QUAY_ADMIN_PASSWORD"
 
+// HOL-1348: the Holos Controller's Keycloak admin credential (ADR-20 "Admin
+// credential", preferred shape #1 — a confidential service-account client with
+// scoped realm-management roles).  The controller authenticates to the Keycloak
+// Admin REST API with a client_credentials grant using this client's id +
+// secret to reconcile the keycloak.holos.run Kinds (KeycloakInstance,
+// KeycloakGroup, KeycloakUser, KeycloakClient).  This is a dedicated,
+// least-privileged machine identity — NOT the bootstrap keycloak-initial-admin
+// credential keycloak-config-cli itself uses (ADR-20).
+//
+// The clientId is "svc-"-prefixed to mark it a service account (the platform's
+// svc-quay-resource-controller convention; AGENTS.md Conventions).  The
+// generated client secret is delivered at runtime by the
+// CONTROLLER_CREDS_BOOTSTRAP Job below into the holos-controller-keycloak-creds
+// Secret (keys clientId/clientSecret) in the holos-controller namespace — the
+// exact Secret name + keys internal/controller/keycloak/credentials.go reads
+// (DefaultCredentialsSecretName, credentialKeyClientID/credentialKeyClientSecret)
+// — and into the keycloak namespace so keycloak-config-cli can substitute it
+// into this client's realm import via $(env:...).  It is generated once and
+// never rotated, so the value stays stable across reconciles (the QUAY_OIDC
+// precedent), and never committed (the Runtime Secret Handling guardrail).
+let CONTROLLER_CLIENT_ID = "svc-holos-controller"
+
+// The holos-controller namespace the controller resolves its credential Secret
+// from (api/keycloak/v1alpha1 DefaultControllerNamespace, set on the manager
+// Deployment via the downward-API POD_NAMESPACE).  Unifying with
+// #RegisteredNamespace turns drift between this literal and the registry entry
+// into a render failure rather than an apply-time NotFound.
+let CONTROLLER_NAMESPACE = "holos-controller" & #RegisteredNamespace
+
+// CONTROLLER_CREDS_SECRET is the Secret the bootstrap Job writes the controller's
+// Keycloak admin credential into.  Its name and keys are the contract
+// internal/controller/keycloak/credentials.go reads: DefaultCredentialsSecretName
+// "holos-controller-keycloak-creds" with keys clientId and clientSecret (the
+// optional tokenUrl is omitted — the in-cluster token endpoint derives from the
+// KeycloakInstance's url + realm).
+let CONTROLLER_CREDS_SECRET = "holos-controller-keycloak-creds"
+let CONTROLLER_CREDS_CLIENT_ID_KEY = "clientId"
+let CONTROLLER_CREDS_CLIENT_SECRET_KEY = "clientSecret"
+
+// The Secret (in the keycloak namespace) the bootstrap Job ALSO writes the same
+// generated client secret into, under CONTROLLER_CLIENT_SECRET_KEY, so the
+// keycloak-config-cli Job can read it via secretKeyRef and substitute it into
+// the svc-holos-controller client's realm import — mirroring how the QUAY_OIDC
+// secret is shared between the keycloak and quay namespaces.
+let CONTROLLER_CLIENT_SECRET = "svc-holos-controller-oidc"
+let CONTROLLER_CLIENT_SECRET_KEY = "client_secret"
+let CONTROLLER_CLIENT_SECRET_ENV = "HOLOS_CONTROLLER_CLIENT_SECRET"
+
+// The realm-management client roles the controller's service account holds —
+// the scoped set ADR-20 recommends (NOT blanket realm-admin).  manage-clients
+// covers KeycloakClient (create/update clients, client roles, protocol mappers);
+// manage-users covers KeycloakUser (create users, group membership,
+// federated-identity links) and KeycloakGroup membership; query-groups +
+// query-clients let the reconcilers look objects up by name/path before acting.
+let CONTROLLER_REALM_MGMT_ROLES = [
+	"manage-clients",
+	"manage-users",
+	"query-groups",
+	"query-clients",
+]
+
 // REALM_CONFIG is the keycloak-config-cli import document, marshalled to JSON
 // in the ConfigMap below.  Authored in CUE so it stays reviewable and validated
 // (encoding/json renders it deterministically — stable key order, no manual
@@ -255,6 +316,21 @@ let REALM_CONFIG = {
 			emailVerified: true
 			credentials: [{type: "password", value: "$(env:\(QUAY_ADMIN_PASSWORD_ENV))", temporary: false}]
 			realmRoles: ["platform-owner"]
+		},
+		{
+			// HOL-1348: the synthetic service-account user backing the
+			// svc-holos-controller confidential client.  Keycloak auto-creates a
+			// service-account-<clientId> user when serviceAccountsEnabled is true;
+			// keycloak-config-cli assigns that user's roles via this users[] entry
+			// (serviceAccountClientId binds it to the client; clientRoles grants the
+			// scoped realm-management roles).  This is the supported keycloak-config-cli
+			// path for service-account role assignment — there is no
+			// serviceAccountClientRoles field on the client object.  No password (a
+			// service account authenticates by the client secret, not a password).
+			username:              "service-account-\(CONTROLLER_CLIENT_ID)"
+			enabled:               true
+			serviceAccountClientId: CONTROLLER_CLIENT_ID
+			clientRoles: "realm-management": CONTROLLER_REALM_MGMT_ROLES
 		},
 	]
 
@@ -514,6 +590,119 @@ let REALM_CONFIG = {
 				}
 			},
 		]
+	}, {
+		// HOL-1348: the Holos Controller's confidential service-account client
+		// (ADR-20 "Admin credential", preferred shape).  Unlike argocd/kargo
+		// (public, browser/CLI login) and quay (confidential, browser login),
+		// this client never logs a human in: it has NO standard browser flow
+		// and NO redirect URIs, only the client_credentials grant
+		// (serviceAccountsEnabled) the controller uses to call the Admin REST
+		// API as its own machine identity.  The generated secret is substituted
+		// at import time from $(env:HOLOS_CONTROLLER_CLIENT_SECRET), provisioned
+		// once by CONTROLLER_CREDS_BOOTSTRAP below (never committed).
+		clientId:     CONTROLLER_CLIENT_ID
+		name:         "Holos Controller (service account)"
+		enabled:      true
+		protocol:     "openid-connect"
+		publicClient: false // confidential: holds a client secret
+		// Browser Authorization Code flow OFF — this client never logs a user
+		// in; it only authenticates itself.  serviceAccountsEnabled turns on the
+		// client_credentials grant the controller authenticates with.
+		standardFlowEnabled:       false
+		directAccessGrantsEnabled: false
+		serviceAccountsEnabled:    true
+		secret:                    "$(env:\(CONTROLLER_CLIENT_SECRET_ENV))"
+		// A service-account client has no browser redirect.
+		redirectUris: []
+		webOrigins: []
+		// The scoped realm-management roles the controller's service account holds
+		// are NOT granted on the client object — keycloak-config-cli has no
+		// serviceAccountClientRoles client field.  They are assigned via the
+		// synthetic service-account user (service-account-svc-holos-controller) in
+		// the users[] list below (serviceAccountClientId + clientRoles), the
+		// keycloak-config-cli convention for service-account role assignment.
+	}]
+
+	// HOL-1348: the first-broker-login flow configured for AUTO-LINK, so a
+	// pre-provisioned KeycloakUser (a record the controller creates by email,
+	// e.g. bob@example.com) is linked to its federated identity on the user's
+	// FIRST login through an upstream IdP — rather than Keycloak creating a
+	// duplicate account or prompting the user to manually link.  This is the
+	// realm half of the auto-link mechanism ADR-20's KeycloakUser relies on; the
+	// IdP half (trustEmail: true and firstBrokerLoginFlowAlias pointing at this
+	// flow) is set on the identityProvider when one is introduced and is owned by
+	// the IdP definition, NOT here — this component keeps the ADR-20 scope
+	// discipline (realm: "holos" only; no enabled/identity-provider fields, which
+	// the instance component's KeycloakRealmImport owns).
+	//
+	// Mechanism: the built-in "first broker login" flow's "Handle Existing
+	// Account" subflow defaults to the interactive Confirm-link + Verify-by-Email
+	// executions.  This redefinition replaces that subflow's executions with
+	// Detect Existing Broker User (idpCreateUserIfUnique, ALTERNATIVE — links
+	// when a unique existing user matches) followed by Automatically Set Existing
+	// User (idp-auto-link, ALTERNATIVE — sets the matched user as the
+	// authenticated account with no prompt).  Combined with an IdP that trusts
+	// email, a login whose asserted email matches a pre-provisioned user
+	// auto-links silently.
+	//
+	// Authored as a CUE struct on REALM_CONFIG, which is json.Marshal'd into the
+	// import ConfigMap below — so this is a marshalled struct, never a
+	// hand-written JSON blob (the "No raw inline YAML/JSON in CUE" guardrail).
+	// keycloak-config-cli reconciles authenticationFlows by alias, converging the
+	// built-in flow to these executions on every apply.
+	authenticationFlows: [{
+		alias:       "first broker login"
+		description: "Auto-link a federated login to a pre-provisioned user of the same (IdP-trusted) email (HOL-1348/ADR-20)."
+		providerId:  "basic-flow"
+		topLevel:    true
+		builtIn:     true
+		authenticationExecutions: [
+			{
+				// Review profile stays user-decided (the built-in default) so a
+				// genuinely new federated user can still complete their profile.
+				authenticator:      "idp-review-profile"
+				requirement:        "REQUIRED"
+				priority:           10
+				authenticatorFlow:  false
+				userSetupAllowed:   false
+			},
+			{
+				// The Handle Existing Account subflow, redefined to auto-link.
+				flowAlias:         "User creation or linking"
+				requirement:       "REQUIRED"
+				priority:          20
+				authenticatorFlow: true
+				userSetupAllowed:  false
+			},
+		]
+	}, {
+		alias:       "User creation or linking"
+		description: "Detect an existing broker user and set it automatically (auto-link), no manual confirmation (HOL-1348)."
+		providerId:  "basic-flow"
+		topLevel:    false
+		builtIn:     true
+		authenticationExecutions: [
+			{
+				// Detect Existing Broker User: find a unique local user matching
+				// the federated identity (by trusted email); ALTERNATIVE so the
+				// flow can fall through to plain creation for a brand-new user.
+				authenticator:     "idp-create-user-if-unique"
+				requirement:       "ALTERNATIVE"
+				priority:          10
+				authenticatorFlow: false
+				userSetupAllowed:  false
+			},
+			{
+				// Automatically Set Existing User: when an existing user was
+				// detected, set it as the authenticated account and link the
+				// federated identity with NO interactive confirm/verify step.
+				authenticator:     "idp-auto-link"
+				requirement:       "ALTERNATIVE"
+				priority:          20
+				authenticatorFlow: false
+				userSetupAllowed:  false
+			},
+		]
 	}]
 }
 
@@ -661,6 +850,24 @@ let CONFIG_JOB = {
 							valueFrom: secretKeyRef: {
 								name: QUAY_ADMIN_PASSWORD_SECRET
 								key:  PASSWORD_SECRET_KEY
+							}
+						},
+						// HOL-1348: the generated secret for the svc-holos-controller
+						// service-account client.  keycloak-config-cli substitutes
+						// $(env:HOLOS_CONTROLLER_CLIENT_SECRET) into that client's
+						// realm import at import time.  CONTROLLER_CREDS_BOOTSTRAP
+						// below generates it once into the keycloak-namespace Secret
+						// CONTROLLER_CLIENT_SECRET (and the holos-controller-namespace
+						// credential Secret the controller reads) and never rotates
+						// it, so the value stays stable across reconciles.  The
+						// secretKeyRef holds this Job's pod pending until the
+						// bootstrap Job has created the Secret — the same
+						// level-triggered convergence the other two secrets rely on.
+						{
+							name: CONTROLLER_CLIENT_SECRET_ENV
+							valueFrom: secretKeyRef: {
+								name: CONTROLLER_CLIENT_SECRET
+								key:  CONTROLLER_CLIENT_SECRET_KEY
 							}
 						},
 						// Tolerate the apply-script gate polling before the
@@ -1157,6 +1364,230 @@ let PASSWORD_BOOTSTRAP_JOB = {
 	}
 }
 
+// CONTROLLER_CREDS_BOOTSTRAP is the generate-once bootstrap for the Holos
+// Controller's Keycloak admin credential (HOL-1348), modeled on
+// QUAY_OIDC_BOOTSTRAP above (which writes one shared secret into two
+// namespaces).  It runs in the keycloak namespace and writes the SAME generated
+// client secret into two Secrets:
+//
+//   - keycloak namespace, CONTROLLER_CLIENT_SECRET (key client_secret): read by
+//     the keycloak-config-cli Job here to set the svc-holos-controller client's
+//     secret in the realm via $(env:HOLOS_CONTROLLER_CLIENT_SECRET).
+//   - holos-controller namespace, CONTROLLER_CREDS_SECRET (keys clientId +
+//     clientSecret): the credential the shipped Holos Controller reads
+//     (api/keycloak/v1alpha1 DefaultCredentialsSecretName; the keys
+//     internal/controller/keycloak/credentials.go reads).  clientId is the
+//     non-secret CONTROLLER_CLIENT_ID; clientSecret is the generated value.
+//
+// Generate-once discipline: the script creates each Secret only if absent and
+// never overwrites, so the client secret is stable across re-applies and never
+// rotated (the generate-once guarantee Keycloak's stored client secret and the
+// controller's credential both depend on).  Generated at runtime, never
+// committed (the Runtime Secret Handling guardrail).
+let CONTROLLER_CREDS_BOOTSTRAP = "holos-controller-keycloak-creds-bootstrap"
+
+let CONTROLLER_CREDS_BOOTSTRAP_METADATA = {
+	name:      CONTROLLER_CREDS_BOOTSTRAP
+	namespace: NAMESPACE
+	labels: "app.kubernetes.io/name": CONTROLLER_CREDS_BOOTSTRAP
+}
+
+// The create-if-absent bootstrap script.  The client secret is set on the
+// Keycloak svc-holos-controller client AND read by the controller, so the two
+// copies MUST carry the same value; a mismatch is fatal (the QUAY_OIDC_BOOTSTRAP
+// precedent) since a create-if-absent Job that never overwrites cannot
+// reconcile divergence.  The value is alphanumeric (base64 stripped to A-Za-z0-9)
+// so it is safe both in the realm JSON and as a client secret.  The length check
+// guards against an empty-secret pipeline failure under set -eu.  Each Secret is
+// piped on stdin so the material never appears in the container's argv.
+let CONTROLLER_CREDS_BOOTSTRAP_SCRIPT = """
+	set -eu
+	random_secret() {
+	  head -c 256 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c 1-48
+	}
+	# Echo the decoded client secret from the keycloak-namespace copy, else from
+	# the holos-controller-namespace credential Secret, else nothing.
+	KC_SECRET=""
+	if kubectl -n \(NAMESPACE) get secret \(CONTROLLER_CLIENT_SECRET) >/dev/null 2>&1; then
+	  KC_SECRET="$(kubectl -n \(NAMESPACE) get secret \(CONTROLLER_CLIENT_SECRET) \\
+	    -o jsonpath='{.data.\(CONTROLLER_CLIENT_SECRET_KEY)}' | base64 -d)"
+	fi
+	CTRL_SECRET=""
+	if kubectl -n \(CONTROLLER_NAMESPACE) get secret \(CONTROLLER_CREDS_SECRET) >/dev/null 2>&1; then
+	  CTRL_SECRET="$(kubectl -n \(CONTROLLER_NAMESPACE) get secret \(CONTROLLER_CREDS_SECRET) \\
+	    -o jsonpath='{.data.\(CONTROLLER_CREDS_CLIENT_SECRET_KEY)}' | base64 -d)"
+	fi
+	if [ -n "$KC_SECRET" ] && [ -n "$CTRL_SECRET" ] && [ "$KC_SECRET" != "$CTRL_SECRET" ]; then
+	  echo "ERROR: \(CONTROLLER_CLIENT_SECRET) (\(NAMESPACE)) and \(CONTROLLER_CREDS_SECRET) (\(CONTROLLER_NAMESPACE)) client secrets differ." >&2
+	  echo "       Delete the incorrect copy so this Job can re-create it from the surviving one." >&2
+	  exit 1
+	fi
+	if [ -n "$KC_SECRET" ]; then
+	  CLIENT_SECRET="$KC_SECRET"
+	elif [ -n "$CTRL_SECRET" ]; then
+	  CLIENT_SECRET="$CTRL_SECRET"
+	else
+	  CLIENT_SECRET="$(random_secret)"
+	fi
+	[ "${#CLIENT_SECRET}" -eq 48 ]
+	# keycloak namespace: the single client_secret key keycloak-config-cli reads.
+	if kubectl -n \(NAMESPACE) get secret \(CONTROLLER_CLIENT_SECRET) >/dev/null 2>&1; then
+	  echo "Secret \(CONTROLLER_CLIENT_SECRET) already exists in \(NAMESPACE); leaving it untouched."
+	else
+	  kubectl -n \(NAMESPACE) create -f - <<EOF
+	apiVersion: v1
+	kind: Secret
+	metadata:
+	  name: \(CONTROLLER_CLIENT_SECRET)
+	  namespace: \(NAMESPACE)
+	stringData:
+	  \(CONTROLLER_CLIENT_SECRET_KEY): "${CLIENT_SECRET}"
+	EOF
+	  echo "Secret \(CONTROLLER_CLIENT_SECRET) created in \(NAMESPACE)."
+	fi
+	# holos-controller namespace: clientId + clientSecret, the credential keys the
+	# controller reads (credentials.go).  clientId is the non-secret client id.
+	if kubectl -n \(CONTROLLER_NAMESPACE) get secret \(CONTROLLER_CREDS_SECRET) >/dev/null 2>&1; then
+	  echo "Secret \(CONTROLLER_CREDS_SECRET) already exists in \(CONTROLLER_NAMESPACE); leaving it untouched."
+	else
+	  kubectl -n \(CONTROLLER_NAMESPACE) create -f - <<EOF
+	apiVersion: v1
+	kind: Secret
+	metadata:
+	  name: \(CONTROLLER_CREDS_SECRET)
+	  namespace: \(CONTROLLER_NAMESPACE)
+	stringData:
+	  \(CONTROLLER_CREDS_CLIENT_ID_KEY): "\(CONTROLLER_CLIENT_ID)"
+	  \(CONTROLLER_CREDS_CLIENT_SECRET_KEY): "${CLIENT_SECRET}"
+	EOF
+	  echo "Secret \(CONTROLLER_CREDS_SECRET) created in \(CONTROLLER_NAMESPACE)."
+	fi
+	"""
+
+let CONTROLLER_CREDS_BOOTSTRAP_SERVICE_ACCOUNT = {
+	apiVersion: "v1"
+	kind:       "ServiceAccount"
+	metadata:   CONTROLLER_CREDS_BOOTSTRAP_METADATA
+}
+
+// One Role/RoleBinding per namespace the Job writes into (keycloak and
+// holos-controller).  get is scoped to the one Secret name per namespace; create
+// cannot be scoped by resourceName, so it is namespace-wide on secrets — the
+// QUAY_OIDC_BOOTSTRAP_ROLE precedent.  The #secret parameter scopes the get
+// grant to exactly the Secret this Job manages in that namespace.
+let CONTROLLER_CREDS_BOOTSTRAP_ROLE = {
+	apiVersion: "rbac.authorization.k8s.io/v1"
+	kind:       "Role"
+	#namespace: string
+	#secret:    string
+	metadata: {
+		name:      "\(CONTROLLER_CREDS_BOOTSTRAP)-\(#namespace)"
+		namespace: #namespace
+		labels: "app.kubernetes.io/name": CONTROLLER_CREDS_BOOTSTRAP
+	}
+	rules: [
+		{
+			apiGroups: [""]
+			resources: ["secrets"]
+			verbs: ["get"]
+			resourceNames: [#secret]
+		},
+		{
+			apiGroups: [""]
+			resources: ["secrets"]
+			verbs: ["create"]
+		},
+	]
+}
+
+let CONTROLLER_CREDS_BOOTSTRAP_ROLE_BINDING = {
+	apiVersion: "rbac.authorization.k8s.io/v1"
+	kind:       "RoleBinding"
+	#namespace: string
+	metadata: {
+		name:      "\(CONTROLLER_CREDS_BOOTSTRAP)-\(#namespace)"
+		namespace: #namespace
+		labels: "app.kubernetes.io/name": CONTROLLER_CREDS_BOOTSTRAP
+	}
+	roleRef: {
+		apiGroup: "rbac.authorization.k8s.io"
+		kind:     "Role"
+		name:     "\(CONTROLLER_CREDS_BOOTSTRAP)-\(#namespace)"
+	}
+	// The ServiceAccount lives in the keycloak namespace; the holos-controller
+	// RoleBinding references it cross-namespace, granting the Job write of the one
+	// credential Secret there (the QUAY_OIDC cross-namespace precedent).
+	subjects: [{
+		kind:      "ServiceAccount"
+		name:      CONTROLLER_CREDS_BOOTSTRAP
+		namespace: NAMESPACE
+	}]
+}
+
+let CONTROLLER_CREDS_BOOTSTRAP_ROLE_KEYCLOAK = CONTROLLER_CREDS_BOOTSTRAP_ROLE & {#namespace: NAMESPACE, #secret: CONTROLLER_CLIENT_SECRET}
+let CONTROLLER_CREDS_BOOTSTRAP_ROLE_CONTROLLER = CONTROLLER_CREDS_BOOTSTRAP_ROLE & {#namespace: CONTROLLER_NAMESPACE, #secret: CONTROLLER_CREDS_SECRET}
+let CONTROLLER_CREDS_BOOTSTRAP_ROLE_BINDING_KEYCLOAK = CONTROLLER_CREDS_BOOTSTRAP_ROLE_BINDING & {#namespace: NAMESPACE}
+let CONTROLLER_CREDS_BOOTSTRAP_ROLE_BINDING_CONTROLLER = CONTROLLER_CREDS_BOOTSTRAP_ROLE_BINDING & {#namespace: CONTROLLER_NAMESPACE}
+
+// Deleted and recreated on every apply by pre_keycloak_config (its own
+// app.kubernetes.io/name label) so it always re-runs — a forward change, a prior
+// Failed run, and a routine re-apply all get a fresh Job; the Secrets survive the
+// Job deletion, so the generate-once guarantee holds (the QUAY_OIDC_BOOTSTRAP_JOB
+// precedent).
+let CONTROLLER_CREDS_BOOTSTRAP_JOB = {
+	apiVersion: "batch/v1"
+	kind:       "Job"
+	metadata:   CONTROLLER_CREDS_BOOTSTRAP_METADATA
+	spec: {
+		backoffLimit:            3
+		ttlSecondsAfterFinished: 86400
+		template: {
+			metadata: labels: CONTROLLER_CREDS_BOOTSTRAP_METADATA.labels
+			spec: {
+				serviceAccountName: CONTROLLER_CREDS_BOOTSTRAP
+				restartPolicy:      "Never"
+				securityContext: {
+					runAsNonRoot: true
+					runAsUser:    65534
+					runAsGroup:   65534
+					seccompProfile: type: "RuntimeDefault"
+				}
+				containers: [{
+					name:  "bootstrap"
+					image: KUBECTL_IMAGE
+					command: ["/bin/sh", "-c", CONTROLLER_CREDS_BOOTSTRAP_SCRIPT]
+					// kubectl writes its discovery cache under $HOME; point it at
+					// the writable emptyDir since the root filesystem is read-only.
+					env: [{
+						name:  "HOME"
+						value: "/tmp"
+					}]
+					resources: {
+						requests: {
+							cpu:    "10m"
+							memory: "32Mi"
+						}
+						limits: memory: "64Mi"
+					}
+					securityContext: {
+						allowPrivilegeEscalation: false
+						capabilities: drop: ["ALL"]
+						readOnlyRootFilesystem: true
+					}
+					volumeMounts: [{
+						name:      "tmp"
+						mountPath: "/tmp"
+					}]
+				}]
+				volumes: [{
+					name: "tmp"
+					emptyDir: {}
+				}]
+			}
+		}
+	}
+}
+
 userDefinedBuildPlan: {
 	metadata: name: NAME
 	spec: artifacts: manifests: {
@@ -1177,25 +1608,35 @@ userDefinedBuildPlan: {
 						(QUAY_OIDC_BOOTSTRAP_JOB.metadata.name): QUAY_OIDC_BOOTSTRAP_JOB
 						// HOL-1294: the realm-user password bootstrap.
 						(PASSWORD_BOOTSTRAP_JOB.metadata.name): PASSWORD_BOOTSTRAP_JOB
+						// HOL-1348: the controller's Keycloak admin credential bootstrap.
+						(CONTROLLER_CREDS_BOOTSTRAP_JOB.metadata.name): CONTROLLER_CREDS_BOOTSTRAP_JOB
 					}
 					ServiceAccount: {
 						(QUAY_OIDC_BOOTSTRAP_SERVICE_ACCOUNT.metadata.name): QUAY_OIDC_BOOTSTRAP_SERVICE_ACCOUNT
 						(PASSWORD_BOOTSTRAP_SERVICE_ACCOUNT.metadata.name):  PASSWORD_BOOTSTRAP_SERVICE_ACCOUNT
+						// HOL-1348: the controller-creds bootstrap ServiceAccount.
+						(CONTROLLER_CREDS_BOOTSTRAP_SERVICE_ACCOUNT.metadata.name): CONTROLLER_CREDS_BOOTSTRAP_SERVICE_ACCOUNT
 					}
 					// The QUAY_OIDC bootstrap needs one Role/RoleBinding per
 					// namespace it writes the quay-oidc Secret into (keycloak and
 					// quay); the password bootstrap writes only in keycloak, so it
-					// adds a single same-namespace pair.  Keyed by a distinct name
-					// so the entries do not collide in this map.
+					// adds a single same-namespace pair; the controller-creds
+					// bootstrap (HOL-1348) writes into keycloak and holos-controller,
+					// so it adds one pair per namespace.  Keyed by a distinct name so
+					// the entries do not collide in this map.
 					Role: {
 						(NAMESPACE):          QUAY_OIDC_BOOTSTRAP_ROLE_KEYCLOAK
 						(QUAY_NAMESPACE):     QUAY_OIDC_BOOTSTRAP_ROLE_QUAY
 						(PASSWORD_BOOTSTRAP): PASSWORD_BOOTSTRAP_ROLE
+						(CONTROLLER_CREDS_BOOTSTRAP_ROLE_KEYCLOAK.metadata.name):   CONTROLLER_CREDS_BOOTSTRAP_ROLE_KEYCLOAK
+						(CONTROLLER_CREDS_BOOTSTRAP_ROLE_CONTROLLER.metadata.name): CONTROLLER_CREDS_BOOTSTRAP_ROLE_CONTROLLER
 					}
 					RoleBinding: {
 						(NAMESPACE):          QUAY_OIDC_BOOTSTRAP_ROLE_BINDING_KEYCLOAK
 						(QUAY_NAMESPACE):     QUAY_OIDC_BOOTSTRAP_ROLE_BINDING_QUAY
 						(PASSWORD_BOOTSTRAP): PASSWORD_BOOTSTRAP_ROLE_BINDING
+						(CONTROLLER_CREDS_BOOTSTRAP_ROLE_BINDING_KEYCLOAK.metadata.name):   CONTROLLER_CREDS_BOOTSTRAP_ROLE_BINDING_KEYCLOAK
+						(CONTROLLER_CREDS_BOOTSTRAP_ROLE_BINDING_CONTROLLER.metadata.name): CONTROLLER_CREDS_BOOTSTRAP_ROLE_BINDING_CONTROLLER
 					}
 				}
 			}]

@@ -1,0 +1,22 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/name: holos-controller-keycloak-creds-bootstrap
+  name: holos-controller-keycloak-creds-bootstrap-holos-controller
+  namespace: holos-controller
+rules:
+- apiGroups:
+  - ""
+  resourceNames:
+  - holos-controller-keycloak-creds
+  resources:
+  - secrets
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create

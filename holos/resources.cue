@@ -7,7 +7,6 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 
 	ci "cert-manager.io/clusterissuer/v1"
-	rgv1 "gateway.networking.k8s.io/referencegrant/v1beta1"
 	certv1 "cert-manager.io/certificate/v1"
 	hrv1 "gateway.networking.k8s.io/httproute/v1"
 	gwv1 "gateway.networking.k8s.io/gateway/v1"
@@ -108,7 +107,53 @@ import (
 		metadata: name: string
 		...
 	}
-	ReferenceGrant?: [_]:        rgv1.#ReferenceGrant
+	// ReferenceGrant gets an explicit but DELIBERATELY OPEN entry (the trailing
+	// `...`), like Organization / Project above, rather than a vendored binding.
+	// Two API groups share the Kind name "ReferenceGrant" but with different
+	// schemas and apiVersions: the Gateway-API ReferenceGrant
+	// (gateway.networking.k8s.io) and the platform's own security.holos.run
+	// ReferenceGrant (ADR-22 / HOL-1343, the cross-namespace authorizer for
+	// keycloak.holos.run instanceRefs).  The #Resources map is keyed by Kind name
+	// only, so a single typed binding cannot serve both; the security.holos.run
+	// CRD has no generated CUE type under cue.mod/gen/ (it lives in
+	// api/security/v1alpha1/).  An open, Kind-scoped entry lets either apiVersion
+	// flow through (the keycloak-instance component emits the security.holos.run
+	// form, HOL-1348) while the generic catch-all above stays CLOSED so a
+	// misspelled Kind still fails render-time validation.
+	ReferenceGrant?: [_]: {
+		kind: "ReferenceGrant"
+		metadata: name: string
+		...
+	}
+
+	// The keycloak.holos.run Kinds (ADR-20, the shipped Holos Controller's
+	// Keycloak API group — KeycloakInstance/Group/User/Client) get explicit but
+	// DELIBERATELY OPEN entries for the same reason as Organization above: their
+	// CRDs have no generated CUE type under cue.mod/gen/ (they live in
+	// api/keycloak/v1alpha1/).  The openness is SCOPED to these Kinds, so the
+	// generic catch-all stays CLOSED.  The keycloak-instance component
+	// (KeycloakInstance) and the my-project scaffold (Group/User/Client) emit
+	// these through #Resources (HOL-1348).
+	KeycloakInstance?: [_]: {
+		kind: "KeycloakInstance"
+		metadata: name: string
+		...
+	}
+	KeycloakGroup?: [_]: {
+		kind: "KeycloakGroup"
+		metadata: name: string
+		...
+	}
+	KeycloakUser?: [_]: {
+		kind: "KeycloakUser"
+		metadata: name: string
+		...
+	}
+	KeycloakClient?: [_]: {
+		kind: "KeycloakClient"
+		metadata: name: string
+		...
+	}
 	Role?: [_]:                  rbacv1.#Role
 	RoleBinding?: [_]:           rbacv1.#RoleBinding
 	Secret?: [_]:                corev1.#Secret
