@@ -11,4 +11,4 @@ spec:
   description: The App-of-Apps platform config bundle (HOL-1380).
   name: holos-paas-config
   organizationRef: holos
-  visibility: private
+  visibility: public

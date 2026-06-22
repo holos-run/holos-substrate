@@ -120,6 +120,39 @@ revisit both together. The credential is still encrypted in transit — TLS
 to whichever workload answers the mesh VIP, unauthenticated — which rests
 on trusting the cluster network, acceptable for the local MVP.
 
+### Public repositories: a credential-less registration
+
+When the repository is **public** (`visibility: public` on its
+`quay.holos.run` `Repository` CR), the pull is **anonymous** — the
+repository Secret drops `username`/`password` entirely and carries only the
+non-sensitive registration fields:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: holos-paas-config
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+stringData:
+  name: holos-paas-config
+  url: oci://quay.holos.internal/holos/holos-paas-config
+  type: oci
+  insecure: "true"
+```
+
+`insecure: "true"` is still required (the mkcert serving cert is independent
+of authentication), so the Secret still exists — but with **no secret
+material** it is rendered and committed directly to the deploy tree rather
+than assembled at runtime by a bootstrap Job. This is exactly how the
+**App-of-Apps platform config bundle** (`holos-paas-config`) is registered:
+the `holos-quay-organization` component makes that repository public
+(HOL-1381), so the `argocd-projects` component renders this credential-less
+registration Secret and the platform no longer depends on a
+`holos-paas-config-robot` pull credential. See the *Project Delivery
+Scaffold* / App-of-Apps guidance in the repo root `AGENTS.md`.
+
 ## How the repo-server reaches Quay (in-cluster reachability)
 
 In-cluster clients use the **same URL as the host**:

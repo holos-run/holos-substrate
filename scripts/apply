@@ -157,10 +157,10 @@ ROLLOUT_TIMEOUT_SECONDS="$(duration_seconds "${ROLLOUT_TIMEOUT}")" || exit 1
 # during bootstrap — so appending the pair keeps the established order
 # stable.  argocd-projects trails argocd: it ships the platform/projects
 # AppProjects (argoproj.io custom resources, so the Argo CD CRDs and controller
-# must be established first) plus the create-if-absent repository-credential
-# bootstrap Job, whose prior Complete/Failed instance pre_argocd_projects
-# deletes so every apply re-runs it (a completed Job is otherwise never
-# re-run).  kargo-crds and kargo close the sequence: CRDs before the controllers
+# must be established first) plus the credential-less holos-paas-config
+# repository registration Secret — committed and applied directly, since the
+# public repository (HOL-1381) needs no robot pull credential, only the
+# non-sensitive insecure/type settings.  kargo-crds and kargo close the sequence: CRDs before the controllers
 # that need the kargo.akuity.io types (the same guardrail as the other *-crds
 # pairs), and Kargo depends only on its own CRDs, the Gateway its HTTPRoutes
 # attach to, and cert-manager (the chart's internal webhooks server uses
@@ -1000,75 +1000,45 @@ wait_argocd() {
     rollout status statefulset/argocd-application-controller --timeout="${ROLLOUT_TIMEOUT}"
 }
 
-# argocd-projects: gate the repository-credential bootstrap Job's OUTCOME so
-# scripts/apply fails early on a genuine bootstrap error (e.g. the source Secret
-# exists but is malformed, or the Secret creation fails) instead of exiting
-# successfully while the Job later fails.  The Job is polled (not `kubectl wait
-# --for=condition=Complete`) so a Failed Job fails the gate on the next poll
-# rather than blocking the full ROLLOUT_TIMEOUT.  Crucially the gate TOLERATES
-# the intentionally-absent source-Secret case: the bootstrap Job exits 0 (→
-# Complete=True) both when it creates the repository Secret AND when the source
-# Secret (holos-paas-config-robot) is not yet provisioned — it only exits 1 (→
-# Failed=True) on a real error — so Complete=True passes the gate without
-# asserting the repository Secret exists.  An absent Job (GC'd after its TTL, or
-# mid-poll) yields empty output with exit 0 and is tolerated; a persistent lookup
-# failure (RBAC/API error) fails the gate rather than silently skipping it.
-wait_argocd_projects() {
-  local job=job/holos-paas-config-repo-bootstrap job_state lookup_failures=0
-  local deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
-  while true; do
-    if job_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
-      get "${job}" --ignore-not-found --request-timeout=10s \
-      -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
-      lookup_failures=0
-      if [[ -z "${job_state}" ]] || grep -q '^Complete=True$' <<<"${job_state}"; then
-        break
-      fi
-      if grep -q '^Failed=True$' <<<"${job_state}"; then
-        echo "ERROR: ${job} failed (e.g. the holos-paas-config-robot source Secret is malformed); inspect it with:" >&2
-        echo "       kubectl --context ${KUBE_CONTEXT} --namespace argocd describe ${job}" >&2
-        return 1
-      fi
-    else
-      lookup_failures=$((lookup_failures + 1))
-      if ((lookup_failures >= 3)); then
-        echo "ERROR: cannot query ${job}: ${lookup_failures} consecutive lookup failures." >&2
-        return 1
-      fi
-    fi
-    if ((SECONDS >= deadline)); then
-      echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for ${job} to complete." >&2
-      return 1
-    fi
-    sleep 5
-  done
-}
-
-# argocd-projects: the platform/projects AppProjects plus the create-if-absent
-# repository-credential bootstrap Job (job-holos-paas-config-repo-bootstrap).
-# The Job's name is constant (no config hash), so a prior Complete OR Failed Job
-# is never re-run by apply — and the Job intentionally exits 0 when its source
-# Secret (holos-paas-config-robot, the manually-provisioned holos+robot pull
-# credential) is still absent, so the repository credential would otherwise never
-# be created on a later apply once the operator provisions that source.  Delete
-# any prior Job so every apply re-runs it (mirroring the pre_keycloak_config
-# Job-cleanup pattern); the Job is idempotent (it leaves an existing repository
-# Secret untouched and the Secret survives the Job deletion), so the
-# generate-once guarantee holds.  Pre-apply the bootstrap ServiceAccount + RBAC
-# first: `kubectl apply -f <dir>` applies a component's files alphabetically, so
-# job-*.yaml is created before serviceaccount-*.yaml — on a fresh cluster the
-# Job's pod would fail admission ("error looking up service account") until the
-# SA lands; pre-applying the identity closes that race (the main apply re-applies
-# it idempotently).
+# argocd-projects: idempotent HOL-1381 migration cleanup, run BEFORE the
+# component apply.  The holos-paas-config repository is now public and the
+# argocd-projects component renders a CREDENTIAL-LESS repository registration
+# Secret (holos-paas-config, stringData name/url/type/insecure — no
+# username/password).  On a cluster upgraded from the prior robot-credential
+# bootstrap this cleanup is what actually REMOVES the pull-credential dependency:
+#
+#   1. The old holos-paas-config Secret was created by the retired bootstrap Job
+#      with data.username/password set by a DIFFERENT field manager.  A
+#      server-side apply of the new credential-less manifest MERGES — it sets
+#      name/url/type/insecure but does NOT remove the username/password keys it
+#      never owned, so the robot credential would linger and Argo CD would keep
+#      pulling authenticated.  Delete the Secret if it still carries either
+#      credential key; the component apply that follows recreates it
+#      credential-less (a momentary gap, immediately re-applied in this same run).
+#      A Secret that is already credential-less (fresh cluster, or a prior cleaned
+#      apply) is left untouched, so the registration is not needlessly churned.
+#   2. Delete the retired holos-paas-config-robot SOURCE Secret and the
+#      holos-paas-config-repo-bootstrap Job + ServiceAccount/Role/RoleBinding,
+#      none of which the component renders anymore (a plain apply never prunes).
+#
+# --ignore-not-found makes every step a no-op on a fresh cluster, so this is safe
+# to run on every apply.
 pre_argocd_projects() {
-  local dir="${COMPONENTS_DIR}/argocd-projects"
-  kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
-    -f "${dir}/serviceaccount-holos-paas-config-repo-bootstrap.yaml" \
-    -f "${dir}/role-holos-paas-config-repo-bootstrap.yaml" \
-    -f "${dir}/rolebinding-holos-paas-config-repo-bootstrap.yaml"
-  kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
-    delete job -l app.kubernetes.io/name=holos-paas-config-repo-bootstrap \
-    --ignore-not-found --cascade=foreground --wait --request-timeout=60s
+  if kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
+    get secret holos-paas-config --request-timeout=10s \
+    -o jsonpath='{.data.username}{.data.password}' 2>/dev/null | grep -q .; then
+    echo "    HOL-1381 migration: removing stale robot credential from the" \
+      "holos-paas-config repository Secret (recreated credential-less below)."
+    kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
+      delete secret holos-paas-config --ignore-not-found
+  fi
+  kubectl --context "${KUBE_CONTEXT}" --namespace argocd delete \
+    secret/holos-paas-config-robot \
+    job/holos-paas-config-repo-bootstrap \
+    serviceaccount/holos-paas-config-repo-bootstrap \
+    role.rbac.authorization.k8s.io/holos-paas-config-repo-bootstrap \
+    rolebinding.rbac.authorization.k8s.io/holos-paas-config-repo-bootstrap \
+    --ignore-not-found
 }
 
 # kargo-crds: the Kargo controller and webhooks servers require the
@@ -1283,15 +1253,17 @@ organization and hand reconciliation off to Argo CD (HOL-1380):
      controller image during bootstrap).
 
   3. scripts/apply-holos-quay-organization
-     Apply the 'holos' Quay Organization + the public 'holos-controller'
-     repository (reconciled by the controller).  It prints how to obtain the
-     Quay ROBOT account you need to push/pull the controller image and the
-     App-of-Apps config bundle.
+     Apply the 'holos' Quay Organization + the public 'holos-controller' and
+     'holos-paas-config' repositories (reconciled by the controller).  It prints
+     how to obtain the Quay ROBOT account you need to PUSH the controller image
+     and the App-of-Apps config bundle (both repositories are public, so PULLS —
+     including Argo CD's bundle pull — are anonymous and need no credential).
 
   4. scripts/apply-app-of-apps
      Publish holos-paas-config:dev and apply the two root Applications, handing
      ongoing reconciliation to Argo CD.  Depends on the holos Quay organization
-     (step 3) and the robot push credential it describes.
+     (step 3) and the robot push credential it describes; Argo CD pulls the
+     public bundle anonymously (no pull credential needed).
 
 See docs/local-cluster.md and docs/runbooks/quay-resource-controller-credentials.md.
 ============================================================================

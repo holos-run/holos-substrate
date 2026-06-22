@@ -228,206 +228,52 @@ let PROJECTS_PROJECT = {
 	}
 }
 
-// --- Repository credential bootstrap --------------------------------------
+// --- Repository registration ----------------------------------------------
 //
 // Registers the holos-paas-config OCI repository with Argo CD via a repository
-// credential Secret in the argocd namespace (labeled
-// argocd.argoproj.io/secret-type: repository).  The robot token is secret
-// MATERIAL, so neither the credential nor a placeholder for it is committed (the
-// Runtime Secret Handling guardrail): a create-if-absent bootstrap Job assembles
-// it at runtime, modeled on the Quay OIDC client-secret bootstrap
-// (components/keycloak/realm-config).
+// Secret in the argocd namespace (labeled
+// argocd.argoproj.io/secret-type: repository).
 //
-// The robot pull credential (holos+robot) is provisioned manually — the robot
-// and this pull credential are NOT modeled by the quay.holos.run CRDs (ADR-19
-// Out of scope) — into a SOURCE Secret in the argocd namespace
-// (CONFIG_ROBOT_SECRET, keys username/password).  The Job reads that source and
-// assembles the argocd-format repository Secret create-if-absent.  If the source
-// Secret is absent, the Job logs and exits 0 WITHOUT creating the repository
-// Secret, so nothing empty is ever materialized; the repository Secret appears
-// on the first apply after an operator provisions the robot credential.
+// The repository is PUBLIC (HOL-1381): holos-quay-organization sets the
+// holos-paas-config Repository's visibility to `public`, so Argo CD's repo-server
+// pulls the App-of-Apps bundle ANONYMOUSLY.  This Secret therefore carries NO
+// username/password — no robot pull credential, no secret MATERIAL — so unlike
+// the prior create-if-absent robot bootstrap it is rendered and COMMITTED
+// directly to the deploy tree (the Runtime Secret Handling guardrail forbids
+// committing a Secret's MATERIAL; this Secret has none, only the non-sensitive
+// registration constants).  Making the repo public removes the dependency on the
+// holos-paas-config-robot SOURCE Secret and the bootstrap Job + RBAC entirely.
+//
+// The Secret still exists because Argo CD needs the per-repository
+// `insecure: "true"` setting even for an anonymous pull: the in-cluster Quay
+// serves *.holos.internal with a machine-local mkcert CA certificate that is not
+// in the repo-server image's trust store, so without it the pull fails
+// `x509: certificate signed by unknown authority` (see
+// holos/docs/argocd-application-source.md).  `type: oci` selects the native OCI
+// source.  Distributing the local CA into in-cluster trust stores (which would
+// let `insecure` drop) is the deferred node-level registry trust placeholder.
 
-// REPO_SECRET is the argocd-format repository credential Secret the Job writes.
+// REPO_SECRET is the argocd-format repository registration Secret.
 let REPO_SECRET = "holos-paas-config"
 
-// CONFIG_ROBOT_SECRET is the manually-provisioned source holding the Quay
-// pull-robot username/password (holos+robot).  Created by hand per the runtime
-// secret posture; the Job reads it to assemble REPO_SECRET.
-let CONFIG_ROBOT_SECRET = "holos-paas-config-robot"
-
-// KUBECTL_IMAGE pins the image the bootstrap Job runs kubectl from (the
-// quay-oidc-bootstrap precedent in components/keycloak/realm-config).
-let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
-
-let REPO_BOOTSTRAP = "holos-paas-config-repo-bootstrap"
-
-let REPO_BOOTSTRAP_METADATA = {
-	name:      REPO_BOOTSTRAP
-	namespace: ArgoCDNamespace
-	labels: "app.kubernetes.io/name": REPO_BOOTSTRAP
-}
-
-// The create-if-absent bootstrap script.  It reads the robot username/password
-// from CONFIG_ROBOT_SECRET and assembles the argocd-format repository Secret
-// only if absent, never overwriting (generate-once = stable across re-applies).
-// If the source Secret is missing it exits 0 without creating anything, so no
-// empty-material Secret is ever committed or materialized.  The credential
-// material is piped to kubectl create -f - on stdin so it never appears in the
-// container's argv (/proc-visible).
-let REPO_BOOTSTRAP_SCRIPT = """
-	set -eu
-	if kubectl -n \(ArgoCDNamespace) get secret \(REPO_SECRET) >/dev/null 2>&1; then
-	  echo "Secret \(REPO_SECRET) already exists in \(ArgoCDNamespace); leaving it untouched."
-	  exit 0
-	fi
-	if ! kubectl -n \(ArgoCDNamespace) get secret \(CONFIG_ROBOT_SECRET) >/dev/null 2>&1; then
-	  echo "Source Secret \(CONFIG_ROBOT_SECRET) not found in \(ArgoCDNamespace);" >&2
-	  echo "provision the holos+robot pull credential (keys username/password) and re-apply." >&2
-	  echo "Skipping \(REPO_SECRET) creation for now (the repository is registered once the source exists)." >&2
-	  exit 0
-	fi
-	# The username/password are read as their already-base64-encoded data values
-	# and emitted into the new Secret's base64 `data` fields verbatim — NEVER
-	# interpolated into YAML as raw scalars.  base64 of arbitrary bytes is always
-	# YAML-safe, so a robot token containing quotes, backslashes, or newlines can
-	# neither break the manifest nor alter the written value (a YAML-injection
-	# vector a quoted stringData scalar would expose).  The static fields
-	# (name/url/type/insecure) are known-safe constants.
-	USERNAME_B64="$(kubectl -n \(ArgoCDNamespace) get secret \(CONFIG_ROBOT_SECRET) -o jsonpath='{.data.username}')"
-	PASSWORD_B64="$(kubectl -n \(ArgoCDNamespace) get secret \(CONFIG_ROBOT_SECRET) -o jsonpath='{.data.password}')"
-	if [ -z "$USERNAME_B64" ] || [ -z "$PASSWORD_B64" ]; then
-	  echo "ERROR: \(CONFIG_ROBOT_SECRET) is missing the username or password key." >&2
-	  exit 1
-	fi
-	NAME_B64="$(printf %s '\(REPO_SECRET)' | base64 | tr -d '\\n')"
-	URL_B64="$(printf %s '\(CONFIG_REPO_OCI)' | base64 | tr -d '\\n')"
-	TYPE_B64="$(printf %s 'oci' | base64 | tr -d '\\n')"
-	INSECURE_B64="$(printf %s 'true' | base64 | tr -d '\\n')"
-	kubectl -n \(ArgoCDNamespace) create -f - <<EOF
-	apiVersion: v1
-	kind: Secret
-	metadata:
-	  name: \(REPO_SECRET)
-	  namespace: \(ArgoCDNamespace)
-	  labels:
-	    argocd.argoproj.io/secret-type: repository
-	type: Opaque
-	data:
-	  name: ${NAME_B64}
-	  url: ${URL_B64}
-	  type: ${TYPE_B64}
-	  username: ${USERNAME_B64}
-	  password: ${PASSWORD_B64}
-	  insecure: ${INSECURE_B64}
-	EOF
-	echo "Secret \(REPO_SECRET) created in \(ArgoCDNamespace)."
-	"""
-
-let REPO_BOOTSTRAP_SERVICE_ACCOUNT = {
+// The credential-less repository registration.  stringData carries only the
+// non-sensitive constants (name/url/type/insecure) — there is no
+// username/password because the repository is public and the pull is anonymous,
+// so nothing here is secret MATERIAL and the Secret is safe to commit.
+let REPO_REGISTRATION = {
 	apiVersion: "v1"
-	kind:       "ServiceAccount"
-	metadata:   REPO_BOOTSTRAP_METADATA
-}
-
-// Role granting the Job get on the source/target Secrets and namespace-wide
-// create on secrets (the API server does not evaluate resourceNames for create).
-// Both the source and target Secrets live in the argocd namespace, so a single
-// Role/RoleBinding pair suffices.
-let REPO_BOOTSTRAP_ROLE = {
-	apiVersion: "rbac.authorization.k8s.io/v1"
-	kind:       "Role"
-	metadata:   REPO_BOOTSTRAP_METADATA
-	rules: [
-		{
-			apiGroups: [""]
-			resources: ["secrets"]
-			verbs: ["get"]
-			resourceNames: [REPO_SECRET, CONFIG_ROBOT_SECRET]
-		},
-		{
-			apiGroups: [""]
-			resources: ["secrets"]
-			verbs: ["create"]
-		},
-	]
-}
-
-let REPO_BOOTSTRAP_ROLE_BINDING = {
-	apiVersion: "rbac.authorization.k8s.io/v1"
-	kind:       "RoleBinding"
-	metadata:   REPO_BOOTSTRAP_METADATA
-	roleRef: {
-		apiGroup: "rbac.authorization.k8s.io"
-		kind:     "Role"
-		name:     REPO_BOOTSTRAP
-	}
-	subjects: [{
-		kind:      "ServiceAccount"
-		name:      REPO_BOOTSTRAP
+	kind:       "Secret"
+	metadata: {
+		name:      REPO_SECRET
 		namespace: ArgoCDNamespace
-	}]
-}
-
-// A completed Job's pod template is immutable, so a plain re-apply of this
-// unchanged spec is a no-op while the Job exists; ttlSecondsAfterFinished keeps
-// its logs around for a day while still dissolving the immutable-pod-template
-// caveat for routine re-applies (the quay-oidc-bootstrap precedent).  The Job is
-// idempotent — it exits 0 leaving an existing repository Secret untouched (the
-// create-if-absent script above) — and the Secret survives the Job deletion, so
-// the generate-once guarantee holds across re-runs.
-let REPO_BOOTSTRAP_JOB = {
-	apiVersion: "batch/v1"
-	kind:       "Job"
-	metadata:   REPO_BOOTSTRAP_METADATA
-	spec: {
-		backoffLimit:            3
-		ttlSecondsAfterFinished: 86400
-		template: {
-			metadata: labels: REPO_BOOTSTRAP_METADATA.labels
-			spec: {
-				serviceAccountName: REPO_BOOTSTRAP
-				restartPolicy:      "Never"
-				securityContext: {
-					runAsNonRoot: true
-					// The alpine/kubectl image declares no non-root USER; pick the
-					// conventional "nobody" uid (the quay-oidc-bootstrap precedent).
-					runAsUser:  65534
-					runAsGroup: 65534
-					seccompProfile: type: "RuntimeDefault"
-				}
-				containers: [{
-					name:    "bootstrap"
-					image:   KUBECTL_IMAGE
-					command: ["/bin/sh", "-c", REPO_BOOTSTRAP_SCRIPT]
-					// kubectl writes its discovery cache under $HOME; point it at the
-					// writable emptyDir since the root filesystem is read-only.
-					env: [{
-						name:  "HOME"
-						value: "/tmp"
-					}]
-					resources: {
-						requests: {
-							cpu:    "10m"
-							memory: "32Mi"
-						}
-						limits: memory: "64Mi"
-					}
-					securityContext: {
-						allowPrivilegeEscalation: false
-						capabilities: drop: ["ALL"]
-						readOnlyRootFilesystem: true
-					}
-					volumeMounts: [{
-						name:      "tmp"
-						mountPath: "/tmp"
-					}]
-				}]
-				volumes: [{
-					name: "tmp"
-					emptyDir: {}
-				}]
-			}
-		}
+		labels: "argocd.argoproj.io/secret-type": "repository"
+	}
+	type: "Opaque"
+	stringData: {
+		name:     REPO_SECRET
+		url:      CONFIG_REPO_OCI
+		type:     "oci"
+		insecure: "true"
 	}
 }
 
@@ -442,18 +288,15 @@ userDefinedBuildPlan: {
 				kind:   "Resources"
 				output: "resources.gen.yaml"
 				// Unify with #Resources (holos/resources.cue) so the AppProjects
-				// (typed argoproj.io/appproject binding) and the bootstrap
-				// Job/SA/Role/RoleBinding validate against the vendored schemas at
-				// render time.
+				// (typed argoproj.io/appproject binding) and the credential-less
+				// repository registration Secret validate against the vendored
+				// schemas at render time.
 				resources: #Resources & {
 					AppProject: {
 						(PLATFORM_PROJECT.metadata.name): PLATFORM_PROJECT
 						(PROJECTS_PROJECT.metadata.name): PROJECTS_PROJECT
 					}
-					Job: (REPO_BOOTSTRAP_JOB.metadata.name):                       REPO_BOOTSTRAP_JOB
-					ServiceAccount: (REPO_BOOTSTRAP_SERVICE_ACCOUNT.metadata.name): REPO_BOOTSTRAP_SERVICE_ACCOUNT
-					Role: (REPO_BOOTSTRAP_ROLE.metadata.name):                     REPO_BOOTSTRAP_ROLE
-					RoleBinding: (REPO_BOOTSTRAP_ROLE_BINDING.metadata.name):       REPO_BOOTSTRAP_ROLE_BINDING
+					Secret: (REPO_REGISTRATION.metadata.name): REPO_REGISTRATION
 				}
 			}]
 			transformers: [
