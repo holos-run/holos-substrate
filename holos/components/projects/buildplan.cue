@@ -86,12 +86,13 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 // CONFIG_REPO_OCI is the platform config OCI repository the App-of-Apps pulls
 // from (HOL-1374 publishes holos-paas-config:dev to it).  Keep it consistent
 // with argocd-projects' / app-of-apps' CONFIG_REPO_OCI (the projects AppProject's
-// sourceRepos, oci://quay.holos.internal/*/*, authorize this URL) and
-// scripts/publish-config's CONFIG_REPO default.  The project/application
-// component manifests (AppProject + Applications + Kargo/Quay/Keycloak CRs) live
-// in THIS bundle, distinct from the per-project/app config repos
-// (oci://quay.holos.internal/<project>/<app>-config) the per-project/app
-// Applications themselves source — those are Kargo-driven workload deliveries.
+// sourceRepos pin EXACTLY this URL — HOL-1377 narrowed them from the prior
+// oci://quay.holos.internal/*/* wildcard) and scripts/publish-config's
+// CONFIG_REPO default.  The project/application component manifests (AppProject +
+// Applications + Kargo/Quay/Keycloak CRs) live in THIS bundle, distinct from the
+// per-project/app config repos (oci://quay.holos.internal/<project>/<app>-config)
+// the per-project/app Applications themselves source — those are Kargo-driven
+// workload deliveries.
 let CONFIG_REPO_OCI = "oci://quay.holos.internal/holos/holos-paas-config"
 
 // CONFIG_TAG is the mutable bootstrap tag the projects Applications pin
@@ -155,14 +156,33 @@ let APPLICATION_WORKLOAD_EXCLUDE = "**/workload/**"
 // adding a child Application.  The application child carries an exclude glob
 // (APPLICATION_WORKLOAD_EXCLUDE) so it reconciles only the per-app control-plane
 // manifests, never the Kargo-delivered workload subtree; the project component
-// emits no workload split, so the project child needs no exclude.  Unlike the
-// platform App-of-Apps' system list there is no apply-order dependency BETWEEN
-// these two components that needs sync-wave serialization within THIS root: the
-// application component's CRs reference the project component's (an app
-// KeycloakClient is referenced by project role groups, a Repository's
-// organizationRef names the project Organization), so the project child carries
-// the lower sync-wave (applied first) and the application child the higher,
-// mirroring scripts/apply-projects (project before its apps).
+// emits no workload split, so the project child needs no exclude.
+//
+// Both children share sync-wave 0 — DELIBERATELY NOT serialized project-then-
+// application — because the argocd controller (components/argocd/controller,
+// HOL-1376) installs an Application HEALTH customization that makes a child
+// Application report Healthy only once its OWN status is Healthy, and Argo CD
+// gates sync-wave N+1 on every wave-N resource becoming Healthy.  The project
+// child delivers the per-project Argo CD Application, whose targetRevision is
+// DELIBERATELY OMITTED so Kargo owns it (project/buildplan.cue) — that
+// Application stays Missing/Unknown (never Healthy) until Kargo's first
+// promotion patches the revision.  Putting the project child in an EARLIER wave
+// than the application child would therefore HEALTH-GATE the application child on
+// the project child becoming Healthy, which it cannot until Kargo runs — a
+// bootstrap DEADLOCK where the app control-plane resources (Repository,
+// KeycloakClient, Warehouse/Stage) never reconcile.  A shared wave applies both
+// children at once, so neither gates the other.
+//
+// This is SAFE because the cross-component dependency is UNIDIRECTIONAL and
+// resolved REACTIVELY, not by apply order: the application component's CRs
+// reference the project component's (an app KeycloakClient is referenced by the
+// project role groups' clientRef, a Repository's organizationRef names the
+// project Organization), but the Holos Controller reconciles each CR with retry,
+// and each child's syncPolicy.automated selfHeal converges regardless of arrival
+// order — exactly the "selfHeal converges regardless of arrival order" property
+// the platform App-of-Apps documents for its own steady state.  scripts/apply-
+// projects likewise applies project-before-apps only as a Ready-gating
+// convenience, not a hard ordering the controllers require.
 let TENANT_COMPONENTS = [
 	{component: "project"},
 	{component: "application", exclude: APPLICATION_WORKLOAD_EXCLUDE},
@@ -261,12 +281,20 @@ let CHILD_DIR = "\(COMPONENTS_BASE)/projects/children"
 	}
 }
 
+// CHILD_WAVE is the SHARED sync-wave every child carries (0).  All children sit
+// in one wave on purpose — see the TENANT_COMPONENTS note: serializing the
+// project child before the application child would health-gate the application
+// child on the project child becoming Healthy, which it cannot until Kargo's
+// first promotion (the per-project Application's omitted targetRevision), so a
+// shared wave avoids that bootstrap deadlock.  The root (-1) still settles before
+// the children fan out.
+let CHILD_WAVE = 0
+
 // CHILD_APPLICATIONS is one child Application per tenant collection component,
-// the list index supplying the ascending sync-wave (project before application,
-// mirroring scripts/apply-projects' project-before-its-apps ordering).
+// every child carrying the shared CHILD_WAVE so neither health-gates the other.
 let CHILD_APPLICATIONS = [
-	for i, c in TENANT_COMPONENTS {
-		(#ChildApplication & {inputs: {component: c.component, wave: i, if c.exclude != _|_ {exclude: c.exclude}}}).out
+	for c in TENANT_COMPONENTS {
+		(#ChildApplication & {inputs: {component: c.component, wave: CHILD_WAVE, if c.exclude != _|_ {exclude: c.exclude}}}).out
 	},
 ]
 
@@ -314,14 +342,16 @@ let ROOT_APPLICATION = {
 	}
 }
 
-// Assert the child set is non-empty and each child's sync-wave is exactly its
-// list index, so a future edit that reorders or drops an entry can't silently
-// produce a gap or a duplicate wave.  Each comprehension element unifies the
-// rendered wave string with the expected index string; a mismatch fails render.
+// Assert the child set is non-empty and every child carries the shared
+// CHILD_WAVE, so a future edit that reintroduces per-child wave serialization
+// (re-opening the health-gate deadlock the TENANT_COMPONENTS note describes)
+// fails render rather than shipping silently.  Each comprehension element unifies
+// the rendered wave string with the expected shared-wave string; a mismatch fails
+// render.
 _assertNonEmpty: true & (len(CHILD_APPLICATIONS) > 0)
 _assertWaves: [
-	for i, app in CHILD_APPLICATIONS {
-		"\(i)" & app.metadata.annotations."argocd.argoproj.io/sync-wave"
+	for app in CHILD_APPLICATIONS {
+		"\(CHILD_WAVE)" & app.metadata.annotations."argocd.argoproj.io/sync-wave"
 	},
 ]
 

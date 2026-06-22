@@ -123,9 +123,11 @@ let PLATFORM_PROJECT = {
 //
 // Owns the single top-level App-of-Apps that bootstraps tenant projects (the
 // projects component, HOL-1377) and its two child Applications (projects-project,
-// projects-application).  Scoped to the tenant project OCI repos (any Quay
-// org/repo), which includes the holos-paas-config bundle the projects App-of-Apps
-// pulls the project/application manifests from.
+// projects-application).  Scoped (sourceRepos) to EXACTLY the holos-paas-config
+// bundle the projects App-of-Apps pulls the project/application manifests from —
+// HOL-1377 narrowed it from the prior oci://quay.holos.internal/*/* wildcard (see
+// the sourceRepos rationale below for why the wildcard was unsafe once the argocd
+// destination is permitted).
 //
 // HOL-1377 widens this project so the App-of-Apps can DELIVER the project/
 // application manifests, which Phase 2's minimal scoping rejected:
