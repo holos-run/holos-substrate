@@ -70,11 +70,15 @@ let PLATFORM_PROJECT = {
 		labels: "app.kubernetes.io/name": "platform"
 	}
 	spec: {
-		// A '*' suffix on the config repo authorizes the oci:// repoURL whether a
-		// child Application pins a tag or a digest; the manifests repo is listed in
-		// full for the system-owned Application that may source from it.
+		// Argo CD matches an Application's source by EXACT repoURL string and
+		// selects the tag/digest via targetRevision — it does NOT suffix-match the
+		// repoURL — so the config repo is listed by its exact oci:// URL (a '*'
+		// suffix would also authorize sibling repos like holos-paas-config-backdoor
+		// for a project that whitelists cluster-scoped resources).  The manifests
+		// repo is listed in full for the system-owned Application that may source
+		// from it.
 		sourceRepos: [
-			"\(CONFIG_REPO_OCI)*",
+			CONFIG_REPO_OCI,
 			MANIFESTS_REPO_OCI,
 		]
 		destinations: [{
@@ -115,16 +119,51 @@ let PROJECTS_PROJECT = {
 		sourceRepos: ["oci://quay.holos.internal/*/*"]
 		// Tenant namespaces on the in-cluster API server.  '*' admits the project
 		// control and env-prefixed namespaces (ci-/qa-/prod-<name>, bare <name>)
-		// the projects App-of-Apps fans out into; the absent clusterResourceWhitelist
-		// is what actually confines tenants to namespaced resources.
-		destinations: [{
-			server:    IN_CLUSTER
-			namespace: "*"
-		}]
+		// the projects App-of-Apps fans out into, but the Argo CD control
+		// namespaces are DENIED ('!'-prefixed deny entries): without this a tenant
+		// artifact sourced from oci://quay.holos.internal/<tenant>/* could create an
+		// Argo CD Application in the argocd namespace assigned project: platform —
+		// which has cluster-wide privileges — a confused-deputy privilege
+		// escalation.  Denying argocd (and kube-system) closes that path; the
+		// namespaceResourceBlacklist below is defense-in-depth on the kind axis.
+		destinations: [
+			{
+				server:    IN_CLUSTER
+				namespace: "*"
+			},
+			{
+				server:    IN_CLUSTER
+				namespace: "!\(ArgoCDNamespace)"
+			},
+			{
+				server:    IN_CLUSTER
+				namespace: "!kube-system"
+			},
+		]
 		namespaceResourceWhitelist: [{
 			group: "*"
 			kind:  "*"
 		}]
+		// Deny tenants from creating Argo CD project/Application objects from their
+		// own artifacts: even with the argocd destination denied above, forbidding
+		// these kinds outright removes the escalation primitive entirely (a tenant
+		// cannot mint an Application/AppProject that re-projects itself onto the
+		// platform project).  clusterResourceWhitelist remains DELIBERATELY omitted,
+		// which is what confines tenants to namespaced resources.
+		namespaceResourceBlacklist: [
+			{
+				group: "argoproj.io"
+				kind:  "Application"
+			},
+			{
+				group: "argoproj.io"
+				kind:  "AppProject"
+			},
+			{
+				group: "argoproj.io"
+				kind:  "ApplicationSet"
+			},
+		]
 	}
 }
 
