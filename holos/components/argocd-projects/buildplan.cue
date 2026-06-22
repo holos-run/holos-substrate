@@ -20,10 +20,15 @@ import "list"
 //     BOTH namespace- and cluster-scoped resources (group:"*"/kind:"*"), because
 //     the system components own CRDs, ClusterRoles, and Namespaces.
 //   - projects owns the single top-level App-of-Apps that bootstraps tenant
-//     projects (Phase 4, HOL-1377).  It is scoped to the tenant project OCI repos
-//     (any Quay org/repo) and deliberately OMITS clusterResourceWhitelist — like
-//     the per-project AppProject the project component emits — so the tenant
-//     App-of-Apps cannot create cluster-scoped resources.
+//     projects (HOL-1377).  It is scoped to EXACTLY the holos-paas-config bundle
+//     (sourceRepos), permits the argocd namespace plus all tenant namespaces
+//     (every other platform namespace denied), and whitelists EXACTLY the one
+//     cluster-scoped kind the project component emits (the Kargo Project) — NOT
+//     the platform project's group:"*"/kind:"*" wildcard.  HOL-1377 widened it
+//     from its Phase-2 minimal scoping (which denied argocd and omitted
+//     clusterResourceWhitelist) so the App-of-Apps can deliver the per-project
+//     AppProject/Applications into argocd and the cluster-scoped Kargo Project;
+//     see the PROJECTS_PROJECT header below for the full security rationale.
 //
 // Registered after the argocd controller and before kargo in
 // holos/platform/platform.cue: the AppProject kind is an argoproj.io custom
@@ -154,9 +159,21 @@ let PROJECTS_PROJECT = {
 		labels: "app.kubernetes.io/name": "projects"
 	}
 	spec: {
-		// Any Quay org/repo under the in-cluster registry — the tenant projects'
-		// OCI artifacts (the projects App-of-Apps and the per-project bundles).
-		sourceRepos: ["oci://quay.holos.internal/*/*"]
+		// EXACTLY the platform config bundle — the only repo any Application
+		// assigned to this project ever sources.  The projects App-of-Apps root and
+		// its two children (the sole project: projects Applications) all pull the
+		// project/application component manifests from holos-paas-config; the
+		// per-project/app Applications those manifests carry are assigned to their
+		// OWN per-project AppProjects (project: <project>) and source their own
+		// <project>/<app>-config repos, NOT this one.  A wildcard
+		// (oci://quay.holos.internal/*/*) would let an Application assigned to
+		// projects — which (HOL-1377) may now write into the argocd namespace —
+		// source TENANT-controlled OCI content and reconcile arbitrary namespaced
+		// resources (Applications/AppProjects/Secrets) into argocd: a confused-deputy
+		// escalation.  Pinning sourceRepos to the single platform-owned config repo
+		// closes that — combined with the project-assignment boundary, only the
+		// platform-trusted bootstrap can use this project's argocd-write privilege.
+		sourceRepos: [CONFIG_REPO_OCI]
 		// Tenant namespaces on the in-cluster API server.  '*' admits the project
 		// control and env-prefixed namespaces (ci-/qa-/prod-<name>, bare <name>)
 		// the projects App-of-Apps fans out into, PLUS the argocd namespace the

@@ -123,22 +123,49 @@ let PROJECTS_PROJECT = "projects"
 // source.path is "\(COMPONENTS_BASE)/<component>".
 let COMPONENTS_BASE = "clusters/\(clusterName)/components"
 
+// APPLICATION_WORKLOAD_EXCLUDE is the directory.exclude glob the application
+// child Application carries so the App-of-Apps reconciles ONLY the per-app
+// CONTROL-PLANE manifests, never the per-app WORKLOAD manifests.  The application
+// component (components/application) renders each app into TWO subtrees:
+//   clusters/<cluster>/components/application/<app>/control-plane/  (the Repository,
+//     KeycloakClient, Kargo Warehouse/Stage, and the app's OWN Argo CD Application)
+//   clusters/<cluster>/components/application/<app>/workload/       (the Deployment/
+//     Service/HTTPRoute/ConfigMap/SA/RoleBinding)
+// The workload subtree is the <app>-config artifact the app's OWN Argo CD
+// Application syncs from oci://quay.holos.internal/<project>/<app>-config (the
+// Kargo-driven delivery path).  If this App-of-Apps' application child recursed
+// the whole application/ tree it would ALSO reconcile those workload manifests
+// straight from holos-paas-config — a SECOND Argo CD manager for the same
+// Deployment/Service/HTTPRoute, fighting the per-app Application and bypassing
+// Kargo's targetRevision ownership (the exact second-manager hazard the
+// application component splits the bundles to avoid).  This glob — matched by
+// Argo CD's directory.exclude against paths under the source.path
+// (clusters/<cluster>/components/application) with doublestar semantics — excludes
+// every <app>/workload/<file>, so the application child delivers only the
+// control-plane manifests while the workload stays exclusively Kargo/app-Application
+// owned.
+let APPLICATION_WORKLOAD_EXCLUDE = "**/workload/**"
+
 // TENANT_COMPONENTS is the set of COLLECTION components this projects App-of-Apps
 // reconciles: the project and application components (holos/platform/platform.cue
 // registers them AFTER app-of-apps, capping the system set).  Each entry becomes
 // one child Application that recurses the whole component subpath in the OCI
 // bundle — every registered project's / app's manifests at once — so registering
 // a new project/app grows the manifests under these existing subpaths without
-// adding a child Application.  Unlike the platform App-of-Apps' system list there
-// is no apply-order dependency BETWEEN these two components that needs sync-wave
-// serialization within THIS root: the application component's CRs reference the
-// project component's (an app KeycloakClient is referenced by project role
-// groups, a Repository's organizationRef names the project Organization), so the
-// project child carries the lower sync-wave (applied first) and the application
-// child the higher, mirroring scripts/apply-projects (project before its apps).
+// adding a child Application.  The application child carries an exclude glob
+// (APPLICATION_WORKLOAD_EXCLUDE) so it reconciles only the per-app control-plane
+// manifests, never the Kargo-delivered workload subtree; the project component
+// emits no workload split, so the project child needs no exclude.  Unlike the
+// platform App-of-Apps' system list there is no apply-order dependency BETWEEN
+// these two components that needs sync-wave serialization within THIS root: the
+// application component's CRs reference the project component's (an app
+// KeycloakClient is referenced by project role groups, a Repository's
+// organizationRef names the project Organization), so the project child carries
+// the lower sync-wave (applied first) and the application child the higher,
+// mirroring scripts/apply-projects (project before its apps).
 let TENANT_COMPONENTS = [
-	"project",
-	"application",
+	{component: "project"},
+	{component: "application", exclude: APPLICATION_WORKLOAD_EXCLUDE},
 ]
 
 // SYNC_OPTIONS are applied consistently to the root and every child Application
@@ -179,6 +206,9 @@ let CHILD_DIR = "\(COMPONENTS_BASE)/projects/children"
 	inputs: {
 		component: string
 		wave:      int
+		// exclude is an optional directory.exclude glob (empty = none); the
+		// application child sets it to skip the Kargo-delivered workload subtree.
+		exclude: string | *""
 	}
 	out: {
 		apiVersion: "argoproj.io/v1alpha1"
@@ -206,7 +236,15 @@ let CHILD_DIR = "\(COMPONENTS_BASE)/projects/children"
 				// (one nested directory per registered instance); recurse scans the
 				// whole tree so every instance is reconciled by this one child.
 				path: "\(COMPONENTS_BASE)/\(inputs.component)"
-				directory: recurse: true
+				directory: {
+					recurse: true
+					// exclude the Kargo-delivered workload subtree when set (the
+					// application child), so this root never becomes a second manager
+					// for the per-app Deployment/Service/HTTPRoute.
+					if inputs.exclude != "" {
+						exclude: inputs.exclude
+					}
+				}
 			}
 			destination: {
 				server:    IN_CLUSTER
@@ -228,7 +266,7 @@ let CHILD_DIR = "\(COMPONENTS_BASE)/projects/children"
 // mirroring scripts/apply-projects' project-before-its-apps ordering).
 let CHILD_APPLICATIONS = [
 	for i, c in TENANT_COMPONENTS {
-		(#ChildApplication & {inputs: {component: c, wave: i}}).out
+		(#ChildApplication & {inputs: {component: c.component, wave: i, if c.exclude != _|_ {exclude: c.exclude}}}).out
 	},
 ]
 
