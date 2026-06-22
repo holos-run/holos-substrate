@@ -1000,6 +1000,50 @@ wait_argocd() {
     rollout status statefulset/argocd-application-controller --timeout="${ROLLOUT_TIMEOUT}"
 }
 
+# argocd-projects: gate the repository-credential bootstrap Job's OUTCOME so
+# scripts/apply fails early on a genuine bootstrap error (e.g. the source Secret
+# exists but is malformed, or the Secret creation fails) instead of exiting
+# successfully while the Job later fails.  The Job is polled (not `kubectl wait
+# --for=condition=Complete`) so a Failed Job fails the gate on the next poll
+# rather than blocking the full ROLLOUT_TIMEOUT.  Crucially the gate TOLERATES
+# the intentionally-absent source-Secret case: the bootstrap Job exits 0 (→
+# Complete=True) both when it creates the repository Secret AND when the source
+# Secret (holos-paas-config-robot) is not yet provisioned — it only exits 1 (→
+# Failed=True) on a real error — so Complete=True passes the gate without
+# asserting the repository Secret exists.  An absent Job (GC'd after its TTL, or
+# mid-poll) yields empty output with exit 0 and is tolerated; a persistent lookup
+# failure (RBAC/API error) fails the gate rather than silently skipping it.
+wait_argocd_projects() {
+  local job=job/holos-paas-config-repo-bootstrap job_state lookup_failures=0
+  local deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+  while true; do
+    if job_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
+      get "${job}" --ignore-not-found --request-timeout=10s \
+      -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
+      lookup_failures=0
+      if [[ -z "${job_state}" ]] || grep -q '^Complete=True$' <<<"${job_state}"; then
+        break
+      fi
+      if grep -q '^Failed=True$' <<<"${job_state}"; then
+        echo "ERROR: ${job} failed (e.g. the holos-paas-config-robot source Secret is malformed); inspect it with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} --namespace argocd describe ${job}" >&2
+        return 1
+      fi
+    else
+      lookup_failures=$((lookup_failures + 1))
+      if ((lookup_failures >= 3)); then
+        echo "ERROR: cannot query ${job}: ${lookup_failures} consecutive lookup failures." >&2
+        return 1
+      fi
+    fi
+    if ((SECONDS >= deadline)); then
+      echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for ${job} to complete." >&2
+      return 1
+    fi
+    sleep 5
+  done
+}
+
 # argocd-projects: the platform/projects AppProjects plus the create-if-absent
 # repository-credential bootstrap Job (job-holos-paas-config-repo-bootstrap).
 # The Job's name is constant (no config hash), so a prior Complete OR Failed Job

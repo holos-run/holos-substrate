@@ -1,5 +1,7 @@
 package holos
 
+import "list"
+
 // argocd-projects establishes the Argo CD project separation between the
 // platform "system" and the tenant "projects", and registers the platform
 // config OCI repository with Argo CD (HOL-1375, parent HOL-1373 — the
@@ -54,6 +56,20 @@ let MANIFESTS_REPO_OCI = "oci://quay.holos.internal/holos/holos-paas-manifests"
 // IN_CLUSTER is the in-cluster Kubernetes API server destination every Argo CD
 // Application in these projects targets.
 let IN_CLUSTER = "https://kubernetes.default.svc"
+
+// DENIED_NAMESPACES are the namespaces the projects AppProject denies as
+// destinations: every platform-infrastructure namespace (the central
+// #ReservedNamespaceNames registry — argocd, keycloak, quay, kargo, istio-*,
+// cert-manager, holos-controller, …) plus the Kubernetes system namespaces.
+// Sourcing the platform set from the registry keeps the deny list in lock-step
+// as platform namespaces are added (the registry is the single source of truth
+// the project component already uses to reject colliding project names).
+let DENIED_NAMESPACES = list.Concat([#ReservedNamespaceNames, [
+	"kube-system",
+	"kube-public",
+	"kube-node-lease",
+	"default",
+]])
 
 // --- AppProject: platform -------------------------------------------------
 //
@@ -119,25 +135,25 @@ let PROJECTS_PROJECT = {
 		sourceRepos: ["oci://quay.holos.internal/*/*"]
 		// Tenant namespaces on the in-cluster API server.  '*' admits the project
 		// control and env-prefixed namespaces (ci-/qa-/prod-<name>, bare <name>)
-		// the projects App-of-Apps fans out into, but the Argo CD control
-		// namespaces are DENIED ('!'-prefixed deny entries): without this a tenant
-		// artifact sourced from oci://quay.holos.internal/<tenant>/* could create an
-		// Argo CD Application in the argocd namespace assigned project: platform —
-		// which has cluster-wide privileges — a confused-deputy privilege
-		// escalation.  Denying argocd (and kube-system) closes that path; the
+		// the projects App-of-Apps fans out into, but EVERY platform-infrastructure
+		// namespace is DENIED ('!'-prefixed deny entries): without this a tenant
+		// artifact sourced from oci://quay.holos.internal/<tenant>/* could create
+		// resources (e.g. an Argo CD Application assigned project: platform, which
+		// has cluster-wide privileges, or a Secret/RoleBinding in keycloak/quay/
+		// kargo) inside a platform namespace — a confused-deputy privilege
+		// escalation across the tenant/platform boundary.  The deny set is the
+		// central #ReservedNamespaceNames registry (the static platform namespaces a
+		// project may not name) plus the Kubernetes system namespaces, so it stays
+		// in lock-step with the registry as platform namespaces are added.  The
 		// namespaceResourceBlacklist below is defense-in-depth on the kind axis.
 		destinations: [
 			{
 				server:    IN_CLUSTER
 				namespace: "*"
 			},
-			{
+			for ns in DENIED_NAMESPACES {
 				server:    IN_CLUSTER
-				namespace: "!\(ArgoCDNamespace)"
-			},
-			{
-				server:    IN_CLUSTER
-				namespace: "!kube-system"
+				namespace: "!\(ns)"
 			},
 		]
 		namespaceResourceWhitelist: [{
@@ -225,12 +241,23 @@ let REPO_BOOTSTRAP_SCRIPT = """
 	  echo "Skipping \(REPO_SECRET) creation for now (the repository is registered once the source exists)." >&2
 	  exit 0
 	fi
-	USERNAME="$(kubectl -n \(ArgoCDNamespace) get secret \(CONFIG_ROBOT_SECRET) -o jsonpath='{.data.username}' | base64 -d)"
-	PASSWORD="$(kubectl -n \(ArgoCDNamespace) get secret \(CONFIG_ROBOT_SECRET) -o jsonpath='{.data.password}' | base64 -d)"
-	if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]; then
+	# The username/password are read as their already-base64-encoded data values
+	# and emitted into the new Secret's base64 `data` fields verbatim — NEVER
+	# interpolated into YAML as raw scalars.  base64 of arbitrary bytes is always
+	# YAML-safe, so a robot token containing quotes, backslashes, or newlines can
+	# neither break the manifest nor alter the written value (a YAML-injection
+	# vector a quoted stringData scalar would expose).  The static fields
+	# (name/url/type/insecure) are known-safe constants.
+	USERNAME_B64="$(kubectl -n \(ArgoCDNamespace) get secret \(CONFIG_ROBOT_SECRET) -o jsonpath='{.data.username}')"
+	PASSWORD_B64="$(kubectl -n \(ArgoCDNamespace) get secret \(CONFIG_ROBOT_SECRET) -o jsonpath='{.data.password}')"
+	if [ -z "$USERNAME_B64" ] || [ -z "$PASSWORD_B64" ]; then
 	  echo "ERROR: \(CONFIG_ROBOT_SECRET) is missing the username or password key." >&2
 	  exit 1
 	fi
+	NAME_B64="$(printf %s '\(REPO_SECRET)' | base64 | tr -d '\\n')"
+	URL_B64="$(printf %s '\(CONFIG_REPO_OCI)' | base64 | tr -d '\\n')"
+	TYPE_B64="$(printf %s 'oci' | base64 | tr -d '\\n')"
+	INSECURE_B64="$(printf %s 'true' | base64 | tr -d '\\n')"
 	kubectl -n \(ArgoCDNamespace) create -f - <<EOF
 	apiVersion: v1
 	kind: Secret
@@ -239,13 +266,14 @@ let REPO_BOOTSTRAP_SCRIPT = """
 	  namespace: \(ArgoCDNamespace)
 	  labels:
 	    argocd.argoproj.io/secret-type: repository
-	stringData:
-	  name: \(REPO_SECRET)
-	  url: \(CONFIG_REPO_OCI)
-	  type: oci
-	  username: "${USERNAME}"
-	  password: "${PASSWORD}"
-	  insecure: "true"
+	type: Opaque
+	data:
+	  name: ${NAME_B64}
+	  url: ${URL_B64}
+	  type: ${TYPE_B64}
+	  username: ${USERNAME_B64}
+	  password: ${PASSWORD_B64}
+	  insecure: ${INSECURE_B64}
 	EOF
 	echo "Secret \(REPO_SECRET) created in \(ArgoCDNamespace)."
 	"""
