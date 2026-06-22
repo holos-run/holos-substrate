@@ -1245,7 +1245,7 @@ for component in "${COMPONENTS[@]}"; do
   fi
 done
 
-echo "All platform components applied."
+echo "All platform components applied (imperative bootstrap floor)."
 
 # ---------------------------------------------------------------------------
 # App-of-Apps bootstrap handoff (HOL-1373/HOL-1378)
@@ -1295,6 +1295,29 @@ bootstrap_app_of_apps() {
   fi
 
   echo "==> App-of-Apps handoff: publish holos-paas-config bundle + apply the root Applications"
+
+  # 0. Source-consistency gate.  The imperative loop above applied the WORKING-TREE
+  #    manifests under ${COMPONENTS_DIR}, but scripts/publish-config --build bundles
+  #    the COMMITTED tree (git archive HEAD:holos/deploy) — by design, so the
+  #    bootstrap :dev tag is always a reviewed, committed render.  If holos/deploy/
+  #    is dirty relative to HEAD, the two sources diverge: the cluster has the
+  #    working-tree render while the published :dev (and thus the App-of-Apps roots)
+  #    carries the HEAD render, so Argo CD's selfHeal/prune would drag the cluster
+  #    onto HEAD — silently undoing the uncommitted local manifests.  Refuse the
+  #    handoff when holos/deploy/ is not clean at HEAD (the imperative floor stays
+  #    authoritative); commit the render (the scripts/render diff-clean gate) and
+  #    re-run, or override with BOOTSTRAP_APP_OF_APPS_FORCE_ROOTS=1 if the
+  #    divergence is intentional.
+  if [[ "${BOOTSTRAP_APP_OF_APPS_FORCE_ROOTS:-0}" != "1" ]] \
+    && ! git -C "${REPO_ROOT}" diff --quiet HEAD -- holos/deploy 2>/dev/null; then
+    echo "    SKIP handoff: holos/deploy/ has uncommitted changes relative to HEAD."
+    echo "    scripts/publish-config bundles the COMMITTED tree (HEAD), so publishing now"
+    echo "    would point the App-of-Apps roots at a render that differs from the working-tree"
+    echo "    manifests the imperative floor just applied — Argo CD's selfHeal would undo them."
+    echo "    Commit the render (scripts/render is the diff-clean gate) and re-run to hand off,"
+    echo "    or set BOOTSTRAP_APP_OF_APPS_FORCE_ROOTS=1 if the divergence is intentional."
+    return 0
+  fi
 
   # 1. Publish the holos-paas-config:dev bundle.  oras (and a reachable Quay with
   #    the push credential) are NOT prerequisites of the imperative floor, so a
@@ -1353,7 +1376,5 @@ bootstrap_app_of_apps() {
   echo "    project/application resources (projects-bootstrap) from"
   echo "    holos-paas-config:${CONFIG_TAG:-dev}."
 }
-
-echo "All platform components applied."
 
 bootstrap_app_of_apps
