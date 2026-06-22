@@ -144,8 +144,9 @@ let PROJECTS_PROJECT = {
 		// escalation across the tenant/platform boundary.  The deny set is the
 		// central #ReservedNamespaceNames registry (the static platform namespaces a
 		// project may not name) plus the Kubernetes system namespaces, so it stays
-		// in lock-step with the registry as platform namespaces are added.  The
-		// namespaceResourceBlacklist below is defense-in-depth on the kind axis.
+		// in lock-step with the registry as platform namespaces are added.  This
+		// destination deny is the escalation boundary (no kind blacklist — see the
+		// note after namespaceResourceWhitelist below for why).
 		destinations: [
 			{
 				server:    IN_CLUSTER
