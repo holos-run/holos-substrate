@@ -34,10 +34,17 @@ tars the committed `holos/deploy/` tree as-is under the mutable
 `holos-paas-config:dev` tag, and two root Argo CD `Application`s reconcile it under
 two AppProjects — **`platform`** (`platform-bootstrap`, the system components) and
 **`projects`** (`projects-bootstrap`, the project/application collection
-resources). `scripts/apply` brings Argo CD up imperatively (the bootstrap floor),
-then publishes the bundle and applies the two roots as a final, idempotent, gated
-**handoff** (the chicken-and-egg: Argo CD must exist before it self-manages;
-`BOOTSTRAP_APP_OF_APPS=0` skips it). The per-app Kargo delivery is unchanged and
+resources). `scripts/apply` brings Argo CD up imperatively (the bootstrap floor)
+and **stops there**, with Quay and Keycloak ready for manual setup; the
+chicken-and-egg handoff (Argo CD must exist before it self-manages) is a
+**separate, idempotent script — `scripts/apply-app-of-apps`** — that publishes
+the bundle and applies the two roots. The split (HOL-1379) breaks a rebuild-time
+race: publishing needs the holos Quay **organization** (the `holos-paas-config`
+repository and the `holos-paas-config-robot` push credential) configured first,
+which does not exist on a freshly rebuilt cluster, so `scripts/apply` would race
+the manual Quay setup and fail. `scripts/apply` prints the manual-setup guidance,
+and `scripts/apply-app-of-apps` explicitly depends on that Quay org being
+configured. The per-app Kargo delivery is unchanged and
 complementary (it still owns each app's `Application.spec.source.targetRevision`).
 This supersedes the deferred per-component `argoAppDisabled` git-source projection
 **for the platform** (which stays dormant). See ADR-16 Rev 3
@@ -312,9 +319,10 @@ components have been removed. Git history preserves them.
   as-is under the mutable `holos-paas-config:dev` tag, the **App-of-Apps** that
   consumes it (the `platform-bootstrap`/`projects-bootstrap` roots + per-component
   children, the sync-wave bootstrap ordering, the "Always" `:dev` re-pull
-  mechanism), and how `scripts/apply` wires the publish + root-Application apply as
-  the post-Argo-CD bootstrap handoff (HOL-1373/HOL-1378, [ADR-16](docs/adr/ADR-16.md)
-  Rev 3).
+  mechanism), and how the separate `scripts/apply-app-of-apps` wires the publish +
+  root-Application apply as the post-Argo-CD bootstrap handoff — run after
+  `scripts/apply` stops at the floor and the holos Quay org is configured
+  (HOL-1373/HOL-1378/HOL-1379, [ADR-16](docs/adr/ADR-16.md) Rev 3).
 - [holos/docs/placeholders.md](holos/docs/placeholders.md) — stubs for
   out-of-MVP-scope concerns: ArgoCD gitops delivery (the `argoAppDisabled`
   flip), observability dashboards, the Gateway route-attachment policy,

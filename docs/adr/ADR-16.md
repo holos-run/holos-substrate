@@ -13,6 +13,7 @@
 | 1        | 2026-06-14 | @jeffmccune | Initial design |
 | 2        | 2026-06-14 | @jeffmccune | Note the NATS pipeline retirement landed (HOL-1241): receiver/subscriber code, the pipeline protobuf, and the nats/webhook-* components removed; operational docs updated to this path |
 | 3        | 2026-06-21 | @jeffmccune | HOL-1373/HOL-1378: add the **App-of-Apps OCI config-image bootstrap** — the complement to the per-app Kargo delivery above. The whole committed `holos/deploy/` tree is published as a single OCI bundle (`holos-paas-config:dev`, mutable tag) and two root Argo CD `Application`s reconcile the platform from it under two AppProjects: `platform` (the system components, root `platform-bootstrap`) and `projects` (the project/application collection resources, root `projects-bootstrap`). `scripts/apply` brings Argo CD up imperatively (the bootstrap floor), then publishes the bundle and applies the two roots so Argo CD takes over ongoing reconciliation. See *Bootstrap delivery — the App-of-Apps OCI config bundle* below. Built across HOL-1374 (the `holos-paas-config` bundle + `make config-build`/`config-push`), HOL-1375 (the `platform`/`projects` AppProjects + repo-credential bootstrap), HOL-1376 (the platform root), HOL-1377 (the projects root), and HOL-1378 (the `scripts/apply` wiring + these docs). |
+| 4        | 2026-06-22 | @jeffmccune | HOL-1379: **split the handoff out of `scripts/apply` to break a rebuild-time race.** Publishing `holos-paas-config:dev` needs the holos Quay **organization** (the `holos-paas-config` repository and the `holos-paas-config-robot` push credential) configured first, which does not exist on a freshly rebuilt cluster — so doing the publish from `scripts/apply` raced the manual Quay setup and failed. `scripts/apply` now **stops at the bootstrap floor** (Quay and Keycloak up, ready for manual setup) and prints the manual-setup guidance; the handoff is a **separate script, `scripts/apply-app-of-apps`**, that explicitly depends on the holos Quay organization being configured and (unlike the floor) fails hard on a missing prerequisite. See *Bootstrap delivery — the App-of-Apps OCI config bundle* below. |
 
 ## Context and Problem Statement
 
@@ -211,16 +212,25 @@ of a second, complementary OCI delivery path added in HOL-1373: an Argo CD
   collection-driven `project`/`application` resources. Both track
   `targetRevision: dev` and reconcile on every re-push (the "Always" repo-cache
   TTL the `argocd` component shortens to `1m`).
-- **Bootstrap ordering — the chicken-and-egg.** Argo CD cannot reconcile the
-  platform from the bundle until Argo CD is itself running. So `scripts/apply`
-  keeps bringing the foundation + Argo CD + Kargo up **imperatively** (the
-  bootstrap floor, `kubectl apply --server-side` in dependency order), then as a
-  **final handoff** publishes the bundle and applies the two root `Application`s
-  — after which Argo CD owns ongoing reconciliation. The imperative floor is
-  never removed; the handoff is idempotent and gated (it skips gracefully when
-  `oras`/Quay/the push credential are absent, leaving a usable floor). The
-  per-app Kargo delivery (halves 1–2) is **unchanged and complementary**: it
-  still owns each app's `Application.spec.source.targetRevision`, which the
+- **Bootstrap ordering — the chicken-and-egg, and the rebuild-time race
+  (HOL-1379).** Argo CD cannot reconcile the platform from the bundle until Argo
+  CD is itself running. So `scripts/apply` keeps bringing the foundation + Argo CD
+  + Kargo up **imperatively** (the bootstrap floor, `kubectl apply --server-side`
+  in dependency order) and **stops there**, with Quay and Keycloak up and ready
+  for manual setup. The handoff — publishing the bundle and applying the two root
+  `Application`s — is a **separate script, `scripts/apply-app-of-apps`**, because
+  it has a prerequisite the floor cannot satisfy on a freshly rebuilt cluster: the
+  publish needs the holos Quay **organization** (the `holos-paas-config`
+  repository and the `holos-paas-config-robot` push credential) configured first.
+  Doing the publish from `scripts/apply` raced that manual Quay setup and failed,
+  so the split breaks the race: `scripts/apply` prints the manual-setup guidance,
+  and `scripts/apply-app-of-apps` runs after the operator configures the Quay org.
+  The imperative floor is never removed; the handoff is idempotent. Because the
+  handoff is now its own script (whose whole purpose **is** the handoff), a missing
+  prerequisite — `oras`/Quay/the push credential absent, or the Quay org not yet
+  configured — is a **hard error** with guidance rather than the floor's graceful
+  skip. The per-app Kargo delivery (halves 1–2) is **unchanged and complementary**:
+  it still owns each app's `Application.spec.source.targetRevision`, which the
   project/application roots deliberately do **not** manage (the
   `kargo.akuity.io/authorized-stage` posture).
 

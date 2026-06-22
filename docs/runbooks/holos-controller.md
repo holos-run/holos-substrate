@@ -307,8 +307,10 @@ time, never committed). So the two paths coexist deliberately:
   **not** the mkcert local k3d cluster.
 
 **Ordering guidance.** On the local k3d cluster, run `scripts/apply-projects`
-**after** `scripts/apply` (whose App-of-Apps handoff applies `projects-bootstrap`)
-so the injected `caBundle` is the last writer on the Organization/Repository CRs —
+**after** the App-of-Apps handoff (`scripts/apply-app-of-apps`, the separate
+handoff that applies `projects-bootstrap` — split out of `scripts/apply` in
+HOL-1379) so the injected `caBundle` is the last writer on the
+Organization/Repository CRs —
 `scripts/apply-projects` uses a distinct field manager and re-asserts `caBundle`,
 and ArgoCD's `selfHeal` does not strip a field the committed source never sets
 (server-side apply field ownership). Where the system trust store already covers
