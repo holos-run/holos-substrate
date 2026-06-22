@@ -1,0 +1,52 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  labels:
+    app.kubernetes.io/name: projects
+  name: projects
+  namespace: argocd
+spec:
+  destinations:
+  - namespace: '*'
+    server: https://kubernetes.default.svc
+  - namespace: '!argocd'
+    server: https://kubernetes.default.svc
+  - namespace: '!cert-manager'
+    server: https://kubernetes.default.svc
+  - namespace: '!cnpg-system'
+    server: https://kubernetes.default.svc
+  - namespace: '!echo'
+    server: https://kubernetes.default.svc
+  - namespace: '!holos-controller'
+    server: https://kubernetes.default.svc
+  - namespace: '!istio-gateways'
+    server: https://kubernetes.default.svc
+  - namespace: '!istio-system'
+    server: https://kubernetes.default.svc
+  - namespace: '!kargo'
+    server: https://kubernetes.default.svc
+  - namespace: '!kargo-cluster-secrets'
+    server: https://kubernetes.default.svc
+  - namespace: '!kargo-echo'
+    server: https://kubernetes.default.svc
+  - namespace: '!kargo-shared-resources'
+    server: https://kubernetes.default.svc
+  - namespace: '!kargo-system-resources'
+    server: https://kubernetes.default.svc
+  - namespace: '!keycloak'
+    server: https://kubernetes.default.svc
+  - namespace: '!quay'
+    server: https://kubernetes.default.svc
+  - namespace: '!kube-system'
+    server: https://kubernetes.default.svc
+  - namespace: '!kube-public'
+    server: https://kubernetes.default.svc
+  - namespace: '!kube-node-lease'
+    server: https://kubernetes.default.svc
+  - namespace: '!default'
+    server: https://kubernetes.default.svc
+  namespaceResourceWhitelist:
+  - group: '*'
+    kind: '*'
+  sourceRepos:
+  - oci://quay.holos.internal/*/*

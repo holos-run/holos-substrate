@@ -377,6 +377,26 @@ platform: {
 				labels: app: "argocd"
 			}}).output
 
+			// argocd-projects establishes the Argo CD project separation
+			// between the platform "system" and the tenant "projects" and
+			// registers the holos-paas-config OCI repository with Argo CD
+			// (HOL-1375, the App-of-Apps bootstrap parent HOL-1373).  It emits
+			// two AppProjects — platform (owns all system components, may
+			// create cluster-scoped resources) and projects (owns the
+			// top-level tenant App-of-Apps, namespaced-only) — plus the
+			// create-if-absent bootstrap Job that assembles the repository
+			// credential Secret at runtime.  Registered after the argocd
+			// controller and before kargo: the AppProject kind is an
+			// argoproj.io custom resource, so the Argo CD CRDs (argocd-crds)
+			// and controller (argocd) must be established first.  It introduces
+			// NO Applications, so it is a safe, additive change consumed by
+			// later phases (HOL-1376/HOL-1377).
+			(#ComponentTemplate & {inputs: {
+				component: "argocd-projects"
+				cluster:   CLUSTER.name
+				labels: app: "argocd"
+			}}).output
+
 			// The NATS event-driven deployment pipeline (the nats backbone,
 			// webhook-receiver, and webhook-subscriber components) was retired
 			// in HOL-1241: Kargo plus the client-side ORAS publish workflow

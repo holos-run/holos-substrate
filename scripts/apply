@@ -155,7 +155,12 @@ ROLLOUT_TIMEOUT_SECONDS="$(duration_seconds "${ROLLOUT_TIMEOUT}")" || exit 1
 # Keycloak issuer through a ServiceEntry it ships itself (resolved by the
 # mesh, applied with the component) — nothing downstream depends on it
 # during bootstrap — so appending the pair keeps the established order
-# stable.  kargo-crds and kargo close the sequence: CRDs before the controllers
+# stable.  argocd-projects trails argocd: it ships the platform/projects
+# AppProjects (argoproj.io custom resources, so the Argo CD CRDs and controller
+# must be established first) plus the create-if-absent repository-credential
+# bootstrap Job, whose prior Complete/Failed instance pre_argocd_projects
+# deletes so every apply re-runs it (a completed Job is otherwise never
+# re-run).  kargo-crds and kargo close the sequence: CRDs before the controllers
 # that need the kargo.akuity.io types (the same guardrail as the other *-crds
 # pairs), and Kargo depends only on its own CRDs, the Gateway its HTTPRoutes
 # attach to, and cert-manager (the chart's internal webhooks server uses
@@ -223,6 +228,7 @@ COMPONENTS=(
   quay
   argocd-crds
   argocd
+  argocd-projects
   kargo-crds
   kargo
   kargo-project-echo
@@ -992,6 +998,77 @@ wait_argocd() {
     rollout status deployment/argocd-server --timeout="${ROLLOUT_TIMEOUT}"
   kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
     rollout status statefulset/argocd-application-controller --timeout="${ROLLOUT_TIMEOUT}"
+}
+
+# argocd-projects: gate the repository-credential bootstrap Job's OUTCOME so
+# scripts/apply fails early on a genuine bootstrap error (e.g. the source Secret
+# exists but is malformed, or the Secret creation fails) instead of exiting
+# successfully while the Job later fails.  The Job is polled (not `kubectl wait
+# --for=condition=Complete`) so a Failed Job fails the gate on the next poll
+# rather than blocking the full ROLLOUT_TIMEOUT.  Crucially the gate TOLERATES
+# the intentionally-absent source-Secret case: the bootstrap Job exits 0 (→
+# Complete=True) both when it creates the repository Secret AND when the source
+# Secret (holos-paas-config-robot) is not yet provisioned — it only exits 1 (→
+# Failed=True) on a real error — so Complete=True passes the gate without
+# asserting the repository Secret exists.  An absent Job (GC'd after its TTL, or
+# mid-poll) yields empty output with exit 0 and is tolerated; a persistent lookup
+# failure (RBAC/API error) fails the gate rather than silently skipping it.
+wait_argocd_projects() {
+  local job=job/holos-paas-config-repo-bootstrap job_state lookup_failures=0
+  local deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+  while true; do
+    if job_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
+      get "${job}" --ignore-not-found --request-timeout=10s \
+      -o jsonpath='{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'); then
+      lookup_failures=0
+      if [[ -z "${job_state}" ]] || grep -q '^Complete=True$' <<<"${job_state}"; then
+        break
+      fi
+      if grep -q '^Failed=True$' <<<"${job_state}"; then
+        echo "ERROR: ${job} failed (e.g. the holos-paas-config-robot source Secret is malformed); inspect it with:" >&2
+        echo "       kubectl --context ${KUBE_CONTEXT} --namespace argocd describe ${job}" >&2
+        return 1
+      fi
+    else
+      lookup_failures=$((lookup_failures + 1))
+      if ((lookup_failures >= 3)); then
+        echo "ERROR: cannot query ${job}: ${lookup_failures} consecutive lookup failures." >&2
+        return 1
+      fi
+    fi
+    if ((SECONDS >= deadline)); then
+      echo "ERROR: timed out after ${ROLLOUT_TIMEOUT} waiting for ${job} to complete." >&2
+      return 1
+    fi
+    sleep 5
+  done
+}
+
+# argocd-projects: the platform/projects AppProjects plus the create-if-absent
+# repository-credential bootstrap Job (job-holos-paas-config-repo-bootstrap).
+# The Job's name is constant (no config hash), so a prior Complete OR Failed Job
+# is never re-run by apply — and the Job intentionally exits 0 when its source
+# Secret (holos-paas-config-robot, the manually-provisioned holos+robot pull
+# credential) is still absent, so the repository credential would otherwise never
+# be created on a later apply once the operator provisions that source.  Delete
+# any prior Job so every apply re-runs it (mirroring the pre_keycloak_config
+# Job-cleanup pattern); the Job is idempotent (it leaves an existing repository
+# Secret untouched and the Secret survives the Job deletion), so the
+# generate-once guarantee holds.  Pre-apply the bootstrap ServiceAccount + RBAC
+# first: `kubectl apply -f <dir>` applies a component's files alphabetically, so
+# job-*.yaml is created before serviceaccount-*.yaml — on a fresh cluster the
+# Job's pod would fail admission ("error looking up service account") until the
+# SA lands; pre-applying the identity closes that race (the main apply re-applies
+# it idempotently).
+pre_argocd_projects() {
+  local dir="${COMPONENTS_DIR}/argocd-projects"
+  kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
+    -f "${dir}/serviceaccount-holos-paas-config-repo-bootstrap.yaml" \
+    -f "${dir}/role-holos-paas-config-repo-bootstrap.yaml" \
+    -f "${dir}/rolebinding-holos-paas-config-repo-bootstrap.yaml"
+  kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
+    delete job -l app.kubernetes.io/name=holos-paas-config-repo-bootstrap \
+    --ignore-not-found --cascade=foreground --wait --request-timeout=60s
 }
 
 # kargo-crds: the Kargo controller and webhooks servers require the
