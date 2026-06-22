@@ -1246,3 +1246,97 @@ for component in "${COMPONENTS[@]}"; do
 done
 
 echo "All platform components applied."
+
+# ---------------------------------------------------------------------------
+# App-of-Apps bootstrap handoff (HOL-1373/HOL-1378)
+# ---------------------------------------------------------------------------
+# The imperative COMPONENTS loop above is the bootstrap FLOOR: it brings the
+# Layer 0 foundation, Argo CD, and Kargo up with `kubectl apply --server-side`,
+# in dependency order, with no dependency on Argo CD reconciling anything.  That
+# floor is never removed — Argo CD cannot reconcile the platform from the OCI
+# config bundle until Argo CD itself is running, the chicken-and-egg the
+# App-of-Apps bootstrap resolves by running AFTER the floor.
+#
+# This final step hands ongoing reconciliation off to Argo CD:
+#
+#   1. Publish the holos-paas-config:dev bundle — a straight tar of the
+#      committed holos/deploy/ tree (scripts/publish-config), pushed under the
+#      mutable :dev tag the App-of-Apps Applications track.
+#   2. Apply the two ROOT App-of-Apps Applications (the app-of-apps and projects
+#      component dirs, DELIBERATELY excluded from COMPONENTS above so they are
+#      applied here, once, as the handoff — not as part of the imperative floor).
+#      The platform root (Application platform-bootstrap, spec.project: platform)
+#      fans out one child Application per system component under the platform
+#      AppProject; the projects root (Application projects-bootstrap,
+#      spec.project: projects) fans out the project/application collection
+#      resources under the projects AppProject.  Argo CD then tracks :dev and
+#      reconciles the platform on every re-push (the "Always" repo-cache TTL, see
+#      holos/docs/oci-publish-workflow.md).
+#
+# Idempotent and gated: re-running publishes the current committed render and
+# re-applies the two roots (server-side apply converges).  The publish needs
+# `oras`, a reachable Quay, and the holos-paas-config-robot push credential —
+# none of which the imperative floor requires — so a missing prerequisite is a
+# SKIP (with guidance) rather than a hard failure, keeping `scripts/apply` usable
+# as the bootstrap floor on its own.  Set BOOTSTRAP_APP_OF_APPS=0 to skip the
+# handoff entirely (apply only the imperative floor); set it to 1 (the default)
+# to perform it when oras is available.  CONFIG_REPO / CONFIG_TAG override the
+# bundle target (defaults mirror scripts/publish-config: the in-cluster Quay
+# config repo at :dev).
+BOOTSTRAP_APP_OF_APPS="${BOOTSTRAP_APP_OF_APPS:-1}"
+
+bootstrap_app_of_apps() {
+  if [[ "${BOOTSTRAP_APP_OF_APPS}" != "1" ]]; then
+    echo "==> App-of-Apps handoff: SKIPPED (BOOTSTRAP_APP_OF_APPS=${BOOTSTRAP_APP_OF_APPS})."
+    echo "    The imperative apply above is the complete bootstrap floor; Argo CD"
+    echo "    is not handed ongoing reconciliation.  Set BOOTSTRAP_APP_OF_APPS=1 to"
+    echo "    publish holos-paas-config:dev and apply the root Applications."
+    return 0
+  fi
+
+  echo "==> App-of-Apps handoff: publish holos-paas-config bundle + apply the root Applications"
+
+  # 1. Publish the holos-paas-config:dev bundle.  oras (and a reachable Quay with
+  #    the push credential) are NOT prerequisites of the imperative floor, so a
+  #    missing oras is a graceful skip — the operator can publish later with
+  #    `make config-push` and re-run.  scripts/publish-config --build is
+  #    network-free; --push is the credentialed network step.
+  if ! command -v oras >/dev/null 2>&1; then
+    echo "    SKIP publish: 'oras' not found on PATH (https://oras.land/docs/installation)."
+    echo "    Publish the bundle later with 'make config-push' and re-run to hand off"
+    echo "    to Argo CD; the root Applications below still apply (they sync once the"
+    echo "    bundle exists)."
+  elif "${REPO_ROOT}/scripts/publish-config" --build >&2 \
+    && "${REPO_ROOT}/scripts/publish-config" --push >/dev/null; then
+    echo "    Published holos-paas-config:${CONFIG_TAG:-dev} (the App-of-Apps :dev tag)."
+  else
+    echo "    WARNING: publishing holos-paas-config failed (e.g. Quay unreachable or the" >&2
+    echo "             holos-paas-config-robot push credential is not provisioned)." >&2
+    echo "             The root Applications below still apply; they stay OutOfSync/" >&2
+    echo "             Unknown until the bundle is published.  Publish with 'make" >&2
+    echo "             config-push' once Quay + the credential are ready, then re-run." >&2
+  fi
+
+  # 2. Apply the two root App-of-Apps Applications.  These component dirs are
+  #    NOT in COMPONENTS (the imperative floor) precisely so they are applied
+  #    here, once, as the Argo CD handoff.  The repository-credential Secret
+  #    (holos-paas-config, created create-if-absent by the argocd-projects
+  #    bootstrap Job from the manually-provisioned holos-paas-config-robot source
+  #    Secret) and the platform/projects AppProjects already exist (applied by
+  #    the argocd-projects component in the loop above).  server-side apply
+  #    converges, so re-running is safe.
+  local root
+  for root in app-of-apps projects; do
+    echo "    apply root: ${root}"
+    kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
+      -f "${COMPONENTS_DIR}/${root}/"
+  done
+
+  echo "    Argo CD now reconciles the platform (platform-bootstrap) and the"
+  echo "    project/application resources (projects-bootstrap) from"
+  echo "    holos-paas-config:${CONFIG_TAG:-dev}."
+}
+
+bootstrap_app_of_apps
+
+echo "All platform components applied."
