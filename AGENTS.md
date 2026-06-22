@@ -47,7 +47,7 @@ and `scripts/apply-app-of-apps` explicitly depends on that Quay org being
 configured. The per-app Kargo delivery is unchanged and
 complementary (it still owns each app's `Application.spec.source.targetRevision`).
 This supersedes the deferred per-component `argoAppDisabled` git-source projection
-**for the platform** (which stays dormant). See ADR-16 Rev 3
+**for the platform** (which stays dormant). See ADR-16 Rev 3–4
 (*Bootstrap delivery — the App-of-Apps OCI config bundle*),
 [holos/docs/oci-publish-workflow.md](holos/docs/oci-publish-workflow.md)
 (*Platform config bundle*), and
@@ -322,7 +322,7 @@ components have been removed. Git history preserves them.
   mechanism), and how the separate `scripts/apply-app-of-apps` wires the publish +
   root-Application apply as the post-Argo-CD bootstrap handoff — run after
   `scripts/apply` stops at the floor and the holos Quay org is configured
-  (HOL-1373/HOL-1378/HOL-1379, [ADR-16](docs/adr/ADR-16.md) Rev 3).
+  (HOL-1373/HOL-1378/HOL-1379, [ADR-16](docs/adr/ADR-16.md) Rev 4).
 - [holos/docs/placeholders.md](holos/docs/placeholders.md) — stubs for
   out-of-MVP-scope concerns: ArgoCD gitops delivery (the `argoAppDisabled`
   flip), observability dashboards, the Gateway route-attachment policy,

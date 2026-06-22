@@ -64,10 +64,11 @@
 #                                        mirror scripts/publish-config: the
 #                                        in-cluster Quay config repo at :dev)
 #   BOOTSTRAP_APP_OF_APPS_FORCE_ROOTS — set to 1 to apply the root Applications
-#                                        even if the publish was skipped/failed,
-#                                        holos/deploy/ is dirty relative to HEAD,
-#                                        or the holos-paas-config repo credential
-#                                        is not yet present (skips that check too)
+#                                        even if the publish was skipped/failed or
+#                                        holos/deploy/ is dirty relative to HEAD.
+#                                        Does NOT skip the holos-paas-config repo
+#                                        credential check — Argo CD still needs it
+#                                        to pull the bundle.
 #   REPO_BOOTSTRAP_TIMEOUT_SECONDS    — seconds to wait for the holos-paas-config
 #                                        repo credential Secret to appear (default
 #                                        300)
@@ -263,11 +264,14 @@ ensure_repo_credential() {
     sleep 5
   done
 }
-if [[ "${FORCE_ROOTS}" != "1" ]]; then
-  ensure_repo_credential || exit 1
-else
-  echo "    BOOTSTRAP_APP_OF_APPS_FORCE_ROOTS=1: skipping the repo-credential check."
-fi
+# Always ensure the repo credential — even on the forced path.  FORCE_ROOTS
+# bypasses the PUBLISH and source-consistency gates (a known-current :dev, an
+# intentionally-dirty tree), but Argo CD still cannot pull the bundle without the
+# holos-paas-config repo Secret, so skipping this here would reintroduce the
+# round-1 failure mode (roots applied, bundle unpullable) under a documented flag.
+# It is fast and idempotent on the happy path: the Secret is checked first, so an
+# already-present credential returns immediately.
+ensure_repo_credential || exit 1
 
 # 3. Apply the two root App-of-Apps Applications.  These component dirs are NOT in
 #    scripts/apply's COMPONENTS (the imperative floor) precisely so they are
