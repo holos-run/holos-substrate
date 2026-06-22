@@ -144,11 +144,41 @@ curl https://echo.holos.internal/
 
 ### App-of-Apps handoff (ArgoCD self-management)
 
-After the imperative bring-up, `scripts/apply` performs a final **App-of-Apps
-handoff** so ArgoCD takes over ongoing reconciliation of the platform
-([ADR-16 Rev 3](adr/ADR-16.md)). This resolves the chicken-and-egg — ArgoCD
-cannot reconcile the platform from the OCI config bundle until ArgoCD itself is
-running — by running **after** the imperative floor brings ArgoCD up:
+`scripts/apply` **stops at the bootstrap floor** — with Quay and Keycloak up and
+ready for manual setup — and does **not** itself perform the App-of-Apps handoff.
+Handing reconciliation to ArgoCD requires publishing the `holos-paas-config:dev`
+bundle to the in-cluster Quay, which needs the holos Quay **organization** (the
+`holos-paas-config` repository and the `holos-paas-config-robot` push credential)
+configured first. On a freshly rebuilt cluster that organization does not exist
+yet, so doing the publish from `scripts/apply` would race the manual Quay setup
+and fail (HOL-1379). The handoff is therefore a **separate script**,
+`scripts/apply-app-of-apps`, run after the manual Quay setup ([ADR-16
+Rev 4](adr/ADR-16.md)).
+
+When `scripts/apply` finishes it prints the manual-setup guidance. Configure the
+holos Quay organization:
+
+1. Create the holos organization and the `holos-paas-config` repository in the
+   in-cluster Quay (`https://quay.holos.internal`) — see the
+   [Quay resource-controller credentials runbook](runbooks/quay-resource-controller-credentials.md).
+2. Set up **host-side push auth** for the bundle push — a push-capable Quay robot
+   credential via `ORAS_USERNAME` / `ORAS_PASSWORD` or a prior
+   `oras login quay.holos.internal` (`scripts/publish-config` reads those, **not**
+   any in-cluster Secret).
+3. Provision the `holos-paas-config-robot` **source** Secret (the `holos+robot`
+   **pull** credential, keys `username`/`password`, in the `argocd` namespace) —
+   Argo CD's repository credential (`holos-paas-config`) is assembled from it by
+   the `argocd-projects` bootstrap Job, which `scripts/apply-app-of-apps` re-runs.
+
+Then run the handoff:
+
+```bash
+scripts/apply-app-of-apps
+```
+
+`scripts/apply-app-of-apps` resolves the chicken-and-egg — ArgoCD cannot
+reconcile the platform from the OCI config bundle until ArgoCD itself is running —
+by running **after** the floor brings ArgoCD up:
 
 1. It publishes the **`holos-paas-config:dev`** bundle (a tar of the committed
    `holos/deploy/` tree, `scripts/publish-config`).
@@ -157,19 +187,18 @@ running — by running **after** the imperative floor brings ArgoCD up:
    (the project/application resources, ArgoCD project `projects`) — which then
    track `:dev` and reconcile the platform from the bundle.
 
-The handoff is idempotent and **gated**: it needs `oras`, a reachable Quay, and
-the `holos-paas-config-robot` push credential (none required by the imperative
-floor), so a missing prerequisite is a **graceful skip** with guidance, leaving
-`scripts/apply` fully usable as the bootstrap floor on its own. Applying the two
-root Applications is **gated on a successful publish** this run: the roots
-reconcile with `prune`+`selfHeal`, so applying them against a stale or absent
-`:dev` would drag the cluster back off the manifests the imperative floor just
-applied — so a skipped/failed publish returns **without** applying the roots
-(the imperative floor stays authoritative). Publish the bundle later with
-`make config-push` and re-run to perform the handoff; skip the handoff entirely
-with `BOOTSTRAP_APP_OF_APPS=0`, or force the roots against a known-current `:dev`
-already in the registry with `BOOTSTRAP_APP_OF_APPS_FORCE_ROOTS=1`. The full
-mechanism (the "Always" `:dev` re-pull, the sync-wave ordering) is in
+The handoff is idempotent. Because its whole purpose **is** the handoff (unlike
+`scripts/apply`, which must succeed on its own as the floor), a missing
+prerequisite — `oras` not installed, Quay unreachable, or the holos Quay
+organization not yet configured — is a **hard error** with guidance, not a silent
+skip. Applying the two root Applications is **gated on a successful publish** this
+run: the roots reconcile with `prune`+`selfHeal`, so applying them against a stale
+or absent `:dev` would drag the cluster back off the manifests the floor just
+applied — so a failed publish aborts **without** applying the roots. Force the
+roots against a known-current `:dev` already in the registry (or when
+`holos/deploy/` is intentionally dirty) with
+`BOOTSTRAP_APP_OF_APPS_FORCE_ROOTS=1`. The full mechanism (the "Always" `:dev`
+re-pull, the sync-wave ordering) is in
 [oci-publish-workflow.md](../holos/docs/oci-publish-workflow.md) and
 [argocd-application-source.md](../holos/docs/argocd-application-source.md).
 

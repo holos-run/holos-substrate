@@ -253,6 +253,26 @@ the argocd controller proves unstable on a given cluster, drop its child from th
 `SYSTEM_COMPONENTS` list and apply it only via `scripts/apply` (record the
 exclusion here and in the component comments).
 
+### How the bootstrap runs the handoff (`scripts/apply-app-of-apps`)
+
+`scripts/apply` brings the foundation + Argo CD + Kargo up imperatively (the
+bootstrap floor) and **stops there**, with Quay and Keycloak ready for manual
+setup. The handoff — publishing `holos-paas-config:dev` and applying the two root
+`Application`s above — is a **separate script, `scripts/apply-app-of-apps`**,
+because the publish needs the holos Quay **organization** (the
+`holos-paas-config` repository and the `holos-paas-config-robot` push credential)
+configured first; on a freshly rebuilt cluster that organization does not exist
+yet, so publishing from `scripts/apply` raced the manual Quay setup and failed
+(HOL-1379, [ADR-16 Rev 4](../../docs/adr/ADR-16.md)). After the operator
+configures the Quay org, `scripts/apply-app-of-apps` runs `scripts/publish-config
+--build`/`--push` then `kubectl apply --server-side` of the `app-of-apps` and
+`projects` root component dirs (idempotent; server-side apply converges). Because
+its whole purpose **is** the handoff, a missing prerequisite — `oras`/Quay/the
+push credential absent, or the Quay org not yet configured — is a **hard error**
+with guidance, not a graceful skip; applying the roots is gated on a successful
+publish (`BOOTSTRAP_APP_OF_APPS_FORCE_ROOTS=1` forces the roots against a
+known-current `:dev`).
+
 ### Registry transport and credentials
 
 `scripts/publish-config` reuses `scripts/publish`'s `run_oras_dest` /

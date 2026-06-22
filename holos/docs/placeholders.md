@@ -22,10 +22,12 @@ manifests are now reconciled by ArgoCD from an **OCI App-of-Apps over the
   (`projects-bootstrap`, the project/application collection resources). Each
   tracks `targetRevision: dev` with an "Always" re-pull (the `argocd` component
   shortens the repo-cache TTL to `1m`).
-- `scripts/apply` brings ArgoCD up imperatively (the bootstrap floor), then
-  publishes the bundle and applies the two roots so ArgoCD takes over ongoing
-  reconciliation — the chicken-and-egg handoff (ArgoCD must exist before it can
-  self-manage). The detailed mechanism is in
+- `scripts/apply` brings ArgoCD up imperatively (the bootstrap floor) and stops
+  there; the separate `scripts/apply-app-of-apps` then publishes the bundle and
+  applies the two roots so ArgoCD takes over ongoing reconciliation — the
+  chicken-and-egg handoff (ArgoCD must exist before it can self-manage), split out
+  of `scripts/apply` in HOL-1379 because the publish needs the holos Quay
+  organization configured first. The detailed mechanism is in
   [oci-publish-workflow.md](oci-publish-workflow.md) (*Platform config bundle* /
   *The App-of-Apps that consumes the bundle*) and
   [argocd-application-source.md](argocd-application-source.md).
