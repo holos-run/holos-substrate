@@ -1,0 +1,16 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  labels:
+    app.kubernetes.io/name: projects
+  name: projects
+  namespace: argocd
+spec:
+  destinations:
+  - namespace: '*'
+    server: https://kubernetes.default.svc
+  namespaceResourceWhitelist:
+  - group: '*'
+    kind: '*'
+  sourceRepos:
+  - oci://quay.holos.internal/*/*

@@ -1,0 +1,85 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  labels:
+    app.kubernetes.io/name: holos-paas-config-repo-bootstrap
+  name: holos-paas-config-repo-bootstrap
+  namespace: argocd
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: holos-paas-config-repo-bootstrap
+    spec:
+      containers:
+      - command:
+        - /bin/sh
+        - -c
+        - |-
+          set -eu
+          if kubectl -n argocd get secret holos-paas-config >/dev/null 2>&1; then
+            echo "Secret holos-paas-config already exists in argocd; leaving it untouched."
+            exit 0
+          fi
+          if ! kubectl -n argocd get secret holos-paas-config-robot >/dev/null 2>&1; then
+            echo "Source Secret holos-paas-config-robot not found in argocd;" >&2
+            echo "provision the holos+robot pull credential (keys username/password) and re-apply." >&2
+            echo "Skipping holos-paas-config creation for now (the repository is registered once the source exists)." >&2
+            exit 0
+          fi
+          USERNAME="$(kubectl -n argocd get secret holos-paas-config-robot -o jsonpath='{.data.username}' | base64 -d)"
+          PASSWORD="$(kubectl -n argocd get secret holos-paas-config-robot -o jsonpath='{.data.password}' | base64 -d)"
+          if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]; then
+            echo "ERROR: holos-paas-config-robot is missing the username or password key." >&2
+            exit 1
+          fi
+          kubectl -n argocd create -f - <<EOF
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: holos-paas-config
+            namespace: argocd
+            labels:
+              argocd.argoproj.io/secret-type: repository
+          stringData:
+            name: holos-paas-config
+            url: oci://quay.holos.internal/holos/holos-paas-config
+            type: oci
+            username: "${USERNAME}"
+            password: "${PASSWORD}"
+            insecure: "true"
+          EOF
+          echo "Secret holos-paas-config created in argocd."
+        env:
+        - name: HOME
+          value: /tmp
+        image: docker.io/alpine/kubectl:1.33.3
+        name: bootstrap
+        resources:
+          limits:
+            memory: 64Mi
+          requests:
+            cpu: 10m
+            memory: 32Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - mountPath: /tmp
+          name: tmp
+      restartPolicy: Never
+      securityContext:
+        runAsGroup: 65534
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: holos-paas-config-repo-bootstrap
+      volumes:
+      - emptyDir: {}
+        name: tmp
+  ttlSecondsAfterFinished: 86400

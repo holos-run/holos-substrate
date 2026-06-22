@@ -1,0 +1,23 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/name: holos-paas-config-repo-bootstrap
+  name: holos-paas-config-repo-bootstrap
+  namespace: argocd
+rules:
+- apiGroups:
+  - ""
+  resourceNames:
+  - holos-paas-config
+  - holos-paas-config-robot
+  resources:
+  - secrets
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
