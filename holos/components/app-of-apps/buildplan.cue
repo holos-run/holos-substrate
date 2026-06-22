@@ -28,6 +28,16 @@ package holos
 // cluster.  The children in turn each pull their own component's manifests from
 // the same bundle at their per-component source.path.
 //
+// SCOPE — this phase (HOL-1376) RENDERS the bootstrap component; WIRING it into
+// scripts/apply's apply sequence (the bring-up step that applies the root +
+// children once so Argo CD takes over) is the explicit deliverable of HOL-1378
+// ("wire the App-of-Apps bootstrap into apply").  scripts/apply is DELIBERATELY
+// not modified here — HOL-1376's testing is manifest inspection + render
+// diff-cleanliness, no live-cluster apply — so until HOL-1378 lands, a fresh
+// scripts/apply does not yet create platform-bootstrap.  The component is correct
+// and complete on its own; only the apply hookup is deferred to that sibling
+// issue to keep the two changes reviewable in isolation.
+//
 // "Always" re-pull of the mutable :dev tag.  Argo CD caches the resolved
 // manifest of an OCI tag in the repo-server's repo cache; a moved :dev tag is
 // not re-pulled until that cache entry expires.  Argo CD 3.4.2 exposes NO
@@ -107,6 +117,23 @@ let COMPONENTS_BASE = "clusters/\(clusterName)/components"
 //     committed; Argo CD reconciling their committed, caBundle-less manifests
 //     would strip that material.  They are out of the master scripts/apply array
 //     for the same reason and so are out of this system App-of-Apps.
+//
+// The echo/kargo-echo overlap is DELIBERATE, not a bug.  scripts/apply applies
+// BOTH echo (the smoke-test Deployment/Service/HTTPRoute) and kargo-echo (the
+// Kargo Warehouse/Stage plus a Kargo-driven echo Argo CD Application), so this
+// App-of-Apps mirrors that — both are in the system set (AC #2/#4 require the set
+// to BE the scripts/apply order; dropping echo would violate them).  The two
+// Applications source from DIFFERENT repos and do not fight over the workload
+// image: platform-echo (here) reconciles the STATIC echo scaffold committed in
+// the holos-paas-config bundle, while the kargo-echo component's own echo
+// Application sources the holos-paas-manifests repo whose targetRevision Kargo
+// owns and re-points on promotion.  The committed echo Deployment pins the
+// default agnhost smoke-test image (holos/tags.cue _AppImage), so a selfHeal
+// from platform-echo only ever re-asserts that same static scaffold — it does
+// not undo a Kargo promotion, which lives on the separate manifests-repo
+// Application.  If a future cluster wants Kargo to be the sole owner of the echo
+// workload, drop "echo" from this list and let only kargo-echo's Application
+// reconcile it (record the exclusion here).
 let SYSTEM_COMPONENTS = [
 	"namespaces",
 	"coredns",
