@@ -160,10 +160,16 @@ running — by running **after** the imperative floor brings ArgoCD up:
 The handoff is idempotent and **gated**: it needs `oras`, a reachable Quay, and
 the `holos-paas-config-robot` push credential (none required by the imperative
 floor), so a missing prerequisite is a **graceful skip** with guidance, leaving
-`scripts/apply` fully usable as the bootstrap floor on its own. Skip the handoff
-explicitly with `BOOTSTRAP_APP_OF_APPS=0`, and publish the bundle later with
-`make config-push`. The full mechanism (the "Always" `:dev` re-pull, the
-sync-wave ordering) is in
+`scripts/apply` fully usable as the bootstrap floor on its own. Applying the two
+root Applications is **gated on a successful publish** this run: the roots
+reconcile with `prune`+`selfHeal`, so applying them against a stale or absent
+`:dev` would drag the cluster back off the manifests the imperative floor just
+applied — so a skipped/failed publish returns **without** applying the roots
+(the imperative floor stays authoritative). Publish the bundle later with
+`make config-push` and re-run to perform the handoff; skip the handoff entirely
+with `BOOTSTRAP_APP_OF_APPS=0`, or force the roots against a known-current `:dev`
+already in the registry with `BOOTSTRAP_APP_OF_APPS_FORCE_ROOTS=1`. The full
+mechanism (the "Always" `:dev` re-pull, the sync-wave ordering) is in
 [oci-publish-workflow.md](../holos/docs/oci-publish-workflow.md) and
 [argocd-application-source.md](../holos/docs/argocd-application-source.md).
 
