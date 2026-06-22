@@ -144,37 +144,48 @@ curl https://echo.holos.internal/
 
 ### App-of-Apps handoff (ArgoCD self-management)
 
-`scripts/apply` **stops at the bootstrap floor** — with Quay and Keycloak up and
-ready for manual setup — and does **not** itself perform the App-of-Apps handoff.
-Handing reconciliation to ArgoCD requires publishing the `holos-paas-config:dev`
-bundle to the in-cluster Quay, which needs the holos Quay **organization** (the
-`holos-paas-config` repository and the `holos-paas-config-robot` push credential)
-configured first. On a freshly rebuilt cluster that organization does not exist
-yet, so doing the publish from `scripts/apply` would race the manual Quay setup
-and fail (HOL-1379). The handoff is therefore a **separate script**,
-`scripts/apply-app-of-apps`, run after the manual Quay setup ([ADR-16
-Rev 4](adr/ADR-16.md)).
-
-When `scripts/apply` finishes it prints the manual-setup guidance. Configure the
-holos Quay organization:
-
-1. Create the holos organization and the `holos-paas-config` repository in the
-   in-cluster Quay (`https://quay.holos.internal`) — see the
-   [Quay resource-controller credentials runbook](runbooks/quay-resource-controller-credentials.md).
-2. Set up **host-side push auth** for the bundle push — a push-capable Quay robot
-   credential via `ORAS_USERNAME` / `ORAS_PASSWORD` or a prior
-   `oras login quay.holos.internal` (`scripts/publish-config` reads those, **not**
-   any in-cluster Secret).
-3. Provision the `holos-paas-config-robot` **source** Secret (the `holos+robot`
-   **pull** credential, keys `username`/`password`, in the `argocd` namespace) —
-   Argo CD's repository credential (`holos-paas-config`) is assembled from it by
-   the `argocd-projects` bootstrap Job, which `scripts/apply-app-of-apps` re-runs.
-
-Then run the handoff:
+`scripts/apply` **stops at the bootstrap floor** — with Quay and Keycloak up —
+and does **not** itself perform the App-of-Apps handoff. Handing reconciliation to
+ArgoCD requires publishing the `holos-paas-config:dev` bundle to the in-cluster
+Quay, which needs the holos Quay **organization** configured first. On a freshly
+rebuilt cluster that organization does not exist yet, so doing the publish from
+`scripts/apply` would race the Quay setup and fail (HOL-1379). The remaining
+bootstrap is therefore a **fully-scripted sequence** of separate steps (HOL-1380,
+[ADR-16 Rev 4](adr/ADR-16.md)) that `scripts/apply` prints on completion. Run them
+**in order**:
 
 ```bash
+# 1. Mint the Quay superuser OAuth-Application token (one manual web step the
+#    script walks you through) and store it as the holos-controller-quay-creds
+#    Secret the controller reads.
+scripts/apply-svc-quay-resource-controller-creds
+
+# 2. Deploy the Holos Controller from a pinned, publicly-pullable image tag.
+#    (The in-cluster holos registry does not exist yet, so it cannot host the
+#    controller image during bootstrap — that registry is what step 3 creates.)
+scripts/apply-holos-controller
+
+# 3. Apply the `holos` Quay Organization + the public `holos-controller`
+#    repository (reconciled by the controller).  This prints how to obtain the
+#    Quay ROBOT account you need for the pushes in step 4.
+scripts/apply-holos-quay-organization
+
+# 4. Publish holos-paas-config:dev and apply the two root Applications, handing
+#    ongoing reconciliation to ArgoCD.
 scripts/apply-app-of-apps
 ```
+
+Before step 4, set up the credentials `scripts/apply-holos-quay-organization`
+describes — both backed by the Quay **robot** you create in the `holos` org:
+
+1. **Host-side push auth** for the bundle push — `ORAS_USERNAME` / `ORAS_PASSWORD`
+   or a prior `oras login quay.holos.internal` (`scripts/publish-config` reads
+   those, **not** any in-cluster Secret). The `holos-paas-config` repository is
+   created on first push (the robot has org `creator`/`write`).
+2. The `holos-paas-config-robot` **source** Secret (the `holos+robot` **pull**
+   credential, keys `username`/`password`, in the `argocd` namespace) — Argo CD's
+   repository credential (`holos-paas-config`) is assembled from it by the
+   `argocd-projects` bootstrap Job, which `scripts/apply-app-of-apps` re-runs.
 
 `scripts/apply-app-of-apps` resolves the chicken-and-egg — ArgoCD cannot
 reconcile the platform from the OCI config bundle until ArgoCD itself is running —

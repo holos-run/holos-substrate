@@ -535,6 +535,23 @@ platform: {
 				labels: app: "application"
 			}}).output
 
+			// holos-quay-organization emits the platform's OWN Quay org — the
+			// `holos` Organization and the public `holos-controller` Repository the
+			// Holos Controller reconciles (HOL-1380).  It is the bootstrap home of
+			// the controller image and the App-of-Apps config bundle (in the
+			// holos-paas-config repo).  Like project/application/keycloak-instance it
+			// is render-here / apply-separately — its Organization and Repository
+			// carry a per-cluster caBundle injected at apply time
+			// (scripts/apply-holos-quay-organization), so it is EXCLUDED from the
+			// master scripts/apply COMPONENTS.  Not a tenant project (no Kargo/Argo
+			// CD/Keycloak control plane), so it is registered here next to the
+			// collection components rather than in the system App-of-Apps set above.
+			(#ComponentTemplate & {inputs: {
+				component: "holos-quay-organization"
+				cluster:   CLUSTER.name
+				labels: app: "quay"
+			}}).output
+
 			// projects is the TENANT-side App-of-Apps (HOL-1377, parent
 			// HOL-1373): a root Argo CD Application assigned to the projects
 			// AppProject (argocd-projects, HOL-1375) that fans out two child

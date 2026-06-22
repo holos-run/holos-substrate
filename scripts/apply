@@ -1259,37 +1259,40 @@ echo "All platform components applied (imperative bootstrap floor)."
 #
 # Handing ongoing reconciliation off to Argo CD requires publishing the
 # holos-paas-config:dev bundle to the in-cluster Quay registry — which needs the
-# holos Quay ORGANIZATION (the holos-paas-config repository and the
-# holos-paas-config-robot push credential) to be configured first.  On a freshly
-# rebuilt cluster that organization does not exist yet, so attempting the publish
-# from this script would race the manual Quay setup and fail (the rebuild-time
-# race HOL-1379 breaks).  The handoff is therefore a separate script
-# (scripts/apply-app-of-apps) the operator runs AFTER configuring the Quay org.
+# holos Quay ORGANIZATION (the holos-paas-config repository and a push credential)
+# to be configured first.  On a freshly rebuilt cluster that organization does not
+# exist yet, so attempting the publish from this script would race the Quay setup
+# and fail (the rebuild-time race HOL-1379 breaks).  The remaining bootstrap steps
+# are therefore SEPARATE, fully-scripted steps (HOL-1380) the operator runs in
+# order AFTER this floor.
 cat <<EOF
 
 ============================================================================
-Platform bootstrap floor is up.  Quay and Keycloak are running and ready for
-MANUAL SETUP.
+Platform bootstrap floor is up.  Quay and Keycloak are running.
 
-NEXT: before Argo CD can take over reconciliation, manually configure the holos
-Quay organization so the platform-config bundle can be published:
+NEXT: run the remaining bootstrap steps IN ORDER to provision the holos Quay
+organization and hand reconciliation off to Argo CD (HOL-1380):
 
-  1. Create the holos organization and the holos-paas-config repository in the
-     in-cluster Quay (https://quay.holos.internal) — see
-     docs/runbooks/quay-resource-controller-credentials.md.
-  2. Set up HOST-SIDE PUSH auth for the bundle push: a push-capable Quay robot
-     credential via ORAS_USERNAME / ORAS_PASSWORD or a prior
-     'oras login quay.holos.internal' (scripts/publish-config reads these).
-  3. Provision the holos-paas-config-robot SOURCE Secret (the holos+robot PULL
-     credential, keys username/password) in the argocd namespace — Argo CD's
-     repository credential is assembled from it.
+  1. scripts/apply-svc-quay-resource-controller-creds
+     Mint the Quay superuser OAuth-Application token (one manual web step) and
+     store it as the holos-controller-quay-creds Secret the controller reads.
 
-THEN run the App-of-Apps handoff to hand reconciliation to Argo CD:
+  2. scripts/apply-holos-controller
+     Deploy the Holos Controller from a pinned, publicly-pullable image tag (the
+     in-cluster holos registry does not exist yet, so it cannot self-host the
+     controller image during bootstrap).
 
-  scripts/apply-app-of-apps
+  3. scripts/apply-holos-quay-organization
+     Apply the 'holos' Quay Organization + the public 'holos-controller'
+     repository (reconciled by the controller).  It prints how to obtain the
+     Quay ROBOT account you need to push/pull the controller image and the
+     App-of-Apps config bundle.
 
-scripts/apply-app-of-apps publishes holos-paas-config:dev and applies the two
-root Applications; it explicitly depends on the holos Quay organization above
-being configured first.
+  4. scripts/apply-app-of-apps
+     Publish holos-paas-config:dev and apply the two root Applications, handing
+     ongoing reconciliation to Argo CD.  Depends on the holos Quay organization
+     (step 3) and the robot push credential it describes.
+
+See docs/local-cluster.md and docs/runbooks/quay-resource-controller-credentials.md.
 ============================================================================
 EOF
