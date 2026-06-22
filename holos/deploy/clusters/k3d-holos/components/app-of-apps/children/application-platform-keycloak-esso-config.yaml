@@ -1,0 +1,27 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "18"
+  labels:
+    app.kubernetes.io/component: keycloak-esso-config
+    app.kubernetes.io/name: platform-keycloak-esso-config
+    app.kubernetes.io/part-of: platform
+  name: platform-keycloak-esso-config
+  namespace: argocd
+spec:
+  destination:
+    namespace: argocd
+    server: https://kubernetes.default.svc
+  project: platform
+  source:
+    path: clusters/k3d-holos/components/keycloak-esso-config
+    repoURL: oci://quay.holos.internal/holos/holos-paas-config
+    targetRevision: dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - ServerSideApply=true
+    - CreateNamespace=false

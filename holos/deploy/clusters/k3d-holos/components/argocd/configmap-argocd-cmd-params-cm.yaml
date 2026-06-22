@@ -15,6 +15,7 @@ data:
   repo.server: argocd-repo-server:8081
   reposerver.log.format: text
   reposerver.log.level: info
+  reposerver.repo.cache.expiration: 1m0s
   server.insecure: "true"
   server.log.format: text
   server.log.level: info

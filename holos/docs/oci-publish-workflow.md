@@ -161,6 +161,98 @@ timestamp. Identical committed config therefore always produces an identical
 tarball. `config-build` fails loudly if `holos/deploy/` is absent from `HEAD`
 rather than pushing an empty bundle.
 
+### The App-of-Apps that consumes the bundle (Phase 3, HOL-1376)
+
+The `app-of-apps` component (`holos/components/app-of-apps/buildplan.cue`) is the
+consumer that makes Argo CD reconcile the platform from this `:dev` bundle. It
+renders into `clusters/k3d-holos/components/app-of-apps/`:
+
+- **A root `Application` `platform-bootstrap`** (`application-bootstrap.yaml`) —
+  `spec.project: platform` (the AppProject `argocd-projects` stood up in
+  HOL-1375), source `oci://quay.holos.internal/holos/holos-paas-config` at
+  `targetRevision: dev`, and `source.path:
+  clusters/k3d-holos/components/app-of-apps/children` with
+  `directory.recurse: true`. It reconciles **only** the `children/` subdirectory,
+  so it never manages itself (it lives one level up, outside that path).
+- **One child `Application` per system component** under `children/` —
+  `platform-<component>`, each `spec.project: platform`, source the same bundle
+  at `:dev`, `source.path: clusters/k3d-holos/components/<component>`, destination
+  the in-cluster API server. The **system set** is exactly the components
+  registered in `holos/platform/platform.cue` **before** the `project`/`application`
+  collection components, which is the ordered `COMPONENTS=(…)` array in
+  `scripts/apply` (`keycloak-instance`/`project`/`application` are excluded — they
+  carry an apply-time-injected `caBundle` and are applied by
+  `scripts/apply-projects`, not the master apply). The component **enumerates**
+  that list (each component renders in isolation, so the `platform.components`
+  registry is not reachable from inside the buildplan); keep the list in lock-step
+  with `scripts/apply` when adding/removing/renaming a system component.
+
+**Apply ordering** is preserved via `argocd.argoproj.io/sync-wave` annotations:
+each child's wave is its index in the system list (ascending `0…N`), mirroring
+`scripts/apply` (CRDs/namespaces before controllers, Istio base before
+istiod/cni/ztunnel, cert-manager before local-ca, operators before instances).
+The root carries wave `-1` so it settles before the children fan out.
+
+Sync waves only gate ordering if Argo CD waits for an earlier wave to become
+**Healthy** before applying the next. Argo CD removed built-in health assessment
+of the `Application` kind in 1.8, so the `argocd` controller component restores it
+with a `resource.customizations.health.argoproj.io_Application` Lua check in
+`argocd-cm` (`APP_HEALTH_LUA` in
+`holos/components/argocd/controller/buildplan.cue`): a child Application reports
+Healthy only once its own `status.health.status` is Healthy. Without that
+customization the root App-of-Apps would treat every child as Healthy on creation
+and apply all waves at once, making the annotations cosmetic and racing
+crds-before-controllers ordering. The Lua is mandatory for the wave ordering to
+hold.
+
+**Scope of the ordering guarantee.** The sync waves serialize the **bootstrap**
+rollout — the order in which the root first *creates* the child Applications and
+their resources (CRDs/operators before the controllers/CRs that need them), which
+is what this phase requires. They do **not** serialize steady-state `:dev`
+*updates*: each child independently tracks `targetRevision: dev` with its own
+`automated` sync (the "Always" policy), so when the tag moves the children
+re-resolve and sync in parallel, not in wave order. That is the intrinsic
+tradeoff of the per-child `:dev`-tracking design — a wave-serialized *update*
+rollout would require the root to be the only object that changes per release
+(digest-pinned children), contradicting the committed `targetRevision: dev` on
+the children. Each child's `selfHeal` converges regardless of arrival order; a
+serialized cross-component *update* rollout, if ever needed, is a separate design
+(staged promotion or digest-pinned children) outside this bootstrap.
+
+**Server-side apply parity:** every Application sets `syncOptions:
+[ServerSideApply=true, CreateNamespace=false]` so Argo CD's reconciliation
+matches how `scripts/apply` applies the same manifests
+(`kubectl apply --server-side --force-conflicts`) and namespaces stay owned by the
+`namespaces` child (wave 0), never created ad hoc.
+
+**"Always" re-pull of the mutable `:dev` tag — the exact mechanism.** Argo CD
+caches an OCI tag's *resolved manifest* in the repo-server's repo cache, so a
+re-pushed `:dev` is not re-pulled until that entry expires. Argo CD 3.4.2 (chart
+`9.5.15`) exposes **no** OCI-tag-specific expiration knob — the only OCI
+`argocd-cmd-params-cm` keys the vendored chart wires are
+`reposerver.oci.manifest.max.extracted.size` and
+`reposerver.oci.layer.media.types` (size/format limits, **not** a TTL). The
+applicable mechanism is therefore the repo-cache TTL
+**`reposerver.repo.cache.expiration`** (`ARGOCD_REPO_CACHE_EXPIRATION`, default
+`24h`), which the `argocd` controller component
+(`holos/components/argocd/controller/buildplan.cue`) shortens to **`1m0s`**.
+Within that minute the moved `:dev` is re-resolved; each child's
+`syncPolicy.automated` (`prune` + `selfHeal`) then reconciles the new manifests
+to the cluster — the "Always" image-tag update policy. **Tradeoff:** a shorter
+TTL means more frequent re-resolution work on the repo-server; `1m` is
+comfortable for this single-instance laptop cluster. A digest-pinned
+`targetRevision` would make the cache moot, but the bootstrap deliberately tracks
+the mutable `:dev` tag.
+
+**Self-management note.** The `namespaces` and `argocd-*` children reconcile the
+very Namespaces and Argo CD install Argo CD runs from. The server-side-apply
+posture and `CreateNamespace=false` above are what keep this stable — the children
+adopt the objects `scripts/apply` already applied rather than fighting them. No
+system component is excluded from Argo CD management today; if self-management of
+the argocd controller proves unstable on a given cluster, drop its child from the
+`SYSTEM_COMPONENTS` list and apply it only via `scripts/apply` (record the
+exclusion here and in the component comments).
+
 ### Registry transport and credentials
 
 `scripts/publish-config` reuses `scripts/publish`'s `run_oras_dest` /

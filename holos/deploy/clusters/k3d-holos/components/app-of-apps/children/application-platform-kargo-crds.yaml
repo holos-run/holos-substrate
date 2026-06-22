@@ -1,0 +1,27 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "24"
+  labels:
+    app.kubernetes.io/component: kargo-crds
+    app.kubernetes.io/name: platform-kargo-crds
+    app.kubernetes.io/part-of: platform
+  name: platform-kargo-crds
+  namespace: argocd
+spec:
+  destination:
+    namespace: argocd
+    server: https://kubernetes.default.svc
+  project: platform
+  source:
+    path: clusters/k3d-holos/components/kargo-crds
+    repoURL: oci://quay.holos.internal/holos/holos-paas-config
+    targetRevision: dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - ServerSideApply=true
+    - CreateNamespace=false

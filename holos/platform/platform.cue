@@ -469,6 +469,29 @@ platform: {
 				labels: app: "kargo"
 			}}).output
 
+			// app-of-apps bootstraps the whole platform through Argo CD
+			// (HOL-1376, parent HOL-1373): a root Argo CD Application (the
+			// App-of-Apps) assigned to the platform AppProject (argocd-projects,
+			// HOL-1375) that fans out one child Application per SYSTEM component,
+			// every child pulling the holos-paas-config OCI bundle at the mutable
+			// :dev tag (HOL-1374) and carrying an ascending
+			// argocd.argoproj.io/sync-wave mirroring the scripts/apply dependency
+			// order.  It is the LAST system component and caps the "system" set —
+			// every component registered ABOVE it (down to namespaces) is a child
+			// of this App-of-Apps; the project/application collection components
+			// BELOW it are tenant scaffolding applied separately
+			// (scripts/apply-projects), not by this bootstrap.  Registered after
+			// argocd-projects (which it depends on for the platform AppProject and
+			// the repo credential) and after kargo-echo so it trails the full
+			// system set it enumerates; the root Application is itself applied last
+			// by scripts/apply during bring-up, once Argo CD and the AppProjects
+			// exist, then it owns continuous reconciliation of the children.
+			(#ComponentTemplate & {inputs: {
+				component: "app-of-apps"
+				cluster:   CLUSTER.name
+				labels: app: "argocd"
+			}}).output
+
 			// project is the collection-driven generalization of the (now-deleted)
 			// bespoke my-project scaffold (HOL-1355): it iterates the projects
 			// collection (holos/collections.cue) and emits the full per-project
