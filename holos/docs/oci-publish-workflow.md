@@ -193,6 +193,18 @@ each child's wave is its index in the system list (ascending `0…N`), mirroring
 istiod/cni/ztunnel, cert-manager before local-ca, operators before instances).
 The root carries wave `-1` so it settles before the children fan out.
 
+Sync waves only gate ordering if Argo CD waits for an earlier wave to become
+**Healthy** before applying the next. Argo CD removed built-in health assessment
+of the `Application` kind in 1.8, so the `argocd` controller component restores it
+with a `resource.customizations.health.argoproj.io_Application` Lua check in
+`argocd-cm` (`APP_HEALTH_LUA` in
+`holos/components/argocd/controller/buildplan.cue`): a child Application reports
+Healthy only once its own `status.health.status` is Healthy. Without that
+customization the root App-of-Apps would treat every child as Healthy on creation
+and apply all waves at once, making the annotations cosmetic and racing
+crds-before-controllers ordering. The Lua is mandatory for the wave ordering to
+hold.
+
 **Server-side apply parity:** every Application sets `syncOptions:
 [ServerSideApply=true, CreateNamespace=false]` so Argo CD's reconciliation
 matches how `scripts/apply` applies the same manifests
