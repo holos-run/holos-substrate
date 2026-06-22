@@ -179,8 +179,11 @@ echo "Deploying the Holos Controller image ${DEPLOY_IMAGE} to context ${KUBE_CON
 # we have already pinned/validated it above.
 make -C "${REPO_ROOT}" controller-deploy CONTROLLER_IMAGE="${DEPLOY_IMAGE}"
 
+echo "Waiting for holos-controller-manager to become avaialble ..."
+kubectl --context "${KUBE_CONTEXT}" -n holos-controller rollout status deploy/holos-controller-manager
+
 echo ""
 echo "✓ Holos Controller deployed from ${DEPLOY_IMAGE}."
-echo "  Wait for it to become Available, then provision the holos Quay organization:"
-echo "    kubectl --context ${KUBE_CONTEXT} -n holos-controller rollout status deploy/holos-controller-controller-manager"
+echo "  Next, provision the holos Quay organization:"
+echo ""
 echo "    scripts/apply-holos-quay-organization"
