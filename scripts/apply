@@ -1000,6 +1000,47 @@ wait_argocd() {
     rollout status statefulset/argocd-application-controller --timeout="${ROLLOUT_TIMEOUT}"
 }
 
+# argocd-projects: idempotent HOL-1381 migration cleanup, run BEFORE the
+# component apply.  The holos-paas-config repository is now public and the
+# argocd-projects component renders a CREDENTIAL-LESS repository registration
+# Secret (holos-paas-config, stringData name/url/type/insecure — no
+# username/password).  On a cluster upgraded from the prior robot-credential
+# bootstrap this cleanup is what actually REMOVES the pull-credential dependency:
+#
+#   1. The old holos-paas-config Secret was created by the retired bootstrap Job
+#      with data.username/password set by a DIFFERENT field manager.  A
+#      server-side apply of the new credential-less manifest MERGES — it sets
+#      name/url/type/insecure but does NOT remove the username/password keys it
+#      never owned, so the robot credential would linger and Argo CD would keep
+#      pulling authenticated.  Delete the Secret if it still carries either
+#      credential key; the component apply that follows recreates it
+#      credential-less (a momentary gap, immediately re-applied in this same run).
+#      A Secret that is already credential-less (fresh cluster, or a prior cleaned
+#      apply) is left untouched, so the registration is not needlessly churned.
+#   2. Delete the retired holos-paas-config-robot SOURCE Secret and the
+#      holos-paas-config-repo-bootstrap Job + ServiceAccount/Role/RoleBinding,
+#      none of which the component renders anymore (a plain apply never prunes).
+#
+# --ignore-not-found makes every step a no-op on a fresh cluster, so this is safe
+# to run on every apply.
+pre_argocd_projects() {
+  if kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
+    get secret holos-paas-config --request-timeout=10s \
+    -o jsonpath='{.data.username}{.data.password}' 2>/dev/null | grep -q .; then
+    echo "    HOL-1381 migration: removing stale robot credential from the" \
+      "holos-paas-config repository Secret (recreated credential-less below)."
+    kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
+      delete secret holos-paas-config --ignore-not-found
+  fi
+  kubectl --context "${KUBE_CONTEXT}" --namespace argocd delete \
+    secret/holos-paas-config-robot \
+    job/holos-paas-config-repo-bootstrap \
+    serviceaccount/holos-paas-config-repo-bootstrap \
+    role.rbac.authorization.k8s.io/holos-paas-config-repo-bootstrap \
+    rolebinding.rbac.authorization.k8s.io/holos-paas-config-repo-bootstrap \
+    --ignore-not-found
+}
+
 # kargo-crds: the Kargo controller and webhooks servers require the
 # kargo.akuity.io types at startup, and the next phase (HOL-1240) applies
 # Project/Warehouse/Stage custom resources.

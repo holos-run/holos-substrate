@@ -9,7 +9,7 @@
 // It is a SIBLING of the collection-driven `project` / `application` components,
 // but it is NOT a tenant project: it carries no Kargo/Argo CD/Keycloak control
 // plane, only the org + its two repos (the public holos-controller image repo and
-// the private holos-paas-config bundle repo).  Like those components (and
+// the public holos-paas-config bundle repo).  Like those components (and
 // keycloak-instance)
 // its caBundle is injected at apply time via the _CABundlePEM tag and never
 // committed, so it is render-here / apply-separately: EXCLUDED from the master
