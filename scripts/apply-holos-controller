@@ -56,12 +56,12 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # README.md, the Images workflow); this tag is `git describe` of the controller
 # build the bootstrap is validated against.
 #
-# This is a TAG, the form HOL-1380 specifies.  A tag is mutable, so for a
-# reproducible bootstrap — or to defend against tag retargeting on this
-# privileged controller (it runs with the Quay superuser credential) — override
-# CONTROLLER_IMAGE with the immutable digest of that build:
-#   CONTROLLER_IMAGE=ghcr.io/holos-run/holos-controller@sha256:<digest> scripts/apply-holos-controller
-# Resolve it with: docker buildx imagetools inspect ghcr.io/holos-run/holos-controller:v0.2.0-36-gd1fa190
+# This is a TAG, the form HOL-1380 specifies.  A tag is mutable, so before
+# deploying, the script RESOLVES it to its current immutable digest and deploys
+# that (see resolve_digest below) — the controller runs with the Quay superuser
+# credential, so the running image must not be subject to later tag retargeting.
+# Override CONTROLLER_IMAGE to deploy a different build (a tag or a pre-resolved
+# @sha256: digest, which is used verbatim).
 CONTROLLER_IMAGE="${CONTROLLER_IMAGE:-ghcr.io/holos-run/holos-controller:v0.2.0-36-gd1fa190}"
 
 if ! command -v kubectl >/dev/null 2>&1; then
@@ -100,16 +100,64 @@ if ! kubectl --context "${KUBE_CONTEXT}" version --request-timeout=10s >/dev/nul
   exit 1
 fi
 
-echo "Deploying the Holos Controller image ${CONTROLLER_IMAGE} to context ${KUBE_CONTEXT} ..."
+# Pin the deployed image to an IMMUTABLE digest.  HOL-1380 specifies a TAG, but a
+# tag is mutable — and this controller runs with the Quay superuser credential, so
+# a retargeted tag would silently change privileged bootstrap behavior.  Resolve
+# the tag to its current digest and deploy THAT, so the running controller is
+# reproducible regardless of later tag movement (round-2 review finding).  If
+# CONTROLLER_IMAGE is already a digest reference (operator override), or no
+# registry-inspect tool is available / the lookup fails (offline, image not yet
+# published), fall back to the reference as given with a warning.
+resolve_digest() {
+  local ref="$1" repo digest
+  # Already digest-pinned (possibly tag@sha256:...): take the repo@digest tail.
+  if [[ "${ref}" == *@sha256:* ]]; then
+    echo "${ref%%@*}@sha256:${ref##*@sha256:}"
+    return 0
+  fi
+  repo="${ref%:*}"
+  if command -v docker >/dev/null 2>&1 \
+    && digest="$(docker buildx imagetools inspect "${ref}" --format '{{.Manifest.Digest}}' 2>/dev/null)" \
+    && [[ "${digest}" == sha256:* ]]; then
+    echo "${repo}@${digest}"
+    return 0
+  fi
+  if command -v crane >/dev/null 2>&1 \
+    && digest="$(crane digest "${ref}" 2>/dev/null)" \
+    && [[ "${digest}" == sha256:* ]]; then
+    echo "${repo}@${digest}"
+    return 0
+  fi
+  if command -v skopeo >/dev/null 2>&1 \
+    && digest="$(skopeo inspect --format '{{.Digest}}' "docker://${ref}" 2>/dev/null)" \
+    && [[ "${digest}" == sha256:* ]]; then
+    echo "${repo}@${digest}"
+    return 0
+  fi
+  return 1
+}
+
+DEPLOY_IMAGE="${CONTROLLER_IMAGE}"
+if RESOLVED="$(resolve_digest "${CONTROLLER_IMAGE}")"; then
+  if [[ "${RESOLVED}" != "${CONTROLLER_IMAGE}" ]]; then
+    echo "Resolved ${CONTROLLER_IMAGE} to immutable digest ${RESOLVED}."
+  fi
+  DEPLOY_IMAGE="${RESOLVED}"
+else
+  echo "WARNING: could not resolve ${CONTROLLER_IMAGE} to a digest (no docker/crane/skopeo," >&2
+  echo "         or the registry lookup failed).  Deploying the mutable tag as-is." >&2
+fi
+
+echo "Deploying the Holos Controller image ${DEPLOY_IMAGE} to context ${KUBE_CONTEXT} ..."
 
 # Reuse the controller-deploy target (single-sourced kustomize render + apply),
 # overriding only the image.  controller-deploy applies --server-side, so it
 # converges and is safe to re-run.  The target uses the current kubectl context;
 # we have already pinned/validated it above.
-make -C "${REPO_ROOT}" controller-deploy CONTROLLER_IMAGE="${CONTROLLER_IMAGE}"
+make -C "${REPO_ROOT}" controller-deploy CONTROLLER_IMAGE="${DEPLOY_IMAGE}"
 
 echo ""
-echo "✓ Holos Controller deployed from ${CONTROLLER_IMAGE}."
+echo "✓ Holos Controller deployed from ${DEPLOY_IMAGE}."
 echo "  Wait for it to become Available, then provision the holos Quay organization:"
 echo "    kubectl --context ${KUBE_CONTEXT} -n holos-controller rollout status deploy/holos-controller-controller-manager"
 echo "    scripts/apply-holos-quay-organization"
