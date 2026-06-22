@@ -39,15 +39,20 @@ and **stops there**, with Quay and Keycloak ready for manual setup; the
 chicken-and-egg handoff (Argo CD must exist before it self-manages) is a
 **separate, idempotent script — `scripts/apply-app-of-apps`** — that publishes
 the bundle and applies the two roots. The split (HOL-1379) breaks a rebuild-time
-race: publishing needs the holos Quay **organization** (the `holos-paas-config`
-repository and the `holos-paas-config-robot` push credential) configured first,
+race: publishing needs the holos Quay **organization** (the public `holos-paas-config`
+repository and a push-capable Quay robot credential) configured first,
 which does not exist on a freshly rebuilt cluster, so `scripts/apply` would race
 the manual Quay setup and fail. `scripts/apply` prints the manual-setup guidance,
 and `scripts/apply-app-of-apps` explicitly depends on that Quay org being
-configured. The per-app Kargo delivery is unchanged and
+configured. The `holos-paas-config` repository is **public** (HOL-1381,
+[ADR-16](docs/adr/ADR-16.md) Rev 5), so Argo CD pulls the bundle **anonymously** —
+there is no `holos-paas-config-robot` pull credential or repository-credential
+bootstrap Job; the `argocd-projects` component instead commits a credential-less
+repository registration Secret (only `url`/`type`/`insecure`, no secret material).
+The per-app Kargo delivery is unchanged and
 complementary (it still owns each app's `Application.spec.source.targetRevision`).
 This supersedes the deferred per-component `argoAppDisabled` git-source projection
-**for the platform** (which stays dormant). See ADR-16 Rev 3–4
+**for the platform** (which stays dormant). See ADR-16 Rev 3–5
 (*Bootstrap delivery — the App-of-Apps OCI config bundle*),
 [holos/docs/oci-publish-workflow.md](holos/docs/oci-publish-workflow.md)
 (*Platform config bundle*), and

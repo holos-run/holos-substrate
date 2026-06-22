@@ -53,9 +53,10 @@ let CONTROLLER_REPO = "holos-controller"
 // a CR — rather than relying on a first-push to create it — so the push robot
 // only needs WRITE (push) access, not org `creator`/repo-create rights, and the
 // scripts/apply-app-of-apps push targets an already-existing repo (round-1
-// review finding).  It is private: Argo CD pulls it with the
-// holos-paas-config-robot pull credential (scripts/apply-app-of-apps), so it does
-// not need public visibility.
+// review finding).  It is PUBLIC (HOL-1381): Argo CD pulls the bundle
+// ANONYMOUSLY, so the platform no longer depends on a holos-paas-config-robot
+// pull credential — see CONFIG_REPOSITORY_RESOURCE below and the credential-less
+// repository registration in components/argocd-projects.
 let CONFIG_REPO = "holos-paas-config"
 
 // CREDS_SECRET is the controller's Quay superuser OAuth-Application credential
@@ -129,8 +130,12 @@ let REPOSITORY_RESOURCE = {
 // CONFIG_REPOSITORY_RESOURCE is the holos-paas-config Repository — the
 // App-of-Apps platform config bundle's home — managed declaratively so it exists
 // before scripts/apply-app-of-apps pushes to it (the push robot then needs only
-// write, not repo-create).  Private: Argo CD pulls it with the
-// holos-paas-config-robot credential.  Same gated-injection posture for caBundle.
+// write, not repo-create).  PUBLIC (HOL-1381, world-pullable including
+// unauthenticated pulls): Argo CD pulls the bundle anonymously, so the platform
+// no longer needs a holos-paas-config-robot pull credential — the
+// components/argocd-projects registration carries only the non-sensitive
+// insecure/type settings, with no robot username/password.  Same gated-injection
+// posture for caBundle.
 let CONFIG_REPOSITORY_RESOURCE = {
 	apiVersion: "quay.holos.run/v1alpha1"
 	kind:       "Repository"
@@ -142,7 +147,7 @@ let CONFIG_REPOSITORY_RESOURCE = {
 	spec: {
 		organizationRef: ORG_NAME
 		name:            CONFIG_REPO
-		visibility:      "private"
+		visibility:      "public"
 		description:     "The App-of-Apps platform config bundle (HOL-1380)."
 		credentialsSecretRef: name: CREDS_SECRET
 		if _CABundlePEM != "" {

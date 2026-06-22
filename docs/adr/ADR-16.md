@@ -13,7 +13,8 @@
 | 1        | 2026-06-14 | @jeffmccune | Initial design |
 | 2        | 2026-06-14 | @jeffmccune | Note the NATS pipeline retirement landed (HOL-1241): receiver/subscriber code, the pipeline protobuf, and the nats/webhook-* components removed; operational docs updated to this path |
 | 3        | 2026-06-21 | @jeffmccune | HOL-1373/HOL-1378: add the **App-of-Apps OCI config-image bootstrap** — the complement to the per-app Kargo delivery above. The whole committed `holos/deploy/` tree is published as a single OCI bundle (`holos-paas-config:dev`, mutable tag) and two root Argo CD `Application`s reconcile the platform from it under two AppProjects: `platform` (the system components, root `platform-bootstrap`) and `projects` (the project/application collection resources, root `projects-bootstrap`). `scripts/apply` brings Argo CD up imperatively (the bootstrap floor), then publishes the bundle and applies the two roots so Argo CD takes over ongoing reconciliation. See *Bootstrap delivery — the App-of-Apps OCI config bundle* below. Built across HOL-1374 (the `holos-paas-config` bundle + `make config-build`/`config-push`), HOL-1375 (the `platform`/`projects` AppProjects + repo-credential bootstrap), HOL-1376 (the platform root), HOL-1377 (the projects root), and HOL-1378 (the `scripts/apply` wiring + these docs). |
-| 4        | 2026-06-22 | @jeffmccune | HOL-1379: **split the handoff out of `scripts/apply` to break a rebuild-time race.** Publishing `holos-paas-config:dev` needs the holos Quay **organization** (the `holos-paas-config` repository and the `holos-paas-config-robot` push credential) configured first, which does not exist on a freshly rebuilt cluster — so doing the publish from `scripts/apply` raced the manual Quay setup and failed. `scripts/apply` now **stops at the bootstrap floor** (Quay and Keycloak up, ready for manual setup) and prints the manual-setup guidance; the handoff is a **separate script, `scripts/apply-app-of-apps`**, that explicitly depends on the holos Quay organization being configured and (unlike the floor) fails hard on a missing prerequisite. See *Bootstrap delivery — the App-of-Apps OCI config bundle* below. |
+| 4        | 2026-06-22 | @jeffmccune | HOL-1379: **split the handoff out of `scripts/apply` to break a rebuild-time race.** Publishing `holos-paas-config:dev` needs the holos Quay **organization** (the `holos-paas-config` repository and a push-capable Quay robot credential) configured first, which does not exist on a freshly rebuilt cluster — so doing the publish from `scripts/apply` raced the manual Quay setup and failed. `scripts/apply` now **stops at the bootstrap floor** (Quay and Keycloak up, ready for manual setup) and prints the manual-setup guidance; the handoff is a **separate script, `scripts/apply-app-of-apps`**, that explicitly depends on the holos Quay organization being configured and (unlike the floor) fails hard on a missing prerequisite. See *Bootstrap delivery — the App-of-Apps OCI config bundle* below. |
+| 5        | 2026-06-22 | @jeffmccune | HOL-1381: **make the `holos-paas-config` repository public so Argo CD pulls the bundle anonymously — remove the pull-secret dependency.** The `holos-quay-organization` component flips the repository's `quay.holos.run` `Repository` CR to `visibility: public`. With anonymous pulls, the platform drops the `holos-paas-config-robot` pull credential and the create-if-absent repository-credential bootstrap Job (+ its ServiceAccount/Role/RoleBinding) entirely; the `argocd-projects` component instead renders a **credential-less repository registration Secret** (only `url`/`type`/`insecure`, no secret material) committed to the deploy tree and applied by the floor, and `scripts/apply-app-of-apps` drops its `ensure_repo_credential` gate. `insecure: "true"` is retained for the in-cluster Quay's mkcert serving cert; the push side still uses a Quay robot credential. |
 
 ## Context and Problem Statement
 
@@ -220,8 +221,8 @@ of a second, complementary OCI delivery path added in HOL-1373: an Argo CD
   for manual setup. The handoff — publishing the bundle and applying the two root
   `Application`s — is a **separate script, `scripts/apply-app-of-apps`**, because
   it has a prerequisite the floor cannot satisfy on a freshly rebuilt cluster: the
-  publish needs the holos Quay **organization** (the `holos-paas-config`
-  repository and the `holos-paas-config-robot` push credential) configured first.
+  publish needs the holos Quay **organization** (the public `holos-paas-config`
+  repository and a push-capable Quay robot credential) configured first.
   Doing the publish from `scripts/apply` raced that manual Quay setup and failed,
   so the split breaks the race: `scripts/apply` prints the manual-setup guidance,
   and `scripts/apply-app-of-apps` runs after the operator configures the Quay org.
@@ -233,6 +234,17 @@ of a second, complementary OCI delivery path added in HOL-1373: an Argo CD
   it still owns each app's `Application.spec.source.targetRevision`, which the
   project/application roots deliberately do **not** manage (the
   `kargo.akuity.io/authorized-stage` posture).
+- **The config bundle repository is public — Argo CD pulls anonymously
+  (HOL-1381).** The `holos-paas-config` repository's `quay.holos.run` `Repository`
+  CR sets `visibility: public` (the `holos-quay-organization` component), so the
+  repo-server pulls the bundle with **no pull credential**. The platform therefore
+  drops the `holos-paas-config-robot` pull credential and the create-if-absent
+  bootstrap Job that assembled the credentialed repository Secret: the
+  `argocd-projects` component instead renders a **credential-less repository
+  registration Secret** (carrying only `url`/`type`/`insecure` — no secret
+  material) committed to the deploy tree and applied by the floor. `insecure:
+  "true"` is still required for the in-cluster Quay's mkcert serving cert; the
+  push side still uses a Quay robot credential.
 
 This bootstrap **supersedes the deferred per-component `git`-source projection**
 (`userDefinedBuildPlan`'s `argoAppDisabled` flip) **for the platform**: platform

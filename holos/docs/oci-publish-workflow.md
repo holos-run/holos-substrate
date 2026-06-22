@@ -259,11 +259,15 @@ exclusion here and in the component comments).
 bootstrap floor) and **stops there**, with Quay and Keycloak ready for manual
 setup. The handoff — publishing `holos-paas-config:dev` and applying the two root
 `Application`s above — is a **separate script, `scripts/apply-app-of-apps`**,
-because the publish needs the holos Quay **organization** (the
-`holos-paas-config` repository and the `holos-paas-config-robot` push credential)
+because the publish needs the holos Quay **organization** (the public
+`holos-paas-config` repository and a push-capable Quay robot credential)
 configured first; on a freshly rebuilt cluster that organization does not exist
 yet, so publishing from `scripts/apply` raced the manual Quay setup and failed
-(HOL-1379, [ADR-16 Rev 4](../../docs/adr/ADR-16.md)). After the operator
+(HOL-1379, [ADR-16 Rev 4](../../docs/adr/ADR-16.md)). The repository is **public**
+(HOL-1381), so Argo CD pulls the bundle **anonymously** — no pull credential, and
+the `argocd-projects` component registers it with Argo CD via a credential-less
+repository Secret (carrying only `url`/`type`/`insecure`) committed to the deploy
+tree. After the operator
 configures the Quay org, `scripts/apply-app-of-apps` runs `scripts/publish-config
 --build`/`--push` then `kubectl apply --server-side` of the `app-of-apps` and
 `projects` root component dirs (idempotent; server-side apply converges). Because

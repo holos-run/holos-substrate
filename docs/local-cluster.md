@@ -175,18 +175,20 @@ scripts/apply-holos-quay-organization
 scripts/apply-app-of-apps
 ```
 
-Before step 4, set up the credentials `scripts/apply-holos-quay-organization`
-describes — both backed by the Quay **robot** you create in the `holos` org:
+Before step 4, set up the **one** credential `scripts/apply-holos-quay-organization`
+describes — a Quay **robot** you create in the `holos` org:
 
-1. **Host-side push auth** for the bundle push — `ORAS_USERNAME` / `ORAS_PASSWORD`
-   or a prior `oras login quay.holos.internal` (`scripts/publish-config` reads
-   those, **not** any in-cluster Secret). The `holos-paas-config` repository is
-   pre-created by `scripts/apply-holos-quay-organization`, so the robot needs only
-   **write** (push) access.
-2. The `holos-paas-config-robot` **source** Secret (the `holos+robot` **pull**
-   credential, keys `username`/`password`, in the `argocd` namespace) — Argo CD's
-   repository credential (`holos-paas-config`) is assembled from it by the
-   `argocd-projects` bootstrap Job, which `scripts/apply-app-of-apps` re-runs.
+- **Host-side push auth** for the bundle push — `ORAS_USERNAME` / `ORAS_PASSWORD`
+  or a prior `oras login quay.holos.internal` (`scripts/publish-config` reads
+  those, **not** any in-cluster Secret). The `holos-paas-config` repository is
+  pre-created by `scripts/apply-holos-quay-organization`, so the robot needs only
+  **write** (push) access.
+
+No **pull** credential is needed: the `holos-paas-config` repository is **public**
+(HOL-1381), so Argo CD pulls the bundle **anonymously**. The `argocd-projects`
+component registers the repository with Argo CD via a credential-less repository
+Secret (only `url`/`type`/`insecure`) the floor already applied — there is no
+`holos-paas-config-robot` source Secret and no repository-credential bootstrap Job.
 
 `scripts/apply-app-of-apps` resolves the chicken-and-egg — ArgoCD cannot
 reconcile the platform from the OCI config bundle until ArgoCD itself is running —

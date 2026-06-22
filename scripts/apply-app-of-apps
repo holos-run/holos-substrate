@@ -9,20 +9,16 @@
 #      reconciling anything; AND
 #   2. the holos Quay ORGANIZATION has been provisioned by
 #      scripts/apply-holos-quay-organization (HOL-1380) — the holos org and the
-#      holos-controller repository in the in-cluster Quay — and the operator has
-#      obtained the two credentials this script needs (both backed by a Quay
-#      robot, per the guidance that script prints):
+#      holos-controller + holos-paas-config repositories in the in-cluster Quay —
+#      and the operator has obtained the ONE credential this script needs:
 #        * HOST-SIDE PUSH auth for the `oras push` below — supplied via
 #          ORAS_USERNAME / ORAS_PASSWORD or a prior `oras login` (a push-capable
-#          robot credential; scripts/publish-config reads these, NOT any
-#          in-cluster Secret); and
-#        * the holos-paas-config-robot SOURCE Secret (the holos+robot PULL
-#          credential, keys username/password) in the argocd namespace, which the
-#          argocd-projects bootstrap Job turns into the holos-paas-config repo
-#          Secret Argo CD pulls the bundle with.
-#      The holos-paas-config repository itself is managed (pre-created) by
-#      scripts/apply-holos-quay-organization, so the push robot needs only write
-#      (push) access to it — no repo-create rights.
+#          Quay robot credential; scripts/publish-config reads these, NOT any
+#          in-cluster Secret).
+#      No PULL credential is needed: the holos-paas-config repository is PUBLIC
+#      (HOL-1381), so Argo CD pulls the bundle anonymously.  The repository itself
+#      is managed (pre-created) by scripts/apply-holos-quay-organization, so the
+#      push robot needs only write (push) access to it — no repo-create rights.
 #
 # That holos Quay setup is this script's EXPLICIT dependency, and the reason the
 # handoff is a separate step from scripts/apply (HOL-1379).  On a freshly rebuilt
@@ -72,20 +68,14 @@
 #   BOOTSTRAP_APP_OF_APPS_FORCE_ROOTS — set to 1 to apply the root Applications
 #                                        even if the publish was skipped/failed or
 #                                        holos/deploy/ is dirty relative to HEAD.
-#                                        Does NOT skip the holos-paas-config repo
-#                                        credential check — Argo CD still needs it
-#                                        to pull the bundle.
-#   REPO_BOOTSTRAP_TIMEOUT_SECONDS    — seconds to wait for the holos-paas-config
-#                                        repo credential Secret to appear (default
-#                                        300)
 #
 # Prerequisites (the manual holos Quay organization setup above):
 #   - kubectl, with a context pointing at the target cluster
 #   - oras (https://oras.land/docs/installation) and a reachable Quay
 #   - host-side push auth for the oras push (ORAS_USERNAME / ORAS_PASSWORD or a
 #     prior `oras login`)
-#   - the holos-paas-config-robot SOURCE Secret in the argocd namespace (the
-#     Argo CD pull credential)
+#   (No Argo CD pull credential: the holos-paas-config repository is public,
+#    HOL-1381, so Argo CD pulls the bundle anonymously.)
 
 set -euo pipefail
 
@@ -166,8 +156,9 @@ if [[ "${FORCE_ROOTS}" != "1" && "${deploy_dirty}" -eq 1 ]]; then
 fi
 
 # 1. Publish the holos-paas-config:dev bundle.  This step requires oras, a
-#    reachable Quay, and the holos-paas-config-robot push credential — i.e. the
-#    manual holos Quay organization setup this script depends on.  Applying the
+#    reachable Quay, and a host-side push credential (ORAS_USERNAME/ORAS_PASSWORD
+#    or a prior `oras login`) — i.e. the manual holos Quay organization setup this
+#    script depends on.  Applying the
 #    root Applications is GATED on a successful publish: the roots reconcile with
 #    prune+selfHeal from holos-paas-config:dev, so applying them against a STALE
 #    (or absent) :dev would drag the cluster back off the manifests scripts/apply
@@ -196,9 +187,9 @@ if [[ "${published}" -ne 1 && "${FORCE_ROOTS}" != "1" ]]; then
   echo "           provisioned by scripts/apply-holos-quay-organization (HOL-1380); and" >&2
   echo "         - HOST-SIDE PUSH auth for this oras push: a push-capable Quay robot" >&2
   echo "           credential, supplied via ORAS_USERNAME / ORAS_PASSWORD or a prior" >&2
-  echo "           'oras login quay.holos.internal' (this script's oras push reads those," >&2
-  echo "           NOT the in-cluster holos-paas-config-robot Secret, which is the Argo CD" >&2
-  echo "           PULL credential handled below)." >&2
+  echo "           'oras login quay.holos.internal'.  No PULL credential is needed:" >&2
+  echo "           the holos-paas-config repository is public, so Argo CD pulls the" >&2
+  echo "           bundle anonymously (HOL-1381)." >&2
   echo "       See holos/docs/oci-publish-workflow.md (Registry transport and credentials)" >&2
   echo "       and docs/runbooks/quay-resource-controller-credentials.md." >&2
   echo "" >&2
@@ -209,83 +200,16 @@ if [[ "${published}" -ne 1 && "${FORCE_ROOTS}" != "1" ]]; then
   exit 1
 fi
 
-# 2. Ensure the Argo CD repository-credential Secret exists BEFORE applying the
-#    roots.  Argo CD needs the holos-paas-config repository Secret (argocd-format,
-#    in the argocd namespace) to PULL the OCI bundle the roots track; without it
-#    the roots reconcile but cannot pull holos-paas-config:dev and stay Unknown.
-#    That Secret is assembled create-if-absent by the argocd-projects component's
-#    bootstrap Job from the manually-provisioned holos-paas-config-robot SOURCE
-#    Secret.  scripts/apply ran that Job during the floor — BEFORE the operator
-#    provisioned the source Secret — so it exited 0 WITHOUT creating the repo
-#    Secret, and a Complete Job is never re-run by a plain apply.  So re-run the
-#    bootstrap here, now that the source Secret should exist (mirroring
-#    scripts/apply's pre_argocd_projects): pre-apply its ServiceAccount + RBAC,
-#    delete the prior Job (foreground, so its pod is gone), and re-apply the Job.
-#    Then poll until the repo Secret appears (the Job exits 0 even when it creates
-#    nothing, so Complete does NOT imply the Secret exists — poll the Secret, the
-#    real contract), failing fast on a Failed Job and erroring with guidance if
-#    the source Secret is still missing at the deadline.
-REPO_BOOTSTRAP_TIMEOUT_SECONDS="${REPO_BOOTSTRAP_TIMEOUT_SECONDS:-300}"
-ensure_repo_credential() {
-  local dir="${COMPONENTS_DIR}/argocd-projects"
-  kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
-    -f "${dir}/serviceaccount-holos-paas-config-repo-bootstrap.yaml" \
-    -f "${dir}/role-holos-paas-config-repo-bootstrap.yaml" \
-    -f "${dir}/rolebinding-holos-paas-config-repo-bootstrap.yaml"
-  kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
-    delete job -l app.kubernetes.io/name=holos-paas-config-repo-bootstrap \
-    --ignore-not-found --cascade=foreground --wait --request-timeout=60s
-  kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
-    -f "${dir}/job-holos-paas-config-repo-bootstrap.yaml"
-
-  local job=job/holos-paas-config-repo-bootstrap job_state
-  local deadline=$((SECONDS + REPO_BOOTSTRAP_TIMEOUT_SECONDS))
-  while true; do
-    if kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
-      get secret holos-paas-config --request-timeout=10s >/dev/null 2>&1; then
-      echo "    Argo CD repository credential holos-paas-config is present."
-      return 0
-    fi
-    if job_state=$(kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
-      get "${job}" --ignore-not-found --request-timeout=10s \
-      -o jsonpath='{range .status.conditions[*]}{.type}={.status}{"\n"}{end}' 2>/dev/null); then
-      if grep -q '^Failed=True$' <<<"${job_state}"; then
-        echo "ERROR: ${job} failed (e.g. the holos-paas-config-robot source Secret is malformed);" >&2
-        echo "       inspect it with:" >&2
-        echo "       kubectl --context ${KUBE_CONTEXT} --namespace argocd describe ${job}" >&2
-        return 1
-      fi
-    fi
-    if ((SECONDS >= deadline)); then
-      echo "ERROR: the Argo CD repository credential Secret holos-paas-config was not created" >&2
-      echo "       within ${REPO_BOOTSTRAP_TIMEOUT_SECONDS}s.  The argocd-projects bootstrap Job creates it from the" >&2
-      echo "       holos-paas-config-robot SOURCE Secret (keys username/password, the holos+robot" >&2
-      echo "       PULL credential) in the argocd namespace — provision that Secret, then re-run:" >&2
-      echo "         kubectl -n argocd create secret generic holos-paas-config-robot \\" >&2
-      echo "           --from-literal=username=holos+robot --from-literal=password=<token>" >&2
-      echo "       See docs/runbooks/quay-resource-controller-credentials.md and" >&2
-      echo "       holos/docs/oci-publish-workflow.md." >&2
-      return 1
-    fi
-    sleep 5
-  done
-}
-# Always ensure the repo credential — even on the forced path.  FORCE_ROOTS
-# bypasses the PUBLISH and source-consistency gates (a known-current :dev, an
-# intentionally-dirty tree), but Argo CD still cannot pull the bundle without the
-# holos-paas-config repo Secret, so skipping this here would reintroduce the
-# round-1 failure mode (roots applied, bundle unpullable) under a documented flag.
-# It is idempotent on the happy path (re-applying RBAC + re-running the bootstrap
-# Job leaves an existing Secret untouched), and its poll checks the Secret before
-# the deadline, so an already-present credential returns without any extra wait.
-ensure_repo_credential || exit 1
-
-# 3. Apply the two root App-of-Apps Applications.  These component dirs are NOT in
+# 2. Apply the two root App-of-Apps Applications.  These component dirs are NOT in
 #    scripts/apply's COMPONENTS (the imperative floor) precisely so they are
-#    applied here, once, as the Argo CD handoff.  The repository-credential Secret
-#    (ensured above) and the platform/projects AppProjects already exist (applied
-#    by the argocd-projects component in scripts/apply).  server-side apply
-#    converges, so re-running is safe.
+#    applied here, once, as the Argo CD handoff.  The platform/projects AppProjects
+#    and the credential-less holos-paas-config repository registration Secret
+#    already exist (applied by the argocd-projects component in scripts/apply).
+#    Argo CD pulls the bundle ANONYMOUSLY: the repository is PUBLIC (HOL-1381 —
+#    holos-quay-organization sets its visibility to public), so no robot pull
+#    credential is needed; the registration Secret carries only url/type/insecure
+#    (the insecure flag is still required for the in-cluster Quay's mkcert serving
+#    cert).  server-side apply converges, so re-running is safe.
 for root in app-of-apps projects; do
   echo "    apply root: ${root}"
   kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \

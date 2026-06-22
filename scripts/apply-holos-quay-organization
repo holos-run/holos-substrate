@@ -7,11 +7,12 @@
 # a fresh cluster:
 #   * the holos-controller container image (the public holos-controller repo this
 #     script creates); and
-#   * the App-of-Apps platform config bundle (the private holos-paas-config repo
-#     this script also creates, so the push robot needs only write — see
-#     scripts/apply-app-of-apps).
+#   * the App-of-Apps platform config bundle (the public holos-paas-config repo
+#     this script also creates, so the push robot needs only write and Argo CD
+#     pulls the bundle anonymously — HOL-1381, see scripts/apply-app-of-apps).
 #
-# The holos-controller Repository is PUBLIC (world-pullable), and the org binds an
+# Both the holos-controller and holos-paas-config Repositories are PUBLIC
+# (world-pullable), and the org binds an
 # OIDC-synced Quay team to the realm's `authenticated` default group with org role
 # `creator` + an org default `write` permission — so every authenticated user can
 # create repos in the org and push/pull existing ones ("all authenticated users
@@ -234,14 +235,16 @@ cat <<EOF
 
 ============================================================================
 The holos Quay organization is provisioned: organization 'holos', the public
-'holos-controller' repository, and the private 'holos-paas-config' bundle
+'holos-controller' repository, and the public 'holos-paas-config' bundle
 repository.  All authenticated users may push and pull.
 
-NEXT: obtain a Quay ROBOT account to push and pull the two OCI artifacts that
-flow through this org — the holos-controller image and the App-of-Apps config
-bundle (holos-paas-config).  Both repositories already exist (managed above), so
-the robot needs only WRITE (push) access — no repo-create rights.  Automated
-pushes use a robot credential, NOT an interactive login:
+NEXT: obtain a Quay ROBOT account to PUSH the two OCI artifacts that flow through
+this org — the holos-controller image and the App-of-Apps config bundle
+(holos-paas-config).  Both repositories already exist (managed above), so the
+robot needs only WRITE (push) access — no repo-create rights.  Automated pushes
+use a robot credential, NOT an interactive login.  No PULL credential is needed:
+both repositories are public, so PULLS — including Argo CD's bundle pull — are
+anonymous (HOL-1381).
 
   1. In https://quay.holos.internal, open the 'holos' organization and create a
      Robot account (e.g. holos+robot), then grant it EXPLICIT WRITE on BOTH
@@ -254,10 +257,6 @@ pushes use a robot credential, NOT an interactive login:
      ORAS_PASSWORD, or a prior 'oras login quay.holos.internal'):
        export ORAS_USERNAME='holos+robot'
        export ORAS_PASSWORD='<robot token>'
-  3. Provision the same robot as the holos-paas-config-robot SOURCE Secret (keys
-     username/password) in the argocd namespace so Argo CD can PULL the bundle:
-       kubectl -n argocd create secret generic holos-paas-config-robot \\
-         --from-literal=username='holos+robot' --from-literal=password='<robot token>'
 
 THEN hand reconciliation to Argo CD by publishing the bundle and applying the
 two root Applications:
