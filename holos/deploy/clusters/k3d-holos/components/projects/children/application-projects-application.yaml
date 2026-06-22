@@ -16,6 +16,7 @@ spec:
   project: projects
   source:
     directory:
+      exclude: '**/workload/**'
       recurse: true
     path: clusters/k3d-holos/components/application
     repoURL: oci://quay.holos.internal/holos/holos-paas-config
