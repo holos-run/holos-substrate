@@ -29,7 +29,14 @@
 #
 # Environment overrides:
 #   CONTROLLER_IMAGE — override the deployed image entirely (default: the pinned
-#                      ghcr.io tag above).  Set this to deploy a different build.
+#                      ghcr.io tag above).  Set this to deploy a different build
+#                      (a tag, resolved to a digest before deploy, or a
+#                      pre-resolved @sha256: digest used verbatim).
+#   CONTROLLER_IMAGE_ALLOW_TAG — set to 1 to deploy the mutable tag when its digest
+#                      cannot be resolved (no docker/crane/skopeo, or a registry
+#                      lookup failure).  Default 0: the script FAILS CLOSED rather
+#                      than deploy an unresolvable mutable tag for this
+#                      superuser-credentialed controller.
 #   KUBE_CONTEXT     — the kubectl context this deploy must target (default: the
 #                      current context, which must be k3d-holos).  `make
 #                      controller-deploy` applies to the CURRENT context, so this
@@ -143,9 +150,25 @@ if RESOLVED="$(resolve_digest "${CONTROLLER_IMAGE}")"; then
     echo "Resolved ${CONTROLLER_IMAGE} to immutable digest ${RESOLVED}."
   fi
   DEPLOY_IMAGE="${RESOLVED}"
+elif [[ "${CONTROLLER_IMAGE_ALLOW_TAG:-0}" == "1" ]]; then
+  # Explicit opt-out: deploy the mutable tag.  The operator has accepted that the
+  # running controller is then subject to later tag retargeting.
+  echo "WARNING: could not resolve ${CONTROLLER_IMAGE} to a digest; CONTROLLER_IMAGE_ALLOW_TAG=1" >&2
+  echo "         is set, so deploying the mutable tag as-is." >&2
 else
-  echo "WARNING: could not resolve ${CONTROLLER_IMAGE} to a digest (no docker/crane/skopeo," >&2
-  echo "         or the registry lookup failed).  Deploying the mutable tag as-is." >&2
+  # FAIL CLOSED: this controller runs with the Quay superuser credential, so we
+  # refuse to deploy an unresolvable mutable tag by default (round-2 review
+  # finding).  k3d itself requires docker, so docker buildx imagetools is normally
+  # present; a failure here is usually a transient registry lookup — retry, or
+  # pin explicitly.
+  echo "ERROR: could not resolve ${CONTROLLER_IMAGE} to an immutable digest" >&2
+  echo "       (no docker/crane/skopeo on PATH, or the registry lookup failed)." >&2
+  echo "       Refusing to deploy a mutable tag for the superuser-credentialed controller." >&2
+  echo "       Options:" >&2
+  echo "         - retry (transient registry/network failures resolve on a re-run); or" >&2
+  echo "         - pin explicitly: CONTROLLER_IMAGE=${CONTROLLER_IMAGE%:*}@sha256:<digest> $0; or" >&2
+  echo "         - accept the mutable tag deliberately: CONTROLLER_IMAGE_ALLOW_TAG=1 $0" >&2
+  exit 1
 fi
 
 echo "Deploying the Holos Controller image ${DEPLOY_IMAGE} to context ${KUBE_CONTEXT} ..."

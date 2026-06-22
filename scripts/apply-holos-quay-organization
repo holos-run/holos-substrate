@@ -244,9 +244,12 @@ the robot needs only WRITE (push) access — no repo-create rights.  Automated
 pushes use a robot credential, NOT an interactive login:
 
   1. In https://quay.holos.internal, open the 'holos' organization and create a
-     Robot account (e.g. holos+robot), then grant it WRITE on the org's
-     repositories (add it to a team with a write default permission, or set
-     per-repo write on holos-controller and holos-paas-config).
+     Robot account (e.g. holos+robot), then grant it EXPLICIT WRITE on BOTH
+     existing repositories — holos-controller and holos-paas-config — via each
+     repo's Settings > User and Robot Permissions (set the robot to "Write").
+     Do NOT rely on an org DEFAULT permission (prototype): Quay applies those only
+     to repositories created AFTER the prototype exists, and both repos already
+     exist by now, so a default permission would leave the robot unable to push.
   2. Use it for HOST-SIDE pushes (scripts/publish-config reads ORAS_USERNAME /
      ORAS_PASSWORD, or a prior 'oras login quay.holos.internal'):
        export ORAS_USERNAME='holos+robot'
