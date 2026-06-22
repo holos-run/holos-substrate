@@ -55,6 +55,13 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # multi-arch holos-controller image to ghcr.io/<owner>/holos-controller (see
 # README.md, the Images workflow); this tag is `git describe` of the controller
 # build the bootstrap is validated against.
+#
+# This is a TAG, the form HOL-1380 specifies.  A tag is mutable, so for a
+# reproducible bootstrap — or to defend against tag retargeting on this
+# privileged controller (it runs with the Quay superuser credential) — override
+# CONTROLLER_IMAGE with the immutable digest of that build:
+#   CONTROLLER_IMAGE=ghcr.io/holos-run/holos-controller@sha256:<digest> scripts/apply-holos-controller
+# Resolve it with: docker buildx imagetools inspect ghcr.io/holos-run/holos-controller:v0.2.0-36-gd1fa190
 CONTROLLER_IMAGE="${CONTROLLER_IMAGE:-ghcr.io/holos-run/holos-controller:v0.2.0-36-gd1fa190}"
 
 if ! command -v kubectl >/dev/null 2>&1; then

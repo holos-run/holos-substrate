@@ -181,7 +181,8 @@ describes — both backed by the Quay **robot** you create in the `holos` org:
 1. **Host-side push auth** for the bundle push — `ORAS_USERNAME` / `ORAS_PASSWORD`
    or a prior `oras login quay.holos.internal` (`scripts/publish-config` reads
    those, **not** any in-cluster Secret). The `holos-paas-config` repository is
-   created on first push (the robot has org `creator`/`write`).
+   pre-created by `scripts/apply-holos-quay-organization`, so the robot needs only
+   **write** (push) access.
 2. The `holos-paas-config-robot` **source** Secret (the `holos+robot` **pull**
    credential, keys `username`/`password`, in the `argocd` namespace) — Argo CD's
    repository credential (`holos-paas-config`) is assembled from it by the

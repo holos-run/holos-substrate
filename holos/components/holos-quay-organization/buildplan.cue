@@ -46,6 +46,16 @@ let ORG_NAME = "holos"
 // to and pulled from.
 let CONTROLLER_REPO = "holos-controller"
 
+// CONFIG_REPO is the repository the App-of-Apps platform config bundle
+// (holos-paas-config:dev) is pushed to and Argo CD pulls from.  It is managed as
+// a CR — rather than relying on a first-push to create it — so the push robot
+// only needs WRITE (push) access, not org `creator`/repo-create rights, and the
+// scripts/apply-app-of-apps push targets an already-existing repo (round-1
+// review finding).  It is private: Argo CD pulls it with the
+// holos-paas-config-robot pull credential (scripts/apply-app-of-apps), so it does
+// not need public visibility.
+let CONFIG_REPO = "holos-paas-config"
+
 // CREDS_SECRET is the controller's Quay superuser OAuth-Application credential
 // (named explicitly to document the contract; it is also the field default).
 // scripts/apply-svc-quay-resource-controller-creds provisions it.
@@ -114,6 +124,31 @@ let REPOSITORY_RESOURCE = {
 	}
 }
 
+// CONFIG_REPOSITORY_RESOURCE is the holos-paas-config Repository — the
+// App-of-Apps platform config bundle's home — managed declaratively so it exists
+// before scripts/apply-app-of-apps pushes to it (the push robot then needs only
+// write, not repo-create).  Private: Argo CD pulls it with the
+// holos-paas-config-robot credential.  Same gated-injection posture for caBundle.
+let CONFIG_REPOSITORY_RESOURCE = {
+	apiVersion: "quay.holos.run/v1alpha1"
+	kind:       "Repository"
+	metadata: {
+		name:      CONFIG_REPO
+		namespace: NAMESPACE
+		labels: "app.kubernetes.io/name": ORG_NAME
+	}
+	spec: {
+		organizationRef: ORG_NAME
+		name:            CONFIG_REPO
+		visibility:      "private"
+		description:     "The App-of-Apps platform config bundle (HOL-1380)."
+		credentialsSecretRef: name: CREDS_SECRET
+		if _CABundlePEM != "" {
+			caBundle: base64.Encode(null, _CABundlePEM)
+		}
+	}
+}
+
 userDefinedBuildPlan: {
 	metadata: name: "holos-quay-organization"
 	spec: artifacts: manifests: {
@@ -128,8 +163,11 @@ userDefinedBuildPlan: {
 				// Repository ride the open, Kind-scoped entries there (their CRDs
 				// have no vendored CUE type).
 				resources: #Resources & {
-					Organization: (ORG_NAME):     ORGANIZATION_RESOURCE
-					Repository: (CONTROLLER_REPO): REPOSITORY_RESOURCE
+					Organization: (ORG_NAME): ORGANIZATION_RESOURCE
+					Repository: {
+						(CONTROLLER_REPO): REPOSITORY_RESOURCE
+						(CONFIG_REPO):     CONFIG_REPOSITORY_RESOURCE
+					}
 				}
 			}]
 			transformers: [

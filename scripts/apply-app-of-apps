@@ -20,8 +20,9 @@
 #          credential, keys username/password) in the argocd namespace, which the
 #          argocd-projects bootstrap Job turns into the holos-paas-config repo
 #          Secret Argo CD pulls the bundle with.
-#      The holos-paas-config repository itself is created on first push below (the
-#      robot has org creator/write), so only the org + push credential need exist.
+#      The holos-paas-config repository itself is managed (pre-created) by
+#      scripts/apply-holos-quay-organization, so the push robot needs only write
+#      (push) access to it — no repo-create rights.
 #
 # That holos Quay setup is this script's EXPLICIT dependency, and the reason the
 # handoff is a separate step from scripts/apply (HOL-1379).  On a freshly rebuilt

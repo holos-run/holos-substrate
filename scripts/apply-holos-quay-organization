@@ -5,10 +5,11 @@
 #
 # This is the bootstrap home of the two OCI artifacts the platform delivers from
 # a fresh cluster:
-#   * the holos-controller container image (the holos-controller repo this script
-#     creates); and
-#   * the App-of-Apps platform config bundle (the holos-paas-config repo, created
-#     on first push to holos/holos-paas-config — see scripts/apply-app-of-apps).
+#   * the holos-controller container image (the public holos-controller repo this
+#     script creates); and
+#   * the App-of-Apps platform config bundle (the private holos-paas-config repo
+#     this script also creates, so the push robot needs only write — see
+#     scripts/apply-app-of-apps).
 #
 # The holos-controller Repository is PUBLIC (world-pullable), and the org binds an
 # OIDC-synced Quay team to the realm's `authenticated` default group with org role
@@ -227,20 +228,25 @@ gate_ready() {
 NS="holos-controller"
 gate_ready "${NS}" "organization.quay.holos.run/holos" || exit 1
 gate_ready "${NS}" "repository.quay.holos.run/holos-controller" || exit 1
+gate_ready "${NS}" "repository.quay.holos.run/holos-paas-config" || exit 1
 
 cat <<EOF
 
 ============================================================================
-The holos Quay organization is provisioned: organization 'holos' + the public
-'holos-controller' repository.  All authenticated users may push and pull.
+The holos Quay organization is provisioned: organization 'holos', the public
+'holos-controller' repository, and the private 'holos-paas-config' bundle
+repository.  All authenticated users may push and pull.
 
 NEXT: obtain a Quay ROBOT account to push and pull the two OCI artifacts that
 flow through this org — the holos-controller image and the App-of-Apps config
-bundle (holos-paas-config).  Automated pushes use a robot credential, NOT an
-interactive login:
+bundle (holos-paas-config).  Both repositories already exist (managed above), so
+the robot needs only WRITE (push) access — no repo-create rights.  Automated
+pushes use a robot credential, NOT an interactive login:
 
   1. In https://quay.holos.internal, open the 'holos' organization and create a
-     Robot account (e.g. holos+robot) with write access to the org's repositories.
+     Robot account (e.g. holos+robot), then grant it WRITE on the org's
+     repositories (add it to a team with a write default permission, or set
+     per-repo write on holos-controller and holos-paas-config).
   2. Use it for HOST-SIDE pushes (scripts/publish-config reads ORAS_USERNAME /
      ORAS_PASSWORD, or a prior 'oras login quay.holos.internal'):
        export ORAS_USERNAME='holos+robot'
