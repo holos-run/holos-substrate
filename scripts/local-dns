@@ -50,12 +50,12 @@ sudo mkdir -p "${BREW_PREFIX}/etc/dnsmasq.d"
 
 # Idempotent — overwriting an existing config with the same content is safe;
 # the daemon reload below picks up any changes on re-runs.
-cat <<EOF >"${BREW_PREFIX}/etc/dnsmasq.d/holos.internal.conf"
+sudo tee "${BREW_PREFIX}/etc/dnsmasq.d/holos.internal.conf" <<EOF >/dev/null
 # Refer to https://holos.run/docs/tutorial/local/k3d/
 address=/holos.internal/100.65.0.1
 EOF
 
-cat <<EOF >"${BREW_PREFIX}/etc/dnsmasq.conf"
+sudo tee "${BREW_PREFIX}/etc/dnsmasq.conf" <<EOF >/dev/null
 # Listen on port 53 not 5353
 port=53
 EOF
