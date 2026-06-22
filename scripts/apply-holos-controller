@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# Deploy the Holos Controller (ADR-18) onto a freshly-bootstrapped cluster from a
+# PINNED, publicly-pullable image tag (HOL-1380).
+#
+# This is the BOOTSTRAP deploy path, and it differs from `make controller-deploy`
+# in exactly one way: the image.  On a fresh cluster the in-cluster Quay `holos`
+# organization does not exist yet — that is the chicken-and-egg this whole
+# bootstrap sequence resolves — so the controller image CANNOT be pulled from the
+# in-cluster registry (quay.holos.internal/holos/holos-controller:dev, the
+# `make controller-deploy` default).  Instead this script deploys the
+# CI-published multi-arch image from the public registry:
+#
+#   ghcr.io/holos-run/holos-controller:v0.2.0-36-gd1fa190
+#
+# The controller must run before scripts/apply-holos-quay-organization: it is the
+# reconciler that creates the `holos` Quay organization + holos-controller
+# repository from the quay.holos.run CRs that script applies.
+#
+# It reuses `make controller-deploy` verbatim (only overriding CONTROLLER_IMAGE),
+# so the kustomize render + server-side apply logic is single-sourced with the
+# Makefile.controller target — no second copy of the deploy mechanics to drift.
+#
+# Once the holos Quay organization exists and the controller image has been
+# published to it (quay.holos.internal/holos/holos-controller:dev), use the
+# ordinary `make controller-deploy` (or `make controller-docker-push` +
+# `make controller-deploy`) for the in-cluster-image dev workflow; this pinned,
+# ghcr-sourced script is only for bringing a from-scratch cluster up before that
+# registry exists.
+#
+# Environment overrides:
+#   CONTROLLER_IMAGE — override the deployed image entirely (default: the pinned
+#                      ghcr.io tag above).  Set this to deploy a different build
+#                      (a tag, resolved to a digest before deploy, or a
+#                      pre-resolved @sha256: digest used verbatim).
+#   CONTROLLER_IMAGE_ALLOW_TAG — set to 1 to deploy the mutable tag when its digest
+#                      cannot be resolved (no docker/crane/skopeo, or a registry
+#                      lookup failure).  Default 0: the script FAILS CLOSED rather
+#                      than deploy an unresolvable mutable tag for this
+#                      superuser-credentialed controller.
+#   KUBE_CONTEXT     — the kubectl context this deploy must target (default: the
+#                      current context, which must be k3d-holos).  `make
+#                      controller-deploy` applies to the CURRENT context, so this
+#                      script only VALIDATES that the current context matches
+#                      KUBE_CONTEXT — it does not switch contexts.  To deploy to
+#                      another context, `kubectl config use-context` it first.
+#
+# Prerequisites:
+#   - kubectl, with a context pointing at the target cluster
+#   - make + the Go toolchain (the controller-deploy target installs kustomize
+#     under bin/ at the pinned version)
+#   - the holos-controller Namespace and the quay.holos.run CRDs are installed by
+#     `make controller-deploy` itself (CRDs) and the platform namespaces component
+#     (the Namespace), so run scripts/apply first.
+
+set -euo pipefail
+
+# Resolve the repo root so this script works from any working directory.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# The pinned, publicly-pullable bootstrap image (HOL-1380).  CI publishes the
+# multi-arch holos-controller image to ghcr.io/<owner>/holos-controller (see
+# README.md, the Images workflow); this tag is `git describe` of the controller
+# build the bootstrap is validated against.
+#
+# This is a TAG, the form HOL-1380 specifies.  A tag is mutable, so before
+# deploying, the script RESOLVES it to its current immutable digest and deploys
+# that (see resolve_digest below) — the controller runs with the Quay superuser
+# credential, so the running image must not be subject to later tag retargeting.
+# Override CONTROLLER_IMAGE to deploy a different build (a tag or a pre-resolved
+# @sha256: digest, which is used verbatim).
+CONTROLLER_IMAGE="${CONTROLLER_IMAGE:-ghcr.io/holos-run/holos-controller:v0.2.0-36-gd1fa190}"
+
+if ! command -v kubectl >/dev/null 2>&1; then
+  echo "ERROR: 'kubectl' not found on PATH." >&2
+  exit 1
+fi
+if ! command -v make >/dev/null 2>&1; then
+  echo "ERROR: 'make' not found on PATH (needed to reuse the controller-deploy target)." >&2
+  exit 1
+fi
+
+# Resolve the target context (the scripts/apply posture): refuse to apply to
+# whatever context happens to be current unless it is k3d-holos or the operator
+# explicitly opted in via KUBE_CONTEXT.  `make controller-deploy` applies to the
+# CURRENT context, so additionally require the current context to MATCH
+# KUBE_CONTEXT — this script validates, it does not switch contexts.
+CURRENT_CONTEXT="$(kubectl config current-context)"
+if [[ -z "${KUBE_CONTEXT:-}" ]]; then
+  KUBE_CONTEXT="${CURRENT_CONTEXT}"
+  if [[ "${KUBE_CONTEXT}" != "k3d-holos" ]]; then
+    echo "ERROR: current kubectl context is '${KUBE_CONTEXT}', expected 'k3d-holos'." >&2
+    echo "       The controller deploys to the k3d-holos cluster.  Set KUBE_CONTEXT" >&2
+    echo "       explicitly (and make it the current context) to deploy elsewhere." >&2
+    exit 1
+  fi
+elif [[ "${KUBE_CONTEXT}" != "${CURRENT_CONTEXT}" ]]; then
+  echo "ERROR: KUBE_CONTEXT is '${KUBE_CONTEXT}' but the current context is '${CURRENT_CONTEXT}'." >&2
+  echo "       'make controller-deploy' applies to the CURRENT context, so switch to it first:" >&2
+  echo "         kubectl config use-context ${KUBE_CONTEXT}" >&2
+  exit 1
+fi
+
+if ! kubectl --context "${KUBE_CONTEXT}" version --request-timeout=10s >/dev/null 2>&1; then
+  echo "ERROR: cannot reach the cluster for kubectl context '${KUBE_CONTEXT}'." >&2
+  echo "       Bring up the platform floor with scripts/apply first (see docs/local-cluster.md)." >&2
+  exit 1
+fi
+
+# Pin the deployed image to an IMMUTABLE digest.  HOL-1380 specifies a TAG, but a
+# tag is mutable — and this controller runs with the Quay superuser credential, so
+# a retargeted tag would silently change privileged bootstrap behavior.  Resolve
+# the tag to its current digest and deploy THAT, so the running controller is
+# reproducible regardless of later tag movement (round-2 review finding).  If
+# CONTROLLER_IMAGE is already a digest reference (operator override), or no
+# registry-inspect tool is available / the lookup fails (offline, image not yet
+# published), fall back to the reference as given with a warning.
+resolve_digest() {
+  local ref="$1" repo digest
+  # Already digest-pinned (possibly tag@sha256:...): take the repo@digest tail.
+  if [[ "${ref}" == *@sha256:* ]]; then
+    echo "${ref%%@*}@sha256:${ref##*@sha256:}"
+    return 0
+  fi
+  repo="${ref%:*}"
+  if command -v docker >/dev/null 2>&1 \
+    && digest="$(docker buildx imagetools inspect "${ref}" --format '{{.Manifest.Digest}}' 2>/dev/null)" \
+    && [[ "${digest}" == sha256:* ]]; then
+    echo "${repo}@${digest}"
+    return 0
+  fi
+  if command -v crane >/dev/null 2>&1 \
+    && digest="$(crane digest "${ref}" 2>/dev/null)" \
+    && [[ "${digest}" == sha256:* ]]; then
+    echo "${repo}@${digest}"
+    return 0
+  fi
+  if command -v skopeo >/dev/null 2>&1 \
+    && digest="$(skopeo inspect --format '{{.Digest}}' "docker://${ref}" 2>/dev/null)" \
+    && [[ "${digest}" == sha256:* ]]; then
+    echo "${repo}@${digest}"
+    return 0
+  fi
+  return 1
+}
+
+DEPLOY_IMAGE="${CONTROLLER_IMAGE}"
+if RESOLVED="$(resolve_digest "${CONTROLLER_IMAGE}")"; then
+  if [[ "${RESOLVED}" != "${CONTROLLER_IMAGE}" ]]; then
+    echo "Resolved ${CONTROLLER_IMAGE} to immutable digest ${RESOLVED}."
+  fi
+  DEPLOY_IMAGE="${RESOLVED}"
+elif [[ "${CONTROLLER_IMAGE_ALLOW_TAG:-0}" == "1" ]]; then
+  # Explicit opt-out: deploy the mutable tag.  The operator has accepted that the
+  # running controller is then subject to later tag retargeting.
+  echo "WARNING: could not resolve ${CONTROLLER_IMAGE} to a digest; CONTROLLER_IMAGE_ALLOW_TAG=1" >&2
+  echo "         is set, so deploying the mutable tag as-is." >&2
+else
+  # FAIL CLOSED: this controller runs with the Quay superuser credential, so we
+  # refuse to deploy an unresolvable mutable tag by default (round-2 review
+  # finding).  k3d itself requires docker, so docker buildx imagetools is normally
+  # present; a failure here is usually a transient registry lookup — retry, or
+  # pin explicitly.
+  echo "ERROR: could not resolve ${CONTROLLER_IMAGE} to an immutable digest" >&2
+  echo "       (no docker/crane/skopeo on PATH, or the registry lookup failed)." >&2
+  echo "       Refusing to deploy a mutable tag for the superuser-credentialed controller." >&2
+  echo "       Options:" >&2
+  echo "         - retry (transient registry/network failures resolve on a re-run); or" >&2
+  echo "         - pin explicitly: CONTROLLER_IMAGE=${CONTROLLER_IMAGE%:*}@sha256:<digest> $0; or" >&2
+  echo "         - accept the mutable tag deliberately: CONTROLLER_IMAGE_ALLOW_TAG=1 $0" >&2
+  exit 1
+fi
+
+echo "Deploying the Holos Controller image ${DEPLOY_IMAGE} to context ${KUBE_CONTEXT} ..."
+
+# Reuse the controller-deploy target (single-sourced kustomize render + apply),
+# overriding only the image.  controller-deploy applies --server-side, so it
+# converges and is safe to re-run.  The target uses the current kubectl context;
+# we have already pinned/validated it above.
+make -C "${REPO_ROOT}" controller-deploy CONTROLLER_IMAGE="${DEPLOY_IMAGE}"
+
+echo ""
+echo "✓ Holos Controller deployed from ${DEPLOY_IMAGE}."
+echo "  Wait for it to become Available, then provision the holos Quay organization:"
+echo "    kubectl --context ${KUBE_CONTEXT} -n holos-controller rollout status deploy/holos-controller-controller-manager"
+echo "    scripts/apply-holos-quay-organization"

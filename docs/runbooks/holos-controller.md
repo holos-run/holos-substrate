@@ -172,6 +172,22 @@ The `holos-controller` namespace itself is owned by the central registry
 (`holos/namespaces.cue`, `_ambient: true`) and rendered by `scripts/render`; the
 kustomize tree targets it but does not create the Namespace object.
 
+`make controller-deploy` deploys the controller from the in-cluster registry
+image (`quay.holos.internal/holos/holos-controller:dev` by default) — its
+**steady-state / dev** path, used **once the holos Quay organization exists** and
+the controller image has been published to it (`make controller-docker-push`).
+On a **freshly bootstrapped** cluster that registry does not exist yet (it is
+exactly what the bootstrap provisions), so the controller cannot be pulled from
+it. Use [`scripts/apply-holos-controller`](../../scripts/apply-holos-controller)
+(HOL-1380) for the bootstrap deploy instead: it reuses `make controller-deploy`
+but overrides the image to a pinned, publicly-pullable
+`ghcr.io/holos-run/holos-controller:<tag>`, so the controller can come up and
+reconcile the `holos` Quay organization
+([`scripts/apply-holos-quay-organization`](../../scripts/apply-holos-quay-organization))
+before the in-cluster registry is its own host. After the org is up and the image
+is published there, the ordinary `make controller-deploy` is the path going
+forward.
+
 Verify:
 
 ```bash

@@ -27,29 +27,27 @@ cat <<'EOF'
 
 INSTRUCTIONS:
 
-1. Navigate to: https://quay.holos.internal/organization/platform-automation?tab=OAuthApplications
+1. Obtain the svc-quay-resource-controller password:
 
-2. Log in as the svc-quay-resource-controller Keycloak user
+     kubectl get -n keycloak secret svc-quay-resource-controller -o json \
+       | jq -r --exit-status '.data | map_values(@base64d) | .password'
 
-3. If the platform-automation organization does not exist, create it:
-   - Click "Create Organization"
-   - Name: platform-automation
+2. Log into https://quay.holos.internal as the svc-quay-resource-controller
+   identity (the "Holos SSO" button, using the password from step 1).
 
-4. Create an OAuth Application with the following settings:
+3. Create an organization named: platform-automation
+
+4. Navigate to:
+   https://quay.holos.internal/organization/platform-automation?tab=OAuthApplications
+
+5. Create an OAuth Application with the following settings:
    - Application Name: svc-quay-resource-controller
-   - Redirect URI: http://localhost:8080/callback (or leave blank if not needed)
+   (no Redirect URI is needed — leave it blank)
 
-5. Generate an Access Token with these scopes:
-   - org:admin
-   - repo:admin
-   - repo:create
-   - repo:read
-   - repo:write
-   - super:user
-   - user:admin
-   - user:read
+6. Generate an Access Token with ALL scopes enabled.  The token needs full
+   access so the controller can manage all Quay resources.
 
-6. Copy the generated Access Token and paste it below when prompted.
+7. Copy the generated Access Token and paste it below when prompted.
 
 EOF
 

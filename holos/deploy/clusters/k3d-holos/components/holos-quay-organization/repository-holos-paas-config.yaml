@@ -1,0 +1,14 @@
+apiVersion: quay.holos.run/v1alpha1
+kind: Repository
+metadata:
+  labels:
+    app.kubernetes.io/name: holos
+  name: holos-paas-config
+  namespace: holos-controller
+spec:
+  credentialsSecretRef:
+    name: holos-controller-quay-creds
+  description: The App-of-Apps platform config bundle (HOL-1380).
+  name: holos-paas-config
+  organizationRef: holos
+  visibility: private

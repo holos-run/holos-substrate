@@ -1,0 +1,270 @@
+#!/usr/bin/env bash
+# Provision the platform's own Quay organization (HOL-1380): the `holos`
+# Organization and the public `holos-controller` Repository the shipped Holos
+# Controller (ADR-18/ADR-19) reconciles into the in-cluster Quay registry.
+#
+# This is the bootstrap home of the two OCI artifacts the platform delivers from
+# a fresh cluster:
+#   * the holos-controller container image (the public holos-controller repo this
+#     script creates); and
+#   * the App-of-Apps platform config bundle (the private holos-paas-config repo
+#     this script also creates, so the push robot needs only write — see
+#     scripts/apply-app-of-apps).
+#
+# The holos-controller Repository is PUBLIC (world-pullable), and the org binds an
+# OIDC-synced Quay team to the realm's `authenticated` default group with org role
+# `creator` + an org default `write` permission — so every authenticated user can
+# create repos in the org and push/pull existing ones ("all authenticated users
+# push and pull").  AUTOMATED pushes still use a Quay ROBOT credential; see the
+# guidance this script prints on success.
+#
+# Like scripts/apply-projects, the Organization and Repository carry spec.caBundle
+# — the per-cluster local-ca certificate the controller needs to trust the
+# in-cluster Quay's mkcert-signed serving cert.  That trust material is per-cluster
+# and NEVER committed (absent from the rendered holos/deploy tree); it is injected
+# here at apply time via the ca_bundle_pem CUE tag, the same --inject pattern
+# scripts/publish and scripts/apply-projects use.
+#
+# ORDERING — run, on a freshly-bootstrapped cluster, AFTER:
+#   1. scripts/local-ca (the local CA whose certificate is injected).
+#   2. scripts/apply (the platform floor, incl. the holos-controller Namespace and
+#      Quay itself).
+#   3. scripts/apply-svc-quay-resource-controller-creds (the
+#      holos-controller-quay-creds Secret the controller authenticates to Quay with).
+#   4. scripts/apply-holos-controller (the controller + its quay.holos.run CRDs —
+#      the reconciler that turns the CRs this script applies into a real Quay org).
+#
+# Environment overrides (mirroring scripts/apply-projects):
+#   KUBE_CONTEXT     — kubectl context to apply to (default: current, must be k3d-holos).
+#   CA_BUNDLE_PEM    — the local-ca certificate PEM to inject (default: read from
+#                      the cert-manager/local-ca Secret, falling back to mkcert).
+#   ROLLOUT_TIMEOUT  — per-gate timeout (default: 300s).
+#   KEEP_WORKDIR     — keep the temporary render directory for debugging.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+HOLOS_DIR="${REPO_ROOT}/holos"
+
+ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
+
+# Convert a kubectl-style duration to whole seconds (same grammar as
+# scripts/apply-projects' duration_seconds).
+duration_seconds() {
+  local duration="$1" rest="$1" total=0
+  if [[ ! "${duration}" =~ ^([0-9]+[hms])+$ ]]; then
+    echo "ERROR: cannot parse duration '${duration}' (expected e.g. 300s, 5m, 1h30m)." >&2
+    return 1
+  fi
+  while [[ "${rest}" =~ ^([0-9]+)([hms]) ]]; do
+    case "${BASH_REMATCH[2]}" in
+      h) total=$((total + 10#${BASH_REMATCH[1]} * 3600)) ;;
+      m) total=$((total + 10#${BASH_REMATCH[1]} * 60)) ;;
+      s) total=$((total + 10#${BASH_REMATCH[1]})) ;;
+    esac
+    rest="${rest:${#BASH_REMATCH[0]}}"
+  done
+  echo "${total}"
+}
+
+ROLLOUT_TIMEOUT_SECONDS="$(duration_seconds "${ROLLOUT_TIMEOUT}")" || exit 1
+
+# ---------------------------------------------------------------------------
+# Prerequisites
+# ---------------------------------------------------------------------------
+missing=0
+for tool in holos kubectl; do
+  if ! command -v "${tool}" >/dev/null 2>&1; then
+    echo "ERROR: '${tool}' not found on PATH." >&2
+    [[ "${tool}" == holos ]] && echo "       Install from https://holos.run/docs/cli/" >&2
+    missing=1
+  fi
+done
+if [[ "${missing}" -ne 0 ]]; then
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Resolve and pin the target context (the scripts/apply posture)
+# ---------------------------------------------------------------------------
+if [[ -z "${KUBE_CONTEXT:-}" ]]; then
+  KUBE_CONTEXT="$(kubectl config current-context)"
+  if [[ "${KUBE_CONTEXT}" != "k3d-holos" ]]; then
+    echo "ERROR: current kubectl context is '${KUBE_CONTEXT}', expected 'k3d-holos'." >&2
+    echo "       The rendered manifests target the k3d-holos cluster.  Set" >&2
+    echo "       KUBE_CONTEXT explicitly to apply to a different context." >&2
+    exit 1
+  fi
+fi
+echo "Will apply manifests to kubectl context: ${KUBE_CONTEXT}"
+
+if ! kubectl --context "${KUBE_CONTEXT}" version --request-timeout=10s >/dev/null 2>&1; then
+  echo "ERROR: cannot reach the cluster for kubectl context '${KUBE_CONTEXT}'." >&2
+  echo "       Create the local cluster with scripts/local-k3d (see docs/local-cluster.md)." >&2
+  exit 1
+fi
+
+# Preflight: the Holos Controller's Organization CRD must be installed, or the
+# component apply below fails with `no matches for kind "Organization"`.
+if ! kubectl --context "${KUBE_CONTEXT}" get crd organizations.quay.holos.run \
+  --request-timeout=10s >/dev/null 2>&1; then
+  echo "ERROR: the organizations.quay.holos.run CRD is not installed on context '${KUBE_CONTEXT}'." >&2
+  echo "       The Holos Controller reconciles the holos Organization; install it first with:" >&2
+  echo "         scripts/apply-holos-controller" >&2
+  echo "       (see docs/runbooks/holos-controller.md).  scripts/apply does not install the controller." >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Resolve the local-ca PEM to inject as the caBundle
+# ---------------------------------------------------------------------------
+CA_BUNDLE_PEM="${CA_BUNDLE_PEM:-}"
+if [[ -z "${CA_BUNDLE_PEM}" ]]; then
+  echo "Reading the local-ca Secret from cert-manager in context ${KUBE_CONTEXT} ..." >&2
+  CA_BUNDLE_PEM="$(kubectl --context "${KUBE_CONTEXT}" --namespace cert-manager \
+    get secret local-ca -o jsonpath='{.data.ca\.crt}' 2>/dev/null | base64 -d || true)"
+fi
+if [[ -z "${CA_BUNDLE_PEM}" ]] && command -v mkcert >/dev/null 2>&1; then
+  caroot="$(mkcert -CAROOT 2>/dev/null || true)"
+  if [[ -n "${caroot}" && -f "${caroot}/rootCA.pem" ]]; then
+    echo "local-ca Secret unreadable; falling back to ${caroot}/rootCA.pem" >&2
+    CA_BUNDLE_PEM="$(cat "${caroot}/rootCA.pem")"
+  fi
+fi
+if [[ -z "${CA_BUNDLE_PEM}" ]]; then
+  echo "ERROR: could not resolve the local-ca PEM." >&2
+  echo "       Run scripts/local-ca first, or set CA_BUNDLE_PEM to the local CA certificate." >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Render the platform with the local-ca PEM injected (cleaned up on exit)
+# ---------------------------------------------------------------------------
+WORKDIR="$(mktemp -d "${HOLOS_DIR}/.apply-holos-quay-org.XXXXXX")"
+RENDER_DIR="${WORKDIR}/deploy"
+cleanup() {
+  if [[ -z "${KEEP_WORKDIR:-}" ]]; then
+    rm -rf "${WORKDIR}"
+  else
+    echo "KEEP_WORKDIR set; left render directory at ${WORKDIR}" >&2
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+echo "Rendering platform with ca_bundle_pem injected ..." >&2
+(
+  cd "${HOLOS_DIR}"
+  holos render platform \
+    --inject "ca_bundle_pem=${CA_BUNDLE_PEM}" \
+    --write-to "$(basename "${WORKDIR}")/deploy"
+) >&2
+
+COMPONENT_DIR="${RENDER_DIR}/clusters/k3d-holos/components/holos-quay-organization"
+if [[ ! -d "${COMPONENT_DIR}" ]] || [[ -z "$(ls -A "${COMPONENT_DIR}" 2>/dev/null)" ]]; then
+  echo "ERROR: render produced no holos-quay-organization manifests under ${RENDER_DIR}." >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Apply the Organization + Repository (with the injected caBundle)
+# ---------------------------------------------------------------------------
+echo "==> holos-quay-organization" >&2
+kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts -f "${COMPONENT_DIR}/"
+
+# ---------------------------------------------------------------------------
+# Gate the Organization and Repository to Ready
+# ---------------------------------------------------------------------------
+# Poll a holos.run resource to Ready=True, honoring it only once the controller
+# has observed the current generation (observedGeneration >= generation), failing
+# fast on a terminal Ready=False, and tolerating apply lag (absent/status-less).
+gate_ready() {
+  local namespace="$1" resource="$2" terminal="${3:-Conflict}"
+  local state lookup_failures=0
+  local deadline=$((SECONDS + ROLLOUT_TIMEOUT_SECONDS))
+  while true; do
+    if state=$(kubectl --context "${KUBE_CONTEXT}" --namespace "${namespace}" \
+      get "${resource}" --ignore-not-found --request-timeout=10s \
+      -o jsonpath='gen={.metadata.generation}={.status.observedGeneration}{"\n"}{range .status.conditions[*]}{.type}={.status}={.reason}{"\n"}{end}'); then
+      lookup_failures=0
+      local conditions
+      conditions="$(grep -v '^gen=' <<<"${state}" || true)"
+      if [[ -z "${state}" ]] || [[ -z "${conditions}" ]]; then
+        :
+      else
+        local gen_line generation observed
+        gen_line="$(grep '^gen=' <<<"${state}" | head -1 || true)"
+        generation="$(cut -d= -f2 <<<"${gen_line}")"
+        observed="$(cut -d= -f3 <<<"${gen_line}")"
+        if grep -q '^Ready=True=' <<<"${conditions}"; then
+          if [[ -z "${observed}" ]] || [[ -z "${generation}" ]] || ((observed >= generation)); then
+            break
+          fi
+        elif grep -qE "^Ready=False=(${terminal})\$" <<<"${conditions}"; then
+          local reason; reason="$(grep '^Ready=False=' <<<"${conditions}" | head -1 || true)"
+          echo "ERROR: ${namespace}/${resource} hit a terminal Ready=False (${reason##*=}); inspect it with:" >&2
+          echo "       kubectl --context ${KUBE_CONTEXT} --namespace ${namespace} describe ${resource}" >&2
+          return 1
+        fi
+      fi
+    else
+      lookup_failures=$((lookup_failures + 1))
+      if ((lookup_failures >= 3)); then
+        echo "ERROR: repeated failures reading ${namespace}/${resource}; aborting the gate." >&2
+        return 1
+      fi
+    fi
+    if ((SECONDS >= deadline)); then
+      echo "ERROR: timed out waiting for ${namespace}/${resource} to become Ready; inspect it with:" >&2
+      echo "       kubectl --context ${KUBE_CONTEXT} --namespace ${namespace} describe ${resource}" >&2
+      return 1
+    fi
+    sleep 5
+  done
+}
+
+NS="holos-controller"
+gate_ready "${NS}" "organization.quay.holos.run/holos" || exit 1
+gate_ready "${NS}" "repository.quay.holos.run/holos-controller" || exit 1
+gate_ready "${NS}" "repository.quay.holos.run/holos-paas-config" || exit 1
+
+cat <<EOF
+
+============================================================================
+The holos Quay organization is provisioned: organization 'holos', the public
+'holos-controller' repository, and the private 'holos-paas-config' bundle
+repository.  All authenticated users may push and pull.
+
+NEXT: obtain a Quay ROBOT account to push and pull the two OCI artifacts that
+flow through this org — the holos-controller image and the App-of-Apps config
+bundle (holos-paas-config).  Both repositories already exist (managed above), so
+the robot needs only WRITE (push) access — no repo-create rights.  Automated
+pushes use a robot credential, NOT an interactive login:
+
+  1. In https://quay.holos.internal, open the 'holos' organization and create a
+     Robot account (e.g. holos+robot), then grant it EXPLICIT WRITE on BOTH
+     existing repositories — holos-controller and holos-paas-config — via each
+     repo's Settings > User and Robot Permissions (set the robot to "Write").
+     Do NOT rely on an org DEFAULT permission (prototype): Quay applies those only
+     to repositories created AFTER the prototype exists, and both repos already
+     exist by now, so a default permission would leave the robot unable to push.
+  2. Use it for HOST-SIDE pushes (scripts/publish-config reads ORAS_USERNAME /
+     ORAS_PASSWORD, or a prior 'oras login quay.holos.internal'):
+       export ORAS_USERNAME='holos+robot'
+       export ORAS_PASSWORD='<robot token>'
+  3. Provision the same robot as the holos-paas-config-robot SOURCE Secret (keys
+     username/password) in the argocd namespace so Argo CD can PULL the bundle:
+       kubectl -n argocd create secret generic holos-paas-config-robot \\
+         --from-literal=username='holos+robot' --from-literal=password='<robot token>'
+
+THEN hand reconciliation to Argo CD by publishing the bundle and applying the
+two root Applications:
+
+  scripts/apply-app-of-apps
+
+See holos/docs/oci-publish-workflow.md and
+docs/runbooks/quay-resource-controller-credentials.md.
+============================================================================
+EOF

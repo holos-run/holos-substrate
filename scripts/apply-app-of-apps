@@ -7,9 +7,11 @@
 #      foundation, Quay, Keycloak, Argo CD, and Kargo — with `kubectl apply
 #      --server-side`, in dependency order, with no dependency on Argo CD
 #      reconciling anything; AND
-#   2. an operator has MANUALLY configured the holos Quay ORGANIZATION — the
-#      holos org and the holos-paas-config repository in the in-cluster Quay,
-#      plus the two credentials this script needs (both backed by a Quay robot):
+#   2. the holos Quay ORGANIZATION has been provisioned by
+#      scripts/apply-holos-quay-organization (HOL-1380) — the holos org and the
+#      holos-controller repository in the in-cluster Quay — and the operator has
+#      obtained the two credentials this script needs (both backed by a Quay
+#      robot, per the guidance that script prints):
 #        * HOST-SIDE PUSH auth for the `oras push` below — supplied via
 #          ORAS_USERNAME / ORAS_PASSWORD or a prior `oras login` (a push-capable
 #          robot credential; scripts/publish-config reads these, NOT any
@@ -18,14 +20,18 @@
 #          credential, keys username/password) in the argocd namespace, which the
 #          argocd-projects bootstrap Job turns into the holos-paas-config repo
 #          Secret Argo CD pulls the bundle with.
+#      The holos-paas-config repository itself is managed (pre-created) by
+#      scripts/apply-holos-quay-organization, so the push robot needs only write
+#      (push) access to it — no repo-create rights.
 #
-# That manual Quay setup is this script's EXPLICIT dependency, and the reason the
+# That holos Quay setup is this script's EXPLICIT dependency, and the reason the
 # handoff is a separate step from scripts/apply (HOL-1379).  On a freshly rebuilt
 # cluster the Quay registries are not configured yet when scripts/apply finishes,
-# so attempting the publish there would race the manual Quay setup and fail — the
+# so attempting the publish there would race the Quay setup and fail — the
 # rebuild-time race this split breaks.  scripts/apply therefore STOPS at the
-# floor (Quay and Keycloak up, ready for manual setup) and points here; run this
-# script once the holos Quay organization is configured.
+# floor (Quay and Keycloak up) and points through the HOL-1380 bootstrap steps;
+# run this script LAST, once scripts/apply-holos-quay-organization has run and you
+# have the robot push credential it describes.
 #
 # The handoff resolves the chicken-and-egg — Argo CD cannot reconcile the
 # platform from the OCI config bundle until Argo CD itself is running — by
@@ -186,8 +192,8 @@ if [[ "${published}" -ne 1 && "${FORCE_ROOTS}" != "1" ]]; then
   echo "       drag the cluster back to a stale or absent :dev bundle." >&2
   echo "" >&2
   echo "       This step depends on the holos Quay ORGANIZATION being configured first:" >&2
-  echo "         - the holos org and the holos-paas-config repository in the in-cluster Quay" >&2
-  echo "           (https://quay.holos.internal); and" >&2
+  echo "         - the holos org in the in-cluster Quay (https://quay.holos.internal)," >&2
+  echo "           provisioned by scripts/apply-holos-quay-organization (HOL-1380); and" >&2
   echo "         - HOST-SIDE PUSH auth for this oras push: a push-capable Quay robot" >&2
   echo "           credential, supplied via ORAS_USERNAME / ORAS_PASSWORD or a prior" >&2
   echo "           'oras login quay.holos.internal' (this script's oras push reads those," >&2
