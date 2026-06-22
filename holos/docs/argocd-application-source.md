@@ -56,6 +56,30 @@ kubectl -n argocd patch application <name> --type merge \
   -p '{"spec":{"source":{"targetRevision":"sha256:…"}}}'
 ```
 
+**The one mutable-tag exception — the App-of-Apps bootstrap.** The platform
+App-of-Apps roots and their children deliberately track the **mutable
+`holos-paas-config:dev` tag** rather than a digest (HOL-1373,
+[ADR-16 Rev 3](../../docs/adr/ADR-16.md)):
+
+```yaml
+spec:
+  source:
+    repoURL: oci://quay.holos.internal/holos/holos-paas-config
+    targetRevision: dev   # the mutable bootstrap tag — re-pushing it rolls the platform
+```
+
+This is the "Always" image-update behavior: re-pushing `:dev`
+(`make config-push`) makes Argo CD re-resolve and reconcile the new render. Argo
+CD caches a tag's resolved manifest in the repo-server cache, so the `argocd`
+controller component shortens the repo-cache TTL
+(`reposerver.repo.cache.expiration`, `ARGOCD_REPO_CACHE_EXPIRATION`) to **`1m`**
+so a moved `:dev` is re-pulled within a minute; each child's
+`syncPolicy.automated` (`prune` + `selfHeal`) then converges it. The full
+mechanism is in
+[oci-publish-workflow.md](oci-publish-workflow.md#always-re-pull-of-the-mutable-dev-tag--the-exact-mechanism).
+Nothing **sets** this `targetRevision` imperatively (no Kargo `argocd-update`
+patch) — it is committed as `dev` and left there; the tag, not the field, moves.
+
 ## Repository credential Secret
 
 The repo-server discovers registry credentials from a Secret in the
@@ -163,7 +187,15 @@ The repository Secret and any test `Application` are created imperatively
 pushed imperatively, so a committed `Application` would leave a fresh
 bootstrap perpetually Degraded until someone pushes the artifact. The
 ServiceEntry is the only committed piece — it depends on nothing
-imperative. When the rendered-manifests publish pipeline exists
-([Research: rendered-manifests publish pipeline](../../docs/research/rendered-manifests-publish-pipeline.md)),
-the gitops Application projection takes over — see the
+imperative.
+
+Platform self-delivery is now wired: the **OCI App-of-Apps** over the
+`holos-paas-config:dev` bundle reconciles the platform's own rendered manifests
+([ADR-16 Rev 3](../../docs/adr/ADR-16.md),
+[oci-publish-workflow.md](oci-publish-workflow.md)). `scripts/apply` publishes
+the bundle and applies the two root `Application`s as a final handoff after Argo
+CD is up — so the bundle push and the root apply are the imperative bootstrap
+steps, after which Argo CD owns reconciliation. This **supersedes the deferred
+per-component git-source projection** (the `argoAppDisabled` flip) for the
+platform; that projection stays dormant — see the
 [ArgoCD delivery placeholder](placeholders.md#argocd-gitops-delivery).

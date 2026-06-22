@@ -27,6 +27,25 @@ at the new digest. See
 [holos/docs/oci-publish-workflow.md](holos/docs/oci-publish-workflow.md) and
 [holos/docs/argocd-application-source.md](holos/docs/argocd-application-source.md).
 
+The **platform itself** (as distinct from per-app delivery above) is reconciled
+by Argo CD from an **App-of-Apps over an OCI config bundle** ([ADR-16](docs/adr/ADR-16.md)
+Rev 3, HOL-1373/HOL-1378): `scripts/publish-config` (`make config-build`/`config-push`)
+tars the committed `holos/deploy/` tree as-is under the mutable
+`holos-paas-config:dev` tag, and two root Argo CD `Application`s reconcile it under
+two AppProjects — **`platform`** (`platform-bootstrap`, the system components) and
+**`projects`** (`projects-bootstrap`, the project/application collection
+resources). `scripts/apply` brings Argo CD up imperatively (the bootstrap floor),
+then publishes the bundle and applies the two roots as a final, idempotent, gated
+**handoff** (the chicken-and-egg: Argo CD must exist before it self-manages;
+`BOOTSTRAP_APP_OF_APPS=0` skips it). The per-app Kargo delivery is unchanged and
+complementary (it still owns each app's `Application.spec.source.targetRevision`).
+This supersedes the deferred per-component `argoAppDisabled` git-source projection
+**for the platform** (which stays dormant). See ADR-16 Rev 3
+(*Bootstrap delivery — the App-of-Apps OCI config bundle*),
+[holos/docs/oci-publish-workflow.md](holos/docs/oci-publish-workflow.md)
+(*Platform config bundle*), and
+[holos/docs/placeholders.md](holos/docs/placeholders.md) (*ArgoCD gitops delivery*).
+
 ```text
 cmd/holos-paas/            # the multi-service binary (Fisk root command, ADR-17)
 internal/cli/              # the Fisk command tree (one register* func per command)
@@ -288,7 +307,14 @@ components have been removed. Git history preserves them.
   package the rendered manifests with Kustomize, and `oras push` the OCI
   artifact, with the deterministic input-addressed tagging convention and
   required push credentials. Replaces the deferred in-cluster render
-  subscriber.
+  subscriber. Also documents the **platform config bundle** (`scripts/publish-config`
+  / `make config-build`/`config-push`): the committed `holos/deploy/` tree tarred
+  as-is under the mutable `holos-paas-config:dev` tag, the **App-of-Apps** that
+  consumes it (the `platform-bootstrap`/`projects-bootstrap` roots + per-component
+  children, the sync-wave bootstrap ordering, the "Always" `:dev` re-pull
+  mechanism), and how `scripts/apply` wires the publish + root-Application apply as
+  the post-Argo-CD bootstrap handoff (HOL-1373/HOL-1378, [ADR-16](docs/adr/ADR-16.md)
+  Rev 3).
 - [holos/docs/placeholders.md](holos/docs/placeholders.md) — stubs for
   out-of-MVP-scope concerns: ArgoCD gitops delivery (the `argoAppDisabled`
   flip), observability dashboards, the Gateway route-attachment policy,
