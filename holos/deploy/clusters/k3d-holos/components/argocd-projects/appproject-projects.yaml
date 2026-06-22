@@ -9,6 +9,17 @@ spec:
   destinations:
   - namespace: '*'
     server: https://kubernetes.default.svc
+  - namespace: '!argocd'
+    server: https://kubernetes.default.svc
+  - namespace: '!kube-system'
+    server: https://kubernetes.default.svc
+  namespaceResourceBlacklist:
+  - group: argoproj.io
+    kind: Application
+  - group: argoproj.io
+    kind: AppProject
+  - group: argoproj.io
+    kind: ApplicationSet
   namespaceResourceWhitelist:
   - group: '*'
     kind: '*'
