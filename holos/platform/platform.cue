@@ -534,6 +534,32 @@ platform: {
 				cluster:   CLUSTER.name
 				labels: app: "application"
 			}}).output
+
+			// projects is the TENANT-side App-of-Apps (HOL-1377, parent
+			// HOL-1373): a root Argo CD Application assigned to the projects
+			// AppProject (argocd-projects, HOL-1375) that fans out two child
+			// Applications — one recursing the project component subpath, one
+			// recursing the application component subpath of the holos-paas-config
+			// OCI bundle at the mutable :dev tag (HOL-1374) — so every registered
+			// project's and app's control-plane resources (the per-project
+			// AppProject + Applications, the Kargo/Quay/Keycloak CRs) are
+			// bootstrapped declaratively rather than only via scripts/apply-projects.
+			// It is the tenant counterpart to the platform App-of-Apps
+			// (app-of-apps, HOL-1376) — distinct roots keep the system and tenant
+			// delivery boundaries separate.  Registered LAST, after the project and
+			// application collection components it delivers (it trails the full
+			// tenant set it enumerates), and after argocd-projects (the projects
+			// AppProject it is assigned to, widened in HOL-1377 to permit the argocd
+			// destination and the cluster-scoped Kargo Project the project component
+			// emits).  Like app-of-apps it pins targetRevision: dev on its OWN
+			// Applications (no Kargo in the bootstrap path) while delivering the
+			// per-project/app Applications verbatim (their targetRevision stays
+			// Kargo-owned).  scripts/apply hookup is deferred to HOL-1378.
+			(#ComponentTemplate & {inputs: {
+				component: "projects"
+				cluster:   CLUSTER.name
+				labels: app: "argocd"
+			}}).output
 		}
 	}
 }

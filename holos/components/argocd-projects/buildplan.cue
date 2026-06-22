@@ -116,11 +116,35 @@ let PLATFORM_PROJECT = {
 
 // --- AppProject: projects -------------------------------------------------
 //
-// Owns the single top-level App-of-Apps that bootstraps tenant projects (Phase
-// 4, HOL-1377).  Scoped to the tenant project OCI repos (any Quay org/repo) with
-// destinations covering tenant namespaces.  clusterResourceWhitelist is
-// DELIBERATELY omitted — like the per-project AppProject the project component
-// emits — so the tenant App-of-Apps cannot create cluster-scoped resources.
+// Owns the single top-level App-of-Apps that bootstraps tenant projects (the
+// projects component, HOL-1377) and its two child Applications (projects-project,
+// projects-application).  Scoped to the tenant project OCI repos (any Quay
+// org/repo), which includes the holos-paas-config bundle the projects App-of-Apps
+// pulls the project/application manifests from.
+//
+// HOL-1377 widens this project so the App-of-Apps can DELIVER the project/
+// application manifests, which Phase 2's minimal scoping rejected:
+//   - argocd is RE-PERMITTED as a destination (the '!argocd' deny is removed):
+//     the project component emits the per-project AppProject (named <project>)
+//     and the per-project/app Argo CD Applications into the argocd namespace, so
+//     the App-of-Apps must be allowed to create them there.  This is safe because
+//     ONLY this platform-trusted App-of-Apps and its children are assigned
+//     project: projects — every TENANT artifact (the per-project/app Applications
+//     this delivers) is assigned to its OWN per-project AppProject (project:
+//     <project>, namespaced-only, no argocd destination), so re-permitting argocd
+//     here does not let a tenant artifact mint an escalating Application: a tenant
+//     would have to be assigned project: projects to use this destination, and
+//     nothing tenant-authored is.  The remaining platform-infrastructure
+//     namespaces stay DENIED (keycloak/quay/kargo/istio-*/… via DENIED_NAMESPACES
+//     minus argocd), preserving the confused-deputy boundary for everything except
+//     the Argo CD control namespace the App-of-Apps legitimately writes to.
+//   - clusterResourceWhitelist is ADDED, scoped to EXACTLY the cluster-scoped
+//     kinds the project component emits: the Kargo Project (kargo.akuity.io/Project
+//     is cluster-scoped in Kargo 1.10 — it adopts the same-named project control
+//     namespace).  It is NOT a group:"*"/kind:"*" wildcard (that is the PLATFORM
+//     project's privilege); the tenant App-of-Apps may create only this one
+//     cluster-scoped kind, keeping tenants confined to namespaced resources plus
+//     the single Kargo Project their delivery pipeline requires.
 let PROJECTS_PROJECT = {
 	apiVersion: "argoproj.io/v1alpha1"
 	kind:       "AppProject"
@@ -135,24 +159,24 @@ let PROJECTS_PROJECT = {
 		sourceRepos: ["oci://quay.holos.internal/*/*"]
 		// Tenant namespaces on the in-cluster API server.  '*' admits the project
 		// control and env-prefixed namespaces (ci-/qa-/prod-<name>, bare <name>)
-		// the projects App-of-Apps fans out into, but EVERY platform-infrastructure
-		// namespace is DENIED ('!'-prefixed deny entries): without this a tenant
-		// artifact sourced from oci://quay.holos.internal/<tenant>/* could create
-		// resources (e.g. an Argo CD Application assigned project: platform, which
-		// has cluster-wide privileges, or a Secret/RoleBinding in keycloak/quay/
-		// kargo) inside a platform namespace — a confused-deputy privilege
-		// escalation across the tenant/platform boundary.  The deny set is the
-		// central #ReservedNamespaceNames registry (the static platform namespaces a
-		// project may not name) plus the Kubernetes system namespaces, so it stays
-		// in lock-step with the registry as platform namespaces are added.  This
-		// destination deny is the escalation boundary (no kind blacklist — see the
-		// note after namespaceResourceWhitelist below for why).
+		// the projects App-of-Apps fans out into, PLUS the argocd namespace the
+		// per-project AppProject and per-project/app Applications land in (HOL-1377
+		// re-permits it — see the project header note for why this does not widen
+		// tenant access).  EVERY OTHER platform-infrastructure namespace is DENIED
+		// ('!'-prefixed deny entries): without this a tenant artifact sourced from
+		// oci://quay.holos.internal/<tenant>/* could create resources (e.g. a
+		// Secret/RoleBinding in keycloak/quay/kargo) inside a platform namespace — a
+		// confused-deputy privilege escalation across the tenant/platform boundary.
+		// The deny set is the central #ReservedNamespaceNames registry (the static
+		// platform namespaces a project may not name) plus the Kubernetes system
+		// namespaces, MINUS argocd (now permitted), so it stays in lock-step with the
+		// registry as platform namespaces are added.
 		destinations: [
 			{
 				server:    IN_CLUSTER
 				namespace: "*"
 			},
-			for ns in DENIED_NAMESPACES {
+			for ns in DENIED_NAMESPACES if ns != ArgoCDNamespace {
 				server:    IN_CLUSTER
 				namespace: "!\(ns)"
 			},
@@ -161,21 +185,27 @@ let PROJECTS_PROJECT = {
 			group: "*"
 			kind:  "*"
 		}]
-		// NOTE on the escalation boundary: the boundary that prevents a tenant
-		// artifact from minting an Argo CD Application re-projected onto the
-		// cluster-privileged platform project is the DESTINATION DENY above — Argo
-		// CD Applications must live in the argocd namespace to be reconciled, and
-		// argocd is denied here, so a tenant cannot place one.  An
-		// argoproj.io/Application *kind* blacklist is deliberately NOT used: a kind
-		// blacklist cannot distinguish a tenant's escalating Application from the
-		// legitimate child Applications the projects App-of-Apps must fan out
-		// (HOL-1377), so it would break the very purpose of this project.
-		// clusterResourceWhitelist remains DELIBERATELY omitted, which confines
-		// tenants to namespaced resources.  HOL-1377 wires the top-level
-		// App-of-Apps under this project and refines the Application-creation
-		// boundary (re-permitting the argocd destination for controlled child
-		// Application management) — this phase only stands the project up, scoped
-		// minimally and additively.
+		// clusterResourceWhitelist scoped to EXACTLY the one cluster-scoped kind the
+		// project component emits: the Kargo Project (cluster-scoped in Kargo 1.10;
+		// it adopts the same-named project control namespace).  This is NOT the
+		// platform project's group:"*"/kind:"*" wildcard — the tenant App-of-Apps may
+		// create only this single cluster-scoped kind, keeping tenants otherwise
+		// confined to namespaced resources.
+		clusterResourceWhitelist: [{
+			group: "kargo.akuity.io"
+			kind:  "Project"
+		}]
+		// NOTE on the escalation boundary: an argoproj.io/Application *kind* blacklist
+		// is deliberately NOT used: a kind blacklist cannot distinguish a tenant's
+		// escalating Application from the legitimate per-project/app Applications the
+		// projects App-of-Apps must deliver into argocd (HOL-1377), so it would break
+		// the very purpose of this project.  The boundary that keeps a TENANT artifact
+		// from minting an Application re-projected onto the cluster-privileged platform
+		// project is project assignment, not the destination set: only this
+		// platform-trusted App-of-Apps and its children are assigned project: projects
+		// (and thus may use the argocd destination and the Kargo Project whitelist);
+		// every tenant artifact is assigned its own per-project AppProject, which
+		// permits neither the argocd destination nor any cluster-scoped resource.
 	}
 }
 
