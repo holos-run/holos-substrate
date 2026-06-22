@@ -269,8 +269,9 @@ ensure_repo_credential() {
 # intentionally-dirty tree), but Argo CD still cannot pull the bundle without the
 # holos-paas-config repo Secret, so skipping this here would reintroduce the
 # round-1 failure mode (roots applied, bundle unpullable) under a documented flag.
-# It is fast and idempotent on the happy path: the Secret is checked first, so an
-# already-present credential returns immediately.
+# It is idempotent on the happy path (re-applying RBAC + re-running the bootstrap
+# Job leaves an existing Secret untouched), and its poll checks the Secret before
+# the deadline, so an already-present credential returns without any extra wait.
 ensure_repo_credential || exit 1
 
 # 3. Apply the two root App-of-Apps Applications.  These component dirs are NOT in
