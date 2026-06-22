@@ -1,0 +1,18 @@
+apiVersion: quay.holos.run/v1alpha1
+kind: Organization
+metadata:
+  labels:
+    app.kubernetes.io/name: holos
+  name: holos
+  namespace: holos-controller
+spec:
+  adopt: false
+  credentialsSecretRef:
+    name: holos-controller-quay-creds
+  email: holos@holos.internal
+  name: holos
+  syncedTeams:
+  - name: holos-authenticated
+    oidcGroup: authenticated
+    repositoryPermission: write
+    role: creator
