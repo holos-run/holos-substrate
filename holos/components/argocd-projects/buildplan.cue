@@ -160,26 +160,21 @@ let PROJECTS_PROJECT = {
 			group: "*"
 			kind:  "*"
 		}]
-		// Deny tenants from creating Argo CD project/Application objects from their
-		// own artifacts: even with the argocd destination denied above, forbidding
-		// these kinds outright removes the escalation primitive entirely (a tenant
-		// cannot mint an Application/AppProject that re-projects itself onto the
-		// platform project).  clusterResourceWhitelist remains DELIBERATELY omitted,
-		// which is what confines tenants to namespaced resources.
-		namespaceResourceBlacklist: [
-			{
-				group: "argoproj.io"
-				kind:  "Application"
-			},
-			{
-				group: "argoproj.io"
-				kind:  "AppProject"
-			},
-			{
-				group: "argoproj.io"
-				kind:  "ApplicationSet"
-			},
-		]
+		// NOTE on the escalation boundary: the boundary that prevents a tenant
+		// artifact from minting an Argo CD Application re-projected onto the
+		// cluster-privileged platform project is the DESTINATION DENY above — Argo
+		// CD Applications must live in the argocd namespace to be reconciled, and
+		// argocd is denied here, so a tenant cannot place one.  An
+		// argoproj.io/Application *kind* blacklist is deliberately NOT used: a kind
+		// blacklist cannot distinguish a tenant's escalating Application from the
+		// legitimate child Applications the projects App-of-Apps must fan out
+		// (HOL-1377), so it would break the very purpose of this project.
+		// clusterResourceWhitelist remains DELIBERATELY omitted, which confines
+		// tenants to namespaced resources.  HOL-1377 wires the top-level
+		// App-of-Apps under this project and refines the Application-creation
+		// boundary (re-permitting the argocd destination for controlled child
+		// Application management) — this phase only stands the project up, scoped
+		// minimally and additively.
 	}
 }
 
