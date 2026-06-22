@@ -323,10 +323,40 @@ userDefinedBuildPlan: {
 							pdb: enabled:         false
 						}
 						configs: {
-							// The shared Gateway terminates TLS (the
-							// HTTPRoute pair above); argocd-server serves
-							// plain HTTP behind it.
-							params: "server.insecure": "true"
+							// argocd-cmd-params-cm.  server.insecure: the
+							// shared Gateway terminates TLS (the HTTPRoute
+							// pair above), so argocd-server serves plain HTTP
+							// behind it.
+							params: {
+								"server.insecure": "true"
+
+								// reposerver.repo.cache.expiration realizes the
+								// "Always" re-pull of the mutable :dev OCI tag
+								// the platform App-of-Apps bootstrap reads
+								// (components/app-of-apps, HOL-1376).  Argo CD
+								// caches an OCI tag's RESOLVED manifest in the
+								// repo-server repo cache
+								// (ARGOCD_REPO_CACHE_EXPIRATION, default 24h); a
+								// re-pushed :dev is not re-pulled until that entry
+								// expires.  Argo CD 3.4.2 (chart 9.5.15) exposes
+								// NO OCI-tag-specific expiration knob — the only
+								// OCI cmd-params keys the vendored chart wires are
+								// reposerver.oci.manifest.max.extracted.size and
+								// reposerver.oci.layer.media.types (size/format
+								// limits, not a TTL) — so this repo-cache TTL is
+								// the applicable mechanism.  Shortened to 1m so a
+								// moved :dev is re-resolved within a minute; the
+								// children's syncPolicy.automated (prune +
+								// selfHeal) then reconciles the new manifests to
+								// the cluster — the "Always" image-tag update
+								// policy (HOL-1376 AC #3).  Tradeoff: a shorter
+								// TTL means more frequent re-resolution work on
+								// the repo-server; 1m is comfortable for this
+								// single-instance laptop cluster.  A digest-pinned
+								// targetRevision would make the cache moot, but
+								// the bootstrap deliberately tracks mutable :dev.
+								"reposerver.repo.cache.expiration": "1m0s"
+							}
 
 							// argocd-cm: OIDC SSO against the Keycloak holos
 							// realm.  oidc.config is YAML-marshalled (the
