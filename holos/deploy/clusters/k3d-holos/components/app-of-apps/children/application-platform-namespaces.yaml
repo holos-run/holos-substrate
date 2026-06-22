@@ -1,0 +1,27 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  labels:
+    app.kubernetes.io/component: namespaces
+    app.kubernetes.io/name: platform-namespaces
+    app.kubernetes.io/part-of: platform
+  name: platform-namespaces
+  namespace: argocd
+spec:
+  destination:
+    namespace: argocd
+    server: https://kubernetes.default.svc
+  project: platform
+  source:
+    path: clusters/k3d-holos/components/namespaces
+    repoURL: oci://quay.holos.internal/holos/holos-paas-config
+    targetRevision: dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - ServerSideApply=true
+    - CreateNamespace=false

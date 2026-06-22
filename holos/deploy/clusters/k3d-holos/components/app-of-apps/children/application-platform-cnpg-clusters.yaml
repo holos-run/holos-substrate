@@ -1,0 +1,27 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "14"
+  labels:
+    app.kubernetes.io/component: cnpg-clusters
+    app.kubernetes.io/name: platform-cnpg-clusters
+    app.kubernetes.io/part-of: platform
+  name: platform-cnpg-clusters
+  namespace: argocd
+spec:
+  destination:
+    namespace: argocd
+    server: https://kubernetes.default.svc
+  project: platform
+  source:
+    path: clusters/k3d-holos/components/cnpg-clusters
+    repoURL: oci://quay.holos.internal/holos/holos-paas-config
+    targetRevision: dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - ServerSideApply=true
+    - CreateNamespace=false
