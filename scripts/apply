@@ -1277,9 +1277,12 @@ Quay organization so the platform-config bundle can be published:
   1. Create the holos organization and the holos-paas-config repository in the
      in-cluster Quay (https://quay.holos.internal) — see
      docs/runbooks/quay-resource-controller-credentials.md.
-  2. Provision the holos-paas-config-robot push credential (the
-     holos-paas-config-robot source Secret, keys username/password, in the
-     argocd namespace).
+  2. Set up HOST-SIDE PUSH auth for the bundle push: a push-capable Quay robot
+     credential via ORAS_USERNAME / ORAS_PASSWORD or a prior
+     'oras login quay.holos.internal' (scripts/publish-config reads these).
+  3. Provision the holos-paas-config-robot SOURCE Secret (the holos+robot PULL
+     credential, keys username/password) in the argocd namespace — Argo CD's
+     repository credential is assembled from it.
 
 THEN run the App-of-Apps handoff to hand reconciliation to Argo CD:
 

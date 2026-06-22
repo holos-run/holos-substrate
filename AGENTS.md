@@ -29,7 +29,7 @@ at the new digest. See
 
 The **platform itself** (as distinct from per-app delivery above) is reconciled
 by Argo CD from an **App-of-Apps over an OCI config bundle** ([ADR-16](docs/adr/ADR-16.md)
-Rev 3, HOL-1373/HOL-1378): `scripts/publish-config` (`make config-build`/`config-push`)
+Rev 3–4, HOL-1373/HOL-1378/HOL-1379): `scripts/publish-config` (`make config-build`/`config-push`)
 tars the committed `holos/deploy/` tree as-is under the mutable
 `holos-paas-config:dev` tag, and two root Argo CD `Application`s reconcile it under
 two AppProjects — **`platform`** (`platform-bootstrap`, the system components) and

@@ -191,7 +191,7 @@ imperative.
 
 Platform self-delivery is now wired: the **OCI App-of-Apps** over the
 `holos-paas-config:dev` bundle reconciles the platform's own rendered manifests
-([ADR-16 Rev 3](../../docs/adr/ADR-16.md),
+([ADR-16 Rev 4](../../docs/adr/ADR-16.md),
 [oci-publish-workflow.md](oci-publish-workflow.md)). `scripts/apply` brings Argo
 CD up and stops at the bootstrap floor; the separate `scripts/apply-app-of-apps`
 then publishes the bundle and applies the two root `Application`s as the handoff

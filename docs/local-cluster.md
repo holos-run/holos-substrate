@@ -153,7 +153,7 @@ configured first. On a freshly rebuilt cluster that organization does not exist
 yet, so doing the publish from `scripts/apply` would race the manual Quay setup
 and fail (HOL-1379). The handoff is therefore a **separate script**,
 `scripts/apply-app-of-apps`, run after the manual Quay setup ([ADR-16
-Rev 3](adr/ADR-16.md)).
+Rev 4](adr/ADR-16.md)).
 
 When `scripts/apply` finishes it prints the manual-setup guidance. Configure the
 holos Quay organization:
@@ -161,9 +161,14 @@ holos Quay organization:
 1. Create the holos organization and the `holos-paas-config` repository in the
    in-cluster Quay (`https://quay.holos.internal`) — see the
    [Quay resource-controller credentials runbook](runbooks/quay-resource-controller-credentials.md).
-2. Provision the `holos-paas-config-robot` push credential (the
-   `holos-paas-config-robot` source Secret, keys `username`/`password`, in the
-   `argocd` namespace).
+2. Set up **host-side push auth** for the bundle push — a push-capable Quay robot
+   credential via `ORAS_USERNAME` / `ORAS_PASSWORD` or a prior
+   `oras login quay.holos.internal` (`scripts/publish-config` reads those, **not**
+   any in-cluster Secret).
+3. Provision the `holos-paas-config-robot` **source** Secret (the `holos+robot`
+   **pull** credential, keys `username`/`password`, in the `argocd` namespace) —
+   Argo CD's repository credential (`holos-paas-config`) is assembled from it by
+   the `argocd-projects` bootstrap Job, which `scripts/apply-app-of-apps` re-runs.
 
 Then run the handoff:
 
