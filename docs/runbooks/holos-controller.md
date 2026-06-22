@@ -284,6 +284,39 @@ with an `x509: certificate signed by unknown authority` TLS error against Quay;
 always provision `my-project` through `scripts/apply-projects` so the trust
 anchor is injected.
 
+### caBundle injection vs. the `projects` App-of-Apps (the OCI bootstrap)
+
+The App-of-Apps OCI bootstrap (HOL-1373, [ADR-16 Rev 3](../adr/ADR-16.md)) adds a
+`projects` top-level `Application` (`projects-bootstrap`) that reconciles the
+project/application resources — including each project's Quay `Organization` and
+each app's `Repository` — from the **`holos-paas-config:dev` bundle**. That bundle
+is the **committed** `holos/deploy/` tree, which by guarantee carries **no**
+`caBundle` material (it is per-cluster trust material, injected only at apply
+time, never committed). So the two paths coexist deliberately:
+
+- **`scripts/apply-projects` remains the path that provisions `caBundle`.** It
+  reads the local-ca PEM and renders the Organization/Repository CRs with
+  `spec.caBundle` injected (the `ca_bundle_pem` CUE tag), so the controller
+  trusts the in-cluster Quay's mkcert serving cert. Run it on a local k3d cluster
+  where Quay is served with the mkcert local CA.
+- **The `projects` App-of-Apps reconciles the same CRs *without* a `caBundle`.**
+  Because the bundle carries none, ArgoCD's copy has `spec.caBundle` empty — which
+  means the controller falls back to the **pod's system trust store**. That is
+  correct **only** where Quay's serving certificate already chains to a CA in the
+  system store (a real cluster with a publicly-trusted or system-installed CA),
+  **not** the mkcert local k3d cluster.
+
+**Ordering guidance.** On the local k3d cluster, run `scripts/apply-projects`
+**after** `scripts/apply` (whose App-of-Apps handoff applies `projects-bootstrap`)
+so the injected `caBundle` is the last writer on the Organization/Repository CRs —
+`scripts/apply-projects` uses a distinct field manager and re-asserts `caBundle`,
+and ArgoCD's `selfHeal` does not strip a field the committed source never sets
+(server-side apply field ownership). Where the system trust store already covers
+Quay's cert, the `projects` App-of-Apps alone suffices and `scripts/apply-projects`
+is unnecessary for trust (it is still the path that injects per-cluster material).
+The **no-committed-Secret / no-committed-`caBundle`** guarantee holds either way:
+the bundle never contains trust material.
+
 ## See also
 
 - [ADR-18 — The Holos Controller](../adr/ADR-18.md) — the controller, its

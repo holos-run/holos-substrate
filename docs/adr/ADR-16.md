@@ -12,6 +12,7 @@
 | -------- | ---------- | ----------- | -------------- |
 | 1        | 2026-06-14 | @jeffmccune | Initial design |
 | 2        | 2026-06-14 | @jeffmccune | Note the NATS pipeline retirement landed (HOL-1241): receiver/subscriber code, the pipeline protobuf, and the nats/webhook-* components removed; operational docs updated to this path |
+| 3        | 2026-06-21 | @jeffmccune | HOL-1373/HOL-1378: add the **App-of-Apps OCI config-image bootstrap** — the complement to the per-app Kargo delivery above. The whole committed `holos/deploy/` tree is published as a single OCI bundle (`holos-paas-config:dev`, mutable tag) and two root Argo CD `Application`s reconcile the platform from it under two AppProjects: `platform` (the system components, root `platform-bootstrap`) and `projects` (the project/application collection resources, root `projects-bootstrap`). `scripts/apply` brings Argo CD up imperatively (the bootstrap floor), then publishes the bundle and applies the two roots so Argo CD takes over ongoing reconciliation. See *Bootstrap delivery — the App-of-Apps OCI config bundle* below. Built across HOL-1374 (the `holos-paas-config` bundle + `make config-build`/`config-push`), HOL-1375 (the `platform`/`projects` AppProjects + repo-credential bootstrap), HOL-1376 (the platform root), HOL-1377 (the projects root), and HOL-1378 (the `scripts/apply` wiring + these docs). |
 
 ## Context and Problem Statement
 
@@ -177,6 +178,57 @@ research reports named for Kargo, adopted now as the MVP rather than deferred.
   runs client-side now.
 - **Digest pinning** ([ADR-8](ADR-8.md)) survives: a tag may label, but the
   immutable digest in `targetRevision` is what deploys.
+
+### Bootstrap delivery — the App-of-Apps OCI config bundle
+
+The two halves above deliver **one application** at a time: a per-app
+rendered-manifests artifact (`holos-paas-manifests`, immutable
+input-addressed tags) that Kargo watches and promotes by digest. They do
+**not** deliver the **platform itself** — the Layer 0 foundation, the Layer 1
+services, and the project/application control-plane resources. That is the job
+of a second, complementary OCI delivery path added in HOL-1373: an Argo CD
+**App-of-Apps over an OCI config bundle**.
+
+- **The bundle (`holos-paas-config:dev`).** `scripts/publish-config`
+  (`make config-build`/`config-push`) tars the **committed** `holos/deploy/`
+  tree as-is — no render, no digest injection, no Kustomize — and `oras push`es
+  it under a **mutable `:dev`** tag. This is deliberately distinct from the
+  per-app `scripts/publish` path: that one re-renders with an injected app image
+  digest and pushes an immutable input-addressed tag to `holos-paas-manifests`
+  for Kargo; this one bundles the reviewed platform render under one stable
+  handle for Argo CD to bootstrap the whole platform from. See
+  [holos/docs/oci-publish-workflow.md](../../holos/docs/oci-publish-workflow.md)
+  (*Platform config bundle*).
+- **Two AppProjects, two roots — system vs. tenant separation.** Two Argo CD
+  `AppProject`s split platform delivery by trust scope (the `argocd-projects`
+  component): **`platform`** (broad — the system owns CRDs, ClusterRoles, and
+  every namespace) and **`projects`** (tenant-scoped — denies the reserved
+  platform namespaces, whitelists only the Kargo `Project` cluster-scoped kind).
+  A root `Application` lives in each: **`platform-bootstrap`** (`spec.project:
+  platform`, the `app-of-apps` component) fans out one child `Application` per
+  system component from the bundle's per-component subpaths; **`projects-bootstrap`**
+  (`spec.project: projects`, the `projects` component) fans out the
+  collection-driven `project`/`application` resources. Both track
+  `targetRevision: dev` and reconcile on every re-push (the "Always" repo-cache
+  TTL the `argocd` component shortens to `1m`).
+- **Bootstrap ordering — the chicken-and-egg.** Argo CD cannot reconcile the
+  platform from the bundle until Argo CD is itself running. So `scripts/apply`
+  keeps bringing the foundation + Argo CD + Kargo up **imperatively** (the
+  bootstrap floor, `kubectl apply --server-side` in dependency order), then as a
+  **final handoff** publishes the bundle and applies the two root `Application`s
+  — after which Argo CD owns ongoing reconciliation. The imperative floor is
+  never removed; the handoff is idempotent and gated (it skips gracefully when
+  `oras`/Quay/the push credential are absent, leaving a usable floor). The
+  per-app Kargo delivery (halves 1–2) is **unchanged and complementary**: it
+  still owns each app's `Application.spec.source.targetRevision`, which the
+  project/application roots deliberately do **not** manage (the
+  `kargo.akuity.io/authorized-stage` posture).
+
+This bootstrap **supersedes the deferred per-component `git`-source projection**
+(`userDefinedBuildPlan`'s `argoAppDisabled` flip) **for the platform**: platform
+self-delivery is now the OCI App-of-Apps, not a git-source Application per
+component. See [holos/docs/placeholders.md](../../holos/docs/placeholders.md)
+(*ArgoCD gitops delivery*).
 
 ### What is eschewed / deferred
 

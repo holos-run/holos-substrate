@@ -142,6 +142,31 @@ with a browser-trusted certificate:
 curl https://echo.holos.internal/
 ```
 
+### App-of-Apps handoff (ArgoCD self-management)
+
+After the imperative bring-up, `scripts/apply` performs a final **App-of-Apps
+handoff** so ArgoCD takes over ongoing reconciliation of the platform
+([ADR-16 Rev 3](adr/ADR-16.md)). This resolves the chicken-and-egg — ArgoCD
+cannot reconcile the platform from the OCI config bundle until ArgoCD itself is
+running — by running **after** the imperative floor brings ArgoCD up:
+
+1. It publishes the **`holos-paas-config:dev`** bundle (a tar of the committed
+   `holos/deploy/` tree, `scripts/publish-config`).
+2. It applies the two **root ArgoCD `Application`s** — `platform-bootstrap`
+   (the system components, ArgoCD project `platform`) and `projects-bootstrap`
+   (the project/application resources, ArgoCD project `projects`) — which then
+   track `:dev` and reconcile the platform from the bundle.
+
+The handoff is idempotent and **gated**: it needs `oras`, a reachable Quay, and
+the `holos-paas-config-robot` push credential (none required by the imperative
+floor), so a missing prerequisite is a **graceful skip** with guidance, leaving
+`scripts/apply` fully usable as the bootstrap floor on its own. Skip the handoff
+explicitly with `BOOTSTRAP_APP_OF_APPS=0`, and publish the bundle later with
+`make config-push`. The full mechanism (the "Always" `:dev` re-pull, the
+sync-wave ordering) is in
+[oci-publish-workflow.md](../holos/docs/oci-publish-workflow.md) and
+[argocd-application-source.md](../holos/docs/argocd-application-source.md).
+
 `scripts/apply` no longer applies the `my-project` Layer 3 delivery sample —
 it was removed from the master apply (HOL-1322) because its `quay.holos.run`
 Organization carries a per-cluster local-ca `caBundle` that is injected at apply

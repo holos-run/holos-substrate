@@ -7,41 +7,55 @@ to the real documentation.
 
 ## ArgoCD gitops delivery
 
-ArgoCD itself is installed: the `argocd-crds` and `argocd` components
-([`components/argocd/`](../components/argocd/argocd.cue)) deploy the core
-install via `scripts/apply`, with the UI at `https://argocd.holos.internal`,
-and the `Application` source pattern the delivery will use — OCI
-rendered-manifests artifacts in the in-cluster Quay registry — is decided,
-verified, and documented in
-[argocd-application-source.md](argocd-application-source.md). What remains
-deferred is the delivery itself: reconciling the platform's rendered
-manifests with ArgoCD instead of the direct server-side apply performed by
-`scripts/apply`. The affordance already exists: the `userDefinedBuildPlan`
-adapter
-([`components/user-defined-build-plan.cue`](../components/user-defined-build-plan.cue))
-projects an ArgoCD `Application` per component through its `gitops`
-artifacts, gated by `argoAppDisabled: bool | *true`. The future delivery
-issue flips the default to `false` and renders the Application resources
-under `deploy/clusters/<cluster>/gitops/`. Until then this projection emits
-no Application resources, and the platform's own components are applied per
-[`holos/README.md`](../README.md#how-rendered-manifests-reach-the-cluster)
-rather than reconciled by ArgoCD.
+**Platform self-delivery is resolved — via an OCI App-of-Apps, not the
+deferred git-source projection.** ArgoCD is installed (the `argocd-crds` and
+`argocd` components, [`components/argocd/`](../components/argocd/argocd.cue),
+UI at `https://argocd.holos.internal`), and the platform's own rendered
+manifests are now reconciled by ArgoCD from an **OCI App-of-Apps over the
+`holos-paas-config:dev` config bundle** (HOL-1373, [ADR-16 Rev 3](../../docs/adr/ADR-16.md)):
 
-> **Not to be confused with the hand-authored sample Applications.** This
-> deferred stub concerns the **per-component `argoAppDisabled` projection**
-> that would reconcile *the platform's own components*. It is distinct from the
-> **hand-authored** Argo CD `Application`s the Kargo delivery pipelines own —
-> `echo` ([`components/kargo-echo/`](../components/kargo-echo/buildplan.cue))
-> and `my-project`
-> (rendered by [`components/project/`](../components/project/buildplan.cue) from
-> the `projects` collection as of HOL-1357, see
-> [holos/README.md → The `my-project` delivery scaffold](../README.md#the-my-project-delivery-scaffold)).
-> Those Applications carry an **OCI** source pointing at a rendered-manifests
-> artifact and are reconciled by ArgoCD today (once their artifact is
-> published); the deferred projection would emit a **git**-source Application
-> per component, which is the wrong shape for Kargo to patch. The two are
-> independent: enabling the projection does not change the hand-authored
-> sample Applications, and the sample Applications do not depend on it.
+- The committed `holos/deploy/` tree is published as one OCI bundle
+  (`holos-paas-config:dev`, mutable tag) by `scripts/publish-config`
+  (`make config-build`/`config-push`).
+- Two root `Application`s reconcile it under two AppProjects: **`platform`**
+  (`platform-bootstrap`, the system components) and **`projects`**
+  (`projects-bootstrap`, the project/application collection resources). Each
+  tracks `targetRevision: dev` with an "Always" re-pull (the `argocd` component
+  shortens the repo-cache TTL to `1m`).
+- `scripts/apply` brings ArgoCD up imperatively (the bootstrap floor), then
+  publishes the bundle and applies the two roots so ArgoCD takes over ongoing
+  reconciliation — the chicken-and-egg handoff (ArgoCD must exist before it can
+  self-manage). The detailed mechanism is in
+  [oci-publish-workflow.md](oci-publish-workflow.md) (*Platform config bundle* /
+  *The App-of-Apps that consumes the bundle*) and
+  [argocd-application-source.md](argocd-application-source.md).
+
+The earlier **per-component `git`-source projection** — the `userDefinedBuildPlan`
+adapter's `argoAppDisabled: bool | *true` gate
+([`components/user-defined-build-plan.cue`](../components/user-defined-build-plan.cue),
+which would have emitted a git-source `Application` per component under
+`deploy/clusters/<cluster>/gitops/`) — is **superseded for the platform** by this
+OCI App-of-Apps and is **not used**. The gate stays at its `*true` default
+(dormant, emitting nothing); the affordance is retained only for a hypothetical
+future git-source need and is **not** the platform's delivery mechanism. Do not
+flip it to deliver the platform — the OCI App-of-Apps already does that.
+
+> **Not to be confused with the OCI Applications.** The dormant `argoAppDisabled`
+> projection would emit a **git**-source Application per component — the wrong
+> shape both for Kargo to patch and for the OCI-bundle bootstrap. It is distinct
+> from the Argo CD `Application`s that deliver the platform and apps today, all of
+> which carry an **OCI** source: the two **App-of-Apps roots** above
+> (`platform-bootstrap`/`projects-bootstrap`, sourcing `holos-paas-config:dev`);
+> the **hand-authored** Kargo-driven pipeline Applications — `echo`
+> ([`components/kargo-echo/`](../components/kargo-echo/buildplan.cue)) and the
+> per-project/app Applications rendered by
+> [`components/project/`](../components/project/buildplan.cue) /
+> [`components/application/`](../components/application/buildplan.cue) from the
+> `projects`/`apps` collections (see
+> [holos/README.md → The `my-project` delivery scaffold](../README.md#the-my-project-delivery-scaffold))
+> — which source per-app rendered-manifests artifacts and whose `targetRevision`
+> Kargo owns. The dormant git projection does not change any of these, and they do
+> not depend on it.
 
 ## Project/Application templates: deferred follow-ups
 
