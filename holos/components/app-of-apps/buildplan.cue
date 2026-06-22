@@ -53,6 +53,28 @@ package holos
 // reconciled to the cluster — the "Always" image-tag update policy this phase
 // requires.  See that component for the chosen value and the documented
 // tradeoff.
+//
+// Scope of the sync-wave ordering guarantee (deliberate, AC-bounded).  The
+// ascending child sync-waves — backed by the Application health customization in
+// the argocd controller (so the root waits for an earlier wave to become Healthy
+// before applying the next) — serialize the BOOTSTRAP rollout: the order in which
+// the root App-of-Apps first CREATES the child Applications and their resources,
+// which is what AC #4 requires ("ArgoCD will try to apply controllers before
+// their CRDs" without them).  They do NOT serialize STEADY-STATE :dev updates:
+// each child independently tracks targetRevision: dev with its own automated
+// sync (the "Always" policy AC #1/#3 MANDATE), so when the tag moves the children
+// re-resolve and sync their own component paths in parallel rather than in wave
+// order.  This is an intrinsic, accepted tradeoff of the per-child :dev-tracking
+// design the ACs chose: a globally wave-serialized UPDATE rollout would require
+// the root to be the only object that changes per release (e.g. digest-pinned
+// child revisions regenerated into children/ each publish), which directly
+// contradicts AC #1/#3's committed targetRevision: dev on the children.  In
+// practice steady-state CRD/schema changes are rare and additive (a moved :dev
+// is almost always a workload/config change, not a CRD-vs-controller reordering),
+// and each child's selfHeal converges regardless of arrival order; if a future
+// release needs serialized cross-component UPDATE ordering, that is a separate
+// design (Kargo-style staged promotion or digest-pinned children), tracked
+// outside this phase.
 
 // ArgoCDNamespace is this platform's Argo CD namespace (components/argocd).  The
 // canonical value lives in holos/components/argocd/argocd.cue, but that file is

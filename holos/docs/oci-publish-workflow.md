@@ -205,6 +205,20 @@ and apply all waves at once, making the annotations cosmetic and racing
 crds-before-controllers ordering. The Lua is mandatory for the wave ordering to
 hold.
 
+**Scope of the ordering guarantee.** The sync waves serialize the **bootstrap**
+rollout — the order in which the root first *creates* the child Applications and
+their resources (CRDs/operators before the controllers/CRs that need them), which
+is what this phase requires. They do **not** serialize steady-state `:dev`
+*updates*: each child independently tracks `targetRevision: dev` with its own
+`automated` sync (the "Always" policy), so when the tag moves the children
+re-resolve and sync in parallel, not in wave order. That is the intrinsic
+tradeoff of the per-child `:dev`-tracking design — a wave-serialized *update*
+rollout would require the root to be the only object that changes per release
+(digest-pinned children), contradicting the committed `targetRevision: dev` on
+the children. Each child's `selfHeal` converges regardless of arrival order; a
+serialized cross-component *update* rollout, if ever needed, is a separate design
+(staged promotion or digest-pinned children) outside this bootstrap.
+
 **Server-side apply parity:** every Application sets `syncOptions:
 [ServerSideApply=true, CreateNamespace=false]` so Argo CD's reconciliation
 matches how `scripts/apply` applies the same manifests
