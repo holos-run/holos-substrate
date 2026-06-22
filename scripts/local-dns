@@ -3,13 +3,13 @@
 # and modified locally since; this copy has diverged from upstream (see git log).
 # Documentation: https://github.com/holos-run/holos/blob/main/doc/md/topics/local-cluster.mdx
 #
-# Configure macOS DNS to resolve *.holos.internal to 127.0.0.1 via dnsmasq.
+# Configure macOS DNS to resolve *.holos.internal to 100.65.0.1 via dnsmasq.
 # This is necessary for requests to reach the local k3d cluster.
 #
 # NOTE: This script is macOS-only. It uses Homebrew, launchctl, /etc/resolver,
 # and mDNSResponder — all macOS-specific. Linux users should configure dnsmasq
-# (or systemd-resolved) themselves to point *.holos.internal at 127.0.0.1.
-# The MVP demo target is an Apple Silicon Mac (ADR-7).
+# (or systemd-resolved) themselves to point *.holos.internal at 100.65.0.1. The
+# MVP demo target is an Apple Silicon Mac (ADR-7).
 #
 # Prerequisites:
 #   - macOS (Apple Silicon or Intel)
@@ -97,7 +97,7 @@ sudo launchctl bootstrap system /Library/LaunchDaemons/run.holos.lo0-alias.plist
 sudo brew services restart dnsmasq
 
 sudo mkdir -p /etc/resolver
-# nameserver line is sufficient; macOS routes *.holos.internal to 127.0.0.1
+# nameserver line is sufficient; macOS resolves *.holos.internal to 100.65.0.1
 # based on the resolver file name alone.
 sudo tee /etc/resolver/holos.internal > /dev/null <<EOF
 nameserver 100.65.0.1
