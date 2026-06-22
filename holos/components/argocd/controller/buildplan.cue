@@ -164,6 +164,42 @@ let OIDC_CONFIG = {
 	requestedIDTokenClaims: groups: essential: true
 }
 
+// APP_HEALTH_LUA is the resource.customizations.health.argoproj.io_Application
+// health check the platform App-of-Apps (components/app-of-apps, HOL-1376)
+// depends on.  Argo CD REMOVED built-in health assessment of the Application
+// kind in 1.8 and documents that an app-of-apps using sync waves MUST restore it
+// (https://argo-cd.readthedocs.io/en/stable/operator-manual/health/#argocd-app):
+// without an Application health customization Argo CD treats every child
+// Application as Healthy the instant it is created, so the root App-of-Apps
+// applies ALL sync waves at once and the ascending
+// argocd.argoproj.io/sync-wave annotations on the children become cosmetic — the
+// crds-before-controllers / operator-before-instance ordering the children
+// promise (cnpg-crds→cnpg→cnpg-clusters, keycloak-operator→keycloak,
+// kargo-crds→kargo, …) would race.  This Lua makes a child Application report
+// Healthy only once its own status reports Healthy (and Progressing/Degraded/
+// Missing/Suspended otherwise), so the root waits for an earlier wave to settle
+// before fanning out the next — exactly the scripts/apply dependency ordering
+// AC #4 requires.  This is the canonical app-of-apps Application health script
+// (the chart ships no health.argoproj.io_Application default — only the
+// ignoreResourceUpdates.argoproj.io_Application entry — so it must be added
+// here).  Authored as a Lua string, the sanctioned non-YAML/JSON exception to
+// the marshal-embedded-config guardrail (it is a script, like a shell heredoc,
+// not a YAML/JSON document).
+let APP_HEALTH_LUA = """
+	hs = {}
+	hs.status = "Progressing"
+	hs.message = "Waiting for Application status"
+	if obj.status ~= nil then
+	  if obj.status.health ~= nil and obj.status.health.status ~= nil then
+	    hs.status = obj.status.health.status
+	    if obj.status.health.message ~= nil then
+	      hs.message = obj.status.health.message
+	    end
+	  end
+	end
+	return hs
+	"""
+
 // POLICIES maps Keycloak group/realm-role membership to Argo CD roles, the
 // reference platform's _POLICIES shape adapted to this platform's three
 // managed roles.  Argo CD matches the g, <subject>, <role> rules against the
@@ -404,6 +440,16 @@ userDefinedBuildPlan: {
 								// the production deployment area placeholder
 								// in holos/docs/placeholders.md.
 								"oidc.tls.insecure.skip.verify": "true"
+
+								// Restore Application-kind health assessment
+								// (removed upstream in Argo CD 1.8) so the
+								// platform App-of-Apps' (components/app-of-apps)
+								// child sync waves actually gate ordering — see
+								// APP_HEALTH_LUA above for the full rationale.
+								// Without it the ascending sync-wave annotations
+								// on the children are cosmetic and the
+								// crds-before-controllers ordering races.
+								"resource.customizations.health.argoproj.io_Application": APP_HEALTH_LUA
 							}
 
 							// argocd-rbac-cm: map Keycloak group/realm-role
