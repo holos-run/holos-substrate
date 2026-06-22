@@ -1308,9 +1308,22 @@ bootstrap_app_of_apps() {
   #    authoritative); commit the render (the scripts/render diff-clean gate) and
   #    re-run, or override with BOOTSTRAP_APP_OF_APPS_FORCE_ROOTS=1 if the
   #    divergence is intentional.
-  if [[ "${BOOTSTRAP_APP_OF_APPS_FORCE_ROOTS:-0}" != "1" ]] \
-    && ! git -C "${REPO_ROOT}" diff --quiet HEAD -- holos/deploy 2>/dev/null; then
-    echo "    SKIP handoff: holos/deploy/ has uncommitted changes relative to HEAD."
+  #
+  #    "Clean" must cover BOTH tracked modifications AND untracked files: the
+  #    imperative loop applies the working-tree directory (a brand-new, un-`git
+  #    add`ed render file is applied), but `git archive HEAD:holos/deploy` would
+  #    omit it — so the published bundle and the roots would prune that just-applied
+  #    file.  `git diff --quiet HEAD` ignores untracked files, so check them
+  #    separately with `git ls-files --others --exclude-standard`.
+  local deploy_dirty=0
+  if ! git -C "${REPO_ROOT}" diff --quiet HEAD -- holos/deploy 2>/dev/null; then
+    deploy_dirty=1
+  elif [[ -n "$(git -C "${REPO_ROOT}" ls-files --others --exclude-standard -- holos/deploy 2>/dev/null)" ]]; then
+    deploy_dirty=1
+  fi
+  if [[ "${BOOTSTRAP_APP_OF_APPS_FORCE_ROOTS:-0}" != "1" && "${deploy_dirty}" -eq 1 ]]; then
+    echo "    SKIP handoff: holos/deploy/ has uncommitted changes relative to HEAD"
+    echo "    (tracked edits or untracked files)."
     echo "    scripts/publish-config bundles the COMMITTED tree (HEAD), so publishing now"
     echo "    would point the App-of-Apps roots at a render that differs from the working-tree"
     echo "    manifests the imperative floor just applied — Argo CD's selfHeal would undo them."
