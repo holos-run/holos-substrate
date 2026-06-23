@@ -28,7 +28,7 @@ func TestCheckStubDenies(t *testing.T) {
 	lis := bufconn.Listen(bufSize)
 
 	srv := grpc.NewServer()
-	authv3.RegisterAuthorizationServer(srv, NewCheckServer(logr.Discard()))
+	authv3.RegisterAuthorizationServer(srv, NewCheckServer(NewStore(), logr.Discard()))
 
 	go func() {
 		if err := srv.Serve(lis); err != nil {
@@ -88,7 +88,7 @@ func TestGRPCServerStartStop(t *testing.T) {
 
 	g := &GRPCServer{
 		Listener: lis,
-		Check:    NewCheckServer(logr.Discard()),
+		Check:    NewCheckServer(NewStore(), logr.Discard()),
 		Log:      logr.Discard(),
 	}
 

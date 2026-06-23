@@ -61,6 +61,11 @@ const (
 	// ReasonDiscoveryFailed marks a condition False because the OIDC issuer
 	// discovery or upstream API server could not be reached or validated.
 	ReasonDiscoveryFailed = "DiscoveryFailed"
+	// ReasonHostConflict marks a condition False because another Backend already
+	// owns this Backend's spec.host in the data-path store. Host ownership is
+	// first-claimant-wins so the active routing for a host is deterministic, rather
+	// than depending on reconcile/delete ordering.
+	ReasonHostConflict = "HostConflict"
 )
 
 // setCondition sets a single condition on the supplied condition slice using
@@ -89,6 +94,17 @@ func markReady(conditions *[]metav1.Condition, reason, message string, observedG
 	p := setCondition(conditions, ConditionProgrammed, string(metav1.ConditionTrue), reason, message, observedGeneration)
 	r := setCondition(conditions, ConditionReady, string(metav1.ConditionTrue), reason, message, observedGeneration)
 	return a || p || r
+}
+
+// markAccepted sets Accepted True with the given reason and message and the
+// observed generation, leaving Programmed and Ready untouched. The reconciler
+// calls it once the spec is understood and the group-mapping CEL expression
+// compiles — before OIDC discovery — so a backend whose discovery then fails
+// still reports Accepted=True (the spec was valid; only programming failed),
+// rather than carrying no Accepted condition at all. It returns true when the
+// Accepted condition changed.
+func markAccepted(conditions *[]metav1.Condition, reason, message string, observedGeneration int64) bool {
+	return setCondition(conditions, ConditionAccepted, string(metav1.ConditionTrue), reason, message, observedGeneration)
 }
 
 // markNotReady sets Programmed and Ready False with the given reason and message
