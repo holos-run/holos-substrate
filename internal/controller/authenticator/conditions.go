@@ -91,6 +91,17 @@ func markReady(conditions *[]metav1.Condition, reason, message string, observedG
 	return a || p || r
 }
 
+// markAccepted sets Accepted True with the given reason and message and the
+// observed generation, leaving Programmed and Ready untouched. The reconciler
+// calls it once the spec is understood and the group-mapping CEL expression
+// compiles — before OIDC discovery — so a backend whose discovery then fails
+// still reports Accepted=True (the spec was valid; only programming failed),
+// rather than carrying no Accepted condition at all. It returns true when the
+// Accepted condition changed.
+func markAccepted(conditions *[]metav1.Condition, reason, message string, observedGeneration int64) bool {
+	return setCondition(conditions, ConditionAccepted, string(metav1.ConditionTrue), reason, message, observedGeneration)
+}
+
 // markNotReady sets Programmed and Ready False with the given reason and message
 // and the observed generation, leaving Accepted untouched (the spec was still
 // understood and accepted; it just could not be programmed). It is the failure

@@ -96,12 +96,26 @@ authenticator-build: authenticator-fmt authenticator-vet ## Build the holos-auth
 	go build -ldflags "$(AUTHENTICATOR_LDFLAGS)" -o bin/holos-authenticator ./cmd/holos-authenticator
 
 # authenticator-test runs the authenticator-specific packages with the race
-# detector, mirroring controller-test. This phase has no envtest dependency (no
-# reconcilers yet), so it needs no control-plane binaries — just the gRPC
-# bufconn/loopback server test under internal/authenticator.
+# detector, mirroring controller-test. As of HOL-1387 the Backend reconciler ships
+# with envtest-backed status-transition tests under
+# internal/controller/authenticator, so this target provisions the envtest
+# control-plane binaries (kube-apiserver + etcd) via setup-envtest and exports
+# KUBEBUILDER_ASSETS exactly as controller-test does — otherwise those reconciler
+# tests would silently skip (their TestMain exits 0 when KUBEBUILDER_ASSETS is
+# unset). The envtest-tool/ENVTEST/ENVTEST_K8S_VERSION definitions come from
+# Makefile.controller, included before this file. The api/, cmd/, and
+# internal/authenticator packages have no such dependency but run in the same
+# invocation for one test entrypoint.
 .PHONY: authenticator-test
-authenticator-test: authenticator-fmt authenticator-vet ## Run the authenticator tests with the race detector.
-	go test -race ./cmd/holos-authenticator/... ./api/authenticator/... ./internal/authenticator/... ./internal/controller/authenticator/...
+authenticator-test: authenticator-fmt authenticator-vet envtest-tool ## Run the authenticator tests with the race detector.
+	@set -e; \
+	assets="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)"; \
+	if [ -z "$$assets" ] || [ ! -x "$$assets/etcd" ]; then \
+		echo "ERROR: setup-envtest did not provision control-plane binaries (KUBEBUILDER_ASSETS would be empty); the envtest reconciler tests would silently skip." >&2; \
+		exit 1; \
+	fi; \
+	KUBEBUILDER_ASSETS="$$assets" \
+		go test -race ./cmd/holos-authenticator/... ./api/authenticator/... ./internal/authenticator/... ./internal/controller/authenticator/...
 
 # Image targets use buildx so the builder stage runs on the native host and the
 # Go toolchain cross-compiles to $(AUTHENTICATOR_PLATFORM) — mirrors the

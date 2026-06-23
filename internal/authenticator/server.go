@@ -37,12 +37,21 @@ type CheckServer struct {
 	// recommendation for server implementations.
 	authv3.UnimplementedAuthorizationServer
 
+	// store is the shared host-keyed registry of ready backends, written by the
+	// BackendReconciler and read here by host to validate a request's bearer token
+	// (HOL-1388). It is injected so the reconciler and this server share one
+	// instance. This phase does not yet read it — the Check body still stubs — but
+	// the wiring is in place so HOL-1388 only changes the Check body.
+	store *Store
+
 	log logr.Logger
 }
 
-// NewCheckServer returns a CheckServer logging through the supplied logr.Logger.
-func NewCheckServer(log logr.Logger) *CheckServer {
-	return &CheckServer{log: log}
+// NewCheckServer returns a CheckServer that resolves backends from store and logs
+// through the supplied logr.Logger. store is the same registry the
+// BackendReconciler writes, so the Check path sees backends as they become ready.
+func NewCheckServer(store *Store, log logr.Logger) *CheckServer {
+	return &CheckServer{store: store, log: log}
 }
 
 // Check implements envoy.service.auth.v3.Authorization. The scaffold response is
