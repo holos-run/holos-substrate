@@ -52,7 +52,10 @@ type Entry struct {
 // Two backends could in principle declare the same spec.host; the reconciler
 // registers the most recently reconciled one (last writer wins), which is the
 // pragmatic choice for this phase — a host-uniqueness admission check is out of
-// scope.
+// scope. To keep that defensible, the Store tracks which object key currently
+// owns each host entry: a delete or host-rename only removes a host entry when
+// the acting key still owns it, so a stale Backend tearing down never clobbers
+// the entry a different Backend has since claimed for the same host.
 //
 // The Store also maintains a reverse index from a Backend's object key
 // (namespace/name) to the host it registered, so the reconciler can remove the
@@ -62,6 +65,10 @@ type Store struct {
 	mu sync.RWMutex
 	// entries maps spec.host -> resolved Entry.
 	entries map[string]*Entry
+	// ownerByHost maps spec.host -> the object key of the Backend that currently
+	// owns (last wrote) that host entry, so a delete/rename by a non-owning key is
+	// a no-op rather than clobbering the current winner.
+	ownerByHost map[string]string
 	// hostByKey maps a Backend's object key (namespace/name) -> the host it most
 	// recently registered, so DeleteByKey can find and remove the entry on delete.
 	hostByKey map[string]string
@@ -70,25 +77,30 @@ type Store struct {
 // NewStore returns an empty Store ready for concurrent use.
 func NewStore() *Store {
 	return &Store{
-		entries:   make(map[string]*Entry),
-		hostByKey: make(map[string]string),
+		entries:     make(map[string]*Entry),
+		ownerByHost: make(map[string]string),
+		hostByKey:   make(map[string]string),
 	}
 }
 
-// Set registers or replaces the Entry for entry.Host and records the reverse
-// index from key (the Backend's namespace/name) to that host. When the Backend's
-// host changed since its last registration, the stale host entry is removed so a
-// renamed host does not leave a dangling registration.
+// Set registers or replaces the Entry for entry.Host, recording key (the
+// Backend's namespace/name) as the host's current owner and the reverse index
+// from key to that host. When the Backend changed its spec.host since its last
+// registration, the previous host's entry is removed only when this key still
+// owns it — a different Backend may have claimed the old host in the interim, and
+// clobbering its entry would silently break that backend.
 func (s *Store) Set(key string, entry *Entry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if prevHost, ok := s.hostByKey[key]; ok && prevHost != entry.Host {
-		// The Backend changed its spec.host: drop the old host's entry, but only
-		// when that entry still belongs to this key (another Backend may have since
-		// claimed the old host).
-		delete(s.entries, prevHost)
+		// Host rename: drop the old host's entry only if this key still owns it.
+		if s.ownerByHost[prevHost] == key {
+			delete(s.entries, prevHost)
+			delete(s.ownerByHost, prevHost)
+		}
 	}
 	s.entries[entry.Host] = entry
+	s.ownerByHost[entry.Host] = key
 	s.hostByKey[key] = entry.Host
 }
 
@@ -106,6 +118,11 @@ func (s *Store) Get(host string) (*Entry, bool) {
 // — so the reconciler can call it unconditionally on delete or when a Backend
 // goes NotReady. It resolves the host via the reverse index, so it works even
 // when the caller cannot read spec.host (the not-found delete path).
+//
+// The host entry is removed only when this key still owns it: if a different
+// Backend has since claimed the same host (last-writer-wins), deleting the stale
+// key must not clobber the current winner's entry. The key's own reverse-index
+// row is always cleared.
 func (s *Store) DeleteByKey(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -113,8 +130,11 @@ func (s *Store) DeleteByKey(key string) {
 	if !ok {
 		return
 	}
-	delete(s.entries, host)
 	delete(s.hostByKey, key)
+	if s.ownerByHost[host] == key {
+		delete(s.entries, host)
+		delete(s.ownerByHost, host)
+	}
 }
 
 // Len returns the number of registered Entries. It exists for tests and

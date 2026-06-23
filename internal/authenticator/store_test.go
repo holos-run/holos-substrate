@@ -72,6 +72,55 @@ func TestStoreHostRenameDropsStaleEntry(t *testing.T) {
 	}
 }
 
+// TestStoreDuplicateHostOwnership asserts that when two Backends claim the same
+// host (last-writer-wins) and the stale (losing) Backend is later deleted, the
+// winner's entry is preserved rather than clobbered.
+func TestStoreDuplicateHostOwnership(t *testing.T) {
+	s := NewStore()
+
+	// Backend A claims host h.
+	s.Set("ns/a", &Entry{Host: "h", ServerURL: "https://a"})
+	// Backend B claims the same host h (last writer wins).
+	s.Set("ns/b", &Entry{Host: "h", ServerURL: "https://b"})
+
+	if entry, _ := s.Get("h"); entry == nil || entry.ServerURL != "https://b" {
+		t.Fatalf("after B claims h, Get(h) = %v, want the B entry", entry)
+	}
+
+	// Deleting the stale A must NOT remove B's entry for h.
+	s.DeleteByKey("ns/a")
+	entry, ok := s.Get("h")
+	if !ok || entry.ServerURL != "https://b" {
+		t.Errorf("deleting stale A clobbered the winner: Get(h) = %v, ok=%v, want B entry", entry, ok)
+	}
+
+	// Deleting the owner B finally removes the entry.
+	s.DeleteByKey("ns/b")
+	if _, ok := s.Get("h"); ok {
+		t.Errorf("deleting owner B left a dangling entry for h")
+	}
+}
+
+// TestStoreRenameDoesNotClobberOtherOwner asserts a host rename only drops the
+// old host entry when the renaming key still owns it.
+func TestStoreRenameDoesNotClobberOtherOwner(t *testing.T) {
+	s := NewStore()
+
+	// A owns "old".
+	s.Set("ns/a", &Entry{Host: "old", ServerURL: "https://a"})
+	// B claims "old" too (B now owns "old").
+	s.Set("ns/b", &Entry{Host: "old", ServerURL: "https://b"})
+	// A renames to "new". Since A no longer owns "old", B's "old" entry survives.
+	s.Set("ns/a", &Entry{Host: "new", ServerURL: "https://a"})
+
+	if entry, ok := s.Get("old"); !ok || entry.ServerURL != "https://b" {
+		t.Errorf("A's rename clobbered B's old-host entry: Get(old) = %v, ok=%v", entry, ok)
+	}
+	if entry, ok := s.Get("new"); !ok || entry.ServerURL != "https://a" {
+		t.Errorf("A's new-host entry missing: Get(new) = %v, ok=%v", entry, ok)
+	}
+}
+
 // TestStoreConcurrentAccess runs concurrent writers and readers under the race
 // detector to confirm the Store is concurrency-safe.
 func TestStoreConcurrentAccess(t *testing.T) {

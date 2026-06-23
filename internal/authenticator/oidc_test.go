@@ -5,6 +5,10 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -156,6 +160,78 @@ func TestOIDCVerifyWrongIssuer(t *testing.T) {
 
 	if _, err := verifier.Verify(context.Background(), raw); err == nil {
 		t.Fatalf("Verify wrong-issuer token = nil error, want rejection")
+	}
+}
+
+// oidcDiscoveryServer starts an httptest server serving an OIDC discovery
+// document and a JWKS. jwksKeys controls the published keys: when empty, the JWKS
+// endpoint returns a key set with no keys (the broken-issuer case). It returns the
+// server and its issuer URL.
+func oidcDiscoveryServer(t *testing.T, pub *rsa.PublicKey, jwksKeys int) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		doc := map[string]any{
+			"issuer":                 srv.URL,
+			"jwks_uri":               srv.URL + "/jwks",
+			"authorization_endpoint": srv.URL + "/auth",
+			"token_endpoint":         srv.URL + "/token",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(doc)
+	})
+
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
+		set := jose.JSONWebKeySet{}
+		for i := 0; i < jwksKeys; i++ {
+			set.Keys = append(set.Keys, jose.JSONWebKey{
+				Key:       pub,
+				KeyID:     fmt.Sprintf("key-%d", i),
+				Algorithm: string(jose.RS256),
+				Use:       "sig",
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(set)
+	})
+
+	return srv
+}
+
+// TestDiscoverVerifierHappyPath asserts discovery succeeds against an issuer that
+// advertises a non-empty JWKS, and the returned verifier validates a token signed
+// by the published key.
+func TestDiscoverVerifierHappyPath(t *testing.T) {
+	key := newTestSigningKey(t)
+	srv := oidcDiscoveryServer(t, &key.private.PublicKey, 1)
+
+	verifier, err := DiscoverVerifier(context.Background(), srv.URL, testClientID, nil)
+	if err != nil {
+		t.Fatalf("DiscoverVerifier: %v", err)
+	}
+
+	now := time.Now()
+	claims := baseClaims("alice", testClientID, now)
+	claims["iss"] = srv.URL
+	raw := key.sign(t, claims)
+
+	if _, err := verifier.Verify(context.Background(), raw); err != nil {
+		t.Fatalf("Verify against discovered JWKS: %v", err)
+	}
+}
+
+// TestDiscoverVerifierBrokenJWKS asserts discovery fails (rather than silently
+// succeeding) when the issuer's jwks_uri returns an empty key set — the case
+// Codex flagged where a Backend would be marked Ready yet fail every token verify.
+func TestDiscoverVerifierBrokenJWKS(t *testing.T) {
+	key := newTestSigningKey(t)
+	srv := oidcDiscoveryServer(t, &key.private.PublicKey, 0) // empty JWKS
+
+	if _, err := DiscoverVerifier(context.Background(), srv.URL, testClientID, nil); err == nil {
+		t.Fatalf("DiscoverVerifier with an empty JWKS = nil error, want failure")
 	}
 }
 

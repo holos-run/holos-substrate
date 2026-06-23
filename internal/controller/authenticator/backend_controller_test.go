@@ -126,6 +126,38 @@ func TestReconcileInvalidCELRejects(t *testing.T) {
 	}
 }
 
+// TestReconcileInvalidServerURLRejects asserts a Backend whose spec.server.url is
+// not a valid http(s) URL (it only satisfies the CRD MinLength) is rejected as an
+// invalid spec and never registered in the store.
+func TestReconcileInvalidServerURLRejects(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	r, store, _ := newReconciler(discoverOK)
+	b := makeBackend(ns, "backend-bad-url", "api-badurl.example.test")
+	b.Spec.Server.URL = "not a url" // passes MinLength, not a real URL
+	key := createBackend(ctx, t, b)
+
+	res, err := reconcile(ctx, r, key)
+	if err != nil {
+		t.Fatalf("reconcile returned error for an invalid server URL (should not requeue): %v", err)
+	}
+	if res.RequeueAfter != 0 {
+		t.Errorf("RequeueAfter = %v, want 0 for a terminal rejection", res.RequeueAfter)
+	}
+
+	got := getBackend(ctx, t, key)
+	if s := condStatus(got, ConditionReady); s != metav1.ConditionFalse {
+		t.Errorf("Ready = %q, want False", s)
+	}
+	if reason := condReason(got, ConditionReady); reason != ReasonInvalidSpec {
+		t.Errorf("Ready reason = %q, want %q", reason, ReasonInvalidSpec)
+	}
+	if store.Len() != 0 {
+		t.Errorf("store has %d entries, want 0 for a rejected spec", store.Len())
+	}
+}
+
 // TestReconcileDiscoveryFailureNotReady asserts a Backend whose OIDC discovery
 // fails is marked Programmed/Ready=False (reason DiscoveryFailed), requeues with
 // an error, and is not registered in the store. Accepted stays True (the spec was

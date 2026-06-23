@@ -3,6 +3,7 @@ package authenticator
 import (
 	"context"
 	"fmt"
+	"net/url"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -49,8 +50,16 @@ type BackendReconciler struct {
 // +kubebuilder:rbac:groups=authenticator.holos.run,resources=backends,verbs=get;list;watch
 // +kubebuilder:rbac:groups=authenticator.holos.run,resources=backends/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=authenticator.holos.run,resources=backends/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+//
+// NOTE: this reconciler intentionally requests NO Secret access. This phase
+// records spec.credentialsSecretRef in the store but never reads the Secret —
+// the privileged impersonator credential is resolved on the Check path
+// (HOL-1388), which must do so via a namespace-scoped Role/RoleBinding rather
+// than the cluster-wide `secrets get` a ClusterRole grant would imply (the
+// confused-deputy hazard the main.go wiring calls out). Adding `secrets get`
+// here would grant cluster-wide Secret reads for a capability this phase does
+// not exercise.
 
 // Reconcile drives a Backend toward its desired state. Loop shape: fetch CR
 // (not-found ⇒ drop from the Store) → compile the group-mapping CEL (a malformed
@@ -101,6 +110,16 @@ func (r *BackendReconciler) reconcileNormal(ctx context.Context, logger logr.Log
 		r.Store.DeleteByKey(key)
 		return r.reject(ctx, backend, ReasonInvalidSpec,
 			fmt.Sprintf("compiling group-mapping CEL expression: %v", err))
+	}
+
+	// Validate the upstream API server URL. The CRD enforces only MinLength, so a
+	// non-URL string ("not a url") or an unsupported scheme passes admission; a
+	// Backend whose status claims the upstream is valid must not be marked Ready
+	// with a URL the Check path could never dial. Reject as an invalid spec.
+	if err := validateServerURL(backend.Spec.Server.URL); err != nil {
+		r.Store.DeleteByKey(key)
+		return r.reject(ctx, backend, ReasonInvalidSpec,
+			fmt.Sprintf("invalid spec.server.url: %v", err))
 	}
 
 	// The spec parsed and the CEL expression compiled: the resource is Accepted
@@ -232,4 +251,22 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&authenticatorv1alpha1.Backend{}).
 		Complete(r)
+}
+
+// validateServerURL checks that the upstream API server URL is a well-formed
+// absolute http(s) URL with a host. The CRD enforces only MinLength, so this
+// guards against a Backend being marked Ready with a URL the Check path could
+// never dial (a relative path, a missing host, or a non-http scheme).
+func validateServerURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("parsing %q: %w", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("scheme %q is not http or https (url %q)", u.Scheme, raw)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("missing host in %q", raw)
+	}
+	return nil
 }

@@ -4,11 +4,18 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 )
+
+// maxJWKSBody bounds the JWKS response body read during the discovery
+// reachability probe so a hostile or misconfigured issuer cannot stream an
+// unbounded body into the reconciler. 1 MiB is far larger than any real JWKS.
+const maxJWKSBody = 1 << 20
 
 // VerifiedToken is the result of validating a raw bearer token: the decoded
 // claim set as a generic map, which the GroupMapper evaluates over and from
@@ -88,8 +95,64 @@ func DiscoverVerifier(ctx context.Context, issuerURL, clientID string, caBundle 
 		return nil, fmt.Errorf("OIDC discovery for issuer %q: %w", issuerURL, err)
 	}
 
+	// Discovery only fetched the discovery document; the JWKS the verifier needs
+	// is fetched lazily on first verification. Probe the advertised jwks_uri now so
+	// a reachable issuer with a broken or empty key set fails discovery
+	// (Programmed=False) instead of being marked Ready and then failing every token
+	// verification later (Codex round 1).
+	if err := probeJWKS(ctx, httpClient, provider); err != nil {
+		return nil, fmt.Errorf("OIDC discovery for issuer %q: %w", issuerURL, err)
+	}
+
 	verifier := provider.Verifier(&oidc.Config{ClientID: clientID})
 	return &oidcVerifier{verifier: verifier}, nil
+}
+
+// probeJWKS reads the issuer's advertised jwks_uri and confirms it returns a
+// non-empty JSON Web Key Set. A missing jwks_uri, an unreachable endpoint, an
+// unparseable body, or a key set with no keys is an error so the reconciler marks
+// the backend NotReady rather than registering a backend whose tokens can never
+// be verified.
+func probeJWKS(ctx context.Context, httpClient *http.Client, provider *oidc.Provider) error {
+	var claims struct {
+		JWKSURL string `json:"jwks_uri"`
+	}
+	if err := provider.Claims(&claims); err != nil {
+		return fmt.Errorf("reading discovery claims: %w", err)
+	}
+	if claims.JWKSURL == "" {
+		return fmt.Errorf("issuer discovery document advertises no jwks_uri")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, claims.JWKSURL, nil)
+	if err != nil {
+		return fmt.Errorf("building JWKS request for %q: %w", claims.JWKSURL, err)
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("fetching JWKS from %q: %w", claims.JWKSURL, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("fetching JWKS from %q: status %d", claims.JWKSURL, resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxJWKSBody))
+	if err != nil {
+		return fmt.Errorf("reading JWKS from %q: %w", claims.JWKSURL, err)
+	}
+
+	var keySet struct {
+		Keys []json.RawMessage `json:"keys"`
+	}
+	if err := json.Unmarshal(body, &keySet); err != nil {
+		return fmt.Errorf("parsing JWKS from %q: %w", claims.JWKSURL, err)
+	}
+	if len(keySet.Keys) == 0 {
+		return fmt.Errorf("JWKS from %q contains no keys", claims.JWKSURL)
+	}
+	return nil
 }
 
 // DiscoverFunc is the discovery seam: given an issuer, client ID, and optional CA
