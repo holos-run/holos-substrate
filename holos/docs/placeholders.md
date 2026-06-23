@@ -245,12 +245,14 @@ authentication posture should be recorded as a fresh placeholder.
 
 ## Holos Authenticator: L7 enforcement topology and tenant-policy guard
 
-The `holos-authenticator` component (HOL-1389, [ADR-23](../../docs/adr/ADR-23.md))
-wires the Holos Authenticator into the platform: the manager Deployment + RBAC +
-Service + Backend CRD, the `envoyExtAuthzGrpc` extension provider in `istiod`'s
-`MeshConfig`, a `CUSTOM` `AuthorizationPolicy`, and one example `Backend`. The
-**in-cluster wiring** is built; two enforcement concerns are deliberately
-deferred to a later phase (finalized with the runbook in HOL-1390):
+The `holos-authenticator` component (HOL-1389, [ADR-23](../../docs/adr/ADR-23.md),
+finalized in HOL-1390) wires the Holos Authenticator into the platform: the
+manager Deployment + RBAC + Service + Backend CRD, the `envoyExtAuthzGrpc`
+extension provider in `istiod`'s `MeshConfig`, a `CUSTOM` `AuthorizationPolicy`,
+and one example `Backend`. The **in-cluster wiring** is built and documented in
+the operator runbook ([`docs/runbooks/holos-authenticator.md`](../../docs/runbooks/holos-authenticator.md));
+ADR-23 is `Implemented`. The following enforcement and tuning concerns are
+deliberately deferred to later phases:
 
 - **L7 enforcement requires a waypoint.** In ambient mode ztunnel is L4-only, so
   the `CUSTOM` `AuthorizationPolicy` only takes effect once a **waypoint** fronts
@@ -276,6 +278,28 @@ deferred to a later phase (finalized with the runbook in HOL-1390):
   destination is a platform-owned protected route before returning credentials.
   Until then, keep every protected workload, its `Backend`, and its policy in
   platform-owned namespaces.
+
+- **External-egress waypoint / `ServiceEntry` topology for an external API
+  server.** The as-built ships only the in-cluster wiring (the example `Backend`
+  points at `https://kubernetes.default.svc`). Fronting an **external** API
+  server requires a `ServiceEntry` for the off-cluster endpoint and a waypoint
+  that egresses to it, plus the out-of-band impersonator credential for that
+  remote cluster. Building the full external-egress topology — and a worked
+  external `Backend` example — is deferred.
+
+- **Token-refresh / caching tuning.** The authorizer validates each OIDC token
+  on every request against the issuer's JWKS, and resolves the impersonator
+  credential per request. JWKS caching, issuer-discovery refresh intervals, and
+  credential-Secret caching tuning (TTLs, negative caching, refresh on rotation)
+  are left at conservative defaults; performance tuning of these is deferred.
+
+- **Per-request CEL features beyond the default groups mapping.** The
+  `groupMapping.celExpression` maps validated claims to a Kubernetes group list;
+  the default is `claims["<groupsClaim>"]` (i.e. `claims["groups"]`). Richer
+  per-request CEL — deriving the impersonated username via CEL, emitting
+  `Impersonate-Uid`/`Impersonate-Extra-*`, request-attribute-aware mapping, or a
+  policy DSL over claims plus request metadata — is out of scope for this phase
+  and deferred.
 
 ## Production deployment area
 
