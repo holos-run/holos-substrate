@@ -121,8 +121,8 @@ func checkRequest(host string, headers map[string]string) *authv3.CheckRequest {
 // TestCheckAllowSetsImpersonationHeaders is the happy path: a known host, a valid
 // token, and a resolvable credential. It asserts the OK response sets
 // Impersonate-User (overwrite), one Impersonate-Group per mapped group (append),
-// the impersonator token as Authorization (overwrite), and removes the caller's
-// original Authorization.
+// and the impersonator token as Authorization (overwrite, which replaces the
+// caller's token in place — so HeadersToRemove is empty).
 func TestCheckAllowSetsImpersonationHeaders(t *testing.T) {
 	const host = "api.example.com"
 	store := NewStore()
@@ -156,10 +156,12 @@ func TestCheckAllowSetsImpersonationHeaders(t *testing.T) {
 	}
 	assertHeaderOptions(t, ok.GetHeaders(), want)
 
-	// The caller's original Authorization is removed (defense in depth alongside
-	// the overwrite).
-	if got, want := ok.GetHeadersToRemove(), []string{headerAuthorization}; !equalStrings(got, want) {
-		t.Errorf("headers_to_remove = %v, want %v", got, want)
+	// The caller's original Authorization is replaced in place by the overwrite
+	// above, so nothing is listed in headers_to_remove — listing it there would
+	// risk removing the impersonator token on the undocumented apply-order path
+	// where removals run after sets.
+	if got := ok.GetHeadersToRemove(); len(got) != 0 {
+		t.Errorf("headers_to_remove = %v, want empty", got)
 	}
 }
 
@@ -438,18 +440,6 @@ func formatOptions(opts []*corev3.HeaderValueOption) string {
 		parts = append(parts, fmt.Sprintf("%s=%q(%v)", o.GetHeader().GetKey(), o.GetHeader().GetValue(), o.GetAppendAction()))
 	}
 	return fmt.Sprintf("%v", parts)
-}
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // dialReady creates a client for addr and actively waits for the connection to

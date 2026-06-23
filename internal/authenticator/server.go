@@ -186,12 +186,22 @@ func bearerToken(headers map[string]string) (string, bool) {
 // okResponse builds the allow CheckResponse carrying the Kubernetes impersonation
 // headers. Impersonate-User and Authorization use OVERWRITE_IF_EXISTS_OR_ADD so
 // they replace any caller-supplied value; each Impersonate-Group uses
-// APPEND_IF_EXISTS_OR_ADD so the groups accumulate into repeated headers (the
-// standard multi-group impersonation encoding, compatible with any conformant
-// cluster). The caller's original Authorization is also listed in
-// HeadersToRemove: setting Authorization overwrites it, but the removal is a
-// defense-in-depth guarantee that no caller credential reaches the upstream even
-// if Envoy applied the options in an unexpected order.
+// APPEND_IF_EXISTS_OR_ADD so the groups accumulate into repeated headers — for a
+// non-inline header like Impersonate-Group, Envoy's APPEND_IF_EXISTS_OR_ADD adds
+// a duplicate header entry per value rather than comma-concatenating, which is
+// exactly the standard repeated-header multi-group impersonation encoding the API
+// server expects, compatible with any conformant cluster.
+//
+// The caller's original Authorization is NOT listed in HeadersToRemove. Setting
+// Authorization with OVERWRITE_IF_EXISTS_OR_ADD already discards any
+// caller-supplied value and replaces it with the impersonator token (overwriting
+// it in place), so the upstream never sees the caller's credential. Envoy does
+// not document a guaranteed apply order between the headers (set/append) and
+// headers_to_remove mutations, so additionally listing Authorization in
+// HeadersToRemove would risk removing the impersonator value we just set on the
+// path where removals are applied last — leaving the request unauthenticated to
+// the API server. The AC scopes HeadersToRemove to the "cannot be overwritten in
+// place" case, which does not apply here.
 func okResponse(identity *Identity, impersonatorToken string) *authv3.CheckResponse {
 	headers := make([]*corev3.HeaderValueOption, 0, len(identity.Groups)+2)
 	headers = append(headers, overwriteHeader(headerImpersonateUser, identity.Username))
@@ -204,8 +214,7 @@ func okResponse(identity *Identity, impersonatorToken string) *authv3.CheckRespo
 		Status: &rpcstatus.Status{Code: int32(codes.OK)},
 		HttpResponse: &authv3.CheckResponse_OkResponse{
 			OkResponse: &authv3.OkHttpResponse{
-				Headers:         headers,
-				HeadersToRemove: []string{headerAuthorization},
+				Headers: headers,
 			},
 		},
 	}
