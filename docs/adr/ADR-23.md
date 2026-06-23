@@ -28,6 +28,13 @@ with the deviations noted below. `Status` is now `Implemented`.
   credential, overwriting `Authorization`. The `authenticator.holos.run/v1alpha1`
   `Backend` CRD carries the ADR-22 status contract. The operator guide is
   [the runbook](../runbooks/holos-authenticator.md).
+- **Deviation: the `Backend` reconciler also runs on every replica.** The
+  *Design* above (and the original proposal) framed leader election as gating the
+  reconcilers that keep the in-memory backend configuration current. As built,
+  each replica's registry is **process-local**, so the `Backend` reconciler is
+  configured `NeedLeaderElection=false` and runs on **every** replica — not only
+  the leader — precisely so each replica's registry is populated for its own data
+  path. Leader election is therefore not on the authorization path at all.
 - **Deviation: deployed as a Holos component, not a kustomize tree.** The design
   pointed at `holos-controller`'s build/release machinery as the template, and
   the authenticator reuses it (isolated `Makefile.authenticator`,

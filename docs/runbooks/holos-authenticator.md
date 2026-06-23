@@ -50,10 +50,12 @@ On each `Check` the authorizer:
    with the impersonator credential's `Bearer <token>`. Envoy forwards to the
    upstream API server, which authorizes the request as the impersonated user.
 
-The gRPC `Runnable` reports `NeedLeaderElection() == false`: **every replica
-answers Envoy** on the data path. Leader election (when enabled) gates only the
-`Backend` reconciler that keeps the in-memory registry current, not the
-per-request authorization.
+Both the gRPC `Runnable` and the `Backend` reconciler report
+`NeedLeaderElection() == false`: **every replica answers Envoy and reconciles
+`Backend`s** into its own process-local registry. The reconciler runs on every
+replica (not only the leader) precisely so each replica's in-memory registry is
+populated and can serve the data path; leader election is not on the
+authorization path at all.
 
 Ports (the flag contract in `cmd/holos-authenticator/main.go`):
 
@@ -85,7 +87,8 @@ own OIDC client and mapping.
 | `oidc.usernameClaim`         | no       | `sub`                                      | Token claim used as the impersonated username.                             |
 | `oidc.groupsClaim`           | no       | `groups`                                   | Token claim carrying groups (used by the default mapping).                 |
 | `groupMapping.celExpression` | no       | empty → default mapping                    | CEL expression over `claims` producing the Kubernetes group list.          |
-| `credentialsSecretRef`       | no       | `{name: holos-authenticator-backend-creds}` | Secret holding the privileged impersonator credential.                     |
+| `credentialsSecretRef.name`  | no       | `holos-authenticator-backend-creds`        | Name of the Secret holding the privileged impersonator credential (resolved in the authorizer's own namespace). |
+| `credentialsSecretRef.key`   | no       | `token`                                    | Secret key to read the raw bearer token from (the conventional `token` key when omitted). |
 
 `Backend` reports the ADR-22 Gateway-API status contract: a
 `status.conditions[]` of `Accepted`/`Programmed`/`Ready`, a
@@ -364,8 +367,10 @@ See [README.md](../../README.md) (*Container image* → *Multi-arch images* /
    ```
 
 2. **Backend is Ready.** The `Backend` CR reports `Ready=True` once its
-   group-mapping CEL compiles, its OIDC issuer discovery succeeds, and it has
-   claimed its `host`. **The reconciler does not read the credential Secret** —
+   group-mapping CEL compiles, its `spec.server.url` validates as an absolute
+   `http`/`https` URL with a host (an invalid URL is rejected `Ready=False` with
+   reason `InvalidSpec`), its OIDC issuer discovery succeeds, and it has claimed
+   its `host`. **The reconciler does not read the credential Secret** —
    the impersonator credential is resolved later, on the `Check` data path
    (failing closed with 403 if absent), so `Ready=True` is **not** a signal that
    the credential Secret exists. Provision the Secret (next section) regardless
