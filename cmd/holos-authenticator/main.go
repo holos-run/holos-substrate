@@ -50,10 +50,13 @@ import (
 // own namespace, not cluster-wide. The Check data path (HOL-1388) resolves each
 // backend's privileged impersonator credential Secret from the authorizer's
 // namespace via the manager's APIReader. The marker below carries a `namespace`
-// field so `make authenticator-manifests` emits a namespaced Role/RoleBinding in
-// the authorizer's namespace rather than a ClusterRole — a cluster-wide `secrets`
-// verb would over-grant cluster-wide Secret reads. The Backend reconciler
-// (HOL-1387) still never reads Secrets; only this data path does.
+// field so `make authenticator-manifests` emits a namespaced Role (not a
+// ClusterRole) in the authorizer's namespace — a cluster-wide `secrets` verb
+// would over-grant cluster-wide Secret reads. controller-gen emits only the Role;
+// the RoleBinding that binds it to the authorizer's ServiceAccount is part of the
+// deploy component in HOL-1389 (the platform wiring), so the Role is inert until
+// that phase lands. The Backend reconciler (HOL-1387) still never reads Secrets;
+// only this data path does.
 //
 // +kubebuilder:rbac:groups="",namespace=holos-authenticator,resources=secrets,verbs=get
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch

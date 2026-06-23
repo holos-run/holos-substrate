@@ -189,6 +189,42 @@ func TestCheckAllowNoGroups(t *testing.T) {
 	assertHeaderOptions(t, resp.GetOkResponse().GetHeaders(), want)
 }
 
+// TestCheckInboundImpersonationHeaderDenies asserts that a request carrying any
+// client-supplied Impersonate-* header is denied fail-closed (HTTP 403), closing
+// the header-smuggling / confused-deputy hole (ADR-23): the authorizer injects
+// the backend's privileged credential downstream, so a smuggled
+// Impersonate-Group: system:masters must never survive to the API server. Each
+// impersonation-header variant is rejected, even when an otherwise-valid bearer
+// token is present.
+func TestCheckInboundImpersonationHeaderDenies(t *testing.T) {
+	const host = "api.example.com"
+	store := NewStore()
+	store.Set(testNamespace+"/backend", &Entry{
+		Host:                 host,
+		Authenticator:        newTestAuthenticator(t, map[string]any{"sub": "alice"}, "sub"),
+		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
+	})
+	reader := secretReader(t, credentialSecret("creds", "imp"))
+	client := serveCheck(t, NewCheckServer(store, reader, testNamespace, logr.Discard()))
+
+	// Envoy lowercases header keys in the ext_authz Headers map.
+	smuggled := []string{
+		"impersonate-user",
+		"impersonate-group",
+		"impersonate-uid",
+		"impersonate-extra-scopes",
+	}
+	for _, name := range smuggled {
+		t.Run(name, func(t *testing.T) {
+			resp := mustCheck(t, client, checkRequest(host, map[string]string{
+				"authorization": "Bearer good",
+				name:            "system:masters",
+			}))
+			assertDenied(t, resp, typev3.StatusCode_Forbidden)
+		})
+	}
+}
+
 // TestCheckUnknownHostDenies asserts an unconfigured host is denied with HTTP 403.
 func TestCheckUnknownHostDenies(t *testing.T) {
 	client := serveCheck(t, NewCheckServer(NewStore(), secretReader(t), testNamespace, logr.Discard()))

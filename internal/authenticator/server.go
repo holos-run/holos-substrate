@@ -47,6 +47,11 @@ const (
 	headerImpersonateGroup = "Impersonate-Group"
 	// headerWWWAuthenticate is returned on a missing-token 401 per RFC 7235.
 	headerWWWAuthenticate = "WWW-Authenticate"
+	// impersonatePrefix is the lowercase prefix every Kubernetes impersonation
+	// header shares (Impersonate-User, Impersonate-Group, Impersonate-Uid,
+	// Impersonate-Extra-*). A caller-supplied header with this prefix is a
+	// smuggling attempt and is denied fail-closed.
+	impersonatePrefix = "impersonate-"
 	// bearerPrefix is the case-insensitive scheme prefix on an Authorization
 	// header carrying a bearer token.
 	bearerPrefix = "bearer "
@@ -124,7 +129,24 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (*aut
 		return deniedResponse(typev3.StatusCode_Forbidden, "unknown host", nil), nil
 	}
 
-	// 2. Extract the caller's bearer token. A missing token is a 401 with a
+	// 2. Sanitize inbound impersonation headers (mandatory, ADR-23). The authorizer
+	// injects the backend's privileged credential downstream, so any client-supplied
+	// Impersonate-* header would otherwise be impersonated at that privilege — a
+	// confused-deputy / header-smuggling hole (e.g. a smuggled
+	// Impersonate-Group: system:masters). Because Envoy does not document a
+	// guaranteed apply order between the OkResponse's header sets and
+	// headers_to_remove, we fail closed and DENY any request carrying an
+	// Impersonate-* header rather than relying on a scrub the upstream might race —
+	// ADR-23: "denied rather than silently scrubbed if there is any doubt the
+	// upstream would see the client's version." The caller's own Authorization
+	// (their OIDC token) is expected and is overwritten in place below, so it is not
+	// part of this denial.
+	if name, ok := firstImpersonationHeader(http.GetHeaders()); ok {
+		s.log.V(1).Info("denying request carrying inbound impersonation header", "host", host, "header", name)
+		return deniedResponse(typev3.StatusCode_Forbidden, "inbound impersonation header not allowed", nil), nil
+	}
+
+	// 3. Extract the caller's bearer token. A missing token is a 401 with a
 	// WWW-Authenticate challenge so a compliant client knows to authenticate.
 	token, ok := bearerToken(http.GetHeaders())
 	if !ok {
@@ -136,7 +158,7 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (*aut
 		), nil
 	}
 
-	// 3. Validate the OIDC token and map its claims to a Kubernetes identity. A
+	// 4. Validate the OIDC token and map its claims to a Kubernetes identity. A
 	// verification or mapping failure is a 401 — the caller authenticated but the
 	// token is not acceptable.
 	identity, err := entry.Authenticator.Authenticate(ctx, token)
@@ -145,7 +167,7 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (*aut
 		return deniedResponse(typev3.StatusCode_Unauthorized, "invalid token", nil), nil
 	}
 
-	// 4. Resolve the backend's privileged impersonator credential. A read failure
+	// 5. Resolve the backend's privileged impersonator credential. A read failure
 	// is a 403 and fails closed — the caller is authenticated but the authorizer
 	// cannot act on their behalf, which is an internal/configuration fault, not a
 	// client authentication error.
@@ -155,12 +177,30 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (*aut
 		return deniedResponse(typev3.StatusCode_Forbidden, "credential unavailable", nil), nil
 	}
 
-	// 5. Build the OK response: set the impersonation identity, replace the
-	// caller's Authorization with the impersonator token, and remove the original
-	// Authorization so the upstream never sees the caller's credential.
+	// 6. Build the OK response: set the impersonation identity and replace the
+	// caller's Authorization with the impersonator token. Inbound impersonation
+	// headers were already rejected in step 2, so the only Impersonate-* headers
+	// the upstream sees are the derived ones.
 	s.log.V(1).Info("allowing request",
 		"host", host, "user", identity.Username, "groups", len(identity.Groups))
 	return okResponse(identity, impersonatorToken), nil
+}
+
+// firstImpersonationHeader returns the name of the first inbound Kubernetes
+// impersonation header (Impersonate-User, Impersonate-Group, Impersonate-Uid, or
+// any Impersonate-Extra-* header) present in the request headers, and whether one
+// was found. Envoy lowercases header keys in the ext_authz Headers map, so the
+// prefix match is against the lowercase "impersonate-". The returned name is the
+// key as Envoy presented it, for logging. A caller-supplied impersonation header
+// is a smuggling attempt; the Check path denies the request fail-closed rather
+// than scrubbing it (ADR-23).
+func firstImpersonationHeader(headers map[string]string) (string, bool) {
+	for name := range headers {
+		if strings.HasPrefix(strings.ToLower(name), impersonatePrefix) {
+			return name, true
+		}
+	}
+	return "", false
 }
 
 // bearerToken extracts the bearer token from the request's Authorization header.
