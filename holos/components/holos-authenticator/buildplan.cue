@@ -313,6 +313,53 @@ userDefinedBuildPlan: {
 							}
 						}
 
+						// L4 caller guard on the ext_authz gRPC Service — the decisive
+						// fix for the "anyone who can reach :9000 reads back the
+						// impersonator credential" hazard.  The Check response carries the
+						// backend's privileged Authorization: Bearer <impersonator-token>;
+						// the gRPC Service is a normal ClusterIP, so WITHOUT this policy
+						// any meshed pod that can dial
+						// holos-authenticator.holos-authenticator.svc:9000, present a
+						// valid OIDC token for a configured Backend, and read the response
+						// could exfiltrate that credential — independent of the deferred
+						// waypoint topology.  This ALLOW policy (mTLS source-principal
+						// allowlist, the quay-redis pattern) restricts callers to the
+						// platform-owned namespaces where the ext_authz client (the Istio
+						// waypoint that fronts a protected workload) runs: the
+						// authenticator's own namespace and the istio control-plane
+						// namespaces.  It is fail-closed against tenants: a CUSTOM-action
+						// ALLOW policy denies any source not listed, so until the waypoint
+						// is deployed (deferred) NO tenant-namespace pod can reach the
+						// gRPC server.  Tighten this to the exact waypoint ServiceAccount
+						// principal when the waypoint topology lands (placeholders.md).
+						AuthorizationPolicy: "\(NAME)-grpc-callers": {
+							apiVersion: "security.istio.io/v1"
+							kind:       "AuthorizationPolicy"
+							metadata: {
+								name:      "\(NAME)-grpc-callers"
+								namespace: NAMESPACE
+								labels:    METADATA.labels
+							}
+							spec: {
+								selector: matchLabels: SELECTOR
+								action: "ALLOW"
+								rules: [{
+									from: [{
+										source: namespaces: [
+											NAMESPACE,
+											"istio-system",
+											"istio-gateways",
+										]
+									}]
+									// Restrict to the gRPC ext_authz port; the metrics port
+									// is governed separately (scrape auth on :8080).
+									to: [{
+										operation: ports: ["\(GRPC_PORT)"]
+									}]
+								}]
+							}
+						}
+
 						// One example Backend CR documenting the shape an operator fills
 						// in.  It points at the in-cluster API server, validates tokens
 						// against the platform Keycloak holos realm, and names the
