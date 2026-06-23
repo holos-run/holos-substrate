@@ -12,12 +12,6 @@ rules:
   - create
   - patch
 - apiGroups:
-  - ""
-  resources:
-  - secrets
-  verbs:
-  - get
-- apiGroups:
   - authenticator.holos.run
   resources:
   - backends

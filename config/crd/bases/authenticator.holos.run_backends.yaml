@@ -85,7 +85,10 @@ spec:
                     description: |-
                       Name of the Secret holding the backend's privileged credential. When
                       omitted it defaults to holos-authenticator-backend-creds, resolved in the
-                      authorizer's own namespace.
+                      authorizer's own namespace. MinLength=1 rejects an explicit empty string,
+                      which would otherwise bypass the default and leave the resolver with a blank
+                      Secret name.
+                    minLength: 1
                     type: string
                 type: object
               groupMapping:
@@ -143,8 +146,11 @@ spec:
                     default: groups
                     description: |-
                       GroupsClaim is the token claim the authorizer reads the user's groups from.
-                      It is the input to the spec.groupMapping CEL expression. Defaults to
-                      "groups".
+                      It is the source of truth for which claim carries the groups (the default
+                      group mapping reads it directly when spec.groupMapping.celExpression is
+                      empty). Defaults to "groups". MinLength=1 rejects an explicit empty string,
+                      which would otherwise bypass the default and persist an invalid claim name.
+                    minLength: 1
                     type: string
                   issuerURL:
                     description: |-
@@ -159,6 +165,9 @@ spec:
                     description: |-
                       UsernameClaim is the token claim the authorizer reads the user identity
                       from, used as the Kubernetes impersonated username. Defaults to "sub".
+                      MinLength=1 rejects an explicit empty string, which would otherwise bypass
+                      the default and persist an invalid (blank) claim name.
+                    minLength: 1
                     type: string
                 required:
                 - clientID

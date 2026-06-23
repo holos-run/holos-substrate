@@ -58,17 +58,23 @@ type OIDCConfig struct {
 
 	// UsernameClaim is the token claim the authorizer reads the user identity
 	// from, used as the Kubernetes impersonated username. Defaults to "sub".
+	// MinLength=1 rejects an explicit empty string, which would otherwise bypass
+	// the default and persist an invalid (blank) claim name.
 	//
 	// +optional
 	// +kubebuilder:default=sub
+	// +kubebuilder:validation:MinLength=1
 	UsernameClaim string `json:"usernameClaim,omitempty"`
 
 	// GroupsClaim is the token claim the authorizer reads the user's groups from.
-	// It is the input to the spec.groupMapping CEL expression. Defaults to
-	// "groups".
+	// It is the source of truth for which claim carries the groups (the default
+	// group mapping reads it directly when spec.groupMapping.celExpression is
+	// empty). Defaults to "groups". MinLength=1 rejects an explicit empty string,
+	// which would otherwise bypass the default and persist an invalid claim name.
 	//
 	// +optional
 	// +kubebuilder:default=groups
+	// +kubebuilder:validation:MinLength=1
 	GroupsClaim string `json:"groupsClaim,omitempty"`
 }
 

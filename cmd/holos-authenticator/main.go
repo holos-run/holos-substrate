@@ -13,11 +13,12 @@
 // tutorial assumes, and it keeps the manager legible to the kubebuilder
 // toolchain. Fisk is for the user-facing CLI, not the manager process.
 //
-// This phase (HOL-1385) ships only the scaffold: the manager starts, serves
-// health and Prometheus metrics endpoints, registers the core Kubernetes scheme,
-// and runs the ext_authz gRPC server as a manager.Runnable whose Check is a stub
-// always-Denied (HTTP 403) response. The authenticator.holos.run API group, OIDC
-// validation, CEL mapping, and impersonation output land in HOL-1386..HOL-1389.
+// The scaffold (HOL-1385) starts the manager, serves health and Prometheus
+// metrics endpoints, and runs the ext_authz gRPC server as a manager.Runnable
+// whose Check is a stub always-Denied (HTTP 403) response. HOL-1386 adds the
+// authenticator.holos.run/v1alpha1 API group (the Backend CRD) and registers it
+// in the manager's scheme; the OIDC validation, CEL mapping, and impersonation
+// output that consume a Backend land in HOL-1387..HOL-1389.
 package main
 
 import (
@@ -38,15 +39,22 @@ import (
 )
 
 // RBAC the authenticator needs: leader-election leases and event recording, plus
-// access to the authenticator.holos.run Backend CRs it watches and the credential
-// Secrets they reference. These markers generate the authenticator's own RBAC role
-// (holos-authenticator-role) via `make authenticator-manifests`, scoped to the
-// authenticator packages — distinct from the controller's
-// holos-controller-manager-role. The Backend reconciler that consumes the
-// backends verbs lands in HOL-1387; the read access is declared with the CRD here.
+// read access to the authenticator.holos.run Backend CRs it watches. These markers
+// generate the authenticator's own RBAC role (holos-authenticator-role) via
+// `make authenticator-manifests`, scoped to the authenticator packages — distinct
+// from the controller's holos-controller-manager-role. The Backend reconciler that
+// consumes the backends verbs lands in HOL-1387; the read access is declared with
+// the CRD here.
+//
+// Secret access is deliberately NOT granted here. The backend credential Secret
+// is read by name in the authorizer's own namespace by the reconciler that lands
+// in HOL-1387; that phase adds a namespaced Role/RoleBinding scoped to the
+// authenticator namespace rather than a cluster-wide `secrets` verb on this
+// ClusterRole (which, bound by a ClusterRoleBinding, would grant cluster-wide
+// Secret reads). Keeping the marker out of this types-only phase keeps the
+// generated role minimal and avoids the over-broad grant.
 //
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=authenticator.holos.run,resources=backends,verbs=get;list;watch
 // +kubebuilder:rbac:groups=authenticator.holos.run,resources=backends/status,verbs=get;patch;update

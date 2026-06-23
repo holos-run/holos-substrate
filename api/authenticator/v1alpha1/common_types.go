@@ -46,10 +46,13 @@ const DefaultCredentialsSecretName = "holos-authenticator-backend-creds"
 type SecretReference struct {
 	// Name of the Secret holding the backend's privileged credential. When
 	// omitted it defaults to holos-authenticator-backend-creds, resolved in the
-	// authorizer's own namespace.
+	// authorizer's own namespace. MinLength=1 rejects an explicit empty string,
+	// which would otherwise bypass the default and leave the resolver with a blank
+	// Secret name.
 	//
 	// +optional
 	// +kubebuilder:default=holos-authenticator-backend-creds
+	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name,omitempty"`
 
 	// Key within the Secret to read the credential from. When omitted the
