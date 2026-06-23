@@ -33,17 +33,24 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	authenticatorv1alpha1 "github.com/holos-run/holos-paas/api/authenticator/v1alpha1"
 	"github.com/holos-run/holos-paas/internal/authenticator"
 )
 
-// RBAC the authenticator needs once the authenticator.holos.run reconcilers land
-// (HOL-1386+): leader-election leases and event recording, plus — in later
-// phases — read access to the Backend CRs and the OIDC-client/backend-credential
-// Secrets they reference. Only the minimal leader-election + event verbs are
-// declared now; the API-group verbs are added with the CRD in HOL-1386.
+// RBAC the authenticator needs: leader-election leases and event recording, plus
+// access to the authenticator.holos.run Backend CRs it watches and the credential
+// Secrets they reference. These markers generate the authenticator's own RBAC role
+// (holos-authenticator-role) via `make authenticator-manifests`, scoped to the
+// authenticator packages — distinct from the controller's
+// holos-controller-manager-role. The Backend reconciler that consumes the
+// backends verbs lands in HOL-1387; the read access is declared with the CRD here.
 //
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=authenticator.holos.run,resources=backends,verbs=get;list;watch
+// +kubebuilder:rbac:groups=authenticator.holos.run,resources=backends/status,verbs=get;patch;update
+// +kubebuilder:rbac:groups=authenticator.holos.run,resources=backends/finalizers,verbs=update
 
 // version is the build version stamped into the binary at link time with
 // -ldflags "-X main.version=<v>". The Makefile sets it from `git describe`,
@@ -60,10 +67,11 @@ var (
 
 func init() {
 	// Register the Kubernetes core types so the manager's client and cache can
-	// serve them. Unlike holos-controller this binary registers no quay.holos.run
-	// or keycloak.holos.run groups; the authenticator.holos.run group is added to
-	// the scheme with its CRD in HOL-1386.
+	// serve them, plus the authenticator.holos.run group (HOL-1386) whose Backend
+	// CRs configure the authorizer's API server backends. Unlike holos-controller
+	// this binary registers no quay.holos.run or keycloak.holos.run groups.
 	utilruntimeMust(clientgoscheme.AddToScheme(scheme))
+	utilruntimeMust(authenticatorv1alpha1.AddToScheme(scheme))
 }
 
 func main() {
