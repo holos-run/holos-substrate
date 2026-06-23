@@ -46,15 +46,16 @@ import (
 // authenticator packages — distinct from the controller's
 // holos-controller-manager-role.
 //
-// Secret access is deliberately NOT granted here. The HOL-1387 Backend reconciler
-// only records spec.credentialsSecretRef in the in-memory store — it never reads
-// the Secret. The privileged impersonator credential is resolved on the Check
-// data path (HOL-1388), which must do so via a namespace-scoped Role/RoleBinding
-// in the authorizer's own namespace rather than a cluster-wide `secrets` verb on
-// this ClusterRole (which, bound by a ClusterRoleBinding, would grant cluster-wide
-// Secret reads). Keeping the marker out until then keeps the generated role
-// minimal and avoids the over-broad grant.
+// Secret access is granted only as a namespace-scoped `get` on the authorizer's
+// own namespace, not cluster-wide. The Check data path (HOL-1388) resolves each
+// backend's privileged impersonator credential Secret from the authorizer's
+// namespace via the manager's APIReader. The marker below carries a `namespace`
+// field so `make authenticator-manifests` emits a namespaced Role/RoleBinding in
+// the authorizer's namespace rather than a ClusterRole — a cluster-wide `secrets`
+// verb would over-grant cluster-wide Secret reads. The Backend reconciler
+// (HOL-1387) still never reads Secrets; only this data path does.
 //
+// +kubebuilder:rbac:groups="",namespace=holos-authenticator,resources=secrets,verbs=get
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=authenticator.holos.run,resources=backends,verbs=get;list;watch
@@ -172,13 +173,20 @@ func main() {
 	// Register the ext_authz gRPC server as a manager.Runnable so it shares the
 	// manager's lifecycle and leader-election context. It does not require
 	// leadership (NeedLeaderElection returns false): every replica must answer
-	// Envoy, not only the elected leader. The Check is the scaffold stub
-	// (always-Denied 403); HOL-1388 replaces it with the real decision that reads
-	// the shared store.
+	// Envoy, not only the elected leader. The Check (HOL-1388) routes by Host
+	// through the shared store, validates the caller's OIDC token, and returns
+	// Kubernetes impersonation headers, resolving each backend's privileged
+	// credential Secret via the manager's APIReader (a non-caching reader) from the
+	// authorizer's own namespace.
 	grpcServer := &authenticator.GRPCServer{
-		Addr:  grpcAddr,
-		Check: authenticator.NewCheckServer(store, ctrl.Log.WithName("ext-authz")),
-		Log:   ctrl.Log.WithName("grpc-server"),
+		Addr: grpcAddr,
+		Check: authenticator.NewCheckServer(
+			store,
+			mgr.GetAPIReader(),
+			authenticator.AuthorizerNamespace(),
+			ctrl.Log.WithName("ext-authz"),
+		),
+		Log: ctrl.Log.WithName("grpc-server"),
 	}
 	if err := mgr.Add(grpcServer); err != nil {
 		setupLog.Error(err, "unable to add ext_authz gRPC server to manager")
