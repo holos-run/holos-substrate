@@ -130,17 +130,35 @@ func DefaultGroupExpression(groupsClaim string) string {
 }
 
 // isStringListType reports whether t is acceptable as a group-mapping result:
-// any concrete list(T) (elements are coerced to string at evaluation) or dyn (a
-// map index / field selection whose concrete type CEL defers to runtime, where
-// refValToStringSlice enforces list-ness). Concrete non-list types (scalars,
-// maps) are rejected at compile time.
+// list(string), list(dyn) (e.g. claims["groups"] where the element type is
+// deferred to runtime), or a bare dyn (a map index / field selection whose whole
+// type CEL defers to runtime). A concrete list of a non-string, non-dyn element
+// type — list(int), list(bool), list(list(...)) — is rejected at compile time so
+// an expression like [1] or [true] fails the reconcile (Accepted=False) rather
+// than compiling Ready and then failing every request when elementToString sees a
+// non-string. Concrete non-list types (scalars, maps) are also rejected.
 func isStringListType(t *cel.Type) bool {
 	if t == nil {
 		return false
 	}
 	switch t.Kind() {
-	case types.ListKind, types.DynKind:
+	case types.DynKind:
 		return true
+	case types.ListKind:
+		// Inspect the element type when CEL resolved it concretely. Parameters()[0]
+		// is the list element type; require it to be string or dyn. A list with no
+		// type parameter (shouldn't happen for a well-formed list) is conservatively
+		// accepted as dyn-like.
+		params := t.Parameters()
+		if len(params) == 0 {
+			return true
+		}
+		switch params[0].Kind() {
+		case types.StringKind, types.DynKind:
+			return true
+		default:
+			return false
+		}
 	default:
 		return false
 	}

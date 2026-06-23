@@ -13,7 +13,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	reconcilepkg "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	authenticatorv1alpha1 "github.com/holos-run/holos-paas/api/authenticator/v1alpha1"
 	"github.com/holos-run/holos-paas/internal/authenticator"
@@ -268,8 +270,46 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	runOnEveryReplica := false
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&authenticatorv1alpha1.Backend{}).
+		// Re-enqueue every other Backend that shares a changed Backend's spec.host
+		// so host-collision losers/winners re-converge promptly. Without this, a
+		// Backend that was Ready and then loses its host to a newly-created smaller
+		// key (or that should reclaim a host whose owner was just deleted) would keep
+		// a stale Ready/HostConflict status until some unrelated reconcile. The map
+		// func lists Backends and returns the requests for those matching the host;
+		// the event source's own object is excluded because For() already enqueues it.
+		Watches(&authenticatorv1alpha1.Backend{}, handler.EnqueueRequestsFromMapFunc(r.backendsSharingHost)).
 		WithOptions(controller.Options{NeedLeaderElection: &runOnEveryReplica}).
 		Complete(r)
+}
+
+// backendsSharingHost returns reconcile requests for every Backend that declares
+// the same spec.host as the changed object (excluding the object itself, which
+// For() already enqueues). It is the watch map func that keeps host-collision
+// status convergent: when one Backend claiming a shared host changes, its
+// co-claimants re-reconcile and re-evaluate ownership. A List error yields no
+// requests (best effort) — the periodic informer resync remains a backstop.
+func (r *BackendReconciler) backendsSharingHost(ctx context.Context, obj client.Object) []reconcilepkg.Request {
+	changed, ok := obj.(*authenticatorv1alpha1.Backend)
+	if !ok {
+		return nil
+	}
+	var list authenticatorv1alpha1.BackendList
+	if err := r.List(ctx, &list); err != nil {
+		log.FromContext(ctx).Error(err, "listing Backends for host-sharing requeue")
+		return nil
+	}
+	var reqs []reconcilepkg.Request
+	for i := range list.Items {
+		b := &list.Items[i]
+		if b.Spec.Host != changed.Spec.Host {
+			continue
+		}
+		if b.Namespace == changed.Namespace && b.Name == changed.Name {
+			continue // For() already enqueues the changed object itself
+		}
+		reqs = append(reqs, reconcilepkg.Request{NamespacedName: client.ObjectKeyFromObject(b)})
+	}
+	return reqs
 }
 
 // validateServerURL checks that the upstream API server URL is a well-formed

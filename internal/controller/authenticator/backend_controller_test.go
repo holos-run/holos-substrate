@@ -276,6 +276,46 @@ func TestReconcileHostConflictDeterministic(t *testing.T) {
 	})
 }
 
+// TestReconcileHostConflictLoserRecoversAfterWinnerDeleted asserts the
+// HostConflict loser becomes Ready once the winning Backend is deleted and the
+// loser re-reconciles — the host is freed, so the loser now wins it.
+func TestReconcileHostConflictLoserRecoversAfterWinnerDeleted(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	const host = "shared-recover.example.test"
+
+	r, store, _ := newReconciler(discoverOK)
+
+	keyA := createBackend(ctx, t, makeBackend(ns, "backend-host-a", host)) // winner (smaller)
+	if _, err := reconcile(ctx, r, keyA); err != nil {
+		t.Fatalf("reconcile A: %v", err)
+	}
+	keyB := createBackend(ctx, t, makeBackend(ns, "backend-host-b", host)) // loser (larger)
+	if _, err := reconcile(ctx, r, keyB); err == nil {
+		t.Fatalf("reconcile B = nil error, want host-conflict requeue")
+	}
+	if reason := condReason(getBackend(ctx, t, keyB), ConditionReady); reason != ReasonHostConflict {
+		t.Fatalf("B Ready reason = %q, want %q", reason, ReasonHostConflict)
+	}
+
+	// Delete the winner A and reconcile it (frees the host from the store).
+	if err := shared.k8sClient.Delete(ctx, getBackend(ctx, t, keyA)); err != nil {
+		t.Fatalf("deleting A: %v", err)
+	}
+	if _, err := reconcile(ctx, r, keyA); err != nil {
+		t.Fatalf("reconcile A after delete: %v", err)
+	}
+
+	// B re-reconciles and now wins the freed host.
+	if _, err := reconcile(ctx, r, keyB); err != nil {
+		t.Fatalf("reconcile B after winner deleted: %v", err)
+	}
+	if s := condStatus(getBackend(ctx, t, keyB), ConditionReady); s != metav1.ConditionTrue {
+		t.Errorf("B Ready = %q, want True after winner deleted", s)
+	}
+	assertOwner(t, store, host, keyB.String())
+}
+
 // assertOwner fails the test unless host is owned by wantOwner in the store.
 func assertOwner(t *testing.T, store *authenticator.Store, host, wantOwner string) {
 	t.Helper()

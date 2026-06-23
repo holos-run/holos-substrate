@@ -98,6 +98,9 @@ func TestNewGroupMapperRejectsBadExpressions(t *testing.T) {
 		{name: "non-list result (int literal)", expr: `42`},
 		{name: "non-list result (bool comparison)", expr: `claims.sub == "x"`},
 		{name: "non-list result (map)", expr: `claims`},
+		{name: "concrete list(int)", expr: `[1]`},
+		{name: "concrete list(bool)", expr: `[true]`},
+		{name: "concrete list(int) multi", expr: `[1, 2, 3]`},
 	}
 
 	for _, tc := range tests {
