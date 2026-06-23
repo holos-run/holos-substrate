@@ -28,6 +28,26 @@ with the deviations noted below. `Status` is now `Implemented`.
   credential, overwriting `Authorization`. The `authenticator.holos.run/v1alpha1`
   `Backend` CRD carries the ADR-22 status contract. The operator guide is
   [the runbook](../runbooks/holos-authenticator.md).
+- **Deviation: inbound `Authorization` is accepted and overwritten, not
+  stripped/rejected.** The *Design*/*Decision* above describe sanitizing inbound
+  `Impersonate-*` **and `Authorization`** headers (failure-closed) before
+  injecting the authorizer's own. As built, the caller's `Authorization: Bearer
+  <user token>` is **required input** — it carries the OIDC token the authorizer
+  validates — so only inbound **`Impersonate-*`** headers are rejected
+  failure-closed; the caller's `Authorization` is then **overwritten** with the
+  impersonator credential on the OK response (`HeadersToRemove` is intentionally
+  empty; the overwrite replaces it in place). HOL-1388's spoofed-header tests
+  cover the `Impersonate-*` rejection and the `Authorization` overwrite. The
+  security property (a client cannot smuggle a privileged group or reuse its own
+  token downstream) holds; the mechanism is overwrite-on-allow, not
+  reject-on-inbound, for `Authorization`. The runbook documents the as-built
+  model.
+- **Deviation: `server.caBundle` is recorded but not yet consumed.** The
+  authorizer copies `spec.server.caBundle` into its in-memory `Backend` entry but
+  does **not** dial the upstream API server — Envoy (the waypoint) forwards the
+  impersonated request, so upstream TLS trust is the waypoint/`ServiceEntry`
+  routing layer's concern. The field exists for the deferred external-egress
+  topology; `oidc.caBundle` (the issuer-discovery/JWKS dial) **is** consumed.
 - **Deviation: the `Backend` reconciler also runs on every replica.** The
   *Design* above (and the original proposal) framed leader election as gating the
   reconcilers that keep the in-memory backend configuration current. As built,

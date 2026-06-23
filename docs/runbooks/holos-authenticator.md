@@ -80,7 +80,7 @@ own OIDC client and mapping.
 | ---------------------------- | -------- | ------------------------------------------ | --------------------------------------------------------------------------- |
 | `host`                       | yes      | —                                          | The request `:authority`/`Host` value this Backend serves.                  |
 | `server.url`                 | yes      | —                                          | Upstream API server endpoint (in-cluster or external).                      |
-| `server.caBundle`            | no       | system trust                               | PEM x509 CA bundle to trust for the upstream (a privately-signed endpoint). |
+| `server.caBundle`            | no       | system trust                               | PEM x509 CA bundle for the upstream. **Not yet consumed** (see note below): the authorizer does not dial the upstream — Envoy/the waypoint forwards — so upstream TLS trust lives at the routing layer. The field is recorded for the deferred external-egress topology. |
 | `oidc.issuerURL`             | yes      | —                                          | OIDC issuer base URL (issuer discovery + JWKS).                             |
 | `oidc.clientID`              | yes      | —                                          | OAuth2 client ID / token audience (`aud`).                                  |
 | `oidc.caBundle`              | no       | system trust                               | PEM x509 CA bundle to trust for the OIDC issuer.                            |
@@ -123,8 +123,17 @@ spec:
 The `caBundle` fields are intentionally omitted so the committed manifest
 carries no per-cluster trust material; an operator injects the local-ca PEM out
 of band (mirroring the `caBundle` convention the project/application components
-use). For the in-cluster API server, `caBundle` may carry the cluster CA so the
-authorizer trusts `https://kubernetes.default.svc`.
+use).
+
+> **`server.caBundle` is recorded but not yet consumed.** The authorizer copies
+> `server.caBundle` into its in-memory `Backend` entry but **does not dial the
+> upstream API server** — Envoy (the waypoint) forwards the impersonated request,
+> so the upstream's TLS trust is the waypoint/`ServiceEntry` routing layer's
+> concern, not the authorizer's. The field exists for the deferred external-egress
+> topology (see [`holos/docs/placeholders.md`](../../holos/docs/placeholders.md));
+> setting it today has no effect on the request path. (`oidc.caBundle`, by
+> contrast, **is** consumed — the authorizer dials the OIDC issuer directly for
+> discovery/JWKS.)
 
 ### Example: external API server
 
