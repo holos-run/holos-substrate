@@ -123,20 +123,30 @@ func TestGroupMapperRejectsNonListAtRuntime(t *testing.T) {
 	}
 }
 
-// TestGroupMapperCoercesNonStringElements confirms a list of non-string elements
-// is coerced to strings rather than dropped, so a numeric or boolean group value
-// does not silently vanish.
-func TestGroupMapperCoercesNonStringElements(t *testing.T) {
+// TestGroupMapperRejectsNonStringElements confirms a list containing a non-string
+// element is rejected (not coerced): the API contract is list(string), so a
+// numeric or boolean claim value must not silently become a Kubernetes group name.
+func TestGroupMapperRejectsNonStringElements(t *testing.T) {
 	m, err := NewGroupMapper(`claims.groups`)
 	if err != nil {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
-	got, err := m.Groups(map[string]any{"groups": []any{"a", int64(7), true}})
+	if _, err := m.Groups(map[string]any{"groups": []any{"a", int64(7), true}}); err == nil {
+		t.Fatalf("Groups over a list with non-string elements = nil error, want rejection")
+	}
+}
+
+// TestGroupMapperAllStringElements confirms an all-string list passes through.
+func TestGroupMapperAllStringElements(t *testing.T) {
+	m, err := NewGroupMapper(`claims.groups`)
+	if err != nil {
+		t.Fatalf("NewGroupMapper: %v", err)
+	}
+	got, err := m.Groups(map[string]any{"groups": []any{"a", "b"}})
 	if err != nil {
 		t.Fatalf("Groups: %v", err)
 	}
-	want := []string{"a", "7", "true"}
-	if !reflect.DeepEqual(got, want) {
+	if want := []string{"a", "b"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("Groups = %v, want %v", got, want)
 	}
 }

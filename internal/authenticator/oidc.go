@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 )
@@ -16,6 +17,13 @@ import (
 // reachability probe so a hostile or misconfigured issuer cannot stream an
 // unbounded body into the reconciler. 1 MiB is far larger than any real JWKS.
 const maxJWKSBody = 1 << 20
+
+// discoveryTimeout bounds the whole OIDC discovery + JWKS-probe round trip so a
+// hung or slow issuer cannot pin a reconcile worker indefinitely. It applies as
+// both an http.Client.Timeout (each request) and a context deadline (the overall
+// operation), so neither a stalled connection nor a slow-drip body can hang the
+// reconciler.
+const discoveryTimeout = 30 * time.Second
 
 // VerifiedToken is the result of validating a raw bearer token: the decoded
 // claim set as a generic map, which the GroupMapper evaluates over and from
@@ -84,6 +92,13 @@ func DiscoverVerifier(ctx context.Context, issuerURL, clientID string, caBundle 
 	if err != nil {
 		return nil, err
 	}
+
+	// Bound the overall discovery + JWKS probe with a deadline so a hung issuer
+	// cannot pin the reconcile worker. The http.Client also carries its own
+	// per-request Timeout (oidcHTTPClient) as a second line of defense for a stalled
+	// connection the context cancellation alone might not interrupt promptly.
+	ctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
+	defer cancel()
 
 	// go-oidc reads the *http.Client from the context for both discovery and the
 	// subsequent JWKS fetch the remote KeySet performs, so the caBundle-trusting
@@ -161,33 +176,33 @@ func probeJWKS(ctx context.Context, httpClient *http.Client, provider *oidc.Prov
 // fake that returns a stub verifier without reaching a live issuer.
 type DiscoverFunc func(ctx context.Context, issuerURL, clientID string, caBundle []byte) (TokenVerifier, error)
 
-// oidcHTTPClient builds an *http.Client whose TLS transport trusts caBundle in
-// addition to the system root store. An empty caBundle yields the default client
-// (system trust only). A caBundle that parses to no certificate is an error so a
-// misconfigured bundle surfaces at discovery rather than silently falling back to
-// system trust and reporting Ready for an unhonored spec.
+// oidcHTTPClient builds an *http.Client (with a finite per-request Timeout) whose
+// TLS transport trusts caBundle in addition to the system root store. An empty
+// caBundle yields a client using system trust only — but never http.DefaultClient,
+// which has no timeout and is process-global; a dedicated timed client keeps a
+// hung issuer from pinning a reconcile worker. A caBundle that parses to no
+// certificate is an error so a misconfigured bundle surfaces at discovery rather
+// than silently falling back to system trust and reporting Ready for an unhonored
+// spec.
 func oidcHTTPClient(caBundle []byte) (*http.Client, error) {
-	if len(caBundle) == 0 {
-		return http.DefaultClient, nil
-	}
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 
-	systemPool, err := x509.SystemCertPool()
-	if err != nil || systemPool == nil {
-		// A nil/failed system pool is not fatal: start from an empty pool so the
-		// explicit caBundle is still honored (the issuer may be signed solely by
-		// the supplied CA, e.g. the in-cluster local CA).
-		systemPool = x509.NewCertPool()
-	}
-	if !systemPool.AppendCertsFromPEM(caBundle) {
-		return nil, fmt.Errorf("oidc caBundle contains no valid PEM certificate")
+	if len(caBundle) > 0 {
+		systemPool, err := x509.SystemCertPool()
+		if err != nil || systemPool == nil {
+			// A nil/failed system pool is not fatal: start from an empty pool so the
+			// explicit caBundle is still honored (the issuer may be signed solely by
+			// the supplied CA, e.g. the in-cluster local CA).
+			systemPool = x509.NewCertPool()
+		}
+		if !systemPool.AppendCertsFromPEM(caBundle) {
+			return nil, fmt.Errorf("oidc caBundle contains no valid PEM certificate")
+		}
+		tlsConfig.RootCAs = systemPool
 	}
 
 	return &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs:    systemPool,
-				MinVersion: tls.VersionTLS12,
-			},
-		},
+		Timeout:   discoveryTimeout,
+		Transport: &http.Transport{TLSClientConfig: tlsConfig},
 	}, nil
 }

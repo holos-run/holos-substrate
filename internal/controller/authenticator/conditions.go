@@ -61,6 +61,11 @@ const (
 	// ReasonDiscoveryFailed marks a condition False because the OIDC issuer
 	// discovery or upstream API server could not be reached or validated.
 	ReasonDiscoveryFailed = "DiscoveryFailed"
+	// ReasonHostConflict marks a condition False because another Backend already
+	// owns this Backend's spec.host in the data-path store. Host ownership is
+	// first-claimant-wins so the active routing for a host is deterministic, rather
+	// than depending on reconcile/delete ordering.
+	ReasonHostConflict = "HostConflict"
 )
 
 // setCondition sets a single condition on the supplied condition slice using

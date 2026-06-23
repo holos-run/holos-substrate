@@ -12,6 +12,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	authenticatorv1alpha1 "github.com/holos-run/holos-paas/api/authenticator/v1alpha1"
@@ -141,6 +142,17 @@ func (r *BackendReconciler) reconcileNormal(ctx context.Context, logger logr.Log
 			fmt.Sprintf("OIDC discovery for issuer %q: %v", backend.Spec.OIDC.IssuerURL, err))
 	}
 
+	// Reject a host collision deterministically: if a different Backend already
+	// owns this spec.host in the store, do not silently overwrite the data-path
+	// routing for that host (which would make the active issuer/upstream depend on
+	// reconcile/delete ordering). First claimant wins; the loser reports
+	// Ready=False/HostConflict until the host is freed or its own host changes.
+	if owner, ok := r.Store.Owner(backend.Spec.Host); ok && owner != key {
+		r.Store.DeleteByKey(key)
+		return r.fail(ctx, backend, ReasonHostConflict,
+			fmt.Sprintf("host %q is already claimed by another Backend (%s)", backend.Spec.Host, owner))
+	}
+
 	// Build the resolved entry and register it in the Store keyed by spec.host
 	// (the Store records the key→host reverse index so a later delete removes it).
 	entry := &authenticator.Entry{
@@ -248,8 +260,17 @@ func (r *BackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Store == nil {
 		r.Store = authenticator.NewStore()
 	}
+	// Run on every replica, not only the elected leader. The reconciler's job is
+	// to populate the process-local Store the always-on ext_authz gRPC server
+	// (NeedLeaderElection=false) reads; if it ran only on the leader, non-leader
+	// replicas would serve Envoy from an empty store and deny every request. Each
+	// replica independently reconciles the same Backends into its own store — there
+	// is no external system to coordinate, so concurrent reconcilers are safe (Codex
+	// round 2).
+	runOnEveryReplica := false
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&authenticatorv1alpha1.Backend{}).
+		WithOptions(controller.Options{NeedLeaderElection: &runOnEveryReplica}).
 		Complete(r)
 }
 

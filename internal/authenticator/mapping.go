@@ -190,17 +190,21 @@ func listerToStringSlice(val ref.Val) ([]string, error) {
 	return groups, nil
 }
 
-// elementToString coerces a single CEL list element to a Go string. A string
-// element passes through; any other scalar is rendered via fmt so a numeric or
-// boolean group value does not silently vanish.
+// elementToString returns a single CEL list element as a Go string, requiring it
+// to actually be a string. The API contract is that the expression returns
+// list(string); a non-string element (a number, a bool, a nested object) is a
+// malformed result and is rejected rather than coerced — coercing would turn a
+// claim like 7 or true into a real Kubernetes group name ("7"/"true"), silently
+// granting access the operator never expressed.
 func elementToString(el ref.Val) (string, error) {
 	if el == nil {
 		return "", fmt.Errorf("group-mapping list element is nil")
 	}
-	if s, ok := el.Value().(string); ok {
-		return s, nil
+	s, ok := el.Value().(string)
+	if !ok {
+		return "", fmt.Errorf("group-mapping list element is not a string (got %T); the expression must return list(string)", el.Value())
 	}
-	return fmt.Sprintf("%v", el.Value()), nil
+	return s, nil
 }
 
 // isMissingKeyErr reports whether err is CEL's "no such key" / "no such field"

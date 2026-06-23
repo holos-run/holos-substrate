@@ -40,20 +40,20 @@ import (
 )
 
 // RBAC the authenticator needs: leader-election leases and event recording, plus
-// read access to the authenticator.holos.run Backend CRs it watches. These markers
-// generate the authenticator's own RBAC role (holos-authenticator-role) via
-// `make authenticator-manifests`, scoped to the authenticator packages — distinct
-// from the controller's holos-controller-manager-role. The Backend reconciler that
-// consumes the backends verbs lands in HOL-1387; the read access is declared with
-// the CRD here.
+// read/status access to the authenticator.holos.run Backend CRs the reconciler
+// watches (HOL-1387). These markers generate the authenticator's own RBAC role
+// (holos-authenticator-role) via `make authenticator-manifests`, scoped to the
+// authenticator packages — distinct from the controller's
+// holos-controller-manager-role.
 //
-// Secret access is deliberately NOT granted here. The backend credential Secret
-// is read by name in the authorizer's own namespace by the reconciler that lands
-// in HOL-1387; that phase adds a namespaced Role/RoleBinding scoped to the
-// authenticator namespace rather than a cluster-wide `secrets` verb on this
-// ClusterRole (which, bound by a ClusterRoleBinding, would grant cluster-wide
-// Secret reads). Keeping the marker out of this types-only phase keeps the
-// generated role minimal and avoids the over-broad grant.
+// Secret access is deliberately NOT granted here. The HOL-1387 Backend reconciler
+// only records spec.credentialsSecretRef in the in-memory store — it never reads
+// the Secret. The privileged impersonator credential is resolved on the Check
+// data path (HOL-1388), which must do so via a namespace-scoped Role/RoleBinding
+// in the authorizer's own namespace rather than a cluster-wide `secrets` verb on
+// this ClusterRole (which, bound by a ClusterRoleBinding, would grant cluster-wide
+// Secret reads). Keeping the marker out until then keeps the generated role
+// minimal and avoids the over-broad grant.
 //
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
@@ -147,6 +147,15 @@ func main() {
 	// the request's :authority/Host. Injecting one instance into both is how the
 	// reconciler's reconciled state reaches the data path without an import cycle
 	// (both depend on internal/authenticator, not on each other).
+	//
+	// The store is process-local. Because the ext_authz gRPC server must answer
+	// Envoy on every replica (NeedLeaderElection=false), the reconciler that fills
+	// the store also runs on every replica (it sets NeedLeaderElection=false in
+	// SetupWithManager) rather than only on the elected leader — otherwise a
+	// non-leader replica would serve from an empty store and deny every request.
+	// With --leader-elect this means each replica independently reconciles the same
+	// Backends into its own store; there is no external system to coordinate, so
+	// that is safe.
 	store := authenticator.NewStore()
 
 	// Register the Backend reconciler: it watches Backend CRs, performs OIDC

@@ -219,6 +219,39 @@ func TestReconcileDeleteRemovesFromStore(t *testing.T) {
 	}
 }
 
+// TestReconcileHostConflictRejectsSecond asserts that when two Backends declare
+// the same spec.host, the first to reconcile owns the store entry and the second
+// is rejected (Ready=False, reason HostConflict) rather than silently overwriting
+// the data-path routing.
+func TestReconcileHostConflictRejectsSecond(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	r, store, _ := newReconciler(discoverOK)
+
+	keyA := createBackend(ctx, t, makeBackend(ns, "backend-host-a", "shared.example.test"))
+	if _, err := reconcile(ctx, r, keyA); err != nil {
+		t.Fatalf("reconcile A: %v", err)
+	}
+
+	keyB := createBackend(ctx, t, makeBackend(ns, "backend-host-b", "shared.example.test"))
+	if _, err := reconcile(ctx, r, keyB); err == nil {
+		t.Fatalf("reconcile B = nil error, want a requeue error on host conflict")
+	}
+
+	// A keeps the store entry; B is rejected.
+	if owner, ok := store.Owner("shared.example.test"); !ok || owner != keyA.String() {
+		t.Errorf("store owner = %q (ok=%v), want %q", owner, ok, keyA.String())
+	}
+	b := getBackend(ctx, t, keyB)
+	if reason := condReason(b, ConditionReady); reason != ReasonHostConflict {
+		t.Errorf("B Ready reason = %q, want %q", reason, ReasonHostConflict)
+	}
+	if store.Len() != 1 {
+		t.Errorf("store has %d entries, want 1 (only A)", store.Len())
+	}
+}
+
 // TestReconcileIsIdempotent asserts a second reconcile of an unchanged ready
 // Backend is a no-op (no error, no requeue, store unchanged).
 func TestReconcileIsIdempotent(t *testing.T) {

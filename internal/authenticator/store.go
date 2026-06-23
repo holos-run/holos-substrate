@@ -113,6 +113,17 @@ func (s *Store) Get(host string) (*Entry, bool) {
 	return entry, ok
 }
 
+// Owner returns the object key currently owning host and whether host is
+// registered. The reconciler uses it to detect a host collision — a host already
+// owned by a different Backend — and reject the new claimant deterministically
+// rather than silently overwriting the data-path routing for that host.
+func (s *Store) Owner(host string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	owner, ok := s.ownerByHost[host]
+	return owner, ok
+}
+
 // DeleteByKey removes the Entry a Backend registered, identified by its object
 // key (namespace/name). It is idempotent — a key with no registration is a no-op
 // — so the reconciler can call it unconditionally on delete or when a Backend
