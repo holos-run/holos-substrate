@@ -218,6 +218,28 @@ echo "    apply platform root: app-of-apps"
 kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
   -f "${COMPONENTS_DIR}/app-of-apps/"
 
+# 3. One-time migration cleanup (HOL-1382): prune the RETIRED global tenant
+#    App-of-Apps.  Before HOL-1382 a single `projects` App-of-Apps reconciled ALL
+#    projects from the SHARED holos-paas-config bundle: the root `projects-bootstrap`
+#    and its two children `projects-project` / `projects-application`.  HOL-1382
+#    removes the `projects` component (those paths are GONE from the republished
+#    bundle) and replaces it with per-project `<project>-control-plane` /
+#    `<project>-workload` roots over per-project bundles.  On a cluster that already
+#    ran the old handoff, those three Applications LINGER: `projects-bootstrap`'s
+#    source path vanished from the bundle (it errors, cannot self-prune its
+#    children), and `projects-project`/`projects-application` either keep
+#    reconciling the shared bundle's project/application paths IN PARALLEL with the
+#    new per-project roots (a second manager) or go invalid once argocd-projects
+#    narrows the `projects` AppProject sourceRepos to the per-project bundles.
+#    Delete all three explicitly (idempotent --ignore-not-found; a no-op on a fresh
+#    cluster) so the migration is clean.  This is platform-bootstrap's natural
+#    finalization of the bundle migration it just republished.
+echo "    prune retired global tenant App-of-Apps (one-time HOL-1382 migration)"
+kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
+  delete application.argoproj.io \
+  projects-bootstrap projects-project projects-application \
+  --ignore-not-found --request-timeout=60s
+
 echo "    Argo CD now reconciles the platform (platform-bootstrap) from"
 echo "    holos-paas-config:${CONFIG_TAG:-dev}."
 echo "    Tenant projects are bootstrapped separately and independently:"
