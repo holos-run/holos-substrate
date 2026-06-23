@@ -235,6 +235,37 @@ func TestDiscoverVerifierBrokenJWKS(t *testing.T) {
 	}
 }
 
+// rawJWKSDiscoveryServer serves a discovery document plus a verbatim JWKS body,
+// so a test can publish malformed key material (e.g. {"keys":[{}]}).
+func rawJWKSDiscoveryServer(t *testing.T, jwksBody string) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":   srv.URL,
+			"jwks_uri": srv.URL + "/jwks",
+		})
+	})
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(jwksBody))
+	})
+	return srv
+}
+
+// TestDiscoverVerifierUnusableJWKSKey asserts discovery fails when the JWKS has a
+// non-empty keys array but no usable key material ({"keys":[{}]}) — the deeper
+// validation Codex's round-3 finding asked for, beyond a bare length check.
+func TestDiscoverVerifierUnusableJWKSKey(t *testing.T) {
+	srv := rawJWKSDiscoveryServer(t, `{"keys":[{}]}`)
+	if _, err := DiscoverVerifier(context.Background(), srv.URL, testClientID, nil); err == nil {
+		t.Fatalf("DiscoverVerifier with an unusable JWKS key = nil error, want failure")
+	}
+}
+
 // fakeVerifier is a TokenVerifier stub returning a fixed result, used by the
 // Authenticator tests so they exercise the verify→map pipeline without a real
 // OIDC token.

@@ -142,19 +142,13 @@ func (r *BackendReconciler) reconcileNormal(ctx context.Context, logger logr.Log
 			fmt.Sprintf("OIDC discovery for issuer %q: %v", backend.Spec.OIDC.IssuerURL, err))
 	}
 
-	// Reject a host collision deterministically: if a different Backend already
-	// owns this spec.host in the store, do not silently overwrite the data-path
-	// routing for that host (which would make the active issuer/upstream depend on
-	// reconcile/delete ordering). First claimant wins; the loser reports
-	// Ready=False/HostConflict until the host is freed or its own host changes.
-	if owner, ok := r.Store.Owner(backend.Spec.Host); ok && owner != key {
-		r.Store.DeleteByKey(key)
-		return r.fail(ctx, backend, ReasonHostConflict,
-			fmt.Sprintf("host %q is already claimed by another Backend (%s)", backend.Spec.Host, owner))
-	}
-
-	// Build the resolved entry and register it in the Store keyed by spec.host
-	// (the Store records the key→host reverse index so a later delete removes it).
+	// Build the resolved entry and attempt to register it keyed by spec.host. The
+	// Store resolves a host collision deterministically (the lexicographically
+	// smallest object key wins), so every replica converges on the same owner
+	// regardless of the order it observes the colliding Backends. Set returns false
+	// when this key lost the tie-break: report Ready=False/HostConflict (and requeue
+	// so it recovers if the winner is later deleted) rather than silently
+	// overwriting the data-path routing for that host.
 	entry := &authenticator.Entry{
 		Host:                 backend.Spec.Host,
 		Authenticator:        authenticator.NewAuthenticator(verifier, mapper, backend.Spec.OIDC.UsernameClaim),
@@ -163,7 +157,11 @@ func (r *BackendReconciler) reconcileNormal(ctx context.Context, logger logr.Log
 		ServerCABundle:       backend.Spec.Server.CABundle,
 		CredentialsSecretRef: backend.Spec.CredentialsSecretRef,
 	}
-	r.Store.Set(key, entry)
+	if !r.Store.Set(key, entry) {
+		owner, _ := r.Store.Owner(backend.Spec.Host)
+		return r.fail(ctx, backend, ReasonHostConflict,
+			fmt.Sprintf("host %q is already claimed by another Backend (%s); the lexicographically-smallest Backend key owns a shared host", backend.Spec.Host, owner))
+	}
 
 	return r.succeed(ctx, logger, backend)
 }

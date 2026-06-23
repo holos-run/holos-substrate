@@ -219,36 +219,68 @@ func TestReconcileDeleteRemovesFromStore(t *testing.T) {
 	}
 }
 
-// TestReconcileHostConflictRejectsSecond asserts that when two Backends declare
-// the same spec.host, the first to reconcile owns the store entry and the second
-// is rejected (Ready=False, reason HostConflict) rather than silently overwriting
-// the data-path routing.
-func TestReconcileHostConflictRejectsSecond(t *testing.T) {
-	ctx := context.Background()
-	ns := makeNamespace(ctx, t)
+// TestReconcileHostConflictDeterministic asserts that when two Backends declare
+// the same spec.host, the lexicographically-smallest object key owns the store
+// entry regardless of reconcile order, and the loser reports
+// Ready=False/HostConflict. This is the order-independent convergence Codex's
+// round-3 finding asked for: the same owner is chosen whichever Backend reconciles
+// first.
+func TestReconcileHostConflictDeterministic(t *testing.T) {
+	const host = "shared.example.test"
 
-	r, store, _ := newReconciler(discoverOK)
+	// keyA = "<ns>/backend-host-a" sorts before keyB = "<ns>/backend-host-b".
+	t.Run("smaller reconciles first", func(t *testing.T) {
+		ctx := context.Background()
+		ns := makeNamespace(ctx, t)
+		r, store, _ := newReconciler(discoverOK)
 
-	keyA := createBackend(ctx, t, makeBackend(ns, "backend-host-a", "shared.example.test"))
-	if _, err := reconcile(ctx, r, keyA); err != nil {
-		t.Fatalf("reconcile A: %v", err)
-	}
+		keyA := createBackend(ctx, t, makeBackend(ns, "backend-host-a", host))
+		if _, err := reconcile(ctx, r, keyA); err != nil {
+			t.Fatalf("reconcile A: %v", err)
+		}
+		keyB := createBackend(ctx, t, makeBackend(ns, "backend-host-b", host))
+		if _, err := reconcile(ctx, r, keyB); err == nil {
+			t.Fatalf("reconcile B = nil error, want a requeue error on host conflict")
+		}
 
-	keyB := createBackend(ctx, t, makeBackend(ns, "backend-host-b", "shared.example.test"))
-	if _, err := reconcile(ctx, r, keyB); err == nil {
-		t.Fatalf("reconcile B = nil error, want a requeue error on host conflict")
-	}
+		assertOwner(t, store, host, keyA.String())
+		if reason := condReason(getBackend(ctx, t, keyB), ConditionReady); reason != ReasonHostConflict {
+			t.Errorf("B Ready reason = %q, want %q", reason, ReasonHostConflict)
+		}
+	})
 
-	// A keeps the store entry; B is rejected.
-	if owner, ok := store.Owner("shared.example.test"); !ok || owner != keyA.String() {
-		t.Errorf("store owner = %q (ok=%v), want %q", owner, ok, keyA.String())
-	}
-	b := getBackend(ctx, t, keyB)
-	if reason := condReason(b, ConditionReady); reason != ReasonHostConflict {
-		t.Errorf("B Ready reason = %q, want %q", reason, ReasonHostConflict)
-	}
-	if store.Len() != 1 {
-		t.Errorf("store has %d entries, want 1 (only A)", store.Len())
+	// Reverse order: the larger key reconciles first but must yield to the smaller.
+	t.Run("larger reconciles first", func(t *testing.T) {
+		ctx := context.Background()
+		ns := makeNamespace(ctx, t)
+		r, store, _ := newReconciler(discoverOK)
+
+		keyB := createBackend(ctx, t, makeBackend(ns, "backend-host-b", host))
+		if _, err := reconcile(ctx, r, keyB); err != nil {
+			t.Fatalf("reconcile B: %v", err)
+		}
+		keyA := createBackend(ctx, t, makeBackend(ns, "backend-host-a", host))
+		// A is smaller, so it seizes ownership and reconciles cleanly.
+		if _, err := reconcile(ctx, r, keyA); err != nil {
+			t.Fatalf("reconcile A (should seize ownership): %v", err)
+		}
+
+		assertOwner(t, store, host, keyA.String())
+		// Re-reconciling B now finds the host owned by the smaller A → conflict.
+		if _, err := reconcile(ctx, r, keyB); err == nil {
+			t.Fatalf("re-reconcile B = nil error, want a host-conflict requeue error")
+		}
+		if reason := condReason(getBackend(ctx, t, keyB), ConditionReady); reason != ReasonHostConflict {
+			t.Errorf("B Ready reason = %q, want %q", reason, ReasonHostConflict)
+		}
+	})
+}
+
+// assertOwner fails the test unless host is owned by wantOwner in the store.
+func assertOwner(t *testing.T, store *authenticator.Store, host, wantOwner string) {
+	t.Helper()
+	if owner, ok := store.Owner(host); !ok || owner != wantOwner {
+		t.Errorf("store owner of %q = %q (ok=%v), want %q", host, owner, ok, wantOwner)
 	}
 }
 

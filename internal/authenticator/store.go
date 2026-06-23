@@ -49,13 +49,16 @@ type Entry struct {
 // change, or are removed); the gRPC Check Runnable is a reader (Get by host). It
 // lives in internal/authenticator so both depend on it without an import cycle.
 //
-// Two backends could in principle declare the same spec.host; the reconciler
-// registers the most recently reconciled one (last writer wins), which is the
-// pragmatic choice for this phase — a host-uniqueness admission check is out of
-// scope. To keep that defensible, the Store tracks which object key currently
-// owns each host entry: a delete or host-rename only removes a host entry when
-// the acting key still owns it, so a stale Backend tearing down never clobbers
-// the entry a different Backend has since claimed for the same host.
+// Two backends could in principle declare the same spec.host. Because this
+// reconciler runs on every replica (each maintains its own process-local Store),
+// host ownership must be **order-independent** so all replicas converge on the
+// same owner regardless of the sequence in which they observe the Backends and
+// regardless of restarts. The Store therefore resolves a host collision
+// deterministically: the lexicographically-smallest owning object key wins. A
+// later Set by a larger key does not seize a host a smaller key already owns, and
+// a Set by a smaller key takes ownership from a larger one. (A full API-backed
+// uniqueness/admission mechanism remains a documented follow-up; this convergent
+// rule removes the cross-replica nondeterminism without one.)
 //
 // The Store also maintains a reverse index from a Backend's object key
 // (namespace/name) to the host it registered, so the reconciler can remove the
@@ -65,9 +68,9 @@ type Store struct {
 	mu sync.RWMutex
 	// entries maps spec.host -> resolved Entry.
 	entries map[string]*Entry
-	// ownerByHost maps spec.host -> the object key of the Backend that currently
-	// owns (last wrote) that host entry, so a delete/rename by a non-owning key is
-	// a no-op rather than clobbering the current winner.
+	// ownerByHost maps spec.host -> the object key of the Backend that owns that
+	// host entry (the lexicographically-smallest key claiming it), so a delete or a
+	// losing Set is a no-op rather than clobbering the deterministic winner.
 	ownerByHost map[string]string
 	// hostByKey maps a Backend's object key (namespace/name) -> the host it most
 	// recently registered, so DeleteByKey can find and remove the entry on delete.
@@ -89,9 +92,27 @@ func NewStore() *Store {
 // registration, the previous host's entry is removed only when this key still
 // owns it — a different Backend may have claimed the old host in the interim, and
 // clobbering its entry would silently break that backend.
-func (s *Store) Set(key string, entry *Entry) {
+// Set returns true when key won (or retained) ownership of entry.Host and the
+// entry was stored, and false when a lexicographically-smaller key already owns
+// the host (this key lost the deterministic tie-break and nothing was stored for
+// it). The reconciler uses the return to decide whether the Backend is Ready
+// (owner) or in HostConflict (loser), order-independently across replicas.
+func (s *Store) Set(key string, entry *Entry) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Resolve ownership deterministically: a smaller current owner wins.
+	if owner, ok := s.ownerByHost[entry.Host]; ok && owner != key && owner < key {
+		// A smaller key already owns this host; this key loses. Do not store its
+		// entry. Also clear any stale reverse-index row pointing this key at this
+		// host (e.g. it previously owned the host and a smaller key has since taken
+		// it), so the index does not claim ownership the entry table contradicts.
+		if s.hostByKey[key] == entry.Host {
+			delete(s.hostByKey, key)
+		}
+		return false
+	}
+
 	if prevHost, ok := s.hostByKey[key]; ok && prevHost != entry.Host {
 		// Host rename: drop the old host's entry only if this key still owns it.
 		if s.ownerByHost[prevHost] == key {
@@ -102,6 +123,7 @@ func (s *Store) Set(key string, entry *Entry) {
 	s.entries[entry.Host] = entry
 	s.ownerByHost[entry.Host] = key
 	s.hostByKey[key] = entry.Host
+	return true
 }
 
 // Get returns the Entry registered for host and whether one was found. The

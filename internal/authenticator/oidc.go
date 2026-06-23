@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	jose "github.com/go-jose/go-jose/v4"
 )
 
 // maxJWKSBody bounds the JWKS response body read during the discovery
@@ -158,14 +159,23 @@ func probeJWKS(ctx context.Context, httpClient *http.Client, provider *oidc.Prov
 		return fmt.Errorf("reading JWKS from %q: %w", claims.JWKSURL, err)
 	}
 
-	var keySet struct {
-		Keys []json.RawMessage `json:"keys"`
-	}
+	// Parse as a real JWK set, not just a "keys" array length check: a key set like
+	// {"keys":[{}]} unmarshals to one element but carries no usable key material,
+	// and would be marked Ready yet fail every token verification. jose.JSONWebKeySet
+	// decodes each key's algorithm/usage/material, and JSONWebKey.Valid() confirms
+	// the material is present and consistent. Require at least one valid key.
+	var keySet jose.JSONWebKeySet
 	if err := json.Unmarshal(body, &keySet); err != nil {
 		return fmt.Errorf("parsing JWKS from %q: %w", claims.JWKSURL, err)
 	}
-	if len(keySet.Keys) == 0 {
-		return fmt.Errorf("JWKS from %q contains no keys", claims.JWKSURL)
+	usable := 0
+	for i := range keySet.Keys {
+		if keySet.Keys[i].Valid() {
+			usable++
+		}
+	}
+	if usable == 0 {
+		return fmt.Errorf("JWKS from %q contains no usable keys", claims.JWKSURL)
 	}
 	return nil
 }
