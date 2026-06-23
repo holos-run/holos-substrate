@@ -4,13 +4,55 @@
 | -------- | ---------------------------------------------------------- |
 | Date     | 2026-06-22                                                 |
 | Author   | @jeffmccune                                                |
-| Status   | `Proposed`                                                 |
+| Status   | `Implemented`                                              |
 | Tags     | controller, authenticator, oidc, istio, authz, impersonation |
 | Updates  | ADR-3                                                      |
 
-| Revision | Date       | Author      | Info           |
-| -------- | ---------- | ----------- | -------------- |
-| 1        | 2026-06-22 | @jeffmccune | Initial design |
+| Revision | Date       | Author      | Info                                                              |
+| -------- | ---------- | ----------- | ----------------------------------------------------------------- |
+| 1        | 2026-06-22 | @jeffmccune | Initial design                                                    |
+| 2        | 2026-06-23 | @jeffmccune | Flipped to `Implemented` — as-built summary and deviations (below) |
+
+## As-built (Revision 2)
+
+The implementation phases (HOL-1385..HOL-1390) shipped the design as proposed,
+with the deviations noted below. `Status` is now `Implemented`.
+
+- **As built.** The `cmd/holos-authenticator` controller-runtime manager runs
+  the Envoy ext_authz gRPC server as a `manager.Runnable` with
+  `NeedLeaderElection() == false`; `Check` routes by `Host`, sanitizes inbound
+  `Impersonate-*` headers (failure-closed — denies rather than scrubs), validates
+  the OIDC token (issuer discovery + JWKS, `iss`/`aud`/`exp`), maps claims to
+  groups via CEL (default `claims["<groupsClaim>"]`, i.e. `claims["groups"]`),
+  and returns `Impersonate-User`/`Impersonate-Group` plus the impersonator
+  credential, overwriting `Authorization`. The `authenticator.holos.run/v1alpha1`
+  `Backend` CRD carries the ADR-22 status contract. The operator guide is
+  [the runbook](../runbooks/holos-authenticator.md).
+- **Deviation: deployed as a Holos component, not a kustomize tree.** The design
+  pointed at `holos-controller`'s build/release machinery as the template, and
+  the authenticator reuses it (isolated `Makefile.authenticator`,
+  `Dockerfile.authenticator`, a discrete Images-workflow job). But unlike
+  `holos-controller` (deployed via its `config/` kustomize tree, not
+  platform-native), the runtime manifests are rendered by a **Holos component**
+  (`holos/components/holos-authenticator/`) so the deploy tree stays render-clean
+  and the namespace is ambient-enrolled via the central registry. The component
+  is registered in `holos/platform/platform.cue` but **excluded** from the
+  imperative `scripts/apply` floor and the App-of-Apps `SYSTEM_COMPONENTS` (its
+  image does not exist on a freshly bootstrapped cluster) — it is applied out of
+  band once published, the same precedent `holos-controller` set.
+- **Deviation: external-egress waypoint topology deferred.** The design assumed
+  ambient mesh with Envoy as the only proxy and noted external API-server targets.
+  The as-built ships the **in-cluster wiring** — the `meshConfig.extensionProviders`
+  `envoyExtAuthzGrpc` provider, a `CUSTOM` `AuthorizationPolicy`, and one example
+  in-cluster `Backend`. The full external-API-server `ServiceEntry`/waypoint
+  egress topology (and the positive tenant-policy enforcement guard) is a
+  **deferred follow-up** recorded in
+  [`holos/docs/placeholders.md`](../../holos/docs/placeholders.md), mitigated
+  today by construction (no waypoint deployed, the manager cache scoped to the
+  `holos-authenticator` namespace, the impersonator credential resolved only from
+  that namespace, and the namespace reserved against tenant projects). Token
+  refresh/caching tuning and per-request CEL features beyond the default groups
+  mapping are likewise deferred there.
 
 ## Context and Problem Statement
 

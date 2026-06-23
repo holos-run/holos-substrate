@@ -86,22 +86,25 @@ Dockerfile                 # two-stage cross-compile → distroless runtime
 holos/                     # Holos CUE deployment configuration and policy
 ```
 
-Both service images (`holos-paas`, `holos-controller`) have multi-arch `make`
-targets — `make docker-buildx` / `make controller-docker-buildx` (HOL-1333) —
-that build and push a single OCI image index spanning `linux/amd64` and
-`linux/arm64` via a shared `docker-container` buildx builder (`make
-docker-buildx-builder` bootstraps it; no QEMU, the Go toolchain cross-compiles
-from `$BUILDPLATFORM`). The single-`PLATFORM` `docker-build`/`docker-push`
-targets remain for local-cluster use. The manual
+All three service images (`holos-paas`, `holos-controller`,
+`holos-authenticator` — the last [ADR-23](docs/adr/ADR-23.md), HOL-1385) have
+multi-arch `make` targets — `make docker-buildx` / `make controller-docker-buildx`
+(HOL-1333) / `make authenticator-docker-buildx` — that build and push a single
+OCI image index spanning `linux/amd64` and `linux/arm64` via a shared
+`docker-container` buildx builder (`make docker-buildx-builder` bootstraps it; no
+QEMU, the Go toolchain cross-compiles from `$BUILDPLATFORM`). The
+single-`PLATFORM` `docker-build`/`docker-push` targets remain for local-cluster
+use. The manual
 [`.github/workflows/images.yaml`](.github/workflows/images.yaml) **Images**
 workflow (HOL-1334) publishes the multi-arch images from CI — `workflow_dispatch`
 only (never on push/PR/tag), with each image a **discrete job** (an `image`
-input selects `both`/`holos-paas`/`holos-controller`, so one builds without the
-other) sharing the reusable
+input selects `both`/`holos-paas`/`holos-controller`/`holos-authenticator`, where
+`both` builds all three and any single value builds only that one) sharing the
+reusable
 [`build-image.yaml`](.github/workflows/build-image.yaml) workflow, gated behind a
 `publish-images` GitHub Environment, taking `ref`/`tag` inputs and pushing to
-`ghcr.io/<owner>/holos-{paas,controller}`. It drives the same buildx make
-targets, so the build logic is single-sourced.
+`ghcr.io/<owner>/holos-{paas,controller,authenticator}`. It drives the same
+buildx make targets, so the build logic is single-sourced.
 See [README.md](README.md) (*Container image* → *Multi-arch images* /
 *Publishing images from CI*).
 
@@ -210,6 +213,12 @@ components have been removed. Git history preserves them.
   and ADR-22 (the `security.holos.run` API group
   and its `ReferenceGrant` cross-namespace reference convention, shipped in
   HOL-1343).
+  ADR-23 (the **Holos Authenticator** — an Istio gRPC `ext_authz` authorizer
+  for OIDC → Kubernetes impersonation, **`Implemented`** as built in
+  HOL-1385..HOL-1390 — Rev 2, `Updates: ADR-3`) is a separate service in the
+  same monorepo (`cmd/holos-authenticator`, namespace `holos-authenticator`),
+  not part of the controller's API groups; it reuses the controller's
+  build/release machinery template.
   The controller (`holos-controller` namespace)
   and its Quay **and Keycloak** API groups have **shipped** (Quay
   HOL-1309..HOL-1313; Keycloak + `security.holos.run` HOL-1343..HOL-1348) —
@@ -332,6 +341,22 @@ components have been removed. Git history preserves them.
   serving cert with, instead of the pod's system trust store — see the
   [project/app templates guide](holos/docs/project-and-application-templates.md)).
   Companion to [ADR-19](docs/adr/ADR-19.md) and the credentials runbook above.
+- [docs/runbooks/holos-authenticator.md](docs/runbooks/holos-authenticator.md) —
+  the operator runbook for the **Holos Authenticator** ([ADR-23](docs/adr/ADR-23.md),
+  `Implemented`): the Istio gRPC `ext_authz` model (route by `Host`,
+  failure-closed inbound `Impersonate-*` sanitization, OIDC validate → CEL map →
+  impersonate → forward, every replica answers Envoy), the
+  `authenticator.holos.run` `Backend` CR (fields + in-cluster and external API
+  server examples), the default `claims["groups"]` group mapping and CEL
+  overrides, the **impersonation RBAC** the forwarded credential must hold
+  (`impersonate` on `users`/`groups`), provisioning the `credentialsSecretRef`
+  Secret at runtime (never committed), the Istio `extensionProvider` + `CUSTOM`
+  `AuthorizationPolicy` wiring, the out-of-band apply ordering (CRD-before-CR;
+  excluded from the bootstrap floor like `holos-controller`), and end-to-end
+  verification. Companion to [ADR-23](docs/adr/ADR-23.md), the component README
+  ([holos/components/holos-authenticator/README.md](holos/components/holos-authenticator/README.md)),
+  and the deferred follow-ups in
+  [holos/docs/placeholders.md](holos/docs/placeholders.md).
 - [holos/docs/oci-publish-workflow.md](holos/docs/oci-publish-workflow.md)
   — the client-side build-and-publish workflow (`scripts/publish` /
   `make publish`): render the platform with an injected app image digest,
