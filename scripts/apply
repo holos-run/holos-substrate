@@ -1259,11 +1259,18 @@ organization and hand reconciliation off to Argo CD (HOL-1380):
      and the App-of-Apps config bundle (both repositories are public, so PULLS —
      including Argo CD's bundle pull — are anonymous and need no credential).
 
-  4. scripts/apply-app-of-apps
-     Publish holos-paas-config:dev and apply the two root Applications, handing
-     ongoing reconciliation to Argo CD.  Depends on the holos Quay organization
-     (step 3) and the robot push credential it describes; Argo CD pulls the
-     public bundle anonymously (no pull credential needed).
+  4. scripts/apply-platform-app-of-apps
+     Publish holos-paas-config:dev and apply the PLATFORM root Application, handing
+     ongoing SYSTEM reconciliation to Argo CD.  Depends on the holos Quay
+     organization (step 3) and the robot push credential it describes; Argo CD
+     pulls the public bundle anonymously (no pull credential needed).  This is the
+     clean cut line: the platform is fully bootstrapped here.
+
+  5. scripts/apply-projects-app-of-apps   (tenant projects; independent of step 4)
+     For EACH registered project, build+push its per-project OCI config bundle and
+     apply its CONTROL-PLANE root Application (the platform-managed half).  Each
+     project's SERVICE OWNER then applies its workload separately with
+     scripts/apply-project-workload-app-of-apps <PROJECT>.
 
 See docs/local-cluster.md and docs/runbooks/quay-resource-controller-credentials.md.
 ============================================================================

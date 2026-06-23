@@ -470,6 +470,15 @@ for project_dir in "${PROJECT_BASE}"/*/; do
   # The control namespace is the bare project name (the bare-<name> control
   # namespace resolution — see holos/components/project/buildplan.cue).
   CTRL_NS="${NAME}"
+  # The project component renders its (all control-plane) resources into the
+  # control-plane/ subtree (HOL-1382), mirroring the application component.  A
+  # project has no service-owner workload of its own, so there is no workload/
+  # subtree here; every manifest this loop applies lives under control-plane/.
+  CP_DIR="${project_dir}control-plane"
+  if ! have_dir "${CP_DIR}"; then
+    echo "ERROR: project ${NAME} rendered no control-plane manifests at ${CP_DIR}." >&2
+    exit 1
+  fi
   echo "================================================================" >&2
   echo "==> project ${NAME} (control namespace ${CTRL_NS})" >&2
 
@@ -487,9 +496,9 @@ for project_dir in "${PROJECT_BASE}"/*/; do
   # Pre-apply ServiceAccounts + RBAC before the Jobs (the filename-ordering race
   # guard lifted from scripts/apply-my-project).
   rbac_files=()
-  for f in "${project_dir}"serviceaccount-*.yaml \
-           "${project_dir}"role-*.yaml \
-           "${project_dir}"rolebinding-*.yaml; do
+  for f in "${CP_DIR}/"serviceaccount-*.yaml \
+           "${CP_DIR}/"role-*.yaml \
+           "${CP_DIR}/"rolebinding-*.yaml; do
     [[ -e "${f}" ]] && rbac_files+=(-f "${f}")
   done
   if ((${#rbac_files[@]})); then
@@ -502,9 +511,9 @@ for project_dir in "${PROJECT_BASE}"/*/; do
     delete job -l "app.kubernetes.io/name=${NAME}-quay-webhook-bootstrap" \
     --ignore-not-found --cascade=foreground --wait --request-timeout=60s
 
-  # Apply the full project component.
+  # Apply the full project component (its control-plane subtree).
   echo "==> apply ${NAME}" >&2
-  kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts -f "${project_dir}"
+  kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts -f "${CP_DIR}/"
 
   # Apply this project's apps BEFORE the project's role-group Ready gates: the
   # role groups carry a clientRef to each app's KeycloakClient, so they cannot go
@@ -529,7 +538,7 @@ for project_dir in "${PROJECT_BASE}"/*/; do
     gate_ready "${CTRL_NS}" "keycloakgroup.keycloak.holos.run/${NAME}-custodians-${r}" || exit 1
   done
   # One KeycloakUser per owner; gate each rendered user Ready.
-  for user_file in "${project_dir}"keycloakuser-*.yaml; do
+  for user_file in "${CP_DIR}/"keycloakuser-*.yaml; do
     [[ -e "${user_file}" ]] || continue
     user_name="$(basename "${user_file}" .yaml)"
     user_name="${user_name#keycloakuser-}"

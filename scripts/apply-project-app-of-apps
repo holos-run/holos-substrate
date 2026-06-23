@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+# Apply ONE project's CONTROL-PLANE App-of-Apps (HOL-1382).
+#
+# This is the per-project, platform-engineer half of the App-of-Apps split that
+# HOL-1382 carves out of the former scripts/apply-app-of-apps.  Given a single
+# PROJECT name (the first argument), it:
+#
+#   1. builds that project's per-project OCI config bundle — a tar of the
+#      COMMITTED render of the project's control-plane subtree
+#      (clusters/<cluster>/components/project/<PROJECT>/control-plane) plus each of
+#      its apps' bundles (clusters/<cluster>/components/application/<app>, both the
+#      control-plane and workload subtrees) — and
+#   2. pushes it to the project's OWN bundle repo
+#      (quay.holos.internal/holos/<PROJECT>-config:dev, a PUBLIC repo
+#      holos-quay-organization pre-creates), then
+#   3. applies that project's CONTROL-PLANE root Application
+#      (components/project-app-of-apps/<PROJECT>/application-<PROJECT>-control-plane.yaml),
+#      which Argo CD reconciles from the bundle — EXCLUDING the app workload
+#      (directory.exclude: **/workload/**), so this script delivers ONLY the
+#      platform-managed control plane (the per-project AppProject + Applications,
+#      the Kargo/Quay/Keycloak CRs, RBAC).
+#
+# The SERVICE-OWNER workload half is a SEPARATE script,
+# scripts/apply-project-workload-app-of-apps <PROJECT>, run AFTER this one (the
+# workload root reuses the same bundle this script pushed; the platform team
+# applies the control plane first, the service owner applies the workload).
+#
+# scripts/apply-projects-app-of-apps iterates every registered project and calls
+# THIS script once per project; an operator can also run it directly for one
+# project.  It is the per-project counterpart to scripts/apply-platform-app-of-apps
+# (the system bootstrap); the two are INDEPENDENT and never call each other.
+#
+# ORDERING — run AFTER:
+#   1. scripts/apply has brought up the imperative bootstrap FLOOR (Argo CD +
+#      Kargo + the argocd-projects AppProjects and the credential-less per-project
+#      bundle registration Secret this root pulls with); AND
+#   2. scripts/apply-holos-quay-organization has provisioned the holos Quay org and
+#      the PUBLIC per-project bundle repo (holos/<PROJECT>-config) this script
+#      pushes to; AND
+#   3. the operator has host-side PUSH auth for the oras push (ORAS_USERNAME /
+#      ORAS_PASSWORD or a prior `oras login`).  No PULL credential is needed: the
+#      bundle repo is public, so Argo CD pulls anonymously (HOL-1381).
+#
+# Idempotent by construction: re-running rebuilds the current committed render and
+# re-applies the root (server-side apply converges).
+#
+# Environment overrides:
+#   KUBE_CONTEXT       — kubectl context to apply to (default: the current context,
+#                        which must be k3d-holos; set explicitly to target another).
+#   CLUSTER            — the rendered cluster directory name (default k3d-holos).
+#   CONFIG_REPO_BASE   — the OCI repo PREFIX the per-project bundle lives under
+#                        (default quay.holos.internal/holos, the platform `holos`
+#                        org).  The bundle is <CONFIG_REPO_BASE>/<PROJECT>-config.
+#   CONFIG_TAG         — the mutable bundle tag (default dev) the per-project root
+#                        Applications pin.
+#   PROJECT_APP_OF_APPS_FORCE_ROOT — set to 1 to apply the root even if the push was
+#                        skipped/failed or holos/deploy/ is dirty relative to HEAD
+#                        (e.g. a known-current bundle already in the registry).
+#   ORAS_USERNAME / ORAS_PASSWORD — push credentials for the bundle repo, passed via
+#                        --username/--password-stdin.  Omit to use oras's ambient
+#                        auth (a prior `oras login`).
+#   ORAS_INSECURE / ORAS_PLAIN_HTTP — force the oras transport flag (otherwise
+#                        decided per host, mirroring scripts/publish-config).
+#
+# Prerequisites: bash, kubectl, holos, jq, git, gzip, and oras with a reachable Quay.
+
+set -euo pipefail
+
+PROJECT="${1:-}"
+if [[ -z "${PROJECT}" ]]; then
+  echo "ERROR: a project name is required." >&2
+  echo "       Usage: scripts/apply-project-app-of-apps <PROJECT>" >&2
+  exit 1
+fi
+
+# Resolve the repo root so this script works from any working directory.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+HOLOS_DIR="${REPO_ROOT}/holos"
+CLUSTER="${CLUSTER:-k3d-holos}"
+COMPONENTS_REL="clusters/${CLUSTER}/components"
+COMPONENTS_DIR="${REPO_ROOT}/holos/deploy/${COMPONENTS_REL}"
+
+CONFIG_REPO_BASE="${CONFIG_REPO_BASE:-quay.holos.internal/holos}"
+CONFIG_TAG="${CONFIG_TAG:-dev}"
+BUNDLE_REPO="${CONFIG_REPO_BASE}/${PROJECT}-config"
+BUNDLE_REF="${BUNDLE_REPO}:${CONFIG_TAG}"
+FORCE_ROOT="${PROJECT_APP_OF_APPS_FORCE_ROOT:-0}"
+
+# ---------------------------------------------------------------------------
+# Prerequisites
+# ---------------------------------------------------------------------------
+missing=0
+for tool in kubectl holos jq git gzip; do
+  if ! command -v "${tool}" >/dev/null 2>&1; then
+    echo "ERROR: '${tool}' not found on PATH." >&2
+    missing=1
+  fi
+done
+[[ "${missing}" -ne 0 ]] && exit 1
+
+if [[ ! -d "${COMPONENTS_DIR}" ]]; then
+  echo "ERROR: rendered manifests not found: ${COMPONENTS_DIR}" >&2
+  echo "       The deploy tree is committed; is this a complete checkout?" >&2
+  exit 1
+fi
+
+ROOT_FILE="${COMPONENTS_DIR}/project-app-of-apps/${PROJECT}/application-${PROJECT}-control-plane.yaml"
+if [[ ! -f "${ROOT_FILE}" ]]; then
+  echo "ERROR: no control-plane root rendered for project '${PROJECT}' at:" >&2
+  echo "       ${ROOT_FILE}" >&2
+  echo "       Is '${PROJECT}' a registered project (holos/projects/<name>.cue)?" >&2
+  echo "       Registered projects:" >&2
+  holos cue export "${REPO_ROOT}/holos/projects" 2>/dev/null \
+    | jq -r '.projects | keys[]' 2>/dev/null | sed 's/^/         - /' >&2 || true
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Resolve and pin the target context (the scripts/apply posture)
+# ---------------------------------------------------------------------------
+if [[ -z "${KUBE_CONTEXT:-}" ]]; then
+  KUBE_CONTEXT="$(kubectl config current-context)"
+  if [[ "${KUBE_CONTEXT}" != "k3d-holos" ]]; then
+    echo "ERROR: current kubectl context is '${KUBE_CONTEXT}', expected 'k3d-holos'." >&2
+    echo "       The rendered manifests target the k3d-holos cluster.  Set" >&2
+    echo "       KUBE_CONTEXT explicitly to apply to a different context." >&2
+    exit 1
+  fi
+fi
+echo "==> project ${PROJECT}: build+push bundle ${BUNDLE_REF}, apply the control-plane root (context ${KUBE_CONTEXT})"
+
+if ! kubectl --context "${KUBE_CONTEXT}" version --request-timeout=10s >/dev/null 2>&1; then
+  echo "ERROR: cannot reach the cluster for kubectl context '${KUBE_CONTEXT}'." >&2
+  echo "       Bring up the platform floor with scripts/apply first (see docs/local-cluster.md)." >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# 0. Source-consistency gate (mirrors scripts/apply-platform-app-of-apps)
+# ---------------------------------------------------------------------------
+# The bundle is built from the COMMITTED render (git archive HEAD:holos/deploy) so
+# the per-project :dev tag is always a reviewed, committed render.  If holos/deploy/
+# is dirty relative to HEAD the committed bundle would diverge from the working-tree
+# manifests, and Argo CD's selfHeal would drag the cluster onto HEAD — refuse the
+# apply unless PROJECT_APP_OF_APPS_FORCE_ROOT=1.  Check BOTH tracked edits and
+# untracked files (git diff --quiet HEAD ignores untracked).
+deploy_dirty=0
+if ! git -C "${REPO_ROOT}" diff --quiet HEAD -- holos/deploy 2>/dev/null; then
+  deploy_dirty=1
+elif [[ -n "$(git -C "${REPO_ROOT}" ls-files --others --exclude-standard -- holos/deploy 2>/dev/null)" ]]; then
+  deploy_dirty=1
+fi
+if [[ "${FORCE_ROOT}" != "1" && "${deploy_dirty}" -eq 1 ]]; then
+  echo "ERROR: holos/deploy/ has uncommitted changes relative to HEAD (tracked edits or" >&2
+  echo "       untracked files).  The per-project bundle is built from the COMMITTED tree" >&2
+  echo "       (HEAD), so pushing now would point the root at a render that differs from the" >&2
+  echo "       working-tree manifests — Argo CD's selfHeal would undo them.  Commit the render" >&2
+  echo "       (scripts/render is the diff-clean gate) and re-run, or set" >&2
+  echo "       PROJECT_APP_OF_APPS_FORCE_ROOT=1 if the divergence is intentional." >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# 1. Build the per-project bundle from the COMMITTED tree (HEAD)
+# ---------------------------------------------------------------------------
+# Collect the project's subpaths: the project's control-plane subtree plus each of
+# its apps' bundles (control-plane + workload — the control-plane root excludes the
+# workload, the workload root selects it; both come from the same bundle).  The app
+# set is the apps whose .project == PROJECT (holos cue export ./apps, run from the
+# module root so its import of the projects package resolves).
+PROJECT_CP_REL="${COMPONENTS_REL}/project/${PROJECT}/control-plane"
+paths=("${PROJECT_CP_REL}")
+
+apps_json="$( (cd "${HOLOS_DIR}" && holos cue export ./apps) 2>/dev/null || echo '{}' )"
+mapfile -t APPS < <(printf '%s' "${apps_json}" \
+  | jq -r --arg p "${PROJECT}" '(.apps // {}) | to_entries[] | select(.value.project==$p) | .key' \
+  | LC_ALL=C sort)
+for app in "${APPS[@]}"; do
+  [[ -n "${app}" ]] || continue
+  paths+=("${COMPONENTS_REL}/application/${app}")
+done
+
+if ((${#APPS[@]})); then
+  echo "    project ${PROJECT} apps: ${APPS[*]}"
+else
+  echo "    project ${PROJECT} has no registered apps (control plane only)."
+fi
+
+# git archive errors if a pathspec does not match at HEAD, which is the desired
+# guard: a missing committed control-plane subtree (uncommitted render) fails here
+# rather than pushing an incomplete bundle.  Pin --mtime + gzip -n for a
+# byte-reproducible artifact (the publish-config determinism rationale).
+TARBALL="$(mktemp "${TMPDIR:-/tmp}/holos-${PROJECT}-config.XXXXXX.tar.gz")"
+cleanup() { rm -f "${TARBALL}"; }
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+pushed=0
+if ! command -v oras >/dev/null 2>&1; then
+  echo "    SKIP push: 'oras' not found on PATH (https://oras.land/docs/installation)." >&2
+else
+  echo "    Building bundle from HEAD: ${paths[*]}" >&2
+  if git -C "${REPO_ROOT}" archive --format=tar --mtime='1970-01-01 00:00:00 UTC' \
+       HEAD:holos/deploy "${paths[@]}" 2>/dev/null | gzip -n > "${TARBALL}" \
+     && [[ -s "${TARBALL}" ]]; then
+    # Transport flag, mirroring scripts/publish-config: --plain-http for a bare
+    # localhost dev registry, --insecure for the *.holos.internal mkcert cert.
+    bundle_host="${BUNDLE_REPO%%/*}"
+    transport=""
+    if [[ -n "${ORAS_PLAIN_HTTP:-}" ]]; then
+      transport="--plain-http"
+    elif [[ -z "${ORAS_PLAIN_HTTP+x}" && ( "${bundle_host}" == localhost || "${bundle_host}" == localhost:* || "${bundle_host}" == 127.0.0.1 || "${bundle_host}" == 127.0.0.1:* ) ]]; then
+      transport="--plain-http"
+    elif [[ -n "${ORAS_INSECURE:-}" ]]; then
+      transport="--insecure"
+    elif [[ -z "${ORAS_INSECURE+x}" && "${bundle_host}" == *.holos.internal ]]; then
+      transport="--insecure"
+    fi
+
+    tarball_dir="$(cd "$(dirname "${TARBALL}")" && pwd)"
+    tarball_name="$(basename "${TARBALL}")"
+    echo "    Pushing ${BUNDLE_REF} ..." >&2
+    if [[ -n "${ORAS_USERNAME:-}" && -n "${ORAS_PASSWORD:-}" ]]; then
+      ( cd "${tarball_dir}" && printf '%s' "${ORAS_PASSWORD}" \
+          | oras push ${transport:+"${transport}"} \
+              --username "${ORAS_USERNAME}" --password-stdin \
+              "${BUNDLE_REF}" \
+              "${tarball_name}:application/vnd.oci.image.layer.v1.tar+gzip" ) >&2 \
+        && pushed=1
+    else
+      ( cd "${tarball_dir}" && oras push ${transport:+"${transport}"} \
+              "${BUNDLE_REF}" \
+              "${tarball_name}:application/vnd.oci.image.layer.v1.tar+gzip" ) >&2 \
+        && pushed=1
+    fi
+  else
+    echo "    WARNING: building the per-project bundle failed (is the control-plane render committed at HEAD?)." >&2
+  fi
+fi
+
+if [[ "${pushed}" -ne 1 && "${FORCE_ROOT}" != "1" ]]; then
+  echo "ERROR: ${BUNDLE_REF} was not pushed this run, so the per-project handoff cannot" >&2
+  echo "       proceed: applying the prune+selfHeal root could drag the cluster back to a" >&2
+  echo "       stale or absent bundle." >&2
+  echo "" >&2
+  echo "       This step depends on:" >&2
+  echo "         - the PUBLIC bundle repo ${BUNDLE_REPO} existing — provisioned by" >&2
+  echo "           scripts/apply-holos-quay-organization (HOL-1380/HOL-1382); and" >&2
+  echo "         - host-side PUSH auth: ORAS_USERNAME / ORAS_PASSWORD or a prior" >&2
+  echo "           'oras login ${bundle_host:-quay.holos.internal}' (a push-capable Quay robot)." >&2
+  echo "       Install oras (https://oras.land/docs/installation) if missing, configure the" >&2
+  echo "       above, then re-run.  Set PROJECT_APP_OF_APPS_FORCE_ROOT=1 to apply the root" >&2
+  echo "       against a bundle already current in the registry." >&2
+  exit 1
+fi
+[[ "${pushed}" -eq 1 ]] && echo "    Pushed ${BUNDLE_REF}."
+
+# ---------------------------------------------------------------------------
+# 2. Apply the per-project bundle registration Secret + the control-plane root
+# ---------------------------------------------------------------------------
+# The credential-less registration Secret (argocd-projects, secret-holos-<PROJECT>-config)
+# is normally already present from scripts/apply (the platform floor) and is
+# reconciled by the platform App-of-Apps; apply it here too so a project added AFTER
+# the floor can pull its bundle immediately.  Then apply the control-plane root.
+# server-side apply converges, so re-running is safe.
+REG_SECRET="${COMPONENTS_DIR}/argocd-projects/secret-holos-${PROJECT}-config.yaml"
+if [[ -f "${REG_SECRET}" ]]; then
+  echo "    apply bundle registration: secret-holos-${PROJECT}-config"
+  kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts -f "${REG_SECRET}"
+fi
+
+echo "    apply control-plane root: ${PROJECT}-control-plane"
+kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts -f "${ROOT_FILE}"
+
+echo "    Argo CD now reconciles project ${PROJECT}'s control plane from ${BUNDLE_REF}."
+echo "    The SERVICE OWNER applies the workload next:"
+echo "      scripts/apply-project-workload-app-of-apps ${PROJECT}"

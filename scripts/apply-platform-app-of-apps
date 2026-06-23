@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
-# App-of-Apps bootstrap handoff (HOL-1373/HOL-1378, separated out in HOL-1379).
+# Platform App-of-Apps bootstrap handoff (HOL-1382, split out of the former
+# scripts/apply-app-of-apps).
 #
-# Hand ongoing platform reconciliation off to Argo CD, AFTER:
+# Hand ongoing PLATFORM (system) reconciliation off to Argo CD.  This is the
+# "clean cut line" HOL-1382 asks for: this script fully bootstraps the platform
+# with the PLATFORM-level App-of-Apps and STOPS — it does NOT touch tenant
+# projects.  Projects are handled separately and independently by
+# scripts/apply-projects-app-of-apps (which fans out to
+# scripts/apply-project-app-of-apps per project).  The two are COMPLETELY
+# INDEPENDENT and never call each other.
 #
+# Run AFTER:
 #   1. scripts/apply has brought up the imperative bootstrap FLOOR — the Layer 0
 #      foundation, Quay, Keycloak, Argo CD, and Kargo — with `kubectl apply
 #      --server-side`, in dependency order, with no dependency on Argo CD
@@ -26,8 +34,8 @@
 # so attempting the publish there would race the Quay setup and fail — the
 # rebuild-time race this split breaks.  scripts/apply therefore STOPS at the
 # floor (Quay and Keycloak up) and points through the HOL-1380 bootstrap steps;
-# run this script LAST, once scripts/apply-holos-quay-organization has run and you
-# have the robot push credential it describes.
+# run this script once scripts/apply-holos-quay-organization has run and you have
+# the robot push credential it describes.
 #
 # The handoff resolves the chicken-and-egg — Argo CD cannot reconcile the
 # platform from the OCI config bundle until Argo CD itself is running — by
@@ -35,39 +43,36 @@
 #
 #   1. Publish the holos-paas-config:dev bundle — a straight tar of the committed
 #      holos/deploy/ tree (scripts/publish-config), pushed under the mutable :dev
-#      tag the App-of-Apps Applications track.
-#   2. Apply the two ROOT App-of-Apps Applications (the app-of-apps and projects
-#      component dirs, DELIBERATELY excluded from scripts/apply's COMPONENTS so
-#      they are applied here, once, as the handoff — not as part of the
-#      imperative floor).  The platform root (Application platform-bootstrap,
-#      spec.project: platform) fans out one child Application per system
-#      component under the platform AppProject; the projects root (Application
-#      projects-bootstrap, spec.project: projects) fans out the
-#      project/application collection resources under the projects AppProject.
+#      tag the platform App-of-Apps Applications track.
+#   2. Apply the PLATFORM ROOT App-of-Apps Application (the app-of-apps component
+#      dir, DELIBERATELY excluded from scripts/apply's COMPONENTS so it is applied
+#      here, once, as the handoff — not as part of the imperative floor).  The
+#      platform root (Application platform-bootstrap, spec.project: platform) fans
+#      out one child Application per SYSTEM component under the platform AppProject.
 #      Argo CD then tracks :dev and reconciles the platform on every re-push (the
 #      "Always" repo-cache TTL, see holos/docs/oci-publish-workflow.md).
 #
 # Idempotent by construction: re-running publishes the current committed render
-# and re-applies the two roots (server-side apply converges).
+# and re-applies the platform root (server-side apply converges).
 #
 # Unlike scripts/apply (the bootstrap floor, which must succeed on its own), a
 # missing handoff prerequisite here is a HARD ERROR with guidance — this script's
 # whole purpose IS the handoff, so it must not silently no-op.  The one exception
-# is BOOTSTRAP_APP_OF_APPS_FORCE_ROOTS=1, which forces applying the roots even
-# when the publish was skipped/failed or holos/deploy/ is dirty (e.g. a
-# known-current :dev already in the registry).
+# is PLATFORM_APP_OF_APPS_FORCE_ROOT=1, which forces applying the root even when
+# the publish was skipped/failed or holos/deploy/ is dirty (e.g. a known-current
+# :dev already in the registry).
 #
 # Environment overrides:
-#   KUBE_CONTEXT                       — kubectl context to apply to (default: the
-#                                        current context, which must be k3d-holos;
-#                                        setting this explicitly is informed
-#                                        consent to target another context)
-#   CONFIG_REPO / CONFIG_TAG          — override the bundle target (defaults
-#                                        mirror scripts/publish-config: the
-#                                        in-cluster Quay config repo at :dev)
-#   BOOTSTRAP_APP_OF_APPS_FORCE_ROOTS — set to 1 to apply the root Applications
-#                                        even if the publish was skipped/failed or
-#                                        holos/deploy/ is dirty relative to HEAD.
+#   KUBE_CONTEXT                  — kubectl context to apply to (default: the
+#                                   current context, which must be k3d-holos;
+#                                   setting this explicitly is informed consent to
+#                                   target another context)
+#   CONFIG_REPO / CONFIG_TAG      — override the bundle target (defaults mirror
+#                                   scripts/publish-config: the in-cluster Quay
+#                                   config repo at :dev)
+#   PLATFORM_APP_OF_APPS_FORCE_ROOT — set to 1 to apply the platform root even if
+#                                   the publish was skipped/failed or holos/deploy/
+#                                   is dirty relative to HEAD.
 #
 # Prerequisites (the manual holos Quay organization setup above):
 #   - kubectl, with a context pointing at the target cluster
@@ -108,7 +113,7 @@ if [[ -z "${KUBE_CONTEXT:-}" ]]; then
     exit 1
   fi
 fi
-echo "Will apply the App-of-Apps roots to kubectl context: ${KUBE_CONTEXT}"
+echo "Will apply the platform App-of-Apps root to kubectl context: ${KUBE_CONTEXT}"
 
 if ! kubectl --context "${KUBE_CONTEXT}" version --request-timeout=10s >/dev/null 2>&1; then
   echo "ERROR: cannot reach the cluster for kubectl context '${KUBE_CONTEXT}'." >&2
@@ -116,26 +121,26 @@ if ! kubectl --context "${KUBE_CONTEXT}" version --request-timeout=10s >/dev/nul
   exit 1
 fi
 
-FORCE_ROOTS="${BOOTSTRAP_APP_OF_APPS_FORCE_ROOTS:-0}"
+FORCE_ROOT="${PLATFORM_APP_OF_APPS_FORCE_ROOT:-0}"
 
-echo "==> App-of-Apps handoff: publish holos-paas-config bundle + apply the root Applications"
+echo "==> Platform App-of-Apps handoff: publish holos-paas-config bundle + apply the platform root"
 
 # 0. Source-consistency gate.  scripts/apply applied the WORKING-TREE manifests
 #    under ${COMPONENTS_DIR}, but scripts/publish-config --build bundles the
 #    COMMITTED tree (git archive HEAD:holos/deploy) — by design, so the bootstrap
 #    :dev tag is always a reviewed, committed render.  If holos/deploy/ is dirty
 #    relative to HEAD, the two sources diverge: the cluster has the working-tree
-#    render while the published :dev (and thus the App-of-Apps roots) carries the
-#    HEAD render, so Argo CD's selfHeal/prune would drag the cluster onto HEAD —
+#    render while the published :dev (and thus the platform root) carries the HEAD
+#    render, so Argo CD's selfHeal/prune would drag the cluster onto HEAD —
 #    silently undoing the uncommitted local manifests.  Refuse the handoff when
 #    holos/deploy/ is not clean at HEAD; commit the render (the scripts/render
-#    diff-clean gate) and re-run, or override with
-#    BOOTSTRAP_APP_OF_APPS_FORCE_ROOTS=1 if the divergence is intentional.
+#    diff-clean gate) and re-run, or override with PLATFORM_APP_OF_APPS_FORCE_ROOT=1
+#    if the divergence is intentional.
 #
 #    "Clean" must cover BOTH tracked modifications AND untracked files: a
 #    brand-new, un-`git add`ed render file would be applied from the working tree
 #    but omitted by `git archive HEAD:holos/deploy`, so the published bundle and
-#    the roots would prune that just-applied file.  `git diff --quiet HEAD`
+#    the root would prune that just-applied file.  `git diff --quiet HEAD`
 #    ignores untracked files, so check them separately with
 #    `git ls-files --others --exclude-standard`.
 deploy_dirty=0
@@ -144,13 +149,13 @@ if ! git -C "${REPO_ROOT}" diff --quiet HEAD -- holos/deploy 2>/dev/null; then
 elif [[ -n "$(git -C "${REPO_ROOT}" ls-files --others --exclude-standard -- holos/deploy 2>/dev/null)" ]]; then
   deploy_dirty=1
 fi
-if [[ "${FORCE_ROOTS}" != "1" && "${deploy_dirty}" -eq 1 ]]; then
+if [[ "${FORCE_ROOT}" != "1" && "${deploy_dirty}" -eq 1 ]]; then
   echo "ERROR: holos/deploy/ has uncommitted changes relative to HEAD (tracked edits or" >&2
   echo "       untracked files).  scripts/publish-config bundles the COMMITTED tree (HEAD)," >&2
-  echo "       so publishing now would point the App-of-Apps roots at a render that differs" >&2
+  echo "       so publishing now would point the platform root at a render that differs" >&2
   echo "       from the working-tree manifests scripts/apply applied — Argo CD's selfHeal" >&2
   echo "       would undo them.  Commit the render (scripts/render is the diff-clean gate)" >&2
-  echo "       and re-run, or set BOOTSTRAP_APP_OF_APPS_FORCE_ROOTS=1 if the divergence is" >&2
+  echo "       and re-run, or set PLATFORM_APP_OF_APPS_FORCE_ROOT=1 if the divergence is" >&2
   echo "       intentional." >&2
   exit 1
 fi
@@ -158,29 +163,28 @@ fi
 # 1. Publish the holos-paas-config:dev bundle.  This step requires oras, a
 #    reachable Quay, and a host-side push credential (ORAS_USERNAME/ORAS_PASSWORD
 #    or a prior `oras login`) — i.e. the manual holos Quay organization setup this
-#    script depends on.  Applying the
-#    root Applications is GATED on a successful publish: the roots reconcile with
-#    prune+selfHeal from holos-paas-config:dev, so applying them against a STALE
-#    (or absent) :dev would drag the cluster back off the manifests scripts/apply
-#    just applied.  A failed/skipped publish is therefore a HARD ERROR (unless
-#    BOOTSTRAP_APP_OF_APPS_FORCE_ROOTS=1 forces the roots against a known-current
-#    :dev).  scripts/publish-config --build is network-free; --push is the
-#    credentialed network step.
+#    script depends on.  Applying the platform root is GATED on a successful
+#    publish: the root reconciles with prune+selfHeal from holos-paas-config:dev,
+#    so applying it against a STALE (or absent) :dev would drag the cluster back
+#    off the manifests scripts/apply just applied.  A failed/skipped publish is
+#    therefore a HARD ERROR (unless PLATFORM_APP_OF_APPS_FORCE_ROOT=1 forces the
+#    root against a known-current :dev).  scripts/publish-config --build is
+#    network-free; --push is the credentialed network step.
 published=0
 if ! command -v oras >/dev/null 2>&1; then
   echo "    SKIP publish: 'oras' not found on PATH (https://oras.land/docs/installation)." >&2
 elif "${REPO_ROOT}/scripts/publish-config" --build >&2 \
   && "${REPO_ROOT}/scripts/publish-config" --push >/dev/null; then
-  echo "    Published holos-paas-config:${CONFIG_TAG:-dev} (the App-of-Apps :dev tag)."
+  echo "    Published holos-paas-config:${CONFIG_TAG:-dev} (the platform App-of-Apps :dev tag)."
   published=1
 else
   echo "    WARNING: publishing holos-paas-config failed." >&2
 fi
 
-if [[ "${published}" -ne 1 && "${FORCE_ROOTS}" != "1" ]]; then
+if [[ "${published}" -ne 1 && "${FORCE_ROOT}" != "1" ]]; then
   echo "ERROR: holos-paas-config:${CONFIG_TAG:-dev} was not published this run, so the" >&2
-  echo "       App-of-Apps handoff cannot proceed: applying the prune+selfHeal roots could" >&2
-  echo "       drag the cluster back to a stale or absent :dev bundle." >&2
+  echo "       platform App-of-Apps handoff cannot proceed: applying the prune+selfHeal root" >&2
+  echo "       could drag the cluster back to a stale or absent :dev bundle." >&2
   echo "" >&2
   echo "       This step depends on the holos Quay ORGANIZATION being configured first:" >&2
   echo "         - the holos org in the in-cluster Quay (https://quay.holos.internal)," >&2
@@ -195,27 +199,26 @@ if [[ "${published}" -ne 1 && "${FORCE_ROOTS}" != "1" ]]; then
   echo "" >&2
   echo "       Install oras (https://oras.land/docs/installation) if missing, configure the" >&2
   echo "       holos Quay organization and host-side push auth, then re-run this script.  Set" >&2
-  echo "       BOOTSTRAP_APP_OF_APPS_FORCE_ROOTS=1 to apply the roots against a :dev already" >&2
+  echo "       PLATFORM_APP_OF_APPS_FORCE_ROOT=1 to apply the root against a :dev already" >&2
   echo "       current in the registry." >&2
   exit 1
 fi
 
-# 2. Apply the two root App-of-Apps Applications.  These component dirs are NOT in
-#    scripts/apply's COMPONENTS (the imperative floor) precisely so they are
-#    applied here, once, as the Argo CD handoff.  The platform/projects AppProjects
-#    and the credential-less holos-paas-config repository registration Secret
-#    already exist (applied by the argocd-projects component in scripts/apply).
-#    Argo CD pulls the bundle ANONYMOUSLY: the repository is PUBLIC (HOL-1381 —
-#    holos-quay-organization sets its visibility to public), so no robot pull
-#    credential is needed; the registration Secret carries only url/type/insecure
-#    (the insecure flag is still required for the in-cluster Quay's mkcert serving
-#    cert).  server-side apply converges, so re-running is safe.
-for root in app-of-apps projects; do
-  echo "    apply root: ${root}"
-  kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
-    -f "${COMPONENTS_DIR}/${root}/"
-done
+# 2. Apply the PLATFORM root App-of-Apps Application.  This component dir is NOT in
+#    scripts/apply's COMPONENTS (the imperative floor) precisely so it is applied
+#    here, once, as the Argo CD handoff.  The platform AppProject and the
+#    credential-less holos-paas-config repository registration Secret already exist
+#    (applied by the argocd-projects component in scripts/apply).  Argo CD pulls the
+#    bundle ANONYMOUSLY: the repository is PUBLIC (HOL-1381 — holos-quay-organization
+#    sets its visibility to public), so no robot pull credential is needed; the
+#    registration Secret carries only url/type/insecure (the insecure flag is still
+#    required for the in-cluster Quay's mkcert serving cert).  server-side apply
+#    converges, so re-running is safe.
+echo "    apply platform root: app-of-apps"
+kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
+  -f "${COMPONENTS_DIR}/app-of-apps/"
 
-echo "    Argo CD now reconciles the platform (platform-bootstrap) and the"
-echo "    project/application resources (projects-bootstrap) from"
+echo "    Argo CD now reconciles the platform (platform-bootstrap) from"
 echo "    holos-paas-config:${CONFIG_TAG:-dev}."
+echo "    Tenant projects are bootstrapped separately and independently:"
+echo "      scripts/apply-projects-app-of-apps   # all projects' control planes"

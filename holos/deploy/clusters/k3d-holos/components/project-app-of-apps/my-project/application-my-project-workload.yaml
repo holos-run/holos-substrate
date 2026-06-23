@@ -1,12 +1,11 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-    annotations:
-        argocd.argoproj.io/sync-wave: "-1"
     labels:
-        app.kubernetes.io/name: projects-bootstrap
-        app.kubernetes.io/part-of: projects
-    name: projects-bootstrap
+        app.kubernetes.io/component: workload
+        app.kubernetes.io/name: my-project-workload
+        app.kubernetes.io/part-of: my-project
+    name: my-project-workload
     namespace: argocd
 spec:
     destination:
@@ -15,9 +14,10 @@ spec:
     project: projects
     source:
         directory:
+            include: '**/workload/**'
             recurse: true
-        path: clusters/k3d-holos/components/projects/children
-        repoURL: oci://quay.holos.internal/holos/holos-paas-config
+        path: clusters/k3d-holos/components
+        repoURL: oci://quay.holos.internal/holos/my-project-config
         targetRevision: dev
     syncPolicy:
         automated:

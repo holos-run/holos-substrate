@@ -9,7 +9,7 @@
 #     script creates); and
 #   * the App-of-Apps platform config bundle (the public holos-paas-config repo
 #     this script also creates, so the push robot needs only write and Argo CD
-#     pulls the bundle anonymously — HOL-1381, see scripts/apply-app-of-apps).
+#     pulls the bundle anonymously — HOL-1381, see scripts/apply-platform-app-of-apps).
 #
 # Both the holos-controller and holos-paas-config Repositories are PUBLIC
 # (world-pullable), and the org binds an
@@ -259,9 +259,11 @@ anonymous (HOL-1381).
        export ORAS_PASSWORD='<robot token>'
 
 THEN hand reconciliation to Argo CD by publishing the bundle and applying the
-two root Applications:
+platform root Application (the clean cut line — the platform is fully bootstrapped
+here), then bootstrap the tenant projects separately:
 
-  scripts/apply-app-of-apps
+  scripts/apply-platform-app-of-apps     # publish + the platform App-of-Apps root
+  scripts/apply-projects-app-of-apps      # each project's control-plane App-of-Apps
 
 See holos/docs/oci-publish-workflow.md and
 docs/runbooks/quay-resource-controller-credentials.md.
