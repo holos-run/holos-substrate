@@ -14,30 +14,34 @@ package authenticator
 import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	authenticatorv1alpha1 "github.com/holos-run/holos-paas/api/authenticator/v1alpha1"
 )
 
-// Condition types surfaced on authenticator.holos.run resource status. They
-// mirror the vocabulary declared on the API types (ConditionAccepted /
-// ConditionProgrammed / ConditionReady) and follow the Gateway API convention:
+// Condition types surfaced on authenticator.holos.run resource status. They are
+// aliased from the API package's declarations (not re-typed as fresh string
+// literals) so the controller and API can never drift, mirroring how
+// internal/controller/keycloak aliases the keycloak API constants. They follow
+// the Gateway API convention:
 //
 //   - Accepted   — the spec was understood and claimed by this resource.
 //   - Programmed — the desired state was configured (the OIDC client and
 //     upstream API server are discoverable and reachable).
 //   - Ready      — the backend is fully configured and usable.
 //
-// Reusing the same string values the API package defines keeps the printer
-// columns (which match on type=="Ready") and any client tooling consistent.
+// Sharing the same values keeps the printer columns (which match on
+// type=="Ready") and any client tooling consistent.
 const (
 	// ConditionAccepted reports whether the spec was accepted as valid and
 	// claimed by this resource (Gateway-API Accepted).
-	ConditionAccepted = "Accepted"
+	ConditionAccepted = authenticatorv1alpha1.ConditionAccepted
 	// ConditionProgrammed reports whether the desired state has been programmed —
 	// the backend's OIDC client and upstream API server are configured and
 	// discoverable (Gateway-API Programmed).
-	ConditionProgrammed = "Programmed"
+	ConditionProgrammed = authenticatorv1alpha1.ConditionProgrammed
 	// ConditionReady reports whether the backend is fully configured and usable
 	// (Gateway-API Ready).
-	ConditionReady = "Ready"
+	ConditionReady = authenticatorv1alpha1.ConditionReady
 )
 
 // Condition reasons. Reasons are stable, CamelCase machine-readable tokens

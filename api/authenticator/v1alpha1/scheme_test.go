@@ -68,7 +68,11 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 	}
 	clone.Spec.Server.CABundle[0] = 'X'
 	if backend.Spec.Server.CABundle[0] == 'X' {
-		t.Error("mutating the clone's Server.CABundle changed the original")
+		t.Error("mutating the clone's Server.CABundle changed the original (shared backing array)")
+	}
+	clone.Spec.OIDC.CABundle[0] = 'Y'
+	if backend.Spec.OIDC.CABundle[0] == 'Y' {
+		t.Error("mutating the clone's OIDC.CABundle changed the original (shared backing array)")
 	}
 	if clone.Spec.OIDC.ClientID != "holos-authenticator" {
 		t.Errorf("cloned OIDC.ClientID = %q, want holos-authenticator", clone.Spec.OIDC.ClientID)
