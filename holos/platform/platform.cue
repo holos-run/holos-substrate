@@ -552,28 +552,32 @@ platform: {
 				labels: app: "quay"
 			}}).output
 
-			// projects is the TENANT-side App-of-Apps (HOL-1377, parent
-			// HOL-1373): a root Argo CD Application assigned to the projects
-			// AppProject (argocd-projects, HOL-1375) that fans out two child
-			// Applications — one recursing the project component subpath, one
-			// recursing the application component subpath of the holos-paas-config
-			// OCI bundle at the mutable :dev tag (HOL-1374) — so every registered
-			// project's and app's control-plane resources (the per-project
-			// AppProject + Applications, the Kargo/Quay/Keycloak CRs) are
-			// bootstrapped declaratively rather than only via scripts/apply-projects.
-			// It is the tenant counterpart to the platform App-of-Apps
-			// (app-of-apps, HOL-1376) — distinct roots keep the system and tenant
-			// delivery boundaries separate.  Registered LAST, after the project and
-			// application collection components it delivers (it trails the full
-			// tenant set it enumerates), and after argocd-projects (the projects
-			// AppProject it is assigned to, widened in HOL-1377 to permit the argocd
-			// destination and the cluster-scoped Kargo Project the project component
-			// emits).  Like app-of-apps it pins targetRevision: dev on its OWN
-			// Applications (no Kargo in the bootstrap path) while delivering the
-			// per-project/app Applications verbatim (their targetRevision stays
-			// Kargo-owned).  scripts/apply hookup is deferred to HOL-1378.
+			// project-app-of-apps is the PER-PROJECT, control-plane/workload-split
+			// tenant App-of-Apps (HOL-1382) that SUPERSEDES the single global
+			// `projects` root (HOL-1377): it iterates the projects collection and
+			// emits, FOR EACH project, a PAIR of root Argo CD Applications assigned to
+			// the projects AppProject (argocd-projects) — <project>-control-plane
+			// (the platform-applied control plane: AppProject, Applications,
+			// Kargo/Quay/Keycloak CRs) and <project>-workload (the service-owner-
+			// applied app workload) — each pulling that project's OWN OCI config
+			// bundle (oci://quay.holos.internal/holos/<project>-config:dev) rather
+			// than the single shared holos-paas-config bundle.  This is the "clean
+			// cut line" HOL-1382 asks for: the platform App-of-Apps (app-of-apps)
+			// bootstraps the system, and each project is bootstrapped separately by
+			// its own per-project roots, built/pushed/applied by
+			// scripts/apply-project-app-of-apps (control plane) and
+			// scripts/apply-project-workload-app-of-apps (workload).  Registered LAST,
+			// after the project and application collection components it delivers, and
+			// after argocd-projects (the projects AppProject it is assigned to,
+			// widened in HOL-1382 to permit the oci://quay.holos.internal/holos/*
+			// per-project bundle sourceRepos).  Like app-of-apps it pins
+			// targetRevision: dev on its OWN root Applications (no Kargo in the
+			// bootstrap path) while delivering the per-project/app Applications
+			// verbatim (their targetRevision stays Kargo-owned).  The root manifests
+			// are applied imperatively by the per-project scripts and are NOT part of
+			// any per-project bundle, so a root never reconciles itself.
 			(#ComponentTemplate & {inputs: {
-				component: "projects"
+				component: "project-app-of-apps"
 				cluster:   CLUSTER.name
 				labels: app: "argocd"
 			}}).output

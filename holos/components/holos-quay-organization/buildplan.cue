@@ -52,7 +52,7 @@ let CONTROLLER_REPO = "holos-controller"
 // (holos-paas-config:dev) is pushed to and Argo CD pulls from.  It is managed as
 // a CR — rather than relying on a first-push to create it — so the push robot
 // only needs WRITE (push) access, not org `creator`/repo-create rights, and the
-// scripts/apply-app-of-apps push targets an already-existing repo (round-1
+// scripts/apply-platform-app-of-apps push targets an already-existing repo (round-1
 // review finding).  It is PUBLIC (HOL-1381): Argo CD pulls the bundle
 // ANONYMOUSLY, so the platform no longer depends on a holos-paas-config-robot
 // pull credential — see CONFIG_REPOSITORY_RESOURCE below and the credential-less
@@ -156,6 +156,42 @@ let CONFIG_REPOSITORY_RESOURCE = {
 	}
 }
 
+// PROJECT_CONFIG_REPOSITORIES is one PUBLIC Repository per registered project
+// (HOL-1382): the per-project App-of-Apps config bundle's home,
+// holos/<project>-config, pushed to by scripts/apply-project-app-of-apps and
+// pulled ANONYMOUSLY by the project-app-of-apps roots (so the
+// components/argocd-projects registration for each carries no credential, exactly
+// like holos-paas-config).  Managed as a CR — rather than relying on a first-push
+// to create it — so the push robot needs only WRITE (push) access, not org
+// `creator`/repo-create rights, and the per-project bundle repo exists before the
+// per-project root reconciles.  Same gated-injection posture for caBundle.  These
+// live in the holos org alongside holos-controller / holos-paas-config; the
+// per-APP delivery repos (oci://quay.holos.internal/<project>/<app>-config) are a
+// separate concern under each project's OWN Quay org (the project Organization).
+let PROJECT_CONFIG_REPOSITORIES = {
+	for NAME, _ in projects {
+		"\(NAME)-config": {
+			apiVersion: "quay.holos.run/v1alpha1"
+			kind:       "Repository"
+			metadata: {
+				name:      "\(NAME)-config"
+				namespace: NAMESPACE
+				labels: "app.kubernetes.io/name": ORG_NAME
+			}
+			spec: {
+				organizationRef: ORG_NAME
+				name:            "\(NAME)-config"
+				visibility:      "public"
+				description:     "The per-project App-of-Apps config bundle for project \(NAME) (HOL-1382)."
+				credentialsSecretRef: name: CREDS_SECRET
+				if _CABundlePEM != "" {
+					caBundle: base64.Encode(null, _CABundlePEM)
+				}
+			}
+		}
+	}
+}
+
 userDefinedBuildPlan: {
 	metadata: name: "holos-quay-organization"
 	spec: artifacts: manifests: {
@@ -174,6 +210,10 @@ userDefinedBuildPlan: {
 					Repository: {
 						(CONTROLLER_REPO): REPOSITORY_RESOURCE
 						(CONFIG_REPO):     CONFIG_REPOSITORY_RESOURCE
+						// One public bundle repo per registered project (HOL-1382).
+						for REPO_NAME, R in PROJECT_CONFIG_REPOSITORIES {
+							(REPO_NAME): R
+						}
 					}
 				}
 			}]

@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Apply ONE project's WORKLOAD App-of-Apps (HOL-1382).
+#
+# This is the per-project, SERVICE-OWNER half of the App-of-Apps split.  Given a
+# single PROJECT name (the first argument), it applies that project's WORKLOAD root
+# Application
+# (components/project-app-of-apps/<PROJECT>/application-<PROJECT>-workload.yaml),
+# which Argo CD reconciles from the project's per-project OCI config bundle
+# (quay.holos.internal/holos/<PROJECT>-config:dev) — selecting ONLY the app workload
+# (directory.include: **/workload/**): each app's Deployment/Service/HTTPRoute/
+# ConfigMap/ServiceAccount/RoleBinding.
+#
+# It is DELIBERATELY split from the control-plane half
+# (scripts/apply-project-app-of-apps): platform engineers apply the project's
+# CONTROL PLANE first (the per-project AppProject + Applications, the
+# Kargo/Quay/Keycloak CRs, RBAC, and the namespace the workload lands in), THEN the
+# service owner runs THIS script to apply the workload.  This script does NOT build
+# or push the bundle — it reuses the bundle the control-plane step already pushed —
+# so it needs NO oras / push credential, only kubectl.
+#
+# ORDERING — run AFTER scripts/apply-project-app-of-apps <PROJECT> has applied the
+# project's control plane (which pushed the bundle and created the project control
+# namespace, ServiceAccounts, and AppProject the workload references).  Running it
+# before the control plane leaves the workload root unable to pull a not-yet-pushed
+# bundle (it stays Unknown until the control-plane step pushes it) and its objects
+# blocked on the missing namespace.
+#
+# Environment overrides:
+#   KUBE_CONTEXT — kubectl context to apply to (default: the current context, which
+#                  must be k3d-holos; set explicitly to target another).
+#   CLUSTER      — the rendered cluster directory name (default k3d-holos).
+#
+# Prerequisites: bash, kubectl, and a reachable cluster with the platform floor up.
+
+set -euo pipefail
+
+PROJECT="${1:-}"
+if [[ -z "${PROJECT}" ]]; then
+  echo "ERROR: a project name is required." >&2
+  echo "       Usage: scripts/apply-project-workload-app-of-apps <PROJECT>" >&2
+  exit 1
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+CLUSTER="${CLUSTER:-k3d-holos}"
+COMPONENTS_DIR="${REPO_ROOT}/holos/deploy/clusters/${CLUSTER}/components"
+
+if ! command -v kubectl >/dev/null 2>&1; then
+  echo "ERROR: 'kubectl' not found on PATH." >&2
+  exit 1
+fi
+
+ROOT_FILE="${COMPONENTS_DIR}/project-app-of-apps/${PROJECT}/application-${PROJECT}-workload.yaml"
+if [[ ! -f "${ROOT_FILE}" ]]; then
+  echo "ERROR: no workload root rendered for project '${PROJECT}' at:" >&2
+  echo "       ${ROOT_FILE}" >&2
+  echo "       Is '${PROJECT}' a registered project (holos/projects/<name>.cue)?" >&2
+  exit 1
+fi
+
+# Resolve and pin the target context (the scripts/apply posture).
+if [[ -z "${KUBE_CONTEXT:-}" ]]; then
+  KUBE_CONTEXT="$(kubectl config current-context)"
+  if [[ "${KUBE_CONTEXT}" != "k3d-holos" ]]; then
+    echo "ERROR: current kubectl context is '${KUBE_CONTEXT}', expected 'k3d-holos'." >&2
+    echo "       The rendered manifests target the k3d-holos cluster.  Set" >&2
+    echo "       KUBE_CONTEXT explicitly to apply to a different context." >&2
+    exit 1
+  fi
+fi
+echo "==> project ${PROJECT}: apply the workload root (context ${KUBE_CONTEXT})"
+
+if ! kubectl --context "${KUBE_CONTEXT}" version --request-timeout=10s >/dev/null 2>&1; then
+  echo "ERROR: cannot reach the cluster for kubectl context '${KUBE_CONTEXT}'." >&2
+  echo "       Bring up the platform floor with scripts/apply first (see docs/local-cluster.md)." >&2
+  exit 1
+fi
+
+# Apply the workload root.  The per-project bundle it pulls was pushed by
+# scripts/apply-project-app-of-apps (the control-plane step); if that step has not
+# run, the root applies but stays Unknown until the bundle exists — re-run after the
+# control plane.  server-side apply converges, so re-running is safe.
+echo "    apply workload root: ${PROJECT}-workload"
+kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts -f "${ROOT_FILE}"
+
+echo "    Argo CD now reconciles project ${PROJECT}'s app workload from"
+echo "    quay.holos.internal/holos/${PROJECT}-config:${CONFIG_TAG:-dev}."

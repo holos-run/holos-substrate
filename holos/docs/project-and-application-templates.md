@@ -226,6 +226,20 @@ fallback) until the Kargo receiver URL is published into a Secret the
   superuser-credential setup, and the platform foundation
   (`scripts/apply`) — the Argo CD/Kargo/Holos Controller must be established first.
   The workload bundle is delivered by Argo CD from the published OCI artifact.
+  As of HOL-1382 the project component renders its (all control-plane) resources
+  into a `control-plane/` subtree
+  (`clusters/<cluster>/components/project/<name>/control-plane/`), mirroring the
+  application component's control-plane/workload split.
+- **Apply via the per-project App-of-Apps (the GitOps path).** Alternatively, hand
+  reconciliation to Argo CD per project (HOL-1382): `scripts/apply-project-app-of-apps
+  <project>` builds+pushes the project's own OCI config bundle
+  (`holos/<project>-config:dev`) and applies its `<project>-control-plane` root
+  (the platform-managed control plane); the service owner then applies the
+  `<project>-workload` root with `scripts/apply-project-workload-app-of-apps
+  <project>`. `scripts/apply-projects-app-of-apps` runs the control-plane step for
+  every registered project. See
+  [oci-publish-workflow.md](oci-publish-workflow.md) (*Per-project config bundles
+  and the project handoff*).
 
 ## See also
 

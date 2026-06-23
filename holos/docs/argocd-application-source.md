@@ -226,11 +226,13 @@ Platform self-delivery is now wired: the **OCI App-of-Apps** over the
 `holos-paas-config:dev` bundle reconciles the platform's own rendered manifests
 ([ADR-16 Rev 4](../../docs/adr/ADR-16.md),
 [oci-publish-workflow.md](oci-publish-workflow.md)). `scripts/apply` brings Argo
-CD up and stops at the bootstrap floor; the separate `scripts/apply-app-of-apps`
-then publishes the bundle and applies the two root `Application`s as the handoff
-(split out of `scripts/apply` in HOL-1379 because the publish needs the holos
-Quay organization configured first) — so the bundle push and the root apply are
-the imperative bootstrap steps, after which Argo CD owns reconciliation. This
+CD up and stops at the bootstrap floor; the separate
+`scripts/apply-platform-app-of-apps` then publishes the bundle and applies the
+**platform** root `Application` as the handoff (split out of `scripts/apply` in
+HOL-1379 because the publish needs the holos Quay organization configured first;
+tenant projects are bootstrapped separately by `scripts/apply-projects-app-of-apps`,
+HOL-1382) — so the bundle push and the root apply are the imperative bootstrap
+steps, after which Argo CD owns reconciliation. This
 **supersedes the deferred
 per-component git-source projection** (the `argoAppDisabled` flip) for the
 platform; that projection stays dormant — see the

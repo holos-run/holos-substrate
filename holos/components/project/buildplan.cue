@@ -804,14 +804,26 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 
 userDefinedBuildPlan: {
 	metadata: name: "project"
-	// One artifact directory per project (clusters/<cluster>/components/project/<name>/),
-	// iterating the projects collection.  As of HOL-1357 this includes my-project
-	// (the bespoke holos/components/my-project component was deleted and this
-	// generalized component now produces the reference instance's project-level
-	// resource set); every registered project renders its own subdirectory.
+	// One artifact directory per project, iterating the projects collection.  As
+	// of HOL-1357 this includes my-project (the bespoke holos/components/my-project
+	// component was deleted and this generalized component now produces the
+	// reference instance's project-level resource set); every registered project
+	// renders its own subdirectory.
+	//
+	// The resources render into a control-plane/ SUBTREE
+	// (clusters/<cluster>/components/project/<name>/control-plane/, HOL-1382),
+	// mirroring the application component's control-plane/workload split: a
+	// project's resources are ALL platform-managed control plane (the AppProject,
+	// Argo CD Application, Kargo control plane, Quay Organization, Keycloak CRs,
+	// RBAC) — a project has NO service-owner workload of its own (its workload
+	// lives in its apps, the application component).  The per-project App-of-Apps
+	// (components/project-app-of-apps) recurses this control-plane/ subtree for the
+	// platform-applied control-plane root, and the apps' workload/ subtree for the
+	// service-owner-applied workload root, so the two delivery boundaries are
+	// separable exactly as the application component's two bundles are.
 	spec: artifacts: manifests: {
 		for PROJECT, P in projects {
-			"clusters/\(clusterName)/components/project/\(PROJECT)": {
+			"clusters/\(clusterName)/components/project/\(PROJECT)/control-plane": {
 				artifact: _
 				generators: [{
 					kind: "Resources"

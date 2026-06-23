@@ -50,4 +50,4 @@ spec:
   - group: '*'
     kind: '*'
   sourceRepos:
-  - oci://quay.holos.internal/holos/holos-paas-config
+  - oci://quay.holos.internal/holos/my-project-config

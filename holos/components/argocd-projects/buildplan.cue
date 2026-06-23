@@ -52,6 +52,24 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 let CONFIG_REPO = "quay.holos.internal/holos/holos-paas-config"
 let CONFIG_REPO_OCI = "oci://\(CONFIG_REPO)"
 
+// CONFIG_REPO_BASE is the OCI repository PREFIX the platform config bundles live
+// under: the platform-owned `holos` Quay org.  The PLATFORM config bundle is
+// <CONFIG_REPO_BASE>/holos-paas-config (CONFIG_REPO above); each PROJECT's
+// per-project config bundle (HOL-1382) is <CONFIG_REPO_BASE>/<project>-config.
+// Keep consistent with project-app-of-apps's CONFIG_REPO_BASE and
+// scripts/apply-project-app-of-apps's CONFIG_REPO_BASE.
+let CONFIG_REPO_BASE = "quay.holos.internal/holos"
+
+// PROJECT_BUNDLE_OCI maps each registered project name to the oci:// URL of its
+// per-project config bundle (HOL-1382).  The projects AppProject authorizes
+// EXACTLY these repos (sourceRepos below) and a credential-less registration
+// Secret is emitted per bundle (PROJECT_BUNDLE_REGISTRATIONS) so Argo CD pulls the
+// public bundle with the in-cluster Quay's insecure: "true" setting.  An EXACT
+// per-project list (not an oci://.../holos/* wildcard) keeps the projects
+// AppProject from authorizing sibling holos-org repos, the same exact-match
+// discipline the platform AppProject's sourceRepos use.
+let PROJECT_BUNDLE_OCI = {for NAME, _ in projects {(NAME): "oci://\(CONFIG_REPO_BASE)/\(NAME)-config"}}
+
 // MANIFESTS_REPO is the per-app rendered-manifests OCI repository the existing
 // echo/Kargo delivery pipeline publishes to (components/kargo-echo).  The
 // platform AppProject authorizes it too so a system-owned Application may also
@@ -161,21 +179,24 @@ let PROJECTS_PROJECT = {
 		labels: "app.kubernetes.io/name": "projects"
 	}
 	spec: {
-		// EXACTLY the platform config bundle — the only repo any Application
-		// assigned to this project ever sources.  The projects App-of-Apps root and
-		// its two children (the sole project: projects Applications) all pull the
-		// project/application component manifests from holos-paas-config; the
-		// per-project/app Applications those manifests carry are assigned to their
-		// OWN per-project AppProjects (project: <project>) and source their own
-		// <project>/<app>-config repos, NOT this one.  A wildcard
-		// (oci://quay.holos.internal/*/*) would let an Application assigned to
-		// projects — which (HOL-1377) may now write into the argocd namespace —
-		// source TENANT-controlled OCI content and reconcile arbitrary namespaced
-		// resources (Applications/AppProjects/Secrets) into argocd: a confused-deputy
-		// escalation.  Pinning sourceRepos to the single platform-owned config repo
-		// closes that — combined with the project-assignment boundary, only the
-		// platform-trusted bootstrap can use this project's argocd-write privilege.
-		sourceRepos: [CONFIG_REPO_OCI]
+		// EXACTLY the per-project config bundles (HOL-1382) — one oci:// URL per
+		// registered project (oci://quay.holos.internal/holos/<project>-config), the
+		// only repos any Application assigned to this project ever sources.  Each
+		// per-project App-of-Apps root (components/project-app-of-apps,
+		// <project>-control-plane / <project>-workload) pulls ONLY its own project's
+		// bundle; the per-project/app Applications those bundles carry are assigned to
+		// their OWN per-project AppProjects (project: <project>) and source their own
+		// <project>/<app>-config repos, NOT these.  An EXACT per-project list (not an
+		// oci://quay.holos.internal/holos/* wildcard, and never the old
+		// oci://quay.holos.internal/*/* tenant wildcard) is the same exact-match
+		// discipline the platform AppProject uses: a wildcard would let an Application
+		// assigned to projects — which may write into the argocd namespace — source a
+		// sibling holos-org (or tenant) repo and reconcile arbitrary namespaced
+		// resources (Applications/AppProjects/Secrets) into argocd, a confused-deputy
+		// escalation.  Pinning to the exact platform-owned per-project bundles closes
+		// that — combined with the project-assignment boundary, only the
+		// platform-trusted per-project roots use this project's argocd-write privilege.
+		sourceRepos: [for NAME, _ in projects {PROJECT_BUNDLE_OCI[NAME]}]
 		// Tenant namespaces on the in-cluster API server.  '*' admits the project
 		// control and env-prefixed namespaces (ci-/qa-/prod-<name>, bare <name>)
 		// the projects App-of-Apps fans out into, PLUS the argocd namespace the
@@ -277,6 +298,41 @@ let REPO_REGISTRATION = {
 	}
 }
 
+// PROJECT_BUNDLE_REGISTRATIONS is one credential-less repository registration
+// Secret per registered project (HOL-1382), registering that project's per-project
+// config bundle (oci://quay.holos.internal/holos/<project>-config) with Argo CD.
+// Each carries ONLY the non-sensitive registration constants (name/url/type/
+// insecure), exactly like REPO_REGISTRATION above: the per-project bundle repos are
+// PUBLIC (holos-quay-organization emits a public Repository CR per project), so the
+// pull is anonymous and nothing here is secret MATERIAL — the Secrets are safe to
+// commit.  The insecure: "true" is still required because the in-cluster Quay serves
+// *.holos.internal with the machine-local mkcert CA the repo-server does not trust.
+// metadata.name is holos-<project>-config (the holos-org bundle for <project>),
+// unambiguous in the argocd namespace.  Applied with the platform floor
+// (argocd-projects is in scripts/apply and the platform App-of-Apps), so the
+// registrations exist before scripts/apply-project-app-of-apps applies a per-project
+// root that pulls the bundle.
+let PROJECT_BUNDLE_REGISTRATIONS = {
+	for NAME, _ in projects {
+		"holos-\(NAME)-config": {
+			apiVersion: "v1"
+			kind:       "Secret"
+			metadata: {
+				name:      "holos-\(NAME)-config"
+				namespace: ArgoCDNamespace
+				labels: "argocd.argoproj.io/secret-type": "repository"
+			}
+			type: "Opaque"
+			stringData: {
+				name:     "holos-\(NAME)-config"
+				url:      PROJECT_BUNDLE_OCI[NAME]
+				type:     "oci"
+				insecure: "true"
+			}
+		}
+	}
+}
+
 userDefinedBuildPlan: {
 	metadata: name: "argocd-projects"
 	spec: artifacts: manifests: {
@@ -296,7 +352,13 @@ userDefinedBuildPlan: {
 						(PLATFORM_PROJECT.metadata.name): PLATFORM_PROJECT
 						(PROJECTS_PROJECT.metadata.name): PROJECTS_PROJECT
 					}
-					Secret: (REPO_REGISTRATION.metadata.name): REPO_REGISTRATION
+					Secret: {
+						(REPO_REGISTRATION.metadata.name): REPO_REGISTRATION
+						// One credential-less registration per per-project bundle (HOL-1382).
+						for SECRET_NAME, S in PROJECT_BUNDLE_REGISTRATIONS {
+							(SECRET_NAME): S
+						}
+					}
 				}
 			}]
 			transformers: [

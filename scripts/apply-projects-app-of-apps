@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Apply EVERY registered project's CONTROL-PLANE App-of-Apps (HOL-1382).
+#
+# This is the platform-engineer, control-plane iterator half of the App-of-Apps
+# split that HOL-1382 carves out of the former scripts/apply-app-of-apps.  It
+# enumerates the registered projects from the CUE collection
+# (`holos cue export ./holos/projects`, mapped through jq) and, for EACH project,
+# calls scripts/apply-project-app-of-apps <PROJECT> — which builds and pushes that
+# project's per-project OCI config bundle and applies its CONTROL-PLANE root
+# Application (the per-project AppProject + Applications, the Kargo/Quay/Keycloak
+# CRs, RBAC).
+#
+# It is the PROJECTS counterpart to scripts/apply-platform-app-of-apps (the system
+# bootstrap).  The two are COMPLETELY INDEPENDENT and never call each other: this
+# script bootstraps the tenant projects, that one bootstraps the platform system.
+# Run scripts/apply-platform-app-of-apps first (the projects depend on Argo CD +
+# the platform floor being up), then this.
+#
+# The SERVICE-OWNER workload half is NOT iterated here: each project's workload is
+# applied by its own service owner via scripts/apply-project-workload-app-of-apps
+# <PROJECT>, AFTER the platform team has applied the control plane.  (A platform
+# operator bringing a whole cluster up alone can loop that script too, but the
+# split exists precisely so the two roles act independently.)
+#
+# ORDERING — run AFTER scripts/apply (the floor), scripts/apply-holos-quay-organization
+# (the holos org + the PUBLIC per-project bundle repos), and the host-side push auth
+# the per-project script needs.  See scripts/apply-project-app-of-apps for the full
+# per-project prerequisites; the environment overrides there (KUBE_CONTEXT, CLUSTER,
+# CONFIG_REPO_BASE, CONFIG_TAG, ORAS_USERNAME/ORAS_PASSWORD, …) pass through to each
+# per-project invocation.
+#
+# Prerequisites: bash, holos, jq, plus everything scripts/apply-project-app-of-apps
+# needs (kubectl, git, gzip, oras with a reachable Quay).
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+missing=0
+for tool in holos jq; do
+  if ! command -v "${tool}" >/dev/null 2>&1; then
+    echo "ERROR: '${tool}' not found on PATH." >&2
+    missing=1
+  fi
+done
+[[ "${missing}" -ne 0 ]] && exit 1
+
+# Enumerate the registered projects from the CUE collection (the HOL-1382 contract:
+# holos cue export ./holos/projects mapped through jq).  projects.cue has no
+# imports, so the export resolves from the repo root without the module context.
+#
+# `holos cue export` requires a RELATIVE package path (it rejects an absolute path:
+# "cannot use absolute directory ... as package path"), so run it from REPO_ROOT
+# with `./holos/projects`.  Capture into a variable FIRST and fail hard on a
+# non-zero export/jq exit — a `mapfile < <(...)` process substitution would
+# otherwise SWALLOW the failure and silently report "no projects" (a no-op
+# bootstrap), the exact trap the absolute-path bug hit.
+projects_json="$( cd "${REPO_ROOT}" && holos cue export ./holos/projects )" || {
+  echo "ERROR: 'holos cue export ./holos/projects' failed (run from ${REPO_ROOT})." >&2
+  exit 1
+}
+# Run the jq pipeline in a command substitution (NOT inside the mapfile process
+# substitution): with `set -o pipefail` on, a jq failure — a malformed export shape,
+# or `.projects` absent so `keys[]` iterates null — makes the `$(...)` non-zero and
+# the `||` fires.  A process-substitution `mapfile < <(... | jq ...)` would SWALLOW
+# that failure (the round-2 finding), silently no-opping the bootstrap.
+projects_keys="$(printf '%s' "${projects_json}" | jq -r '.projects | keys[]' | LC_ALL=C sort)" || {
+  echo "ERROR: could not parse the project list from 'holos cue export ./holos/projects'." >&2
+  echo "       Expected a top-level .projects map." >&2
+  exit 1
+}
+
+if [[ -z "${projects_keys}" ]]; then
+  echo "No registered projects found (holos/projects/<name>.cue).  Nothing to apply."
+  exit 0
+fi
+mapfile -t PROJECTS <<<"${projects_keys}"
+
+echo "==> Applying the control-plane App-of-Apps for ${#PROJECTS[@]} project(s): ${PROJECTS[*]}"
+
+# Apply each project's control plane sequentially.  A failure on one project is
+# fatal (set -e): the operator fixes it and re-runs (the per-project script is
+# idempotent, so already-applied projects converge without churn).
+for project in "${PROJECTS[@]}"; do
+  [[ -n "${project}" ]] || continue
+  echo "================================================================"
+  "${REPO_ROOT}/scripts/apply-project-app-of-apps" "${project}"
+done
+
+echo "================================================================"
+echo "All ${#PROJECTS[@]} project control planes applied."
+echo "Each project's SERVICE OWNER applies its workload next:"
+echo "  scripts/apply-project-workload-app-of-apps <PROJECT>"

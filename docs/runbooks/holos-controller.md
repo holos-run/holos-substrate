@@ -302,13 +302,16 @@ anchor is injected.
 
 ### caBundle injection vs. the `projects` App-of-Apps (the OCI bootstrap)
 
-The App-of-Apps OCI bootstrap (HOL-1373, [ADR-16 Rev 3](../adr/ADR-16.md)) adds a
-`projects` top-level `Application` (`projects-bootstrap`) that reconciles the
-project/application resources — including each project's Quay `Organization` and
-each app's `Repository` — from the **`holos-paas-config:dev` bundle**. That bundle
-is the **committed** `holos/deploy/` tree, which by guarantee carries **no**
-`caBundle` material (it is per-cluster trust material, injected only at apply
-time, never committed). So the two paths coexist deliberately:
+The App-of-Apps OCI bootstrap (HOL-1373, [ADR-16 Rev 3](../adr/ADR-16.md);
+split per-project in HOL-1382, Rev 6) reconciles the project/application resources
+— including each project's Quay `Organization` and each app's `Repository` — from
+an OCI bundle: as of HOL-1382 each project has its **own** per-project
+`<project>-control-plane` root over its **own** bundle
+(`holos/<project>-config:dev`), applied by
+`scripts/apply-project-app-of-apps <project>`. Every such bundle is built from the
+**committed** `holos/deploy/` tree, which by guarantee carries **no** `caBundle`
+material (it is per-cluster trust material, injected only at apply time, never
+committed). So the two paths coexist deliberately:
 
 - **`scripts/apply-projects` remains the path that provisions `caBundle`.** It
   reads the local-ca PEM and renders the Organization/Repository CRs with
@@ -323,9 +326,11 @@ time, never committed). So the two paths coexist deliberately:
   **not** the mkcert local k3d cluster.
 
 **Ordering guidance.** On the local k3d cluster, run `scripts/apply-projects`
-**after** the App-of-Apps handoff (`scripts/apply-app-of-apps`, the separate
-handoff that applies `projects-bootstrap` — split out of `scripts/apply` in
-HOL-1379) so the injected `caBundle` is the last writer on the
+**after** the App-of-Apps handoff (`scripts/apply-platform-app-of-apps` then
+`scripts/apply-projects-app-of-apps`, which apply the platform root and each
+project's `<project>-control-plane` root — split out of `scripts/apply` in
+HOL-1379, further split per-project in HOL-1382) so the injected `caBundle` is the
+last writer on the
 Organization/Repository CRs —
 `scripts/apply-projects` uses a distinct field manager and re-asserts `caBundle`,
 and ArgoCD's `selfHeal` does not strip a field the committed source never sets

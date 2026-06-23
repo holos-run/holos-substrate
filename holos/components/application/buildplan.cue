@@ -143,6 +143,17 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 	// the same control namespace, so this reserved name is the standing guard.)
 	NAME: !="project"
 
+	// An app MUST NOT be named "control-plane" or "workload" either.  The per-app
+	// Argo CD Application is named <project>-<app> in the SHARED argocd namespace,
+	// and the per-project App-of-Apps roots (components/project-app-of-apps,
+	// HOL-1382) are named <project>-control-plane and <project>-workload there — so
+	// an app named "control-plane" or "workload" would render an Application
+	// <project>-control-plane / <project>-workload that COLLIDES with the project's
+	// own App-of-Apps root.  Both are therefore reserved app names; reject them at
+	// RENDER.
+	NAME: !="control-plane"
+	NAME: !="workload"
+
 	// CTRL_NS is the app's project's BARE control namespace (see the namespace
 	// note in the file header): every app resource lands here.  Unified with
 	// #RegisteredNamespace so a missing registry entry fails at render, not apply.

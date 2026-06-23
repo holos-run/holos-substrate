@@ -170,9 +170,19 @@ scripts/apply-holos-controller
 #    Quay ROBOT account you need for the pushes in step 4.
 scripts/apply-holos-quay-organization
 
-# 4. Publish holos-paas-config:dev and apply the two root Applications, handing
-#    ongoing reconciliation to ArgoCD.
-scripts/apply-app-of-apps
+# 4. Publish holos-paas-config:dev and apply the PLATFORM root Application,
+#    handing ongoing SYSTEM reconciliation to ArgoCD.  This is the clean cut
+#    line: the platform is fully bootstrapped here.
+scripts/apply-platform-app-of-apps
+
+# 5. Bootstrap the tenant projects (independent of step 4).  For EACH registered
+#    project this builds+pushes its own OCI config bundle and applies the
+#    project's CONTROL-PLANE root Application (the platform-managed half).
+scripts/apply-projects-app-of-apps
+
+# 5b. The SERVICE OWNER of each project then applies its workload separately,
+#     AFTER the platform team applied the control plane above:
+#       scripts/apply-project-workload-app-of-apps <PROJECT>
 ```
 
 Before step 4, set up the **one** credential `scripts/apply-holos-quay-organization`
@@ -190,16 +200,21 @@ component registers the repository with Argo CD via a credential-less repository
 Secret (only `url`/`type`/`insecure`) the floor already applied — there is no
 `holos-paas-config-robot` source Secret and no repository-credential bootstrap Job.
 
-`scripts/apply-app-of-apps` resolves the chicken-and-egg — ArgoCD cannot
+`scripts/apply-platform-app-of-apps` resolves the chicken-and-egg — ArgoCD cannot
 reconcile the platform from the OCI config bundle until ArgoCD itself is running —
 by running **after** the floor brings ArgoCD up:
 
 1. It publishes the **`holos-paas-config:dev`** bundle (a tar of the committed
    `holos/deploy/` tree, `scripts/publish-config`).
-2. It applies the two **root ArgoCD `Application`s** — `platform-bootstrap`
-   (the system components, ArgoCD project `platform`) and `projects-bootstrap`
-   (the project/application resources, ArgoCD project `projects`) — which then
-   track `:dev` and reconcile the platform from the bundle.
+2. It applies the **platform root ArgoCD `Application`** `platform-bootstrap`
+   (the system components, ArgoCD project `platform`), which then tracks `:dev`
+   and reconciles the platform from the bundle. Tenant projects are bootstrapped
+   **separately and independently** by `scripts/apply-projects-app-of-apps`
+   (HOL-1382): that script builds a **per-project** OCI config bundle
+   (`holos/<project>-config:dev`) and applies each project's own
+   `<project>-control-plane` root (the platform-managed control plane) — and the
+   project's service owner applies its `<project>-workload` root afterward with
+   `scripts/apply-project-workload-app-of-apps <project>`.
 
 The handoff is idempotent. Because its whole purpose **is** the handoff (unlike
 `scripts/apply`, which must succeed on its own as the floor), a missing
@@ -208,10 +223,11 @@ organization not yet configured — is a **hard error** with guidance, not a sil
 skip. Applying the two root Applications is **gated on a successful publish** this
 run: the roots reconcile with `prune`+`selfHeal`, so applying them against a stale
 or absent `:dev` would drag the cluster back off the manifests the floor just
-applied — so a failed publish aborts **without** applying the roots. Force the
-roots against a known-current `:dev` already in the registry (or when
+applied — so a failed publish aborts **without** applying the root. Force the
+root against a known-current `:dev` already in the registry (or when
 `holos/deploy/` is intentionally dirty) with
-`BOOTSTRAP_APP_OF_APPS_FORCE_ROOTS=1`. The full mechanism (the "Always" `:dev`
+`PLATFORM_APP_OF_APPS_FORCE_ROOT=1` (and `PROJECT_APP_OF_APPS_FORCE_ROOT=1` for
+the per-project scripts). The full mechanism (the "Always" `:dev`
 re-pull, the sync-wave ordering) is in
 [oci-publish-workflow.md](../holos/docs/oci-publish-workflow.md) and
 [argocd-application-source.md](../holos/docs/argocd-application-source.md).
