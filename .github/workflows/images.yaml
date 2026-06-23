@@ -10,9 +10,9 @@ name: Images
 #
 # Discrete per-image jobs. Each image is built by its own job that calls the
 # reusable build-image.yaml workflow. The `image` input selects which to run, so
-# you can publish holos-paas only, holos-controller only, or both — building one
-# never forces the other. The shared build/publish/validation logic lives once
-# in build-image.yaml.
+# you can publish holos-paas, holos-controller, or holos-authenticator
+# individually, or all of them with `both` — building one never forces another.
+# The shared build/publish/validation logic lives once in build-image.yaml.
 #
 # Security model (enforced in build-image.yaml, which is resolved from this same
 # trusted commit — not from the caller-supplied `ref`):
@@ -50,6 +50,7 @@ on:
           - both
           - holos-paas
           - holos-controller
+          - holos-authenticator
       ref:
         description: >-
           Git reference to build: a commit SHA, a branch (main or
@@ -113,6 +114,21 @@ jobs:
       make_target: controller-docker-buildx
       repo_var: CONTROLLER_IMAGE_REPO
       tag_var: CONTROLLER_IMAGE_TAG
+      ref: ${{ inputs.ref }}
+      tag: ${{ inputs.tag }}
+      registry: ${{ inputs.registry }}
+
+  holos-authenticator:
+    if: ${{ inputs.image == 'holos-authenticator' || inputs.image == 'both' }}
+    uses: ./.github/workflows/build-image.yaml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      image: holos-authenticator
+      make_target: authenticator-docker-buildx
+      repo_var: AUTHENTICATOR_IMAGE_REPO
+      tag_var: AUTHENTICATOR_IMAGE_TAG
       ref: ${{ inputs.ref }}
       tag: ${{ inputs.tag }}
       registry: ${{ inputs.registry }}

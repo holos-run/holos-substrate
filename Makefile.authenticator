@@ -1,0 +1,92 @@
+# Makefile.authenticator — isolated targets for the holos-authenticator service
+# (ADR-23, HOL-1385). Included from the root Makefile.
+#
+# Every target here is namespaced authenticator-* so it never collides with the
+# holos-paas targets (build, test, docker-build, publish, ...) or the
+# holos-controller targets (controller-*), and it does not touch scripts/apply,
+# scripts/render, or scripts/publish. This phase ships only the service scaffold
+# (the cmd/holos-authenticator manager + ext_authz gRPC stub), so unlike
+# Makefile.controller there are no controller-gen/kustomize/envtest targets yet —
+# the authenticator.holos.run CRD and its generation land in HOL-1386.
+
+# Container image coordinates for the authenticator. Defaults target the local
+# k3d in-cluster registry so a pushed image is pullable by the cluster (mirrors
+# the holos-paas IMAGE_* and the CONTROLLER_IMAGE_* defaults).
+AUTHENTICATOR_IMAGE_REPO ?= quay.holos.internal/holos/holos-authenticator
+AUTHENTICATOR_IMAGE_TAG  ?= dev
+AUTHENTICATOR_IMAGE      ?= $(AUTHENTICATOR_IMAGE_REPO):$(AUTHENTICATOR_IMAGE_TAG)
+AUTHENTICATOR_PLATFORM   ?= linux/arm64
+
+# Multi-arch (manifest list) platforms for the authenticator image. The buildx
+# builder itself is the shared $(BUILDX_BUILDER) defined in the root Makefile
+# before the include: all services cross-compile identically, so they
+# intentionally share one docker-container builder rather than each bootstrapping
+# its own. authenticator-docker-buildx-builder below is deliberately equivalent
+# to the root docker-buildx-builder target.
+AUTHENTICATOR_MULTIARCH_PLATFORMS ?= linux/amd64,linux/arm64
+
+.PHONY: authenticator-fmt
+authenticator-fmt: ## Run go fmt against the authenticator sources.
+	go fmt ./cmd/holos-authenticator/... ./internal/authenticator/...
+
+.PHONY: authenticator-vet
+authenticator-vet: ## Run go vet against the authenticator sources.
+	go vet ./cmd/holos-authenticator/... ./internal/authenticator/...
+
+# AUTHENTICATOR_LDFLAGS stamps the build VERSION (defined in the root Makefile,
+# from `git describe`) into the authenticator binary by overriding its
+# package-main `version` var, which it logs once at manager startup ("starting
+# manager", version=...). Dockerfile.authenticator applies the same -X via its
+# VERSION build-arg.
+AUTHENTICATOR_LDFLAGS ?= -X main.version=$(VERSION)
+
+.PHONY: authenticator-build
+authenticator-build: authenticator-fmt authenticator-vet ## Build the holos-authenticator binary.
+	go build -ldflags "$(AUTHENTICATOR_LDFLAGS)" -o bin/holos-authenticator ./cmd/holos-authenticator
+
+# authenticator-test runs the authenticator-specific packages with the race
+# detector, mirroring controller-test. This phase has no envtest dependency (no
+# reconcilers yet), so it needs no control-plane binaries — just the gRPC
+# bufconn/loopback server test under internal/authenticator.
+.PHONY: authenticator-test
+authenticator-test: authenticator-fmt authenticator-vet ## Run the authenticator tests with the race detector.
+	go test -race ./cmd/holos-authenticator/... ./internal/authenticator/...
+
+# Image targets use buildx so the builder stage runs on the native host and the
+# Go toolchain cross-compiles to $(AUTHENTICATOR_PLATFORM) — mirrors the
+# holos-controller docker-build/docker-push pattern but with the authenticator
+# Dockerfile. Both build a single-$(AUTHENTICATOR_PLATFORM) image; for a
+# multi-arch manifest list spanning $(AUTHENTICATOR_MULTIARCH_PLATFORMS) use the
+# authenticator-docker-buildx target below.
+# --build-arg VERSION=$(VERSION) carries the git-describe version (from the root
+# Makefile) into Dockerfile.authenticator, which stamps it via -ldflags exactly
+# as `make authenticator-build` does on the host.
+.PHONY: authenticator-docker-build
+authenticator-docker-build: ## Build the authenticator image for $(AUTHENTICATOR_PLATFORM) tagged $(AUTHENTICATOR_IMAGE).
+	docker buildx build --platform $(AUTHENTICATOR_PLATFORM) --build-arg VERSION=$(VERSION) -f Dockerfile.authenticator -t $(AUTHENTICATOR_IMAGE) --load .
+
+.PHONY: authenticator-docker-push
+authenticator-docker-push: ## Build for $(AUTHENTICATOR_PLATFORM) and push $(AUTHENTICATOR_IMAGE) to the registry.
+	docker buildx build --platform $(AUTHENTICATOR_PLATFORM) --build-arg VERSION=$(VERSION) -f Dockerfile.authenticator -t $(AUTHENTICATOR_IMAGE) --push .
+
+# Multi-arch authenticator image index. Mirrors the root docker-buildx pair and
+# reuses the same shared $(BUILDX_BUILDER), since all services produce identical
+# cross-compiled output from one docker-container builder. No QEMU is required —
+# Dockerfile.authenticator pins the builder stage to $BUILDPLATFORM and
+# cross-compiles via the Go toolchain.
+#
+# authenticator-docker-buildx-builder delegates the actual bootstrap to the root
+# docker-buildx-builder target (defined in the root Makefile, visible here via
+# the include) rather than duplicating the guard. A single owner of the shared
+# builder keeps the host-network/driver guard in one place and means a parallel
+# `make -j docker-buildx authenticator-docker-buildx` cannot race two recipes
+# creating/removing the same builder.
+.PHONY: authenticator-docker-buildx-builder
+authenticator-docker-buildx-builder: docker-buildx-builder ## Ensure the shared docker-container buildx builder $(BUILDX_BUILDER) exists.
+
+# Push-only: a multi-platform build cannot --load into the local Docker daemon,
+# so this emits the manifest list straight to $(AUTHENTICATOR_IMAGE). Verify with:
+#   docker buildx imagetools inspect $(AUTHENTICATOR_IMAGE)
+.PHONY: authenticator-docker-buildx
+authenticator-docker-buildx: authenticator-docker-buildx-builder ## Build and push the multi-arch $(AUTHENTICATOR_MULTIARCH_PLATFORMS) image index $(AUTHENTICATOR_IMAGE).
+	docker buildx build --builder $(BUILDX_BUILDER) --platform $(AUTHENTICATOR_MULTIARCH_PLATFORMS) --build-arg VERSION=$(VERSION) -f Dockerfile.authenticator -t $(AUTHENTICATOR_IMAGE) --push .
