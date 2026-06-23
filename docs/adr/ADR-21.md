@@ -455,7 +455,11 @@ manifests provision the identity half of its primitive-role model
    > projects' resources from the `holos-paas-config:dev` bundle — the
    > project/application collection components above — declaratively, alongside
    > the **`platform` root** (`platform-bootstrap`) that bootstraps the system
-   > components. So a project's Argo CD `Application`s are reconciled by Argo CD
+   > components. **(Superseded by Rev 6 / HOL-1382: the single `projects-bootstrap`
+   > root is replaced by per-project `<project>-control-plane` / `<project>-workload`
+   > roots, each over the project's own `holos/<project>-config:dev` bundle — see the
+   > Rev 6 row and [ADR-16 Rev 6](ADR-16.md).)** So a project's Argo CD `Application`s
+   > are reconciled by Argo CD
    > under the `projects` AppProject either via the App-of-Apps (the OCI
    > bootstrap) or via `scripts/apply-projects` (the caBundle-injecting operator
    > path), the two coexisting per the caBundle story below. See

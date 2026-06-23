@@ -52,7 +52,7 @@ let CONTROLLER_REPO = "holos-controller"
 // (holos-paas-config:dev) is pushed to and Argo CD pulls from.  It is managed as
 // a CR — rather than relying on a first-push to create it — so the push robot
 // only needs WRITE (push) access, not org `creator`/repo-create rights, and the
-// scripts/apply-app-of-apps push targets an already-existing repo (round-1
+// scripts/apply-platform-app-of-apps push targets an already-existing repo (round-1
 // review finding).  It is PUBLIC (HOL-1381): Argo CD pulls the bundle
 // ANONYMOUSLY, so the platform no longer depends on a holos-paas-config-robot
 // pull credential — see CONFIG_REPOSITORY_RESOURCE below and the credential-less

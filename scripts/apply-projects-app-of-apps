@@ -60,12 +60,22 @@ projects_json="$( cd "${REPO_ROOT}" && holos cue export ./holos/projects )" || {
   echo "ERROR: 'holos cue export ./holos/projects' failed (run from ${REPO_ROOT})." >&2
   exit 1
 }
-mapfile -t PROJECTS < <(printf '%s' "${projects_json}" | jq -r '.projects | keys[]' | LC_ALL=C sort)
+# Run the jq pipeline in a command substitution (NOT inside the mapfile process
+# substitution): with `set -o pipefail` on, a jq failure — a malformed export shape,
+# or `.projects` absent so `keys[]` iterates null — makes the `$(...)` non-zero and
+# the `||` fires.  A process-substitution `mapfile < <(... | jq ...)` would SWALLOW
+# that failure (the round-2 finding), silently no-opping the bootstrap.
+projects_keys="$(printf '%s' "${projects_json}" | jq -r '.projects | keys[]' | LC_ALL=C sort)" || {
+  echo "ERROR: could not parse the project list from 'holos cue export ./holos/projects'." >&2
+  echo "       Expected a top-level .projects map." >&2
+  exit 1
+}
 
-if ((${#PROJECTS[@]} == 0)); then
+if [[ -z "${projects_keys}" ]]; then
   echo "No registered projects found (holos/projects/<name>.cue).  Nothing to apply."
   exit 0
 fi
+mapfile -t PROJECTS <<<"${projects_keys}"
 
 echo "==> Applying the control-plane App-of-Apps for ${#PROJECTS[@]} project(s): ${PROJECTS[*]}"
 

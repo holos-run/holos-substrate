@@ -202,18 +202,22 @@ of a second, complementary OCI delivery path added in HOL-1373: an Argo CD
   handle for Argo CD to bootstrap the whole platform from. See
   [holos/docs/oci-publish-workflow.md](../../holos/docs/oci-publish-workflow.md)
   (*Platform config bundle*).
-- **Two AppProjects, two roots — system vs. tenant separation.** Two Argo CD
+- **Two AppProjects — system vs. tenant separation.** Two Argo CD
   `AppProject`s split platform delivery by trust scope (the `argocd-projects`
   component): **`platform`** (broad — the system owns CRDs, ClusterRoles, and
   every namespace) and **`projects`** (tenant-scoped — denies the reserved
   platform namespaces, whitelists only the Kargo `Project` cluster-scoped kind).
-  A root `Application` lives in each: **`platform-bootstrap`** (`spec.project:
-  platform`, the `app-of-apps` component) fans out one child `Application` per
-  system component from the bundle's per-component subpaths; **`projects-bootstrap`**
-  (`spec.project: projects`, the `projects` component) fans out the
-  collection-driven `project`/`application` resources. Both track
-  `targetRevision: dev` and reconcile on every re-push (the "Always" repo-cache
-  TTL the `argocd` component shortens to `1m`).
+  The **`platform-bootstrap`** root `Application` (`spec.project: platform`, the
+  `app-of-apps` component) fans out one child `Application` per system component
+  from the `holos-paas-config:dev` bundle's per-component subpaths. **As of Rev 6
+  (HOL-1382) the tenant side is no longer a single `projects-bootstrap` root over
+  that shared bundle:** each project has its **own** per-project bundle
+  (`holos/<project>-config:dev`) and **two** roots under the `projects` AppProject —
+  `<project>-control-plane` (`directory.exclude: **/workload/**`) and
+  `<project>-workload` (`directory.include: **/workload/**`) — emitted by the
+  `project-app-of-apps` component (the global `projects` component is removed). The
+  roots track `targetRevision: dev` and reconcile on every re-push (the "Always"
+  repo-cache TTL the `argocd` component shortens to `1m`).
 - **Bootstrap ordering — the chicken-and-egg, and the rebuild-time race
   (HOL-1379).** Argo CD cannot reconcile the platform from the bundle until Argo
   CD is itself running. So `scripts/apply` keeps bringing the foundation + Argo CD

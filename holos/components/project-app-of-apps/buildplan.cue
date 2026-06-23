@@ -65,11 +65,14 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 // the platform-owned `holos` Quay org.  Each project's bundle is
 // <CONFIG_REPO_BASE>/<name>-config (distinct from the per-APP delivery repos at
 // oci://quay.holos.internal/<project>/<app>-config, which are under each project's
-// OWN org).  The projects AppProject's sourceRepos authorize exactly this prefix
-// (oci://quay.holos.internal/holos/*, argocd-projects) and a repo-creds credential
-// template registers the prefix with Argo CD, so every <name>-config bundle is
-// pullable without per-project credential wiring.  Keep it consistent with
-// scripts/apply-project-app-of-apps's CONFIG_REPO_BASE.
+// OWN org).  The projects AppProject's sourceRepos authorize EXACTLY these
+// per-project bundle URLs — one entry per registered project, not a
+// oci://quay.holos.internal/holos/* wildcard (argocd-projects, the exact-match
+// discipline the platform AppProject uses) — and argocd-projects commits one
+// credential-less repository registration Secret per bundle so each PUBLIC
+// <name>-config bundle is pullable anonymously (insecure: "true" for the mkcert
+// cert).  Keep it consistent with scripts/apply-project-app-of-apps's
+// CONFIG_REPO_BASE.
 let CONFIG_REPO_BASE = "oci://quay.holos.internal/holos"
 
 // CONFIG_TAG is the mutable bootstrap tag the per-project roots pin themselves.
