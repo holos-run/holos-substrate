@@ -62,7 +62,7 @@
 #   ORAS_INSECURE / ORAS_PLAIN_HTTP — force the oras transport flag (otherwise
 #                        decided per host, mirroring scripts/publish-config).
 #
-# Prerequisites: bash, kubectl, holos, jq, git, gzip, and oras with a reachable Quay.
+# Prerequisites: bash, kubectl, git, gzip, and oras with a reachable Quay.
 
 set -euo pipefail
 
@@ -76,7 +76,6 @@ fi
 # Resolve the repo root so this script works from any working directory.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-HOLOS_DIR="${REPO_ROOT}/holos"
 CLUSTER="${CLUSTER:-k3d-holos}"
 COMPONENTS_REL="clusters/${CLUSTER}/components"
 COMPONENTS_DIR="${REPO_ROOT}/holos/deploy/${COMPONENTS_REL}"
@@ -91,7 +90,7 @@ FORCE_ROOT="${PROJECT_APP_OF_APPS_FORCE_ROOT:-0}"
 # Prerequisites
 # ---------------------------------------------------------------------------
 missing=0
-for tool in kubectl holos jq git gzip; do
+for tool in kubectl git gzip; do
   if ! command -v "${tool}" >/dev/null 2>&1; then
     echo "ERROR: '${tool}' not found on PATH." >&2
     missing=1
@@ -111,8 +110,9 @@ if [[ ! -f "${ROOT_FILE}" ]]; then
   echo "       ${ROOT_FILE}" >&2
   echo "       Is '${PROJECT}' a registered project (holos/projects/<name>.cue)?" >&2
   echo "       Registered projects:" >&2
-  holos cue export "${REPO_ROOT}/holos/projects" 2>/dev/null \
-    | jq -r '.projects | keys[]' 2>/dev/null | sed 's/^/         - /' >&2 || true
+  for d in "${COMPONENTS_DIR}/project-app-of-apps/"*/; do
+    [[ -d "${d}" ]] && echo "         - $(basename "${d}")" >&2
+  done
   exit 1
 fi
 
@@ -166,16 +166,37 @@ fi
 # ---------------------------------------------------------------------------
 # Collect the project's subpaths: the project's control-plane subtree plus each of
 # its apps' bundles (control-plane + workload — the control-plane root excludes the
-# workload, the workload root selects it; both come from the same bundle).  The app
-# set is the apps whose .project == PROJECT (holos cue export ./apps, run from the
-# module root so its import of the projects package resolves).
+# workload, the workload root selects it; both come from the same bundle).
+#
+# The app set is the apps whose resources land in this project's bare control
+# namespace, derived from the COMMITTED render (robust, no module/import context):
+# the application component places every app's resources in its project's namespace,
+# so an app's rendered control-plane Repository (repository-<app>-config.yaml)
+# carries metadata.namespace == PROJECT.  The source-consistency gate above
+# guarantees the working-tree render this scans matches HEAD (what the bundle is
+# built from), so the two never diverge.
 PROJECT_CP_REL="${COMPONENTS_REL}/project/${PROJECT}/control-plane"
 paths=("${PROJECT_CP_REL}")
 
-apps_json="$( (cd "${HOLOS_DIR}" && holos cue export ./apps) 2>/dev/null || echo '{}' )"
-mapfile -t APPS < <(printf '%s' "${apps_json}" \
-  | jq -r --arg p "${PROJECT}" '(.apps // {}) | to_entries[] | select(.value.project==$p) | .key' \
-  | LC_ALL=C sort)
+APPS=()
+APP_BASE="${COMPONENTS_DIR}/application"
+if [[ -d "${APP_BASE}" ]]; then
+  for app_dir in "${APP_BASE}"/*/; do
+    [[ -d "${app_dir}" ]] || continue
+    app="$(basename "${app_dir}")"
+    repo_file="${app_dir}control-plane/repository-${app}-config.yaml"
+    [[ -f "${repo_file}" ]] || continue
+    # metadata.namespace is the only top-level (2-space-indented) namespace key in
+    # the rendered Repository CR; the app belongs to PROJECT iff it equals PROJECT.
+    app_ns="$(grep -m1 '^  namespace:' "${repo_file}" | awk '{print $2}')"
+    [[ "${app_ns}" == "${PROJECT}" ]] && APPS+=("${app}")
+  done
+fi
+# Sort for a deterministic bundle (git archive already emits sorted tree order, but
+# keep the displayed/iterated order stable too).
+if ((${#APPS[@]})); then
+  mapfile -t APPS < <(printf '%s\n' "${APPS[@]}" | LC_ALL=C sort)
+fi
 for app in "${APPS[@]}"; do
   [[ -n "${app}" ]] || continue
   paths+=("${COMPONENTS_REL}/application/${app}")
