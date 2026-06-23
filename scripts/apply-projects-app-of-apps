@@ -49,11 +49,18 @@ done
 # Enumerate the registered projects from the CUE collection (the HOL-1382 contract:
 # holos cue export ./holos/projects mapped through jq).  projects.cue has no
 # imports, so the export resolves from the repo root without the module context.
-mapfile -t PROJECTS < <(
-  holos cue export "${REPO_ROOT}/holos/projects" 2>/dev/null \
-    | jq -r '.projects | keys[]' \
-    | LC_ALL=C sort
-)
+#
+# `holos cue export` requires a RELATIVE package path (it rejects an absolute path:
+# "cannot use absolute directory ... as package path"), so run it from REPO_ROOT
+# with `./holos/projects`.  Capture into a variable FIRST and fail hard on a
+# non-zero export/jq exit — a `mapfile < <(...)` process substitution would
+# otherwise SWALLOW the failure and silently report "no projects" (a no-op
+# bootstrap), the exact trap the absolute-path bug hit.
+projects_json="$( cd "${REPO_ROOT}" && holos cue export ./holos/projects )" || {
+  echo "ERROR: 'holos cue export ./holos/projects' failed (run from ${REPO_ROOT})." >&2
+  exit 1
+}
+mapfile -t PROJECTS < <(printf '%s' "${projects_json}" | jq -r '.projects | keys[]' | LC_ALL=C sort)
 
 if ((${#PROJECTS[@]} == 0)); then
   echo "No registered projects found (holos/projects/<name>.cue).  Nothing to apply."

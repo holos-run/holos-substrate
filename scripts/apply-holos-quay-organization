@@ -238,20 +238,24 @@ The holos Quay organization is provisioned: organization 'holos', the public
 'holos-controller' repository, and the public 'holos-paas-config' bundle
 repository.  All authenticated users may push and pull.
 
-NEXT: obtain a Quay ROBOT account to PUSH the two OCI artifacts that flow through
-this org — the holos-controller image and the App-of-Apps config bundle
-(holos-paas-config).  Both repositories already exist (managed above), so the
-robot needs only WRITE (push) access — no repo-create rights.  Automated pushes
-use a robot credential, NOT an interactive login.  No PULL credential is needed:
-both repositories are public, so PULLS — including Argo CD's bundle pull — are
-anonymous (HOL-1381).
+NEXT: obtain a Quay ROBOT account to PUSH the OCI artifacts that flow through this
+org — the holos-controller image, the platform App-of-Apps config bundle
+(holos-paas-config), AND each project's per-project config bundle
+(holos/<project>-config, one per registered project, also managed above, HOL-1382).
+All of these repositories already exist (managed above), so the robot needs only
+WRITE (push) access — no repo-create rights.  Automated pushes use a robot
+credential, NOT an interactive login.  No PULL credential is needed: all of these
+repositories are public, so PULLS — including Argo CD's bundle pull — are anonymous
+(HOL-1381).
 
   1. In https://quay.holos.internal, open the 'holos' organization and create a
-     Robot account (e.g. holos+robot), then grant it EXPLICIT WRITE on BOTH
-     existing repositories — holos-controller and holos-paas-config — via each
-     repo's Settings > User and Robot Permissions (set the robot to "Write").
+     Robot account (e.g. holos+robot), then grant it EXPLICIT WRITE on EVERY
+     repository in the org — holos-controller, holos-paas-config, AND each
+     <project>-config bundle repo (e.g. my-project-config) — via each repo's
+     Settings > User and Robot Permissions (set the robot to "Write").  Grant WRITE
+     on each new <project>-config repo as projects are added.
      Do NOT rely on an org DEFAULT permission (prototype): Quay applies those only
-     to repositories created AFTER the prototype exists, and both repos already
+     to repositories created AFTER the prototype exists, and these repos already
      exist by now, so a default permission would leave the robot unable to push.
   2. Use it for HOST-SIDE pushes (scripts/publish-config reads ORAS_USERNAME /
      ORAS_PASSWORD, or a prior 'oras login quay.holos.internal'):

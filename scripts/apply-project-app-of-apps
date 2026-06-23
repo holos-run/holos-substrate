@@ -279,13 +279,28 @@ fi
 [[ "${pushed}" -eq 1 ]] && echo "    Pushed ${BUNDLE_REF}."
 
 # ---------------------------------------------------------------------------
-# 2. Apply the per-project bundle registration Secret + the control-plane root
+# 2. Apply the projects AppProject + bundle registration Secret + control-plane root
 # ---------------------------------------------------------------------------
-# The credential-less registration Secret (argocd-projects, secret-holos-<PROJECT>-config)
-# is normally already present from scripts/apply (the platform floor) and is
-# reconciled by the platform App-of-Apps; apply it here too so a project added AFTER
-# the floor can pull its bundle immediately.  Then apply the control-plane root.
+# Two argocd-projects artifacts gate the root and are normally already present from
+# scripts/apply (the platform floor) and reconciled by the platform App-of-Apps —
+# but a project registered AFTER the floor is rendered into BOTH only on the next
+# committed render, so the floor's copy predates this project.  Apply both here so a
+# freshly-added project is self-contained:
+#
+#   - appproject-projects.yaml — the `projects` AppProject, whose sourceRepos now
+#     AUTHORIZE this project's exact bundle (oci://.../<PROJECT>-config).  Without
+#     the updated AppProject, Argo CD rejects the root with "application repo ... is
+#     not permitted in project 'projects'", so it MUST be applied before the root.
+#   - secret-holos-<PROJECT>-config.yaml — the credential-less registration Secret
+#     (insecure/type) Argo CD pulls the bundle with.
+#
 # server-side apply converges, so re-running is safe.
+PROJECTS_APPPROJECT="${COMPONENTS_DIR}/argocd-projects/appproject-projects.yaml"
+if [[ -f "${PROJECTS_APPPROJECT}" ]]; then
+  echo "    apply projects AppProject (authorizes the ${PROJECT}-config source)"
+  kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts -f "${PROJECTS_APPPROJECT}"
+fi
+
 REG_SECRET="${COMPONENTS_DIR}/argocd-projects/secret-holos-${PROJECT}-config.yaml"
 if [[ -f "${REG_SECRET}" ]]; then
   echo "    apply bundle registration: secret-holos-${PROJECT}-config"
