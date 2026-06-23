@@ -243,6 +243,40 @@ webhook ingress to authenticate and no in-cluster NATS surface to harden, so bot
 placeholders no longer apply. If a messaging backbone is reintroduced later, its
 authentication posture should be recorded as a fresh placeholder.
 
+## Holos Authenticator: L7 enforcement topology and tenant-policy guard
+
+The `holos-authenticator` component (HOL-1389, [ADR-23](../../docs/adr/ADR-23.md))
+wires the Holos Authenticator into the platform: the manager Deployment + RBAC +
+Service + Backend CRD, the `envoyExtAuthzGrpc` extension provider in `istiod`'s
+`MeshConfig`, a `CUSTOM` `AuthorizationPolicy`, and one example `Backend`. The
+**in-cluster wiring** is built; two enforcement concerns are deliberately
+deferred to a later phase (finalized with the runbook in HOL-1390):
+
+- **L7 enforcement requires a waypoint.** In ambient mode ztunnel is L4-only, so
+  the `CUSTOM` `AuthorizationPolicy` only takes effect once a **waypoint** fronts
+  the protected workload. For an **external** API-server `Backend` target, a
+  `ServiceEntry` + waypoint fronts it. The example `Backend` points at the
+  in-cluster API server and the example policy selects the authenticator's own
+  pods; the full waypoint / `ServiceEntry` egress topology is not yet built.
+
+- **Tenant use of the extension provider must be enforced, not just documented.**
+  The provider is registered mesh-wide, so a `CUSTOM` `AuthorizationPolicy`
+  naming `provider.name: holos-authenticator` could in principle be attached to a
+  tenant-controlled waypoint/workload to receive the authorizer's injected
+  privileged `Authorization` header. Today this is mitigated by **construction**
+  — no waypoint is deployed (the provider is inert), the manager's cache is
+  scoped to the `holos-authenticator` namespace (tenant `Backend`s are never
+  reconciled), the impersonator credential resolves only from the
+  `holos-authenticator` namespace, and that namespace is denied to tenant Argo CD
+  projects — but there is **no positive enforcement** preventing a tenant
+  `AuthorizationPolicy` from referencing the provider once a waypoint exists. The
+  deferred work is to **enforce** it: either restrict `security.istio.io`
+  `AuthorizationPolicy` (or this `provider.name`) in the tenant `projects`
+  AppProject / via an admission policy, or have the authorizer verify the request
+  destination is a platform-owned protected route before returning credentials.
+  Until then, keep every protected workload, its `Backend`, and its policy in
+  platform-owned namespaces.
+
 ## Production deployment area
 
 The only registered cluster is the local `k3d-holos` development cluster.

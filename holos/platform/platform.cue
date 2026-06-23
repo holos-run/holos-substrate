@@ -349,16 +349,22 @@ platform: {
 				// plus its Backend CRD, RBAC, Service, an AuthorizationPolicy
 				// (action: CUSTOM, provider.name holos-authenticator) referencing the
 				// Istio extensionProvider declared in components/istio/istio.cue, and
-				// one example Backend CR.  Registered after quay: the manager
+				// one example Backend CR.  Listed here next to quay because the manager
 				// Deployment pulls its image from the in-cluster Quay registry
-				// (quay.holos.internal/holos/holos-authenticator:dev), so Quay must be
-				// up before the holos-authenticator rollout the apply step waits on can
-				// pull and start (the same image-from-Quay dependency that keeps the
-				// holos-controller out of the bootstrap apply).  Its ext_authz provider
-				// is part of istiod's MeshConfig and its namespace is ambient-enrolled,
-				// both established far earlier in the istio data-plane phase.  The
-				// component bundles its Backend CRD with the controller so the
-				// authenticator.holos.run types ship with the platform (the
+				// (quay.holos.internal/holos/holos-authenticator:dev).  It is
+				// render-here / apply-OUT-OF-BAND: like the holos-controller (also
+				// image-from-Quay), it is DELIBERATELY EXCLUDED from the master
+				// scripts/apply COMPONENTS floor AND the system App-of-Apps
+				// (components/app-of-apps) — that image does not exist on a freshly
+				// bootstrapped cluster until an operator publishes it after the
+				// imperative floor, so a bootstrap rollout gate (or an Argo CD child
+				// Application) would hang on ImagePullBackOff.  It is applied out of
+				// band once its image is published (the deploy step the next phase
+				// wires, alongside the impersonator credential Secret and any waypoint
+				// topology).  Its ext_authz provider (istiod's MeshConfig) and its
+				// ambient-enrolled namespace are both established earlier in the istio
+				// data-plane phase.  The component bundles its Backend CRD with the
+				// controller so the authenticator.holos.run types ship with it (the
 				// cert-manager-crds / cnpg-crds / kargo-crds pattern, here co-located
 				// because the example Backend CR ships in the same component).
 				(#ComponentTemplate & {inputs: {

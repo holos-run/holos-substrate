@@ -226,7 +226,6 @@ COMPONENTS=(
   keycloak-esso-config
   keycloak-config
   quay
-  holos-authenticator
   argocd-crds
   argocd
   argocd-projects
@@ -325,28 +324,18 @@ wait_echo() {
     rollout status deployment/echo --timeout="${ROLLOUT_TIMEOUT}"
 }
 
-# holos-authenticator bundles its Backend CRD, the manager Deployment, and one
-# example Backend CR in a single component directory.  A plain
-# `kubectl apply -f <dir>/` would try to apply the example Backend CR before its
-# CRD is Established (kubectl applies a directory's files in lexical order, and
-# backend-*.yaml sorts before customresourcedefinition-*.yaml), failing with a
-# "no matches for kind Backend" error.  Apply the CRD first and wait for it to be
-# Established so the subsequent full-directory apply admits the example CR.
-pre_holos_authenticator() {
-  kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
-    -f "${COMPONENTS_DIR}/holos-authenticator/"customresourcedefinition-*.yaml
-  wait_crds_established holos-authenticator
-}
-
-# holos-authenticator: waiting for the manager rollout is the smoke check that
-# the ext_authz gRPC server starts under ambient capture.  The Istio
-# extensionProvider that points at it lives in istiod's MeshConfig (applied with
-# the istiod component above); a Backend takes effect only once a waypoint
-# fronts the protected workload (deferred, holos/docs/placeholders.md).
-wait_holos_authenticator() {
-  kubectl --context "${KUBE_CONTEXT}" --namespace holos-authenticator \
-    rollout status deployment/holos-authenticator --timeout="${ROLLOUT_TIMEOUT}"
-}
+# holos-authenticator is DELIBERATELY NOT in the COMPONENTS array above (and not
+# in the system App-of-Apps).  Its manager Deployment pulls its image from the
+# in-cluster Quay registry (quay.holos.internal/holos/holos-authenticator:dev),
+# which does not exist on a freshly bootstrapped cluster until an operator
+# publishes it AFTER this imperative floor (the manual Quay-org/image-push setup
+# scripts/apply stops before).  A blocking rollout gate here would hang the
+# bootstrap on ImagePullBackOff before that publish can happen — the same
+# image-from-Quay dependency that keeps the holos-controller out of this floor.
+# The component still renders to the deploy tree and is registered in
+# holos/platform/platform.cue; it is applied out of band once its image is
+# published (the deploy step the next phase wires, alongside the impersonator
+# credential Secret and any waypoint topology).
 
 # cnpg-crds: the CNPG operator requires its types at startup, and the next
 # phase applies postgresql.cnpg.io Cluster resources.

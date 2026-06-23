@@ -125,27 +125,34 @@ at a protected workload behind a waypoint, keep the protected workload and its
 `Backend`/policy in platform-owned namespaces; do not expose the provider to
 tenant-controlled `AuthorizationPolicy` resources.
 
-## Apply ordering
+## Apply ordering (render-here / apply-out-of-band)
 
-Registered in `holos/platform/platform.cue`, the `SYSTEM_COMPONENTS` list in
-`holos/components/app-of-apps/buildplan.cue`, and the `COMPONENTS` array in
-`scripts/apply` — all **after `quay`**. The manager Deployment pulls its image
-from the in-cluster Quay registry
-(`quay.holos.internal/holos/holos-authenticator:dev`), so Quay must be up before
-the `wait_holos_authenticator` rollout gate can pull and start the manager
-(otherwise a fresh `scripts/apply` would block before ever reaching the Quay
-phase). This is the same image-from-Quay dependency that keeps the
-`holos-controller` out of the bootstrap apply. The `ext_authz` provider
-(`istiod`'s `MeshConfig`) and the ambient-enrolled namespace are both established
-far earlier in the Istio data-plane phase, so the after-Quay position still
-satisfies "after the Istio data-plane components".
+The component is **registered in `holos/platform/platform.cue`** (so it renders
+to the deploy tree) but is **DELIBERATELY EXCLUDED from both the master
+`scripts/apply` `COMPONENTS` floor and the system App-of-Apps**
+(`holos/components/app-of-apps/buildplan.cue` `SYSTEM_COMPONENTS`).
 
-Because the component bundles the Backend CRD **and** an example Backend CR in
-one directory, `scripts/apply` has a `pre_holos_authenticator` hook that applies
-the CRD and waits for it to be `Established` before the full-directory apply (a
-plain `kubectl apply -f dir/` would otherwise try the example CR before its CRD
-exists), and a `wait_holos_authenticator` hook that waits for the manager
-rollout.
+The manager Deployment pulls its image from the in-cluster Quay registry
+(`quay.holos.internal/holos/holos-authenticator:dev`), which **does not exist on
+a freshly bootstrapped cluster** until an operator publishes it *after* the
+imperative bootstrap floor (the manual Quay-org/image-push setup `scripts/apply`
+stops before). A bootstrap rollout gate — or an Argo CD child Application — would
+therefore hang in `ImagePullBackOff`. This is exactly why the `holos-controller`
+(also image-from-Quay) is excluded from the bootstrap apply; the authenticator
+follows the same precedent.
+
+It is **applied out of band** once its image is published — the deploy step the
+next phase wires, alongside the impersonator credential Secret and any waypoint
+topology. The `ext_authz` provider (in `istiod`'s `MeshConfig`) and the
+ambient-enrolled namespace are both established earlier in the Istio data-plane
+phase, so nothing in the bootstrap floor depends on this component.
+
+> **CRD-before-CR within the directory.** The component bundles the Backend CRD
+> **and** an example Backend CR in one directory. The out-of-band apply step must
+> apply `customresourcedefinition-*.yaml` first and wait for it to be
+> `Established` before the example `backend-*.yaml` (a plain
+> `kubectl apply -f dir/` applies files lexically, and `backend-*.yaml` sorts
+> before `customresourcedefinition-*.yaml`).
 
 ## Render workflow
 

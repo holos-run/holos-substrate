@@ -139,6 +139,15 @@ let COMPONENTS_BASE = "clusters/\(clusterName)/components"
 //     committed; Argo CD reconciling their committed, caBundle-less manifests
 //     would strip that material.  They are out of the master scripts/apply array
 //     for the same reason and so are out of this system App-of-Apps.
+//   - holos-authenticator (HOL-1389) — its manager Deployment pulls its image
+//     from the in-cluster Quay registry (quay.holos.internal/holos/
+//     holos-authenticator:dev), which does not exist on a freshly bootstrapped
+//     cluster until an operator publishes it after the imperative floor.  Like
+//     the holos-controller (also image-from-Quay), it is rendered and registered
+//     in platform.cue but kept OUT of both the master scripts/apply array and
+//     this system App-of-Apps, and applied out of band once its image is
+//     published.  A child Application here would sit in ImagePullBackOff on a
+//     fresh cluster.
 //
 // The echo/kargo-echo overlap is DELIBERATE, not a bug.  scripts/apply applies
 // BOTH echo (the smoke-test Deployment/Service/HTTPRoute) and kargo-echo (the
@@ -178,7 +187,6 @@ let SYSTEM_COMPONENTS = [
 	"keycloak-esso-config",
 	"keycloak-config",
 	"quay",
-	"holos-authenticator",
 	"argocd-crds",
 	"argocd",
 	"argocd-projects",
