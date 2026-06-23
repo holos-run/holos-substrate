@@ -130,6 +130,7 @@ namespaces: [NAME=string]: corev1.#Namespace & {
 	"cert-manager",
 	"cnpg-system",
 	"echo",
+	"holos-authenticator",
 	"holos-controller",
 	"istio-gateways",
 	"istio-system",
@@ -341,6 +342,23 @@ namespaces: {
 	// credential Secret (holos-controller-quay-creds) from this namespace via the
 	// downward-API POD_NAMESPACE the manager Deployment sets (HOL-1313).
 	"holos-controller": _ambient: true
+
+	// holos-authenticator hosts the Holos Authenticator (ADR-23): the
+	// controller-runtime manager that runs the Envoy ext_authz gRPC server and
+	// reconciles the authenticator.holos.run Backend custom resources, fronting
+	// one or more Kubernetes API servers with OIDC validation + Kubernetes
+	// impersonation.  Its workloads enroll in the ambient mesh per the platform
+	// convention for controller namespaces, like cert-manager, cnpg-system, and
+	// holos-controller; the Istio extensionProvider (meshConfig.extensionProviders
+	// in components/istio/istio.cue) routes ext_authz Check calls to the
+	// holos-authenticator Service in this namespace over the mesh.
+	//
+	// The Namespace object is owned here centrally (the component guidelines
+	// forbid a component creating its own namespace); the holos-authenticator
+	// component (components/holos-authenticator) merely TARGETS this namespace.
+	// The manager resolves its Secrets (the per-Backend credentialsSecretRef) from
+	// this namespace via the downward-API POD_NAMESPACE its Deployment sets.
+	"holos-authenticator": _ambient: true
 
 	// --- Derived: per-project, per-environment namespaces (ADR-21) -----------
 	//

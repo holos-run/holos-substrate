@@ -169,6 +169,27 @@ platform: {
 				labels: app: "echo"
 			}}).output
 
+				// holos-authenticator deploys the Holos Authenticator (ADR-23): the
+				// controller-runtime manager running the Envoy ext_authz gRPC server
+				// plus its Backend CRD, RBAC, Service, an AuthorizationPolicy
+				// (action: CUSTOM, provider.name holos-authenticator) referencing the
+				// Istio extensionProvider declared in components/istio/istio.cue, and
+				// one example Backend CR.  Registered after the istio data-plane
+				// components (istio-base/istiod/cni/ztunnel and istio-gateway): the
+				// ext_authz provider is part of istiod's MeshConfig, so the mesh
+				// control plane must be established first, and the namespace is
+				// ambient-enrolled, so the dataplane must be capturing traffic when
+				// the manager starts.  The component bundles its Backend CRD with the
+				// controller so the authenticator.holos.run types ship with the
+				// platform (like the cert-manager-crds / cnpg-crds / kargo-crds
+				// pattern, here co-located because the example Backend CR ships in the
+				// same component).
+				(#ComponentTemplate & {inputs: {
+					component: "holos-authenticator"
+					cluster:   CLUSTER.name
+					labels: app: "holos-authenticator"
+				}}).output
+
 			// cnpg-crds renders the CloudNativePG CRDs, filtered out of the
 			// single upstream release manifest (upstream ships no CRDs-only
 			// asset).  CRDs are isolated components labeled crds: "true" so

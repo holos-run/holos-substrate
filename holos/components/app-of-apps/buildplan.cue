@@ -169,6 +169,7 @@ let SYSTEM_COMPONENTS = [
 	"local-ca",
 	"istio-gateway",
 	"echo",
+	"holos-authenticator",
 	"cnpg-crds",
 	"cnpg",
 	"cnpg-clusters",

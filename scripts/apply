@@ -217,6 +217,7 @@ COMPONENTS=(
   local-ca
   istio-gateway
   echo
+  holos-authenticator
   cnpg-crds
   cnpg
   cnpg-clusters
@@ -322,6 +323,29 @@ wait_cert_manager() {
 wait_echo() {
   kubectl --context "${KUBE_CONTEXT}" --namespace echo \
     rollout status deployment/echo --timeout="${ROLLOUT_TIMEOUT}"
+}
+
+# holos-authenticator bundles its Backend CRD, the manager Deployment, and one
+# example Backend CR in a single component directory.  A plain
+# `kubectl apply -f <dir>/` would try to apply the example Backend CR before its
+# CRD is Established (kubectl applies a directory's files in lexical order, and
+# backend-*.yaml sorts before customresourcedefinition-*.yaml), failing with a
+# "no matches for kind Backend" error.  Apply the CRD first and wait for it to be
+# Established so the subsequent full-directory apply admits the example CR.
+pre_holos_authenticator() {
+  kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
+    -f "${COMPONENTS_DIR}/holos-authenticator/"customresourcedefinition-*.yaml
+  wait_crds_established holos-authenticator
+}
+
+# holos-authenticator: waiting for the manager rollout is the smoke check that
+# the ext_authz gRPC server starts under ambient capture.  The Istio
+# extensionProvider that points at it lives in istiod's MeshConfig (applied with
+# the istiod component above); a Backend takes effect only once a waypoint
+# fronts the protected workload (deferred, holos/docs/placeholders.md).
+wait_holos_authenticator() {
+  kubectl --context "${KUBE_CONTEXT}" --namespace holos-authenticator \
+    rollout status deployment/holos-authenticator --timeout="${ROLLOUT_TIMEOUT}"
 }
 
 # cnpg-crds: the CNPG operator requires its types at startup, and the next
