@@ -2,7 +2,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   annotations:
-    argocd.argoproj.io/sync-wave: "12"
+    argocd.argoproj.io/sync-wave: "21"
   labels:
     app.kubernetes.io/component: holos-authenticator
     app.kubernetes.io/name: platform-holos-authenticator

@@ -2,7 +2,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   annotations:
-    argocd.argoproj.io/sync-wave: "18"
+    argocd.argoproj.io/sync-wave: "17"
   labels:
     app.kubernetes.io/component: keycloak
     app.kubernetes.io/name: platform-keycloak
