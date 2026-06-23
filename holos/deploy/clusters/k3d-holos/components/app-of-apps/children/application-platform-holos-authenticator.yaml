@@ -2,12 +2,12 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   annotations:
-    argocd.argoproj.io/sync-wave: "16"
+    argocd.argoproj.io/sync-wave: "12"
   labels:
-    app.kubernetes.io/component: keycloak-operator-crds
-    app.kubernetes.io/name: platform-keycloak-operator-crds
+    app.kubernetes.io/component: holos-authenticator
+    app.kubernetes.io/name: platform-holos-authenticator
     app.kubernetes.io/part-of: platform
-  name: platform-keycloak-operator-crds
+  name: platform-holos-authenticator
   namespace: argocd
 spec:
   destination:
@@ -15,7 +15,7 @@ spec:
     server: https://kubernetes.default.svc
   project: platform
   source:
-    path: clusters/k3d-holos/components/keycloak-operator-crds
+    path: clusters/k3d-holos/components/holos-authenticator
     repoURL: oci://quay.holos.internal/holos/holos-paas-config
     targetRevision: dev
   syncPolicy:

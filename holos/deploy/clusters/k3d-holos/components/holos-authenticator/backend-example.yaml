@@ -1,0 +1,16 @@
+apiVersion: authenticator.holos.run/v1alpha1
+kind: Backend
+metadata:
+  labels:
+    app.kubernetes.io/name: holos-authenticator
+  name: example
+  namespace: holos-authenticator
+spec:
+  credentialsSecretRef:
+    name: holos-authenticator-backend-creds
+  host: api.example.holos.internal
+  oidc:
+    clientID: holos-authenticator
+    issuerURL: https://keycloak.holos.internal/realms/holos
+  server:
+    url: https://kubernetes.default.svc

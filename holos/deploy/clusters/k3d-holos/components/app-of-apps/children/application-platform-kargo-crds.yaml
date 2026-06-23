@@ -2,7 +2,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   annotations:
-    argocd.argoproj.io/sync-wave: "24"
+    argocd.argoproj.io/sync-wave: "25"
   labels:
     app.kubernetes.io/component: kargo-crds
     app.kubernetes.io/name: platform-kargo-crds

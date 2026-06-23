@@ -11,6 +11,12 @@ data:
       metrics:
       - prometheus
     enablePrometheusMerge: true
+    extensionProviders:
+    - envoyExtAuthzGrpc:
+        port: 9000
+        service: holos-authenticator.holos-authenticator.svc.cluster.local
+        timeout: 2s
+      name: holos-authenticator
     rootNamespace: istio-system
     serviceScopeConfigs:
     - scope: GLOBAL

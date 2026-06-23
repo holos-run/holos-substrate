@@ -1,0 +1,14 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/name: holos-authenticator
+  name: holos-authenticator-role
+  namespace: holos-authenticator
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get

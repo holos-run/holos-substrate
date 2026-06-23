@@ -167,6 +167,16 @@ data:
           }
         },
         "enablePrometheusMerge": true,
+        "extensionProviders": [
+          {
+            "envoyExtAuthzGrpc": {
+              "port": 9000,
+              "service": "holos-authenticator.holos-authenticator.svc.cluster.local",
+              "timeout": "2s"
+            },
+            "name": "holos-authenticator"
+          }
+        ],
         "serviceScopeConfigs": [
           {
             "scope": "GLOBAL",
@@ -251,6 +261,18 @@ data:
     }
   original-values: |-
     {
+      "meshConfig": {
+        "extensionProviders": [
+          {
+            "envoyExtAuthzGrpc": {
+              "port": 9000,
+              "service": "holos-authenticator.holos-authenticator.svc.cluster.local",
+              "timeout": "2s"
+            },
+            "name": "holos-authenticator"
+          }
+        ]
+      },
       "profile": "ambient"
     }
 kind: ConfigMap
