@@ -101,25 +101,27 @@ func (s *Store) Set(key string, entry *Entry) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Resolve ownership deterministically: a smaller current owner wins.
-	if owner, ok := s.ownerByHost[entry.Host]; ok && owner != key && owner < key {
-		// A smaller key already owns this host; this key loses. Do not store its
-		// entry. Also clear any stale reverse-index row pointing this key at this
-		// host (e.g. it previously owned the host and a smaller key has since taken
-		// it), so the index does not claim ownership the entry table contradicts.
-		if s.hostByKey[key] == entry.Host {
-			delete(s.hostByKey, key)
-		}
-		return false
-	}
-
+	// Release any host this key previously registered when it is moving to a
+	// different host. This must happen regardless of whether the new claim wins or
+	// loses the tie-break below: a Backend that renamed its spec.host away from
+	// prevHost no longer claims it, so leaving prevHost in the entry table would
+	// keep the data path serving a host the Backend abandoned. Drop it only when
+	// this key still owns it (a different, smaller key may have since taken it).
 	if prevHost, ok := s.hostByKey[key]; ok && prevHost != entry.Host {
-		// Host rename: drop the old host's entry only if this key still owns it.
 		if s.ownerByHost[prevHost] == key {
 			delete(s.entries, prevHost)
 			delete(s.ownerByHost, prevHost)
 		}
+		delete(s.hostByKey, key)
 	}
+
+	// Resolve ownership of the new host deterministically: a smaller current owner
+	// wins. When this key loses, store nothing for it (the prevHost release above
+	// has already run, so no stale entry survives) and report the loss.
+	if owner, ok := s.ownerByHost[entry.Host]; ok && owner != key && owner < key {
+		return false
+	}
+
 	s.entries[entry.Host] = entry
 	s.ownerByHost[entry.Host] = key
 	s.hostByKey[key] = entry.Host

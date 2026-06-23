@@ -149,6 +149,40 @@ func TestStoreRenameDoesNotClobberOtherOwner(t *testing.T) {
 	}
 }
 
+// TestStoreLosingRenameReleasesOldHost asserts that when a key renames to a host
+// a smaller key already owns (so the new claim loses), the key's PREVIOUS host
+// entry is still released — otherwise the data path would keep serving a host the
+// Backend has abandoned. (Codex confirmation-review regression.)
+func TestStoreLosingRenameReleasesOldHost(t *testing.T) {
+	s := NewStore()
+
+	// ns/b owns "old".
+	if !s.Set("ns/b", &Entry{Host: "old", ServerURL: "https://b-old"}) {
+		t.Fatalf("ns/b should win uncontested host old")
+	}
+	// ns/a (smaller) owns "shared".
+	if !s.Set("ns/a", &Entry{Host: "shared", ServerURL: "https://a"}) {
+		t.Fatalf("ns/a should win uncontested host shared")
+	}
+
+	// ns/b renames from "old" to "shared". It loses "shared" to the smaller ns/a,
+	// but its "old" entry must be released.
+	if s.Set("ns/b", &Entry{Host: "shared", ServerURL: "https://b-shared"}) {
+		t.Errorf("ns/b should lose host shared to smaller ns/a")
+	}
+	if _, ok := s.Get("old"); ok {
+		t.Errorf("ns/b's abandoned old-host entry survived a losing rename")
+	}
+	// ns/a still owns shared with its own entry.
+	if entry, ok := s.Get("shared"); !ok || entry.ServerURL != "https://a" {
+		t.Errorf("shared entry = %v (ok=%v), want ns/a's", entry, ok)
+	}
+	// Only the shared entry remains.
+	if s.Len() != 1 {
+		t.Errorf("Len = %d, want 1", s.Len())
+	}
+}
+
 // TestStoreConcurrentAccess runs concurrent writers and readers under the race
 // detector to confirm the Store is concurrency-safe.
 func TestStoreConcurrentAccess(t *testing.T) {
