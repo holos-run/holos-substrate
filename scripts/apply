@@ -217,7 +217,6 @@ COMPONENTS=(
   local-ca
   istio-gateway
   echo
-  holos-authenticator
   cnpg-crds
   cnpg
   cnpg-clusters
@@ -227,6 +226,7 @@ COMPONENTS=(
   keycloak-esso-config
   keycloak-config
   quay
+  holos-authenticator
   argocd-crds
   argocd
   argocd-projects

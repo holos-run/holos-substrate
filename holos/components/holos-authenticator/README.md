@@ -101,14 +101,44 @@ omits the `caBundle` fields so the committed manifest carries no per-cluster
 trust material; an operator injects the local-ca PEM out of band (mirroring the
 caBundle convention the project/application components use).
 
+## Tenant isolation (Backend is a platform-owned object)
+
+A `Backend` is **platform-owned**, never tenant-self-service:
+
+- The manager's cache (and the Backend reconciler's watch) is **scoped to the
+  `holos-authenticator` namespace** (`cmd/holos-authenticator/main.go`,
+  `Cache.DefaultNamespaces`). A `Backend` created in a tenant namespace is never
+  cached, reconciled, served by the ext_authz path, or used for controller-side
+  OIDC discovery — closing both the controller-side SSRF (a tenant-chosen
+  `issuerURL`) and the privileged-token-injection vectors at the wiring layer.
+- The impersonator credential always resolves from the `holos-authenticator`
+  namespace (`AuthorizerNamespace()` / `POD_NAMESPACE`), never the Backend's
+  namespace, so a `Backend` cannot reference a Secret a tenant controls.
+- The platform namespace registry adds `holos-authenticator` to
+  `#ReservedNamespaceNames` (`holos/namespaces.cue`), so the `projects` Argo CD
+  AppProject denies tenant Applications this namespace as a destination — a
+  tenant cannot deploy a `Backend` (or a Secret) into it.
+
+The example `AuthorizationPolicy` (`action: CUSTOM`, `provider.name:
+holos-authenticator`) selects the authenticator's own pods. When retargeting it
+at a protected workload behind a waypoint, keep the protected workload and its
+`Backend`/policy in platform-owned namespaces; do not expose the provider to
+tenant-controlled `AuthorizationPolicy` resources.
+
 ## Apply ordering
 
 Registered in `holos/platform/platform.cue`, the `SYSTEM_COMPONENTS` list in
 `holos/components/app-of-apps/buildplan.cue`, and the `COMPONENTS` array in
-`scripts/apply` — all **after the Istio data-plane components**
-(`istio-base`/`istiod`/`istio-cni`/`istio-ztunnel`/`istio-gateway`): the
-`ext_authz` provider is part of `istiod`'s `MeshConfig`, and the namespace is
-ambient-enrolled, so the mesh control plane and dataplane must be up first.
+`scripts/apply` — all **after `quay`**. The manager Deployment pulls its image
+from the in-cluster Quay registry
+(`quay.holos.internal/holos/holos-authenticator:dev`), so Quay must be up before
+the `wait_holos_authenticator` rollout gate can pull and start the manager
+(otherwise a fresh `scripts/apply` would block before ever reaching the Quay
+phase). This is the same image-from-Quay dependency that keeps the
+`holos-controller` out of the bootstrap apply. The `ext_authz` provider
+(`istiod`'s `MeshConfig`) and the ambient-enrolled namespace are both established
+far earlier in the Istio data-plane phase, so the after-Quay position still
+satisfies "after the Istio data-plane components".
 
 Because the component bundles the Backend CRD **and** an example Backend CR in
 one directory, `scripts/apply` has a `pre_holos_authenticator` hook that applies
