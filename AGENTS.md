@@ -31,24 +31,43 @@ The **platform itself** (as distinct from per-app delivery above) is reconciled
 by Argo CD from an **App-of-Apps over an OCI config bundle** ([ADR-16](docs/adr/ADR-16.md)
 Rev 3–4, HOL-1373/HOL-1378/HOL-1379): `scripts/publish-config` (`make config-build`/`config-push`)
 tars the committed `holos/deploy/` tree as-is under the mutable
-`holos-paas-config:dev` tag, and two root Argo CD `Application`s reconcile it under
-two AppProjects — **`platform`** (`platform-bootstrap`, the system components) and
-**`projects`** (`projects-bootstrap`, the project/application collection
-resources). `scripts/apply` brings Argo CD up imperatively (the bootstrap floor)
-and **stops there**, with Quay and Keycloak ready for manual setup; the
+`holos-paas-config:dev` tag, and the **platform** root Argo CD `Application`
+(`platform-bootstrap`, under the **`platform`** AppProject) reconciles the system
+components from it. `scripts/apply` brings Argo CD up imperatively (the bootstrap
+floor) and **stops there**, with Quay and Keycloak ready for manual setup; the
 chicken-and-egg handoff (Argo CD must exist before it self-manages) is a
-**separate, idempotent script — `scripts/apply-app-of-apps`** — that publishes
-the bundle and applies the two roots. The split (HOL-1379) breaks a rebuild-time
-race: publishing needs the holos Quay **organization** (the public `holos-paas-config`
-repository and a push-capable Quay robot credential) configured first,
-which does not exist on a freshly rebuilt cluster, so `scripts/apply` would race
-the manual Quay setup and fail. `scripts/apply` prints the manual-setup guidance,
-and `scripts/apply-app-of-apps` explicitly depends on that Quay org being
-configured. The `holos-paas-config` repository is **public** (HOL-1381,
+**separate, idempotent script — `scripts/apply-platform-app-of-apps`** — that
+publishes the bundle and applies the platform root (the "clean cut line": the
+platform is fully bootstrapped there, HOL-1382). The split (HOL-1379) breaks a
+rebuild-time race: publishing needs the holos Quay **organization** (the public
+`holos-paas-config` repository and a push-capable Quay robot credential) configured
+first, which does not exist on a freshly rebuilt cluster, so `scripts/apply` would
+race the manual Quay setup and fail. `scripts/apply` prints the manual-setup
+guidance, and `scripts/apply-platform-app-of-apps` explicitly depends on that Quay
+org being configured. The `holos-paas-config` repository is **public** (HOL-1381,
 [ADR-16](docs/adr/ADR-16.md) Rev 5), so Argo CD pulls the bundle **anonymously** —
 there is no `holos-paas-config-robot` pull credential or repository-credential
 bootstrap Job; the `argocd-projects` component instead commits a credential-less
 repository registration Secret (only `url`/`type`/`insecure`, no secret material).
+
+**Tenant projects bootstrap separately and independently** (HOL-1382): there is no
+longer one global `projects-bootstrap` root. `scripts/apply-projects-app-of-apps`
+enumerates the registered projects (`holos cue export ./holos/projects | jq`) and,
+for **each** project, calls `scripts/apply-project-app-of-apps <project>` — which
+builds+pushes that project's **own** public OCI config bundle
+(`holos/<project>-config:dev`) and applies its **`<project>-control-plane`** root
+(the platform-managed control plane: AppProject, Applications, Kargo/Quay/Keycloak
+CRs, RBAC — `directory.exclude: **/workload/**`). The project's **service owner**
+then applies the **`<project>-workload`** root (`directory.include: **/workload/**`,
+the app `Deployment`/`Service`/`HTTPRoute`/…) with
+`scripts/apply-project-workload-app-of-apps <project>`, **after** the control
+plane. The two top-level scripts (`apply-platform-app-of-apps`,
+`apply-projects-app-of-apps`) are **completely independent and never call each
+other**. The collection-driven `project-app-of-apps` component emits the per-project
+roots; the `project` component now renders its (all control-plane) resources into a
+`control-plane/` subtree, mirroring the `application` component's
+control-plane/workload split.
+
 The per-app Kargo delivery is unchanged and
 complementary (it still owns each app's `Application.spec.source.targetRevision`).
 This supersedes the deferred per-component `argoAppDisabled` git-source projection
@@ -321,13 +340,17 @@ components have been removed. Git history preserves them.
   required push credentials. Replaces the deferred in-cluster render
   subscriber. Also documents the **platform config bundle** (`scripts/publish-config`
   / `make config-build`/`config-push`): the committed `holos/deploy/` tree tarred
-  as-is under the mutable `holos-paas-config:dev` tag, the **App-of-Apps** that
-  consumes it (the `platform-bootstrap`/`projects-bootstrap` roots + per-component
-  children, the sync-wave bootstrap ordering, the "Always" `:dev` re-pull
-  mechanism), and how the separate `scripts/apply-app-of-apps` wires the publish +
-  root-Application apply as the post-Argo-CD bootstrap handoff — run after
-  `scripts/apply` stops at the floor and the holos Quay org is configured
-  (HOL-1373/HOL-1378/HOL-1379, [ADR-16](docs/adr/ADR-16.md) Rev 4).
+  as-is under the mutable `holos-paas-config:dev` tag, the **platform App-of-Apps**
+  that consumes it (the `platform-bootstrap` root + per-component children, the
+  sync-wave bootstrap ordering, the "Always" `:dev` re-pull mechanism), and how the
+  separate `scripts/apply-platform-app-of-apps` wires the publish + root-Application
+  apply as the post-Argo-CD bootstrap handoff — run after `scripts/apply` stops at
+  the floor and the holos Quay org is configured (HOL-1373/HOL-1378/HOL-1379,
+  [ADR-16](docs/adr/ADR-16.md) Rev 4). Tenant projects are bootstrapped
+  **separately** by `scripts/apply-projects-app-of-apps` →
+  `scripts/apply-project-app-of-apps <project>` (per-project bundle +
+  `<project>-control-plane` root) and the service owner's
+  `scripts/apply-project-workload-app-of-apps <project>` (HOL-1382).
 - [holos/docs/placeholders.md](holos/docs/placeholders.md) — stubs for
   out-of-MVP-scope concerns: ArgoCD gitops delivery (the `argoAppDisabled`
   flip), observability dashboards, the Gateway route-attachment policy,

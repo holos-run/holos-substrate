@@ -17,17 +17,22 @@ manifests are now reconciled by ArgoCD from an **OCI App-of-Apps over the
 - The committed `holos/deploy/` tree is published as one OCI bundle
   (`holos-paas-config:dev`, mutable tag) by `scripts/publish-config`
   (`make config-build`/`config-push`).
-- Two root `Application`s reconcile it under two AppProjects: **`platform`**
-  (`platform-bootstrap`, the system components) and **`projects`**
-  (`projects-bootstrap`, the project/application collection resources). Each
-  tracks `targetRevision: dev` with an "Always" re-pull (the `argocd` component
-  shortens the repo-cache TTL to `1m`).
+- The **platform** root `Application` (`platform-bootstrap`, AppProject
+  **`platform`**) reconciles the system components from this bundle, tracking
+  `targetRevision: dev` with an "Always" re-pull (the `argocd` component shortens
+  the repo-cache TTL to `1m`). Tenant projects no longer share this bundle: each
+  project has its **own** per-project bundle and `<project>-control-plane` /
+  `<project>-workload` roots under AppProject **`projects`** (HOL-1382, the
+  `project-app-of-apps` component).
 - `scripts/apply` brings ArgoCD up imperatively (the bootstrap floor) and stops
-  there; the separate `scripts/apply-app-of-apps` then publishes the bundle and
-  applies the two roots so ArgoCD takes over ongoing reconciliation — the
-  chicken-and-egg handoff (ArgoCD must exist before it can self-manage), split out
-  of `scripts/apply` in HOL-1379 because the publish needs the holos Quay
-  organization configured first. The detailed mechanism is in
+  there; the separate `scripts/apply-platform-app-of-apps` then publishes the
+  bundle and applies the platform root so ArgoCD takes over ongoing reconciliation
+  — the chicken-and-egg handoff (ArgoCD must exist before it can self-manage),
+  split out of `scripts/apply` in HOL-1379 because the publish needs the holos Quay
+  organization configured first. Tenant projects are bootstrapped separately by
+  `scripts/apply-projects-app-of-apps` (per-project bundles + control-plane roots)
+  and `scripts/apply-project-workload-app-of-apps <project>` (HOL-1382). The
+  detailed mechanism is in
   [oci-publish-workflow.md](oci-publish-workflow.md) (*Platform config bundle* /
   *The App-of-Apps that consumes the bundle*) and
   [argocd-application-source.md](argocd-application-source.md).
@@ -46,8 +51,10 @@ flip it to deliver the platform — the OCI App-of-Apps already does that.
 > projection would emit a **git**-source Application per component — the wrong
 > shape both for Kargo to patch and for the OCI-bundle bootstrap. It is distinct
 > from the Argo CD `Application`s that deliver the platform and apps today, all of
-> which carry an **OCI** source: the two **App-of-Apps roots** above
-> (`platform-bootstrap`/`projects-bootstrap`, sourcing `holos-paas-config:dev`);
+> which carry an **OCI** source: the **platform App-of-Apps root** above
+> (`platform-bootstrap`, sourcing `holos-paas-config:dev`) plus each project's
+> per-project `<project>-control-plane`/`<project>-workload` roots (sourcing
+> `holos/<project>-config:dev`, HOL-1382);
 > the **hand-authored** Kargo-driven pipeline Applications — `echo`
 > ([`components/kargo-echo/`](../components/kargo-echo/buildplan.cue)) and the
 > per-project/app Applications rendered by

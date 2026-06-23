@@ -15,6 +15,7 @@
 | 3        | 2026-06-21 | @jeffmccune | HOL-1373/HOL-1378: add the **App-of-Apps OCI config-image bootstrap** — the complement to the per-app Kargo delivery above. The whole committed `holos/deploy/` tree is published as a single OCI bundle (`holos-paas-config:dev`, mutable tag) and two root Argo CD `Application`s reconcile the platform from it under two AppProjects: `platform` (the system components, root `platform-bootstrap`) and `projects` (the project/application collection resources, root `projects-bootstrap`). `scripts/apply` brings Argo CD up imperatively (the bootstrap floor), then publishes the bundle and applies the two roots so Argo CD takes over ongoing reconciliation. See *Bootstrap delivery — the App-of-Apps OCI config bundle* below. Built across HOL-1374 (the `holos-paas-config` bundle + `make config-build`/`config-push`), HOL-1375 (the `platform`/`projects` AppProjects + repo-credential bootstrap), HOL-1376 (the platform root), HOL-1377 (the projects root), and HOL-1378 (the `scripts/apply` wiring + these docs). |
 | 4        | 2026-06-22 | @jeffmccune | HOL-1379: **split the handoff out of `scripts/apply` to break a rebuild-time race.** Publishing `holos-paas-config:dev` needs the holos Quay **organization** (the `holos-paas-config` repository and a push-capable Quay robot credential) configured first, which does not exist on a freshly rebuilt cluster — so doing the publish from `scripts/apply` raced the manual Quay setup and failed. `scripts/apply` now **stops at the bootstrap floor** (Quay and Keycloak up, ready for manual setup) and prints the manual-setup guidance; the handoff is a **separate script, `scripts/apply-app-of-apps`**, that explicitly depends on the holos Quay organization being configured and (unlike the floor) fails hard on a missing prerequisite. See *Bootstrap delivery — the App-of-Apps OCI config bundle* below. |
 | 5        | 2026-06-22 | @jeffmccune | HOL-1381: **make the `holos-paas-config` repository public so Argo CD pulls the bundle anonymously — remove the pull-secret dependency.** The `holos-quay-organization` component flips the repository's `quay.holos.run` `Repository` CR to `visibility: public`. With anonymous pulls, the platform drops the `holos-paas-config-robot` pull credential and the create-if-absent repository-credential bootstrap Job (+ its ServiceAccount/Role/RoleBinding) entirely; the `argocd-projects` component instead renders a **credential-less repository registration Secret** (only `url`/`type`/`insecure`, no secret material) committed to the deploy tree and applied by the floor, and `scripts/apply-app-of-apps` drops its `ensure_repo_credential` gate. `insecure: "true"` is retained for the in-cluster Quay's mkcert serving cert; the push side still uses a Quay robot credential. |
+| 6        | 2026-06-22 | @jeffmccune | HOL-1382: **split the handoff into a platform App-of-Apps and per-project App-of-Apps, with a control-plane/workload divide.** `scripts/apply-app-of-apps` is replaced by two **completely independent** scripts: `scripts/apply-platform-app-of-apps` (publish `holos-paas-config:dev` + apply ONLY the `platform-bootstrap` root — the clean cut line, the platform fully bootstrapped) and `scripts/apply-projects-app-of-apps` (enumerate projects via `holos cue export ./holos/projects`, then call `scripts/apply-project-app-of-apps <project>` per project). The single global `projects-bootstrap` root is **removed**; a new collection-driven `project-app-of-apps` component emits, **per project**, a `<project>-control-plane` root (`directory.exclude: **/workload/**`) and a `<project>-workload` root (`directory.include: **/workload/**`), each pulling that project's **own** public OCI bundle `holos/<project>-config:dev`. `scripts/apply-project-app-of-apps` builds+pushes the per-project bundle and applies the control-plane root (platform engineers); the service owner applies the workload root with `scripts/apply-project-workload-app-of-apps <project>` **after** the control plane. The `project` component renders into a `control-plane/` subtree (mirroring `application`); `holos-quay-organization` declares one public bundle `Repository` per project; `argocd-projects` pins the `projects` AppProject `sourceRepos` to the exact per-project bundles and commits one credential-less registration Secret per bundle. See *Bootstrap delivery — the App-of-Apps OCI config bundle* below. |
 
 ## Context and Problem Statement
 
@@ -218,14 +219,22 @@ of a second, complementary OCI delivery path added in HOL-1373: an Argo CD
   CD is itself running. So `scripts/apply` keeps bringing the foundation + Argo CD
   + Kargo up **imperatively** (the bootstrap floor, `kubectl apply --server-side`
   in dependency order) and **stops there**, with Quay and Keycloak up and ready
-  for manual setup. The handoff — publishing the bundle and applying the two root
-  `Application`s — is a **separate script, `scripts/apply-app-of-apps`**, because
-  it has a prerequisite the floor cannot satisfy on a freshly rebuilt cluster: the
-  publish needs the holos Quay **organization** (the public `holos-paas-config`
-  repository and a push-capable Quay robot credential) configured first.
+  for manual setup. The PLATFORM handoff — publishing the bundle and applying the
+  `platform-bootstrap` root `Application` — is a **separate script,
+  `scripts/apply-platform-app-of-apps`** (HOL-1382, split out of the former
+  `scripts/apply-app-of-apps`), because it has a prerequisite the floor cannot
+  satisfy on a freshly rebuilt cluster: the publish needs the holos Quay
+  **organization** (the public `holos-paas-config` repository and a push-capable
+  Quay robot credential) configured first.
   Doing the publish from `scripts/apply` raced that manual Quay setup and failed,
   so the split breaks the race: `scripts/apply` prints the manual-setup guidance,
-  and `scripts/apply-app-of-apps` runs after the operator configures the Quay org.
+  and `scripts/apply-platform-app-of-apps` runs after the operator configures the
+  Quay org. Tenant projects are bootstrapped **separately and independently**
+  (HOL-1382): `scripts/apply-projects-app-of-apps` iterates the registered projects
+  and, per project, builds+pushes a per-project bundle (`holos/<project>-config`)
+  and applies its `<project>-control-plane` root, with the service owner applying
+  the `<project>-workload` root afterward — the two top-level scripts never call
+  each other.
   The imperative floor is never removed; the handoff is idempotent. Because the
   handoff is now its own script (whose whole purpose **is** the handoff), a missing
   prerequisite — `oras`/Quay/the push credential absent, or the Quay org not yet
