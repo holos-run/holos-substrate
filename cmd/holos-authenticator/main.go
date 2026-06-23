@@ -13,11 +13,12 @@
 // tutorial assumes, and it keeps the manager legible to the kubebuilder
 // toolchain. Fisk is for the user-facing CLI, not the manager process.
 //
-// This phase (HOL-1385) ships only the scaffold: the manager starts, serves
-// health and Prometheus metrics endpoints, registers the core Kubernetes scheme,
-// and runs the ext_authz gRPC server as a manager.Runnable whose Check is a stub
-// always-Denied (HTTP 403) response. The authenticator.holos.run API group, OIDC
-// validation, CEL mapping, and impersonation output land in HOL-1386..HOL-1389.
+// The scaffold (HOL-1385) starts the manager, serves health and Prometheus
+// metrics endpoints, and runs the ext_authz gRPC server as a manager.Runnable
+// whose Check is a stub always-Denied (HTTP 403) response. HOL-1386 adds the
+// authenticator.holos.run/v1alpha1 API group (the Backend CRD) and registers it
+// in the manager's scheme; the OIDC validation, CEL mapping, and impersonation
+// output that consume a Backend land in HOL-1387..HOL-1389.
 package main
 
 import (
@@ -33,17 +34,31 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	authenticatorv1alpha1 "github.com/holos-run/holos-paas/api/authenticator/v1alpha1"
 	"github.com/holos-run/holos-paas/internal/authenticator"
 )
 
-// RBAC the authenticator needs once the authenticator.holos.run reconcilers land
-// (HOL-1386+): leader-election leases and event recording, plus — in later
-// phases — read access to the Backend CRs and the OIDC-client/backend-credential
-// Secrets they reference. Only the minimal leader-election + event verbs are
-// declared now; the API-group verbs are added with the CRD in HOL-1386.
+// RBAC the authenticator needs: leader-election leases and event recording, plus
+// read access to the authenticator.holos.run Backend CRs it watches. These markers
+// generate the authenticator's own RBAC role (holos-authenticator-role) via
+// `make authenticator-manifests`, scoped to the authenticator packages — distinct
+// from the controller's holos-controller-manager-role. The Backend reconciler that
+// consumes the backends verbs lands in HOL-1387; the read access is declared with
+// the CRD here.
+//
+// Secret access is deliberately NOT granted here. The backend credential Secret
+// is read by name in the authorizer's own namespace by the reconciler that lands
+// in HOL-1387; that phase adds a namespaced Role/RoleBinding scoped to the
+// authenticator namespace rather than a cluster-wide `secrets` verb on this
+// ClusterRole (which, bound by a ClusterRoleBinding, would grant cluster-wide
+// Secret reads). Keeping the marker out of this types-only phase keeps the
+// generated role minimal and avoids the over-broad grant.
 //
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=authenticator.holos.run,resources=backends,verbs=get;list;watch
+// +kubebuilder:rbac:groups=authenticator.holos.run,resources=backends/status,verbs=get;patch;update
+// +kubebuilder:rbac:groups=authenticator.holos.run,resources=backends/finalizers,verbs=update
 
 // version is the build version stamped into the binary at link time with
 // -ldflags "-X main.version=<v>". The Makefile sets it from `git describe`,
@@ -60,10 +75,11 @@ var (
 
 func init() {
 	// Register the Kubernetes core types so the manager's client and cache can
-	// serve them. Unlike holos-controller this binary registers no quay.holos.run
-	// or keycloak.holos.run groups; the authenticator.holos.run group is added to
-	// the scheme with its CRD in HOL-1386.
+	// serve them, plus the authenticator.holos.run group (HOL-1386) whose Backend
+	// CRs configure the authorizer's API server backends. Unlike holos-controller
+	// this binary registers no quay.holos.run or keycloak.holos.run groups.
 	utilruntimeMust(clientgoscheme.AddToScheme(scheme))
+	utilruntimeMust(authenticatorv1alpha1.AddToScheme(scheme))
 }
 
 func main() {

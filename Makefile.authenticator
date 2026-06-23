@@ -4,10 +4,12 @@
 # Every target here is namespaced authenticator-* so it never collides with the
 # holos-paas targets (build, test, docker-build, publish, ...) or the
 # holos-controller targets (controller-*), and it does not touch scripts/apply,
-# scripts/render, or scripts/publish. This phase ships only the service scaffold
-# (the cmd/holos-authenticator manager + ext_authz gRPC stub), so unlike
-# Makefile.controller there are no controller-gen/kustomize/envtest targets yet —
-# the authenticator.holos.run CRD and its generation land in HOL-1386.
+# scripts/render, or scripts/publish. As of HOL-1386 it includes controller-gen
+# code-generation targets (authenticator-generate / authenticator-manifests) for
+# the authenticator.holos.run API group, generating the Backend CRD and the
+# authenticator's OWN RBAC role (holos-authenticator-role). It still has no
+# kustomize/envtest deploy targets — the authenticator install wiring lands in a
+# later phase (HOL-1389).
 
 # Container image coordinates for the authenticator. Defaults target the local
 # k3d in-cluster registry so a pushed image is pullable by the cluster (mirrors
@@ -25,13 +27,62 @@ AUTHENTICATOR_PLATFORM   ?= linux/arm64
 # to the root docker-buildx-builder target.
 AUTHENTICATOR_MULTIARCH_PLATFORMS ?= linux/amd64,linux/arm64
 
+# Code generation (HOL-1386). controller-gen is pinned and installed under bin/
+# exactly as Makefile.controller does — the same pinned version and bin/ location,
+# declared with ?= so the two includes share one definition rather than colliding.
+# bin/ is gitignored (root .gitignore /bin/).
+LOCALBIN ?= $(CURDIR)/bin
+CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
+CONTROLLER_GEN_VERSION ?= v0.20.1
+
+# CRD generation options: shared with the controller (generate embedded
+# ObjectMeta so the CRD validates server-side-applied metadata).
+CRD_OPTIONS ?= crd:generateEmbeddedObjectMeta=true
+
+# The $(LOCALBIN) directory target (mkdir -p) is defined once in
+# Makefile.controller, which the root Makefile includes before this file, so it is
+# always in scope here — defining it again would warn "overriding recipe". The
+# tool target below uses it as an order-only prerequisite.
+
+# The authenticator-controller-gen-tool target is .PHONY (not a file target) so
+# the version check runs on every invocation: a file target named
+# $(CONTROLLER_GEN) would be considered up to date whenever bin/controller-gen
+# exists — even at the wrong version. As a phony recipe it always compares the
+# installed version against the pin and reinstalls on mismatch. It is a distinct
+# target name from Makefile.controller's controller-gen-tool so the two includes
+# never define the same target twice.
+.PHONY: authenticator-controller-gen-tool
+authenticator-controller-gen-tool: | $(LOCALBIN) ## Install controller-gen under bin/ at the pinned version.
+	@test -x $(CONTROLLER_GEN) && [ "$$($(CONTROLLER_GEN) --version 2>/dev/null | awk '{print $$2}')" = "$(CONTROLLER_GEN_VERSION)" ] || \
+		GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
+
+# authenticator-generate produces the deepcopy methods (zz_generated.deepcopy.go)
+# for the authenticator API group only. Scoping paths to ./api/authenticator/...
+# keeps the generation self-contained; the controller's controller-generate globs
+# ./api/... and would emit the same file, so the two are consistent.
+.PHONY: authenticator-generate
+authenticator-generate: authenticator-controller-gen-tool ## Generate deepcopy methods for the authenticator API group.
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/authenticator/..."
+
+# authenticator-manifests generates the authenticator CRD and its OWN RBAC role
+# (holos-authenticator-role) — distinct from the controller's
+# holos-controller-manager-role — scoped to the authenticator packages. The CRD
+# lands under config/crd/bases (shared with the controller's CRDs); the RBAC role
+# lands under config/authenticator/rbac so it never clobbers config/rbac/role.yaml.
+.PHONY: authenticator-manifests
+authenticator-manifests: authenticator-controller-gen-tool ## Generate the authenticator CRD and its own RBAC role.
+	$(CONTROLLER_GEN) $(CRD_OPTIONS) rbac:roleName=holos-authenticator-role \
+		paths="./api/authenticator/..." paths="./cmd/holos-authenticator/..." paths="./internal/controller/authenticator/..." \
+		output:crd:artifacts:config=config/crd/bases \
+		output:rbac:artifacts:config=config/authenticator/rbac
+
 .PHONY: authenticator-fmt
 authenticator-fmt: ## Run go fmt against the authenticator sources.
-	go fmt ./cmd/holos-authenticator/... ./internal/authenticator/...
+	go fmt ./cmd/holos-authenticator/... ./api/authenticator/... ./internal/authenticator/... ./internal/controller/authenticator/...
 
 .PHONY: authenticator-vet
 authenticator-vet: ## Run go vet against the authenticator sources.
-	go vet ./cmd/holos-authenticator/... ./internal/authenticator/...
+	go vet ./cmd/holos-authenticator/... ./api/authenticator/... ./internal/authenticator/... ./internal/controller/authenticator/...
 
 # AUTHENTICATOR_LDFLAGS stamps the build VERSION (defined in the root Makefile,
 # from `git describe`) into the authenticator binary by overriding its
@@ -50,7 +101,7 @@ authenticator-build: authenticator-fmt authenticator-vet ## Build the holos-auth
 # bufconn/loopback server test under internal/authenticator.
 .PHONY: authenticator-test
 authenticator-test: authenticator-fmt authenticator-vet ## Run the authenticator tests with the race detector.
-	go test -race ./cmd/holos-authenticator/... ./internal/authenticator/...
+	go test -race ./cmd/holos-authenticator/... ./api/authenticator/... ./internal/authenticator/... ./internal/controller/authenticator/...
 
 # Image targets use buildx so the builder stage runs on the native host and the
 # Go toolchain cross-compiles to $(AUTHENTICATOR_PLATFORM) — mirrors the
