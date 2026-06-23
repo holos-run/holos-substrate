@@ -73,13 +73,18 @@ func (s *CheckServer) Check(_ context.Context, _ *authv3.CheckRequest) (*authv3.
 }
 
 // GRPCServer is a controller-runtime manager.Runnable that serves the
-// CheckServer over gRPC on Addr. Registering it with mgr.Add ties its lifecycle
-// to the manager: it starts when the manager starts and shuts down gracefully
-// when the manager's context is cancelled (the same context leader election
-// uses), so the gRPC server and the reconcilers share one process lifecycle.
+// CheckServer over gRPC. Registering it with mgr.Add ties its lifecycle to the
+// manager: it starts when the manager starts and shuts down gracefully when the
+// manager's context is cancelled (the same context leader election uses), so the
+// gRPC server and the reconcilers share one process lifecycle.
 type GRPCServer struct {
-	// Addr is the TCP bind address for the gRPC server, e.g. ":9000".
+	// Addr is the TCP bind address for the gRPC server, e.g. ":9000". It is used
+	// only when Listener is nil; Start binds it then.
 	Addr string
+	// Listener, when non-nil, is served directly instead of binding Addr. This is
+	// for tests that pre-bind a listener (e.g. on an ephemeral port) and hand it
+	// in, avoiding the close-then-reopen race a bind-by-address test would have.
+	Listener net.Listener
 	// Check is the Authorization service implementation to serve.
 	Check *CheckServer
 	// Log records server lifecycle events.
@@ -94,23 +99,31 @@ func (*GRPCServer) NeedLeaderElection() bool { return false }
 // Start runs the gRPC server until ctx is cancelled, then stops it gracefully.
 // It satisfies controller-runtime's manager.Runnable interface.
 func (g *GRPCServer) Start(ctx context.Context) error {
-	lis, err := net.Listen("tcp", g.Addr)
-	if err != nil {
-		return fmt.Errorf("authenticator: listen on %q: %w", g.Addr, err)
+	lis := g.Listener
+	if lis == nil {
+		var err error
+		lis, err = net.Listen("tcp", g.Addr)
+		if err != nil {
+			return fmt.Errorf("authenticator: listen on %q: %w", g.Addr, err)
+		}
 	}
 
 	srv := grpc.NewServer()
 	authv3.RegisterAuthorizationServer(srv, g.Check)
 
+	// Report the actual bound address, which differs from g.Addr when a listener
+	// was injected or when g.Addr used port 0.
+	addr := lis.Addr().String()
+
 	// Translate context cancellation into a graceful stop. GracefulStop drains
 	// in-flight RPCs; the goroutine returns once Serve below unblocks.
 	go func() {
 		<-ctx.Done()
-		g.Log.Info("shutting down ext_authz gRPC server", "addr", g.Addr)
+		g.Log.Info("shutting down ext_authz gRPC server", "addr", addr)
 		srv.GracefulStop()
 	}()
 
-	g.Log.Info("starting ext_authz gRPC server", "addr", g.Addr)
+	g.Log.Info("starting ext_authz gRPC server", "addr", addr)
 	if err := srv.Serve(lis); err != nil {
 		return fmt.Errorf("authenticator: serve gRPC: %w", err)
 	}

@@ -113,23 +113,40 @@ On each request Envoy forwards to the authorizer's `Check`, the authenticator
    `AuthorizationPolicy`/route that routed it to this ext_authz provider)
    identifies which `Backend` custom resource — and therefore which OIDC client,
    issuer, group-mapping expression, and upstream API server — applies.
-2. **Validates the OIDC identity token.** It extracts the bearer token, performs
+2. **Sanitizes inbound impersonation/credential headers (mandatory).** Before
+   anything else, the authorizer **must** strip or reject any client-supplied
+   `Impersonate-User`, `Impersonate-Group`, `Impersonate-Uid`,
+   `Impersonate-Extra-*`, and `Authorization` headers on the inbound request, so
+   that only the authorizer's own derived values reach the upstream. This closes a
+   header-smuggling / confused-deputy hole: because the authorizer injects the
+   backend's privileged impersonation credential downstream, a client that smuggled
+   `Impersonate-Group: system:masters` (or any other group) would otherwise be
+   impersonated at that privilege. The ext_authz `OkResponse` therefore both sets
+   the derived impersonation headers **and** removes any inbound impersonation/`Authorization`
+   headers (using the response's header-mutation `headers_to_remove` / explicit
+   overwrite); the implementation is **failure-closed** — an inbound request that
+   *carries* impersonation headers is denied rather than silently scrubbed if there
+   is any doubt the upstream would see the client's version. HOL-1388 implements
+   this with explicit unit tests for spoofed inbound `Impersonate-*` /
+   `Authorization` headers.
+3. **Validates the OIDC identity token.** It extracts the bearer token, performs
    issuer discovery and JWKS signature verification, and checks `iss`, `aud`
    (the backend's OIDC client), and `exp`. A token that fails validation yields a
    `DeniedResponse` (HTTP 401/403).
-3. **Maps claims to Kubernetes groups via CEL.** It evaluates the backend's CEL
+4. **Maps claims to Kubernetes groups via CEL.** It evaluates the backend's CEL
    expression against the validated claims to produce the user identity and the
    Kubernetes group list. The **default** expression maps the token's `groups`
    claim directly to Kubernetes groups; a backend may override it (e.g. to derive
    groups from a different claim, prefix them, or filter them).
-4. **Returns Kubernetes impersonation headers.** On success it returns an
+5. **Returns Kubernetes impersonation headers.** On success it returns an
    `OkResponse` injecting `Impersonate-User` and one `Impersonate-Group` header
    per mapped group, **compatible with any conformant cluster**, plus the
    backend's own privileged credential (an `Authorization: Bearer <token>` for a
-   ServiceAccount holding the `impersonate` verb). Envoy then forwards the request
-   to the upstream API server with those headers and **no other reverse proxy** in
-   the path; the API server authorizes the request as the impersonated user with
-   their real groups.
+   ServiceAccount holding the `impersonate` verb), having first removed every
+   inbound impersonation/`Authorization` header per step 2 so only the derived
+   values reach the upstream. Envoy then forwards the request to the upstream API
+   server with those headers and **no other reverse proxy** in the path; the API
+   server authorizes the request as the impersonated user with their real groups.
 
 ### Configuration as Kubernetes custom resources: `authenticator.holos.run`
 
@@ -196,7 +213,11 @@ dependency footprint legible.
    impersonation headers** (`Impersonate-User`, `Impersonate-Group`) plus the
    backend's privileged credential, so Envoy forwards to the API server with **no
    other reverse proxy** in the path. The impersonation headers are compatible
-   with any conformant cluster.
+   with any conformant cluster. As a **mandatory, failure-closed** precondition, it
+   **strips or rejects** any client-supplied `Impersonate-*` and `Authorization`
+   headers before injecting its own, so a client cannot smuggle a privileged group
+   (e.g. `system:masters`) under the backend's impersonation credential; HOL-1388
+   ships this with explicit spoofed-header tests.
 4. **All configuration is Kubernetes custom resources** in a new
    `authenticator.holos.run` API group whose central `Backend` Kind models one
    API server backend with **one OIDC client**, an upstream URL that **may be
@@ -235,6 +256,14 @@ dependency footprint legible.
   credential handling, the ext_authz trust boundary, and the failure-closed
   default (deny on any validation error) are security-critical. The scaffold's
   always-Denied stub is failure-closed by construction.
+- **Inbound header sanitization is non-negotiable.** Because the authorizer injects
+  the backend's privileged impersonation credential downstream, it **must** strip
+  or reject any client-supplied `Impersonate-User`/`Impersonate-Group`/`Impersonate-Uid`/`Impersonate-Extra-*`
+  and `Authorization` headers before forwarding (failure-closed). Omitting this would
+  let a client smuggle a privileged group such as `system:masters` and have the
+  upstream honor it under the backend credential — a full privilege-escalation. The
+  allow-path implementation (HOL-1388) carries this requirement and explicit
+  spoofed-inbound-header tests; the scaffold has no allow path and so cannot leak.
 - **Conformant-cluster portability, external backends included.** Relying only on
   standard Kubernetes impersonation (not cluster-specific auth plumbing) lets one
   authorizer front in-cluster and external API servers alike, but it binds the

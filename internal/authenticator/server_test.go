@@ -76,19 +76,20 @@ func TestCheckStubDenies(t *testing.T) {
 // returns cleanly on graceful shutdown — exercising the manager.Runnable adapter
 // the manager drives via mgr.Add.
 func TestGRPCServerStartStop(t *testing.T) {
-	// Bind :0 to let the kernel choose a free port, then read it back so the
-	// client dials the actual address.
+	// Bind :0 to let the kernel choose a free port and inject the listener
+	// directly. Injecting a pre-bound listener (rather than closing it and asking
+	// Start to reopen the same address) closes the close-then-reopen window in
+	// which another process could claim the port and make the test flaky.
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	addr := lis.Addr().String()
-	_ = lis.Close()
 
 	g := &GRPCServer{
-		Addr:  addr,
-		Check: NewCheckServer(logr.Discard()),
-		Log:   logr.Discard(),
+		Listener: lis,
+		Check:    NewCheckServer(logr.Discard()),
+		Log:      logr.Discard(),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
