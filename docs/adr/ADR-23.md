@@ -1,0 +1,243 @@
+# The Holos Authenticator: an Istio gRPC ext_authz Authorizer for OIDC → Kubernetes Impersonation
+
+| Metadata | Value                                                      |
+| -------- | ---------------------------------------------------------- |
+| Date     | 2026-06-22                                                 |
+| Author   | @jeffmccune                                                |
+| Status   | `Proposed`                                                 |
+| Tags     | controller, authenticator, oidc, istio, authz, impersonation |
+| Updates  | ADR-3                                                      |
+
+| Revision | Date       | Author      | Info           |
+| -------- | ---------- | ----------- | -------------- |
+| 1        | 2026-06-22 | @jeffmccune | Initial design |
+
+## Context and Problem Statement
+
+The platform needs a minimal Istio **external authorizer** that lets Envoy (an
+ambient-mesh waypoint, with **no other reverse proxy** in the path) front one or
+more Kubernetes API servers — in-cluster **or external** — and authenticate end
+users via OIDC, translating each user's identity into Kubernetes **impersonation**
+so any conformant API server authorizes the request with the user's real groups.
+
+How should the platform authenticate an end user's OIDC token at the edge, map
+that user's claims to Kubernetes groups, and forward the request to a target API
+server as that user — using only Envoy and one external authorizer, configured
+entirely through Kubernetes custom resources, supporting multiple backends each
+with their own OIDC client, without coupling the authorizer to any single
+cluster's API server?
+
+This ADR records the design of a new `holos-authenticator` service that answers
+that question. It is the binding design record the implementation phases
+(HOL-1385..HOL-1390) reference. This first phase (HOL-1385) ships the **service
+scaffold** — the binary, build tasks, image workflow, and a trivial ext_authz
+stub — and records this design; later phases flip the relevant `Status` to
+`Implemented` as the OIDC, CEL, CRD, and platform-wiring work lands.
+
+## Context / References / Prior Work
+
+- **Envoy `ext_authz` gRPC protocol** (`envoy.service.auth.v3.Authorization`):
+  the prior art and the wire contract. Envoy's external-authorization filter
+  calls a gRPC `Check` on each request; the authorizer returns an `OkResponse`
+  (optionally injecting/overwriting request headers the upstream then sees) or a
+  `DeniedResponse` (an HTTP status and body Envoy returns directly). This is the
+  exact mechanism the authenticator implements; Istio exposes it through a
+  `meshConfig.extensionProviders` entry of type `envoyExtAuthzGrpc` plus an
+  `AuthorizationPolicy` with `action: CUSTOM`.
+- **Kubernetes user impersonation**: a request carrying `Impersonate-User` and
+  `Impersonate-Group` headers, made with a credential that holds the
+  `impersonate` verb, is authorized by the API server **as the impersonated
+  user/groups**. This is a core, conformant Kubernetes feature — every compliant
+  API server honors it — which is what lets one authorizer front *any* cluster
+  without cluster-specific authentication plumbing.
+- **CEL (Common Expression Language)**: the same expression language Kubernetes
+  already uses for admission and CRD validation. The authenticator uses a CEL
+  expression to map OIDC token claims to Kubernetes groups, so the mapping is
+  declarative, sandboxed, and configurable per backend without code changes.
+- [ADR-3 — Authorization via Kubernetes RBAC and group membership](ADR-3.md):
+  the platform authorizes users by their group membership in Kubernetes RBAC.
+  The authenticator is the bridge that turns an external OIDC identity's groups
+  into the Kubernetes groups ADR-3's RBAC binds against, so this ADR **updates**
+  ADR-3 by supplying the OIDC→groups translation mechanism the model assumes.
+- [ADR-18 — The Holos Controller](ADR-18.md): the conventional kubebuilder
+  controller-runtime manager pattern (standard-library `flag`, zap JSON logging,
+  metrics/health endpoints, leader election, a stamped `version`) that the
+  `holos-authenticator` binary mirrors. The authenticator reuses the **build and
+  release machinery** template — isolated `Makefile.authenticator`,
+  `Dockerfile.authenticator`, and a discrete job in the manual Images workflow —
+  exactly as `holos-controller` established it.
+- [ADR-19 — Quay API Group](ADR-19.md) / [ADR-22 — `security.holos.run`](ADR-22.md):
+  the Gateway-API status-condition model (`Accepted`/`Programmed`/`Ready`,
+  `observedGeneration`, `+listType=map`/`+listMapKey=type`, a `Ready` printer
+  column) that ADR-22 mandates for **all** `holos.run` CRs. The
+  `authenticator.holos.run` CRDs (HOL-1386) adopt this contract.
+- [ADR-12 — Repository layout](ADR-12.md): the single-module monorepo with one
+  binary per service under `cmd/`. `cmd/holos-authenticator` is a new service
+  binary under that layout, alongside `cmd/holos-paas` and `cmd/holos-controller`.
+
+## Design
+
+### The service: a controller-runtime manager that also serves ext_authz
+
+`holos-authenticator` is a controller-runtime **manager** (mirroring
+`cmd/holos-controller/main.go`) that additionally runs the Envoy ext_authz gRPC
+server as a `manager.Runnable` registered with `mgr.Add`. Hosting the gRPC server
+on the manager's lifecycle means the server and the (future)
+`authenticator.holos.run` reconcilers share **one process, one context, and one
+leader-election session**: the reconcilers keep the in-memory backend
+configuration current; the gRPC server reads it to answer Envoy.
+
+The manager wiring is the conventional kubebuilder idiom: standard-library `flag`
+parsing, controller-runtime's `zap` JSON logging (production encoder by default,
+suitable for log ingestion), a Prometheus `--metrics-bind-address` (default
+`:8080`), a `--health-probe-bind-address` (default `:8081`) serving
+`healthz`/`readyz`, `--leader-elect` with
+`LeaderElectionID: "holos-authenticator.holos.run"`, and a `version` var stamped
+at link time. The ext_authz server binds a configurable `--grpc-bind-address`
+(default `:9000`).
+
+Crucially, the gRPC `Runnable` reports **`NeedLeaderElection() == false`**: every
+replica must answer Envoy on the data path, not only the elected leader. Leader
+election (when enabled) gates only the reconcilers that mutate shared state, not
+the per-request authorization the gRPC server performs. The scaffold phase
+(HOL-1385) registers only the core Kubernetes scheme (`clientgoscheme`) — no
+`authenticator.holos.run` group yet — and the gRPC `Check` is a deterministic
+**always-Denied (HTTP 403)** stub that proves the proto wiring serves end to end.
+
+### The request path: OIDC validate → CEL map → impersonate → forward
+
+On each request Envoy forwards to the authorizer's `Check`, the authenticator
+(in the fully-implemented design):
+
+1. **Selects the backend.** The request's target (matched by the
+   `AuthorizationPolicy`/route that routed it to this ext_authz provider)
+   identifies which `Backend` custom resource — and therefore which OIDC client,
+   issuer, group-mapping expression, and upstream API server — applies.
+2. **Validates the OIDC identity token.** It extracts the bearer token, performs
+   issuer discovery and JWKS signature verification, and checks `iss`, `aud`
+   (the backend's OIDC client), and `exp`. A token that fails validation yields a
+   `DeniedResponse` (HTTP 401/403).
+3. **Maps claims to Kubernetes groups via CEL.** It evaluates the backend's CEL
+   expression against the validated claims to produce the user identity and the
+   Kubernetes group list. The **default** expression maps the token's `groups`
+   claim directly to Kubernetes groups; a backend may override it (e.g. to derive
+   groups from a different claim, prefix them, or filter them).
+4. **Returns Kubernetes impersonation headers.** On success it returns an
+   `OkResponse` injecting `Impersonate-User` and one `Impersonate-Group` header
+   per mapped group, **compatible with any conformant cluster**, plus the
+   backend's own privileged credential (an `Authorization: Bearer <token>` for a
+   ServiceAccount holding the `impersonate` verb). Envoy then forwards the request
+   to the upstream API server with those headers and **no other reverse proxy** in
+   the path; the API server authorizes the request as the impersonated user with
+   their real groups.
+
+### Configuration as Kubernetes custom resources: `authenticator.holos.run`
+
+All configuration is expressed as Kubernetes custom resources in a new
+**`authenticator.holos.run`** API group (the CRD lands in HOL-1386). The central
+Kind is a **`Backend`**: one API server backend, with exactly **one OIDC client**
+(issuer URL, client ID, and the validation parameters), an **upstream API server
+URL** that **may be external** to the cluster (with an optional trusted CA bundle
+for a privately-signed endpoint), the backend's **impersonation credential**
+reference, and a per-backend **group-mapping CEL expression** (defaulting to the
+`groups`-claim mapping). **Multiple backends** are supported — one `Backend`
+resource per fronted API server — so a single authenticator deployment can serve
+several clusters, each with its own OIDC client and mapping.
+
+Following [ADR-22](ADR-22.md), every `authenticator.holos.run` CR reports rich
+Gateway-API status: a `status.conditions[]` of `metav1.Condition` with
+`Accepted`/`Programmed`/`Ready`, a `status.observedGeneration`, and a `Ready`
+printer column. Any cross-namespace reference a `Backend` makes is authorized by a
+`security.holos.run` `ReferenceGrant` ([ADR-22](ADR-22.md)) in the referent
+namespace, like every other `holos.run` group.
+
+### Deployment: ambient mesh, Envoy as the only proxy
+
+The authenticator is deployed assuming **Istio ambient mesh** (HOL-1389). Istio
+is configured with a `meshConfig.extensionProviders` entry naming the
+authenticator's gRPC service as an `envoyExtAuthzGrpc` provider, and an
+`AuthorizationPolicy` with `action: CUSTOM` referencing that provider attaches the
+authorizer to the fronted routes. Because Kubernetes impersonation lets the API
+server authenticate the forwarded request, **the ambient-mesh Envoy waypoint is
+the only proxy** between the client and the upstream API server — no sidecar
+reverse proxy or API-server auth proxy is added to the path.
+
+### Dependencies kept minimal
+
+New Go dependencies are held to the minimum the protocol requires. This scaffold
+phase adds only **`github.com/envoyproxy/go-control-plane`** (for the
+`envoy/service/auth/v3` ext_authz types — its `/envoy` submodule under modern
+versions) and promotes **`google.golang.org/grpc`** from an indirect to a direct
+dependency. OIDC and CEL libraries are **deliberately not** added until the phase
+that uses them (HOL-1387), keeping each phase's dependency footprint legible.
+
+## Decision
+
+1. **A new `holos-authenticator` service is established**, built from this
+   monorepo using `holos-controller` (ADR-18) as the template for its binary
+   layout, build tasks, and image workflow: a `cmd/holos-authenticator` manager,
+   an isolated `Makefile.authenticator` (`authenticator-*` targets reusing the
+   shared buildx builder), a `Dockerfile.authenticator` (distroless non-root,
+   cross-compiled), and a discrete `holos-authenticator` job/option in the manual
+   `.github/workflows/images.yaml` Images workflow.
+2. **It implements an Istio external authorizer over the Envoy gRPC ext_authz
+   protocol** (`envoy.service.auth.v3.Authorization`), run as a controller-runtime
+   `manager.Runnable` (via `mgr.Add`) that does **not** require leader election —
+   every replica answers Envoy.
+3. **It validates an OIDC identity token** (issuer discovery, JWKS signature,
+   `iss`/`aud`/`exp`), **maps the token's claims to Kubernetes groups via a CEL
+   expression** (default: the `groups` claim), and on success **returns Kubernetes
+   impersonation headers** (`Impersonate-User`, `Impersonate-Group`) plus the
+   backend's privileged credential, so Envoy forwards to the API server with **no
+   other reverse proxy** in the path. The impersonation headers are compatible
+   with any conformant cluster.
+4. **All configuration is Kubernetes custom resources** in a new
+   `authenticator.holos.run` API group whose central `Backend` Kind models one
+   API server backend with **one OIDC client**, an upstream URL that **may be
+   external** (with an optional trusted CA bundle), and a per-backend group-mapping
+   CEL expression. **Multiple backends** are supported. Every CR carries the
+   ADR-22 Gateway-API status contract.
+5. **It is deployed assuming ambient mesh** — an Istio `extensionProviders`
+   ext_authz gRPC provider plus an `AuthorizationPolicy` with `action: CUSTOM` —
+   with Envoy as the only proxy.
+6. **Dependencies are limited to what is necessary**, added per phase: this
+   scaffold phase adds only `github.com/envoyproxy/go-control-plane` and promotes
+   `google.golang.org/grpc` to a direct dependency; OIDC/CEL libraries are added
+   only when their phase needs them.
+7. **This ADR is the binding design record for the implementation phases**
+   (HOL-1385..HOL-1390). It starts `Proposed`; the scaffold (HOL-1385) ships the
+   binary, build tasks, image workflow, and an always-Denied ext_authz stub, and
+   later phases flip the `Status` toward `Implemented` as the OIDC, CEL, CRD, and
+   platform-wiring work lands.
+
+## Consequences
+
+- **A new service to build and operate.** `holos-authenticator` is a third
+  service binary alongside `holos-paas` and `holos-controller`, with its own
+  image, deploy surface, and lifecycle. The isolated `authenticator-*` build
+  targets and the discrete Images-workflow job keep it from colliding with the
+  existing services, at the cost of one more thing to release.
+- **A new `authenticator.holos.run` API group and reconcilers.** The `Backend`
+  CRD (HOL-1386) and the reconcilers that keep its in-memory configuration current
+  (HOL-1387+) are future work this ADR scopes but does not ship. They inherit the
+  ADR-22 status contract and the `security.holos.run` `ReferenceGrant`
+  cross-namespace convention.
+- **A privileged impersonation credential per backend.** Each backend forwards
+  with a credential holding the Kubernetes `impersonate` verb — a powerful
+  permission. Compromise of the authenticator or a backend credential would let an
+  attacker impersonate arbitrary users/groups on that backend's API server, so the
+  credential handling, the ext_authz trust boundary, and the failure-closed
+  default (deny on any validation error) are security-critical. The scaffold's
+  always-Denied stub is failure-closed by construction.
+- **Conformant-cluster portability, external backends included.** Relying only on
+  standard Kubernetes impersonation (not cluster-specific auth plumbing) lets one
+  authorizer front in-cluster and external API servers alike, but it binds the
+  design to the impersonation contract: a backend's credential must hold the
+  `impersonate` verb and the upstream must trust the presented CA bundle.
+- **Updates ADR-3.** This ADR supplies the concrete OIDC-identity → Kubernetes-
+  groups translation the ADR-3 RBAC/group-membership authorization model assumes,
+  without changing that model.
+- **Minimal, phase-scoped dependency growth.** Holding new dependencies to
+  `go-control-plane` + `grpc` now (and adding OIDC/CEL only when used) keeps the
+  module's dependency surface legible, but means the ext_authz proto types are now
+  a direct, long-lived dependency to track for security updates.

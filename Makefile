@@ -194,3 +194,10 @@ docker-buildx: docker-buildx-builder ## Build and push the multi-arch $(MULTIARC
 # controller-* — so they never collide with the holos-paas targets above or
 # touch scripts/apply, scripts/render, or scripts/publish.
 include Makefile.controller
+
+# The holos-authenticator service (ADR-23, HOL-1385) likewise lives in this
+# module but keeps its targets isolated in Makefile.authenticator — all
+# namespaced authenticator-* — so they never collide with the holos-paas or
+# controller-* targets above. It reuses the shared $(BUILDX_BUILDER) defined
+# above for its multi-arch image build.
+include Makefile.authenticator

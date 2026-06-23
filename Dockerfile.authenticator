@@ -1,0 +1,51 @@
+# Build the holos-authenticator binary (ADR-23). Two stages: a golang builder
+# that cross-compiles a static binary, and a distroless non-root runtime. This
+# mirrors the sibling Dockerfile.controller; the authenticator has no UI and no
+# cgo, so there is no Node/UI stage.
+# Pin the builder to the native build platform (BUILDPLATFORM) and let the Go
+# toolchain cross-compile to the requested TARGETOS/TARGETARCH so the same
+# Dockerfile builds linux/arm64 (the Apple Silicon k3d cluster) from any host.
+FROM --platform=$BUILDPLATFORM golang:1.26 AS build
+ARG TARGETOS
+ARG TARGETARCH
+# VERSION is the build version stamped into the binary (mirrors
+# `make authenticator-build`); the authenticator logs it once at manager startup.
+# The build context excludes .git, so the Makefile authenticator docker targets
+# pass it through as --build-arg VERSION=$(VERSION); it defaults to "dev"
+# otherwise.
+ARG VERSION=dev
+
+WORKDIR /workspace
+# Copy the Go module manifests and download dependencies first so this layer is
+# cached unless go.mod/go.sum change.
+COPY go.mod go.mod
+COPY go.sum go.sum
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+# Copy the source. cmd/holos-authenticator is the manager entrypoint; api/ and
+# internal/ are copied so the build sees every package it imports (the
+# authenticator.holos.run API group lands under api/ in a later phase).
+COPY cmd/ cmd/
+COPY api/ api/
+COPY internal/ internal/
+
+# Build a static, trimmed binary. CGO is disabled for a small, portable image;
+# TARGETOS/TARGETARCH (set by buildx, defaulting to linux) drive
+# cross-compilation so the same Dockerfile builds linux/arm64 on Apple Silicon
+# and linux/amd64 elsewhere.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -trimpath \
+    -ldflags "-X main.version=${VERSION}" \
+    -o /holos-authenticator ./cmd/holos-authenticator
+
+# Use distroless as the minimal base image to package the binary.
+# https://github.com/GoogleContainerTools/distroless
+FROM gcr.io/distroless/static:nonroot
+WORKDIR /
+COPY --from=build /holos-authenticator /holos-authenticator
+USER 65532:65532
+
+ENTRYPOINT ["/holos-authenticator"]
