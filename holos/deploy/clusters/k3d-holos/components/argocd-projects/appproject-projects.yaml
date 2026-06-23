@@ -18,6 +18,8 @@ spec:
     server: https://kubernetes.default.svc
   - namespace: '!echo'
     server: https://kubernetes.default.svc
+  - namespace: '!holos-authenticator'
+    server: https://kubernetes.default.svc
   - namespace: '!holos-controller'
     server: https://kubernetes.default.svc
   - namespace: '!istio-gateways'

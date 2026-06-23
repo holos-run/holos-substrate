@@ -20,8 +20,33 @@ IstioVersion: "1.29.2"
 // profile: "ambient" selects ambient mode (ztunnel data plane, no sidecars).
 // Keep these minimal for the local k3d cluster — production concerns like
 // resource limits, autoscaling, and node placement do not belong here.
+//
+// The istiod component passes IstioValues verbatim as the istiod chart's Helm
+// values (components/istio/istiod/buildplan.cue), so meshConfig set here flows
+// into the mesh's MeshConfig.  The other three charts (base, cni, ztunnel)
+// ignore meshConfig, so declaring it once here is harmless for them.
 IstioValues: {
 	profile: "ambient"
+
+	// meshConfig.extensionProviders registers the Holos Authenticator (ADR-23) as
+	// a named Envoy ext_authz gRPC provider.  An AuthorizationPolicy with
+	// action: CUSTOM and provider.name: "holos-authenticator"
+	// (components/holos-authenticator) references this provider by name to send
+	// the authorization decision to the authenticator's gRPC server.  The service
+	// is the holos-authenticator Service in the holos-authenticator namespace; the
+	// port is the manager's gRPC bind address (:9000).  L7 ext_authz enforcement
+	// in ambient mode requires a waypoint in front of the protected workload
+	// (ztunnel is L4-only) — the in-cluster wiring is declared here; the full
+	// waypoint/ServiceEntry egress topology for an external API-server target is a
+	// deferred follow-up (holos/docs/placeholders.md, finalized next phase).
+	meshConfig: extensionProviders: [{
+		name: "holos-authenticator"
+		envoyExtAuthzGrpc: {
+			service: "holos-authenticator.holos-authenticator.svc.cluster.local"
+			port:    9000
+			timeout: "2s"
+		}
+	}]
 }
 
 // IstioNamespace is the control plane namespace.  Keep the chart default

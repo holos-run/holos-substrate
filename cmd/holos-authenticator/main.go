@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -133,12 +134,32 @@ func main() {
 		metricsOptions.TLSOpts = []func(*tls.Config){}
 	}
 
+	// Scope the manager's cache (and therefore the Backend reconciler's watch) to
+	// the authorizer's own namespace. A Backend is a PLATFORM-owned object: its
+	// privileged impersonator credential always resolves from this same namespace
+	// (resolveImpersonatorToken reads AuthorizerNamespace(), never the Backend's
+	// namespace), and the platform namespace registry denies tenant Argo CD
+	// projects this namespace as a destination. Watching cluster-wide would let a
+	// tenant create a Backend in its OWN namespace and have the manager reconcile
+	// it — performing controller-side OIDC discovery against a tenant-chosen
+	// issuerURL (SSRF) and registering a host route into the shared store the
+	// ext_authz path serves. Restricting the cache to AuthorizerNamespace() means
+	// tenant-namespace Backends are never cached, reconciled, or served, closing
+	// both vectors at the wiring layer regardless of the AppProject
+	// namespaceResourceWhitelist. It also matches the namespace-scoped `get` on
+	// Secrets the authorizer's RBAC grants.
+	authorizerNamespace := authenticator.AuthorizerNamespace()
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsOptions,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "holos-authenticator.holos.run",
+		Cache: cache.Options{
+			DefaultNamespaces: map[string]cache.Config{
+				authorizerNamespace: {},
+			},
+		},
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -186,7 +207,7 @@ func main() {
 		Check: authenticator.NewCheckServer(
 			store,
 			mgr.GetAPIReader(),
-			authenticator.AuthorizerNamespace(),
+			authorizerNamespace,
 			ctrl.Log.WithName("ext-authz"),
 		),
 		Log: ctrl.Log.WithName("grpc-server"),

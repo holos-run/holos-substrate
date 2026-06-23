@@ -48,6 +48,15 @@ let ORG_NAME = "holos"
 // to and pulled from.
 let CONTROLLER_REPO = "holos-controller"
 
+// AUTHENTICATOR_REPO is the public repository the holos-authenticator image
+// (HOL-1389) is pushed to and pulled from: quay.holos.internal/holos/
+// holos-authenticator, the image the holos-authenticator component's manager
+// Deployment references.  Public (world-pullable) like CONTROLLER_REPO so the
+// manager pod pulls it with no imagePullSecret; managed as a CR so the repo
+// exists before the image is pushed (the push robot then needs only WRITE,
+// not org creator/repo-create — the same posture as the other repos here).
+let AUTHENTICATOR_REPO = "holos-authenticator"
+
 // CONFIG_REPO is the repository the App-of-Apps platform config bundle
 // (holos-paas-config:dev) is pushed to and Argo CD pulls from.  It is managed as
 // a CR — rather than relying on a first-push to create it — so the push robot
@@ -120,6 +129,32 @@ let REPOSITORY_RESOURCE = {
 		name:            CONTROLLER_REPO
 		visibility:      "public"
 		description:     "The holos-controller container image (HOL-1380)."
+		credentialsSecretRef: name: CREDS_SECRET
+		if _CABundlePEM != "" {
+			caBundle: base64.Encode(null, _CABundlePEM)
+		}
+	}
+}
+
+// AUTHENTICATOR_REPOSITORY_RESOURCE is the public holos-authenticator image
+// Repository within the org (HOL-1389) — the mirror of REPOSITORY_RESOURCE for
+// the authenticator's manager image.  Public visibility makes it world-pullable
+// so the manager pod pulls quay.holos.internal/holos/holos-authenticator:dev
+// without an imagePullSecret; managed as a CR so it exists before the image is
+// pushed.  Same gated-injection posture for caBundle.
+let AUTHENTICATOR_REPOSITORY_RESOURCE = {
+	apiVersion: "quay.holos.run/v1alpha1"
+	kind:       "Repository"
+	metadata: {
+		name:      AUTHENTICATOR_REPO
+		namespace: NAMESPACE
+		labels: "app.kubernetes.io/name": ORG_NAME
+	}
+	spec: {
+		organizationRef: ORG_NAME
+		name:            AUTHENTICATOR_REPO
+		visibility:      "public"
+		description:     "The holos-authenticator container image (HOL-1389)."
 		credentialsSecretRef: name: CREDS_SECRET
 		if _CABundlePEM != "" {
 			caBundle: base64.Encode(null, _CABundlePEM)
@@ -209,6 +244,7 @@ userDefinedBuildPlan: {
 					Organization: (ORG_NAME): ORGANIZATION_RESOURCE
 					Repository: {
 						(CONTROLLER_REPO): REPOSITORY_RESOURCE
+						(AUTHENTICATOR_REPO): AUTHENTICATOR_REPOSITORY_RESOURCE
 						(CONFIG_REPO):     CONFIG_REPOSITORY_RESOURCE
 						// One public bundle repo per registered project (HOL-1382).
 						for REPO_NAME, R in PROJECT_CONFIG_REPOSITORIES {

@@ -1,0 +1,16 @@
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  labels:
+    app.kubernetes.io/name: holos-authenticator
+  name: holos-authenticator
+  namespace: holos-authenticator
+spec:
+  action: CUSTOM
+  provider:
+    name: holos-authenticator
+  rules:
+  - {}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: holos-authenticator

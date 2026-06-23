@@ -42,6 +42,19 @@ import (
 	AppProject?: [_]:          ap.#AppProject
 	Application?: [_]:         app.#Application
 	AuthorizationPolicy?: [_]: azp.#AuthorizationPolicy
+	// The authenticator.holos.run Backend kind (ADR-23, the Holos Authenticator)
+	// gets an explicit but DELIBERATELY OPEN entry (the trailing `...`), like
+	// Organization / KeycloakClient above and for the same reason: its CRD has no
+	// generated CUE type under cue.mod/gen/ (it lives in api/authenticator/
+	// v1alpha1/).  The openness is SCOPED to this kind, so the generic catch-all
+	// above stays CLOSED and a misspelled Kind still fails render-time validation.
+	// The holos-authenticator component (HOL-1389) emits one example Backend CR
+	// through #Resources.
+	Backend?: [_]: {
+		kind: "Backend"
+		metadata: name: string
+		...
+	}
 	Certificate?: [_]:         certv1.#Certificate
 	Cluster?: [_]:             cnpg.#Cluster
 	ClusterIssuer?: [_]:       ci.#ClusterIssuer
