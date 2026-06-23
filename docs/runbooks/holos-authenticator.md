@@ -145,9 +145,12 @@ spec:
     name: "prod-east-impersonator-creds"
 ```
 
-For an **external** target the credential in `credentialsSecretRef` is a
-kubeconfig/token for a principal that holds the impersonator ClusterRole on that
-remote cluster, provisioned out-of-band. The full external-egress waypoint /
+For an **external** target the credential in `credentialsSecretRef` is the **raw
+bearer token** of a principal that holds the impersonator ClusterRole on that
+remote cluster, provisioned out-of-band. The authorizer reads the `token` key
+verbatim and sends it as `Authorization: Bearer <token>`, so store the raw token
+— **not** a kubeconfig blob (the authorizer does not parse one). The full
+external-egress waypoint /
 `ServiceEntry` topology that fronts an external API server is a **deferred
 follow-up** ([`holos/docs/placeholders.md`](../../holos/docs/placeholders.md));
 the in-cluster wiring is what ships today.
@@ -204,10 +207,11 @@ credential stays bounded.
 
 - **In-cluster API server:** create a ServiceAccount, bind the impersonator
   ClusterRole to it, and store its token as the credential Secret.
-- **External API server:** provision the credential out-of-band (a
-  kubeconfig/token for a principal that holds the impersonator ClusterRole on
-  that remote cluster) and store it as the Secret named by
-  `credentialsSecretRef`.
+- **External API server:** provision the credential out-of-band (the **raw
+  bearer token** of a principal that holds the impersonator ClusterRole on that
+  remote cluster) and store it under the `token` key of the Secret named by
+  `credentialsSecretRef`. A kubeconfig blob is not parsed — store only the raw
+  token.
 
 Compromise of this credential lets an attacker impersonate arbitrary
 users/groups on that backend's API server, so its handling, the ext_authz trust
@@ -233,9 +237,10 @@ kubectl -n holos-authenticator create secret generic holos-authenticator-backend
   --from-literal=token="$TOKEN"
 ```
 
-For an external API server, store the out-of-band kubeconfig/token under the
-same `token` key. Write only the key(s) the authorizer reads — never carry an
-extra key.
+For an external API server, store the out-of-band **raw bearer token** under the
+same `token` key (the authorizer sends it as `Authorization: Bearer <token>` and
+does not parse a kubeconfig). Write only the key(s) the authorizer reads — never
+carry an extra key.
 
 ## Istio extensionProvider + AuthorizationPolicy wiring
 
@@ -274,6 +279,38 @@ spec:
   rules:
     - {}
 ```
+
+The component **also** renders a second policy, `holos-authenticator-grpc-callers`
+(`action: ALLOW`), an L4 caller guard on the ext_authz gRPC Service: it permits
+calls to port `9000` only from the `holos-authenticator`, `istio-system`, and
+`istio-gateways` namespaces (a temporary mitigation until the waypoint topology
+lands):
+
+```yaml
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: holos-authenticator-grpc-callers
+  namespace: holos-authenticator
+spec:
+  action: ALLOW
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: holos-authenticator
+  rules:
+    - from:
+        - source:
+            namespaces: ["holos-authenticator", "istio-system", "istio-gateways"]
+      to:
+        - operation:
+            ports: ["9000"]
+```
+
+> **A waypoint outside those namespaces cannot reach ext_authz.** If you place a
+> waypoint (or Envoy caller) in a namespace other than `holos-authenticator`,
+> `istio-system`, or `istio-gateways`, add that namespace to the
+> `holos-authenticator-grpc-callers` `from.source.namespaces` list, or the gRPC
+> `Check` call is denied at L4 before the authorizer ever runs.
 
 > **L7 enforcement requires a waypoint.** In ambient mode ztunnel is L4-only, so
 > the `CUSTOM` `AuthorizationPolicy` only takes effect once a **waypoint** fronts
@@ -326,8 +363,13 @@ See [README.md](../../README.md) (*Container image* → *Multi-arch images* /
    kubectl -n holos-authenticator logs deploy/holos-authenticator | grep "starting manager"
    ```
 
-2. **Backend is Ready.** The `Backend` CR reports `Ready=True` once its OIDC
-   issuer is reachable and its credential resolves:
+2. **Backend is Ready.** The `Backend` CR reports `Ready=True` once its
+   group-mapping CEL compiles, its OIDC issuer discovery succeeds, and it has
+   claimed its `host`. **The reconciler does not read the credential Secret** —
+   the impersonator credential is resolved later, on the `Check` data path
+   (failing closed with 403 if absent), so `Ready=True` is **not** a signal that
+   the credential Secret exists. Provision the Secret (next section) regardless
+   of the Backend's readiness:
 
    ```bash
    kubectl -n holos-authenticator get backends
@@ -379,6 +421,11 @@ See [README.md](../../README.md) (*Container image* → *Multi-arch images* /
   in ambient mode; ztunnel is L4-only. Confirm a waypoint fronts the protected
   workload (see the deferred topology in
   [`holos/docs/placeholders.md`](../../holos/docs/placeholders.md)).
+- **The gRPC `Check` call is denied at L4.** The `holos-authenticator-grpc-callers`
+  `ALLOW` policy permits port `9000` only from the `holos-authenticator`,
+  `istio-system`, and `istio-gateways` namespaces. A waypoint/caller in any other
+  namespace is rejected before the authorizer runs — add its namespace to that
+  policy's `from.source.namespaces`.
 
 ## References
 
