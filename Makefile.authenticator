@@ -4,10 +4,12 @@
 # Every target here is namespaced authenticator-* so it never collides with the
 # holos-paas targets (build, test, docker-build, publish, ...) or the
 # holos-controller targets (controller-*), and it does not touch scripts/apply,
-# scripts/render, or scripts/publish. This phase ships only the service scaffold
-# (the cmd/holos-authenticator manager + ext_authz gRPC stub), so unlike
-# Makefile.controller there are no controller-gen/kustomize/envtest targets yet —
-# the authenticator.holos.run CRD and its generation land in HOL-1386.
+# scripts/render, or scripts/publish. As of HOL-1386 it includes controller-gen
+# code-generation targets (authenticator-generate / authenticator-manifests) for
+# the authenticator.holos.run API group, generating the Backend CRD and the
+# authenticator's OWN RBAC role (holos-authenticator-role). It still has no
+# kustomize/envtest deploy targets — the authenticator install wiring lands in a
+# later phase (HOL-1389).
 
 # Container image coordinates for the authenticator. Defaults target the local
 # k3d in-cluster registry so a pushed image is pullable by the cluster (mirrors

@@ -56,3 +56,27 @@ func TestMarkNotReady(t *testing.T) {
 		}
 	}
 }
+
+// TestMarkRejected asserts the invalid-spec rejection path drives Accepted,
+// Programmed, and Ready all False — Accepted is not left lingering True from a
+// previously valid generation.
+func TestMarkRejected(t *testing.T) {
+	var conditions []metav1.Condition
+	markReady(&conditions, ReasonReconciled, "ok", 1)
+
+	if !markRejected(&conditions, ReasonInvalidSpec, "malformed CEL expression", 2) {
+		t.Fatal("markRejected reported no change")
+	}
+	for _, ct := range []string{ConditionAccepted, ConditionProgrammed, ConditionReady} {
+		c := meta.FindStatusCondition(conditions, ct)
+		if c == nil || c.Status != metav1.ConditionFalse {
+			t.Errorf("condition %s not False after markRejected", ct)
+		}
+		if c.Reason != ReasonInvalidSpec {
+			t.Errorf("condition %s reason = %q, want %q", ct, c.Reason, ReasonInvalidSpec)
+		}
+		if c.ObservedGeneration != 2 {
+			t.Errorf("condition %s observedGeneration = %d, want 2", ct, c.ObservedGeneration)
+		}
+	}
+}

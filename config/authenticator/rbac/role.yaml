@@ -17,8 +17,6 @@ rules:
   - secrets
   verbs:
   - get
-  - list
-  - watch
 - apiGroups:
   - authenticator.holos.run
   resources:

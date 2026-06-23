@@ -77,11 +77,15 @@ type OIDCConfig struct {
 type GroupMapping struct {
 	// CELExpression is a Common Expression Language expression evaluated against
 	// the validated token claims (exposed as the `claims` variable) that returns
-	// the list of Kubernetes groups to impersonate. When omitted it defaults to
-	// mapping the OIDC groups claim directly (the equivalent of `claims.groups`).
+	// the list of Kubernetes groups to impersonate. When omitted (empty) the
+	// authorizer maps the OIDC groups claim directly — the claim named by
+	// spec.oidc.groupsClaim, which is the single source of truth for which claim
+	// carries the groups. The field is intentionally left unset by default rather
+	// than defaulted to a static `claims.groups` string, so that configuring a
+	// non-default groupsClaim is honored without also having to override this
+	// expression. Set it only to transform the groups (e.g. prefix or filter).
 	//
 	// +optional
-	// +kubebuilder:default="claims.groups"
 	CELExpression string `json:"celExpression,omitempty"`
 }
 
@@ -111,9 +115,10 @@ type BackendSpec struct {
 	// (one OIDC client per backend). Required.
 	OIDC OIDCConfig `json:"oidc"`
 
-	// GroupMapping configures the CEL expression that maps validated token claims
-	// to the Kubernetes groups the authorizer impersonates. When omitted the
-	// mapping defaults to the OIDC groups claim (claims.groups).
+	// GroupMapping configures the optional CEL expression that maps validated
+	// token claims to the Kubernetes groups the authorizer impersonates. When
+	// omitted (the default), the authorizer maps the OIDC groups claim directly —
+	// the claim named by spec.oidc.groupsClaim.
 	//
 	// +optional
 	// +kubebuilder:default={}

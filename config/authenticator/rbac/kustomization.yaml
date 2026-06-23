@@ -1,0 +1,10 @@
+# RBAC for the holos-authenticator manager: the generated ClusterRole (role.yaml,
+# holos-authenticator-role). It is kept separate from config/rbac (the
+# holos-controller's RBAC) so the authenticator's role is never bundled into the
+# controller's holos-controller-manager-role. The role binding, leader-election
+# Role, and service account are added with the authenticator deploy tree in
+# HOL-1389.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - role.yaml

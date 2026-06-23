@@ -10,3 +10,4 @@ resources:
   - bases/keycloak.holos.run_keycloakusers.yaml
   - bases/keycloak.holos.run_keycloakclients.yaml
   - bases/security.holos.run_referencegrants.yaml
+  - bases/authenticator.holos.run_backends.yaml

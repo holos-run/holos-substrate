@@ -89,11 +89,27 @@ func markReady(conditions *[]metav1.Condition, reason, message string, observedG
 
 // markNotReady sets Programmed and Ready False with the given reason and message
 // and the observed generation, leaving Accepted untouched (the spec was still
-// understood; it just could not be programmed). It is the failure path for a
-// credential, discovery, or validation error. It returns true when either
-// condition changed.
+// understood and accepted; it just could not be programmed). It is the failure
+// path for a transient operational error — a credential that has not been created
+// yet, or an issuer/upstream that is temporarily unreachable — where the spec
+// itself is valid. For an invalid spec the resource was never accepted; use
+// markRejected instead so Accepted is also driven False. It returns true when
+// either condition changed.
 func markNotReady(conditions *[]metav1.Condition, reason, message string, observedGeneration int64) bool {
 	p := setCondition(conditions, ConditionProgrammed, string(metav1.ConditionFalse), reason, message, observedGeneration)
 	r := setCondition(conditions, ConditionReady, string(metav1.ConditionFalse), reason, message, observedGeneration)
 	return p || r
+}
+
+// markRejected sets Accepted, Programmed, and Ready all False with the given
+// reason and message and the observed generation. It is the rejection path for an
+// invalid spec (e.g. ReasonInvalidSpec): the spec could not be understood or
+// claimed, so — unlike markNotReady — Accepted is driven False too rather than
+// left lingering True from a previously valid generation. It returns true when
+// any of the three conditions changed.
+func markRejected(conditions *[]metav1.Condition, reason, message string, observedGeneration int64) bool {
+	a := setCondition(conditions, ConditionAccepted, string(metav1.ConditionFalse), reason, message, observedGeneration)
+	p := setCondition(conditions, ConditionProgrammed, string(metav1.ConditionFalse), reason, message, observedGeneration)
+	r := setCondition(conditions, ConditionReady, string(metav1.ConditionFalse), reason, message, observedGeneration)
+	return a || p || r
 }
