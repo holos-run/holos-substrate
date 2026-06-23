@@ -2,6 +2,7 @@ package authenticator
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/go-logr/logr"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
@@ -93,7 +95,7 @@ func TestGRPCServerStartStop(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() { errCh <- g.Start(ctx) }()
 
-	conn, err := dialWithRetry(t, addr)
+	conn, err := dialReady(t, addr)
 	if err != nil {
 		cancel()
 		t.Fatalf("dial server: %v", err)
@@ -126,18 +128,31 @@ func TestGRPCServerStartStop(t *testing.T) {
 	}
 }
 
-// dialWithRetry dials addr, retrying briefly so the test does not race the
-// server's Listen in Start.
-func dialWithRetry(t *testing.T, addr string) (*grpc.ClientConn, error) {
+// dialReady creates a client for addr and actively waits for the connection to
+// reach Ready, so the test does not race the server's Listen in Start. Because
+// grpc.NewClient is lazy (it returns before any TCP connection is attempted),
+// the readiness wait — Connect plus WaitForStateChange — is what proves the
+// server is actually accepting connections, not merely that a client handle was
+// allocated.
+func dialReady(t *testing.T, addr string) (*grpc.ClientConn, error) {
 	t.Helper()
-	var lastErr error
-	for i := 0; i < 50; i++ {
-		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-		if err == nil {
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn.Connect()
+	for {
+		s := conn.GetState()
+		if s == connectivity.Ready {
 			return conn, nil
 		}
-		lastErr = err
-		time.Sleep(20 * time.Millisecond)
+		if !conn.WaitForStateChange(ctx, s) {
+			_ = conn.Close()
+			return nil, fmt.Errorf("connection not Ready within timeout (last state %v): %w", s, ctx.Err())
+		}
 	}
-	return nil, lastErr
 }

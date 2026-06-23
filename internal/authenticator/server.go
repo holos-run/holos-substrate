@@ -51,6 +51,10 @@ func NewCheckServer(log logr.Logger) *CheckServer {
 // HOL-1388 replaces this with the real allow/deny logic and the impersonation
 // headers an allowed request carries.
 func (s *CheckServer) Check(_ context.Context, _ *authv3.CheckRequest) (*authv3.CheckResponse, error) {
+	// Record the scaffold denial at debug verbosity so it is observable without
+	// flooding logs on a hot data path. HOL-1388 replaces this with the real
+	// allow/deny decision and structured request context.
+	s.log.V(1).Info("ext_authz scaffold stub denying request")
 	return &authv3.CheckResponse{
 		// A non-OK gRPC status maps the response to the Denied branch in Envoy's
 		// ext_authz filter; PermissionDenied is the conventional code for an

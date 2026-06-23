@@ -167,9 +167,15 @@ reverse proxy or API-server auth proxy is added to the path.
 New Go dependencies are held to the minimum the protocol requires. This scaffold
 phase adds only **`github.com/envoyproxy/go-control-plane`** (for the
 `envoy/service/auth/v3` ext_authz types — its `/envoy` submodule under modern
-versions) and promotes **`google.golang.org/grpc`** from an indirect to a direct
-dependency. OIDC and CEL libraries are **deliberately not** added until the phase
-that uses them (HOL-1387), keeping each phase's dependency footprint legible.
+versions, pinned to a version that keeps `google.golang.org/grpc` at the existing
+release rather than forcing a broad transitive upgrade) and promotes
+**`google.golang.org/grpc`** from an indirect to a direct dependency.
+**`google.golang.org/genproto/googleapis/rpc`** is likewise promoted to direct,
+because the ext_authz `CheckResponse` carries a `google.rpc.Status` the stub sets
+(`server.go` imports `rpc/status`); it was already an indirect dependency, so this
+adds no new module to the build graph. OIDC and CEL libraries are **deliberately
+not** added until the phase that uses them (HOL-1387), keeping each phase's
+dependency footprint legible.
 
 ## Decision
 
