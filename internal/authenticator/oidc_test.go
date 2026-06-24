@@ -824,6 +824,48 @@ func TestDiscoverVerifierRefreshOnRotation(t *testing.T) {
 	}
 }
 
+// TestDiscoverVerifierRefreshNewAlg asserts refresh-on-unknown-kid is not blocked
+// at parse when the rotated-in key uses a different (but issuer-advertised) alg than
+// the keys present at build: the comprehensive outer/parse alg gate admits the
+// PS256 token so it reaches the unknown-kid check and triggers the refetch, after
+// which the per-key binding verifies it.
+func TestDiscoverVerifierRefreshNewAlg(t *testing.T) {
+	keyA := newTestSigningKey(t)
+	keyB := newTestSigningKey(t) // RSA, will sign PS256
+	jwksA := marshalJWKS(t,
+		jose.JSONWebKey{Key: keyA.public, KeyID: "A", Algorithm: string(jose.RS256), Use: "sig"},
+	)
+	// The issuer advertises both RS256 and PS256 up front.
+	srv, setJWKS := mutableJWKSDiscoveryServer(t, []string{string(jose.RS256), string(jose.PS256)}, jwksA)
+
+	verifier, err := DiscoverVerifier(context.Background(), srv.URL, testClientID, nil)
+	if err != nil {
+		t.Fatalf("DiscoverVerifier: %v", err)
+	}
+
+	now := time.Now()
+	claims := baseClaims("alice", testClientID, now)
+	claims["iss"] = srv.URL
+
+	// Key A (RS256) verifies from the snapshot without a refresh.
+	tokenA := signWithKID(t, keyA.private, jose.RS256, "A", claims)
+	if _, err := verifier.Verify(context.Background(), tokenA); err != nil {
+		t.Fatalf("Verify snapshotted key A: %v", err)
+	}
+
+	// Issuer rotates in key B declaring PS256. A PS256 token bearing the new kid must
+	// refresh and verify — even though no PS256 key existed when the verifier was
+	// built.
+	setJWKS(marshalJWKS(t,
+		jose.JSONWebKey{Key: keyA.public, KeyID: "A", Algorithm: string(jose.RS256), Use: "sig"},
+		jose.JSONWebKey{Key: keyB.public, KeyID: "B", Algorithm: string(jose.PS256), Use: "sig"},
+	))
+	tokenB := signWithKID(t, keyB.private, jose.PS256, "B", claims)
+	if _, err := verifier.Verify(context.Background(), tokenB); err != nil {
+		t.Fatalf("Verify rotated-in PS256 key B via refresh: %v", err)
+	}
+}
+
 // TestDiscoverVerifierHonorsAdvertisedAlgs asserts the discovery path constrains
 // each key to the issuer's advertised id_token_signing_alg_values_supported: an
 // alg-less RSA key (which the key type alone would widen to the whole RS*/PS*

@@ -118,7 +118,7 @@ func StaticVerifier(issuerURL, clientID string, jwks []byte) (TokenVerifier, err
 
 	verifier := oidc.NewVerifier(issuerURL, hardened, &oidc.Config{
 		ClientID:             clientID,
-		SupportedSigningAlgs: hardened.supportedSigningAlgs(),
+		SupportedSigningAlgs: verifiableSigAlgStrings(),
 	})
 	return NewOIDCVerifier(verifier), nil
 }
@@ -138,6 +138,33 @@ type signingKey struct {
 // stampede the issuer's JWKS endpoint: at most one refetch per interval.
 const jwksRefreshInterval = time.Minute
 
+// verifiableSigAlgs is the fixed set of asymmetric JWS algorithms the verifier
+// admits at go-oidc's outer alg gate and at jose.ParseSigned. The REAL constraint —
+// which trusted key, which of THAT key's authorized algs (its stated alg or
+// canonical alg, intersected with the issuer's advertised set) — is enforced
+// per-key in VerifySignature, which is strictly tighter than this gate. Keeping the
+// gate comprehensive (rather than the live key union) is what lets
+// refresh-on-unknown-kid pick up a key rotated in under an alg absent from the JWKS
+// when the verifier was built: the token reaches the kid check and triggers a
+// refetch instead of being rejected at parse first. The symmetric families and the
+// "none" alg are deliberately excluded, so an HS*/none token is always rejected.
+var verifiableSigAlgs = []jose.SignatureAlgorithm{
+	jose.RS256, jose.RS384, jose.RS512,
+	jose.PS256, jose.PS384, jose.PS512,
+	jose.ES256, jose.ES384, jose.ES512,
+	jose.EdDSA,
+}
+
+// verifiableSigAlgStrings is verifiableSigAlgs as the []string go-oidc's
+// Config.SupportedSigningAlgs wants.
+func verifiableSigAlgStrings() []string {
+	out := make([]string, len(verifiableSigAlgs))
+	for i, alg := range verifiableSigAlgs {
+		out[i] = string(alg)
+	}
+	return out
+}
+
 // hardenedKeySet is an oidc.KeySet over a set of trusted signing keys that
 // (1) selects the verification key by the token's protected-header `kid` — a
 // token naming a kid is verified ONLY against the key carrying that kid — and
@@ -148,11 +175,10 @@ const jwksRefreshInterval = time.Minute
 // diverge: neither go-oidc's StaticKeySet (tries every key, ignores kid) nor its
 // RemoteKeySet (matches kid but binds alg only globally) enforces both.
 type hardenedKeySet struct {
-	// mu guards keys/allowAlgs, which the discovery path replaces in place when it
-	// refreshes the issuer JWKS; the static path never mutates them after build.
-	mu        sync.RWMutex
-	keys      []signingKey
-	allowAlgs []jose.SignatureAlgorithm // union of every key's algs — the jose.ParseSigned allow-list
+	// mu guards keys, which the discovery path replaces wholesale when it refreshes
+	// the issuer JWKS; the static path never mutates it after build.
+	mu   sync.RWMutex
+	keys []signingKey
 
 	// refresh, when non-nil, re-fetches and re-reduces the issuer JWKS. It is set
 	// only on the discovery path so a key the issuer rotates in after this verifier
@@ -161,7 +187,7 @@ type hardenedKeySet struct {
 	// than being rejected until the next reconcile. The static path leaves it nil:
 	// its JWKS is fixed spec data that only a spec edit (a fresh reconcile) changes.
 	refreshMu   sync.Mutex
-	refresh     func(context.Context) ([]signingKey, []jose.SignatureAlgorithm, error)
+	refresh     func(context.Context) ([]signingKey, error)
 	lastRefresh time.Time
 	minRefresh  time.Duration
 }
@@ -171,21 +197,18 @@ type hardenedKeySet struct {
 // spec error), no issuer-advertised-alg constraint (there is no discovery
 // document), and no refresh (the JWKS is fixed spec data).
 func newStaticKeySet(keySet jose.JSONWebKeySet) (*hardenedKeySet, error) {
-	keys, algs, err := reduceJWKS(keySet, true, nil)
+	keys, err := reduceJWKS(keySet, true, nil)
 	if err != nil {
 		return nil, err
 	}
-	return &hardenedKeySet{keys: keys, allowAlgs: algs}, nil
+	return &hardenedKeySet{keys: keys}, nil
 }
 
-// reduceJWKS reduces a parsed JWKS to the trusted signing keys and the union of
-// their authorized algs — the shared use/alg validation behind both the static and
-// discovery paths. A JWK with use other than "sig" is excluded (an empty use is
-// permitted — RFC 7517 makes it optional); key.Public() strips any private material
-// so a JWKS that accidentally carries a private key still yields only its public
-// half (defense in depth). The asymmetric algorithm(s) compatible with each key's
-// type/curve are derived so the verifier accepts exactly the algs the keys use
-// rather than go-oidc's RS256-only default.
+// reduceJWKS reduces a parsed JWKS to the trusted signing keys — the shared use/alg
+// validation behind both the static and discovery paths. A JWK with use other than
+// "sig" is excluded (an empty use is permitted — RFC 7517 makes it optional);
+// key.Public() strips any private material so a JWKS that accidentally carries a
+// private key still yields only its public half (defense in depth).
 //
 // When strict, an unsupported key type or a stated `alg` incompatible with the key
 // type is an error (the static path's spec validation); otherwise such a key is
@@ -193,14 +216,9 @@ func newStaticKeySet(keySet jose.JSONWebKeySet) (*hardenedKeySet, error) {
 // When advertisedAlgs is non-empty (the discovery document's
 // id_token_signing_alg_values_supported), each key's authorized algs are
 // intersected with it so the verifier never accepts an alg the issuer says it does
-// not use — and an alg-less key is not silently widened past the advertised set. A
-// JWKS yielding no usable signing key is always an error.
-func reduceJWKS(keySet jose.JSONWebKeySet, strict bool, advertisedAlgs []string) ([]signingKey, []jose.SignatureAlgorithm, error) {
-	var (
-		keys []signingKey
-		seen = map[jose.SignatureAlgorithm]struct{}{}
-		all  []jose.SignatureAlgorithm
-	)
+// not use. A JWKS yielding no usable signing key is always an error.
+func reduceJWKS(keySet jose.JSONWebKeySet, strict bool, advertisedAlgs []string) ([]signingKey, error) {
+	var keys []signingKey
 	for _, key := range usableJWKSKeys(keySet) {
 		if key.Use != "" && key.Use != "sig" {
 			continue
@@ -210,7 +228,7 @@ func reduceJWKS(keySet jose.JSONWebKeySet, strict bool, advertisedAlgs []string)
 		compatible := keyAlgs(pub)
 		if len(compatible) == 0 {
 			if strict {
-				return nil, nil, fmt.Errorf("key %q has an unsupported key type for signature verification", key.KeyID)
+				return nil, fmt.Errorf("key %q has an unsupported key type for signature verification", key.KeyID)
 			}
 			continue
 		}
@@ -218,19 +236,21 @@ func reduceJWKS(keySet jose.JSONWebKeySet, strict bool, advertisedAlgs []string)
 		// The JWK `alg` is authoritative when present (RFC 7517 makes it optional). A
 		// stated alg must be one the key type can actually produce: a symmetric, typo'd,
 		// or mismatched alg (e.g. "HS256" or "ES256" on an RSA key) binds the key to an
-		// alg it can never verify under. When absent, the key is bound to the full family
-		// its type can produce (RSA→RS*/PS*, P-256→ES256, …).
+		// alg it can never verify under. When absent, the key is bound to its canonical
+		// alg for the key type (compatible[0]: RSA→RS256, P-256→ES256, …) — NOT the whole
+		// family, so an alg-less key is never silently widened past the single algorithm
+		// the issuer's tokens actually use.
 		var algs []string
 		if key.Algorithm != "" {
 			if !containsString(compatible, key.Algorithm) {
 				if strict {
-					return nil, nil, fmt.Errorf("key %q declares alg %q incompatible with its key type", key.KeyID, key.Algorithm)
+					return nil, fmt.Errorf("key %q declares alg %q incompatible with its key type", key.KeyID, key.Algorithm)
 				}
 				continue
 			}
 			algs = []string{key.Algorithm}
 		} else {
-			algs = compatible
+			algs = []string{compatible[0]}
 		}
 
 		// Honor the issuer's advertised signing algs (discovery only): drop any alg the
@@ -243,19 +263,12 @@ func reduceJWKS(keySet jose.JSONWebKeySet, strict bool, advertisedAlgs []string)
 			}
 		}
 
-		sigAlgs := toSigAlgs(algs)
-		keys = append(keys, signingKey{keyID: key.KeyID, algs: sigAlgs, pub: pub})
-		for _, alg := range sigAlgs {
-			if _, ok := seen[alg]; !ok {
-				seen[alg] = struct{}{}
-				all = append(all, alg)
-			}
-		}
+		keys = append(keys, signingKey{keyID: key.KeyID, algs: toSigAlgs(algs), pub: pub})
 	}
 	if len(keys) == 0 {
-		return nil, nil, fmt.Errorf("contains no usable signing keys")
+		return nil, fmt.Errorf("contains no usable signing keys")
 	}
-	return keys, all, nil
+	return keys, nil
 }
 
 // VerifySignature implements oidc.KeySet. go-oidc has already checked the token's
@@ -293,15 +306,14 @@ func (k *hardenedKeySet) VerifySignature(ctx context.Context, rawToken string) (
 // distinguishes a rotated-in-key miss from a malformed token or a real signature
 // rejection.
 func (k *hardenedKeySet) verifyOnce(rawToken string) (payload []byte, refreshable bool, err error) {
-	// Snapshot the slice headers under the read lock: refresh replaces them wholesale
+	// Snapshot the slice header under the read lock: refresh replaces it wholesale
 	// (it never mutates the backing array), so iterating the snapshot is safe without
 	// holding the lock across the verification.
 	k.mu.RLock()
 	keys := k.keys
-	allowAlgs := k.allowAlgs
 	k.mu.RUnlock()
 
-	jws, err := jose.ParseSigned(rawToken, allowAlgs)
+	jws, err := jose.ParseSigned(rawToken, verifiableSigAlgs)
 	if err != nil {
 		return nil, false, fmt.Errorf("parsing token: %w", err)
 	}
@@ -357,32 +369,15 @@ func (k *hardenedKeySet) tryRefresh(ctx context.Context) bool {
 	if !k.lastRefresh.IsZero() && time.Since(k.lastRefresh) < k.minRefresh {
 		return true
 	}
-	keys, algs, err := k.refresh(ctx)
+	keys, err := k.refresh(ctx)
 	k.lastRefresh = time.Now()
 	if err != nil {
 		return false
 	}
 	k.mu.Lock()
 	k.keys = keys
-	k.allowAlgs = algs
 	k.mu.Unlock()
 	return true
-}
-
-// supportedSigningAlgs returns the union of authorized algs as the []string
-// go-oidc's Config.SupportedSigningAlgs wants, so go-oidc's own alg pre-check
-// admits exactly the algs the keys use (not its RS256-only default) before
-// delegating the signature check to VerifySignature. It is read once at verifier
-// construction (go-oidc captures it), so a later refresh that introduces a wholly
-// new alg family still requires a reconcile to widen this outer gate.
-func (k *hardenedKeySet) supportedSigningAlgs() []string {
-	k.mu.RLock()
-	defer k.mu.RUnlock()
-	out := make([]string, len(k.allowAlgs))
-	for i, alg := range k.allowAlgs {
-		out[i] = string(alg)
-	}
-	return out
 }
 
 // toSigAlgs converts oidc/JOSE alg name strings to jose.SignatureAlgorithm.
@@ -518,27 +513,29 @@ func DiscoverVerifier(ctx context.Context, issuerURL, clientID string, caBundle 
 	if err != nil {
 		return nil, fmt.Errorf("OIDC discovery for issuer %q: %w", issuerURL, err)
 	}
-	keys, algs, err := reduceJWKS(keySet, false, advertisedAlgs)
+	keys, err := reduceJWKS(keySet, false, advertisedAlgs)
 	if err != nil {
 		return nil, fmt.Errorf("OIDC discovery for issuer %q: JWKS %w", issuerURL, err)
 	}
 
 	// Wire refresh-on-unknown-kid so issuer key rotation is picked up at the first
 	// token bearing the new kid (mirroring go-oidc's RemoteKeySet), not deferred to
-	// the next reconcile. The closure captures the timed, caBundle-trusting client
-	// and the jwks_uri; it builds a fresh deadline per refetch because the discovery
-	// ctx below is canceled when DiscoverVerifier returns, long before a data-path
-	// token triggers a refresh.
+	// the next reconcile. The closure captures the timed, caBundle-trusting client,
+	// the jwks_uri, and the advertised algs read above; it builds a fresh deadline
+	// per refetch because the discovery ctx below is canceled when DiscoverVerifier
+	// returns, long before a data-path token triggers a refresh. (A rotation that
+	// also changes the issuer's advertised id_token_signing_alg_values_supported is
+	// picked up at the next reconcile, which re-reads the discovery document — the
+	// advertised set captured here is fixed for this verifier's lifetime.)
 	hardened := &hardenedKeySet{
 		keys:       keys,
-		allowAlgs:  algs,
 		minRefresh: jwksRefreshInterval,
-		refresh: func(rctx context.Context) ([]signingKey, []jose.SignatureAlgorithm, error) {
+		refresh: func(rctx context.Context) ([]signingKey, error) {
 			rctx, cancel := context.WithTimeout(rctx, discoveryTimeout)
 			defer cancel()
 			set, err := fetchJWKSFromURL(rctx, httpClient, jwksURL)
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 			return reduceJWKS(set, false, advertisedAlgs)
 		},
@@ -546,7 +543,7 @@ func DiscoverVerifier(ctx context.Context, issuerURL, clientID string, caBundle 
 
 	verifier := oidc.NewVerifier(issuerURL, hardened, &oidc.Config{
 		ClientID:             clientID,
-		SupportedSigningAlgs: hardened.supportedSigningAlgs(),
+		SupportedSigningAlgs: verifiableSigAlgStrings(),
 	})
 	return &oidcVerifier{verifier: verifier}, nil
 }
