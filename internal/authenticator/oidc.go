@@ -124,23 +124,33 @@ func StaticVerifier(issuerURL, clientID string, jwks []byte) (TokenVerifier, err
 			continue
 		}
 		pub := key.Public().Key
-		pubs = append(pubs, pub)
 
-		// Determine the key's signing algorithm so the verifier accepts exactly the
-		// algs the issuer's keys use rather than go-oidc's RS256-only default —
-		// otherwise a valid ES256/EdDSA/RS512 JWKS would be marked Ready yet fail every
-		// token verification. The JWK `alg` is authoritative when present; RFC 7517
-		// makes it optional, so when absent we infer it from the public key type/curve
-		// (RSA→RS256, P-256→ES256, P-384→ES384, P-521→ES512, Ed25519→EdDSA). A key whose
-		// alg is neither stated nor inferable contributes no entry, leaving go-oidc's
-		// default for that key.
+		// Determine the asymmetric signing algorithm(s) compatible with this key's
+		// type/curve so the verifier accepts exactly the algs the issuer's keys use
+		// rather than go-oidc's RS256-only default — otherwise a valid ES256/EdDSA/RS512
+		// JWKS would be marked Ready yet fail every token verification. An unsupported
+		// key type (e.g. a symmetric oct key) yields none.
+		compatible := keyAlgs(pub)
+		if len(compatible) == 0 {
+			return nil, fmt.Errorf("static JWKS key %q has an unsupported key type for signature verification", key.KeyID)
+		}
+
+		// The JWK `alg` is authoritative when present (RFC 7517 makes it optional). A
+		// stated alg must be one the key type can actually produce: a symmetric, typo'd,
+		// or mismatched alg (e.g. "HS256" or "ES256" on an RSA key) would otherwise build
+		// a verifier that marks the Backend Ready yet rejects every token at request
+		// time, so reject it here as an invalid spec. When absent, fall back to the
+		// canonical alg for the key type (compatible[0]: RSA→RS256, P-256→ES256, …).
 		if key.Algorithm != "" {
+			if !containsString(compatible, key.Algorithm) {
+				return nil, fmt.Errorf("static JWKS key %q declares alg %q incompatible with its key type", key.KeyID, key.Algorithm)
+			}
+			pubs = append(pubs, pub)
 			addAlg(key.Algorithm)
 			continue
 		}
-		if alg := inferKeyAlg(pub); alg != "" {
-			addAlg(alg)
-		}
+		pubs = append(pubs, pub)
+		addAlg(compatible[0])
 	}
 	if len(pubs) == 0 {
 		return nil, fmt.Errorf("static JWKS contains no usable signing keys")
@@ -154,30 +164,42 @@ func StaticVerifier(issuerURL, clientID string, jwks []byte) (TokenVerifier, err
 	return NewOIDCVerifier(verifier), nil
 }
 
-// inferKeyAlg returns the JWS signing algorithm implied by a public key whose JWK
-// omits the optional `alg` member: RSA→RS256 (go-oidc's own default), and each
-// NIST curve to its canonical ECDSA alg (P-256→ES256, P-384→ES384, P-521→ES512),
-// Ed25519→EdDSA. An unrecognized key type returns "" so the caller leaves the
-// default in force rather than asserting an algorithm the key cannot use.
-func inferKeyAlg(pub crypto.PublicKey) string {
+// keyAlgs returns the JWS signing algorithms a public key can verify, canonical
+// (default) alg first, for validating a JWK's stated `alg` and for choosing the
+// alg when the JWK omits the optional `alg` member. An RSA key supports the
+// RSASSA-PKCS1-v1.5 and RSASSA-PSS families (RS*/PS*); each NIST curve maps to its
+// single ECDSA alg (P-256→ES256, P-384→ES384, P-521→ES512); Ed25519→EdDSA. An
+// unrecognized or symmetric key type returns nil so the caller rejects it rather
+// than asserting an algorithm the key cannot use.
+func keyAlgs(pub crypto.PublicKey) []string {
 	switch k := pub.(type) {
 	case *rsa.PublicKey:
-		return oidc.RS256
+		return []string{oidc.RS256, oidc.RS384, oidc.RS512, oidc.PS256, oidc.PS384, oidc.PS512}
 	case *ecdsa.PublicKey:
 		switch k.Curve {
 		case elliptic.P256():
-			return oidc.ES256
+			return []string{oidc.ES256}
 		case elliptic.P384():
-			return oidc.ES384
+			return []string{oidc.ES384}
 		case elliptic.P521():
-			return oidc.ES512
+			return []string{oidc.ES512}
 		}
-		return ""
+		return nil
 	case ed25519.PublicKey:
-		return oidc.EdDSA
+		return []string{oidc.EdDSA}
 	default:
-		return ""
+		return nil
 	}
+}
+
+// containsString reports whether s is in xs.
+func containsString(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 // usableJWKSKeys returns the keys in keySet whose material is present and

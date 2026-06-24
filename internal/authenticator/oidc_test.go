@@ -442,6 +442,71 @@ func TestStaticVerifierAlgLessEC(t *testing.T) {
 	}
 }
 
+// TestStaticVerifierMismatchedAlg asserts a JWK whose stated alg is incompatible
+// with its key type (e.g. a symmetric HS256, or an ES256 alg on an RSA key) is
+// rejected rather than building a verifier that would mark the Backend Ready yet
+// reject every token at request time.
+func TestStaticVerifierMismatchedAlg(t *testing.T) {
+	key := newTestSigningKey(t) // RSA key
+
+	for _, alg := range []string{"HS256", string(jose.ES256), "RS257" /* typo */} {
+		set := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+			Key:       key.public,
+			KeyID:     "rsa-0",
+			Algorithm: alg,
+			Use:       "sig",
+		}}}
+		jwks, err := json.Marshal(set)
+		if err != nil {
+			t.Fatalf("marshaling JWKS: %v", err)
+		}
+		if _, err := StaticVerifier(testIssuer, testClientID, jwks); err == nil {
+			t.Errorf("StaticVerifier with RSA key + alg %q = nil error, want rejection", alg)
+		}
+	}
+}
+
+// TestStaticVerifierRSAFamilyAlg asserts an RSA key may legitimately declare any
+// RSA-family alg (e.g. PS256), not only RS256: the compatible-alg set must accept
+// the whole RS*/PS* family for an RSA key.
+func TestStaticVerifierRSAFamilyAlg(t *testing.T) {
+	now := time.Now()
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generating RSA key: %v", err)
+	}
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.PS256, Key: priv},
+		(&jose.SignerOptions{}).WithType("JWT"),
+	)
+	if err != nil {
+		t.Fatalf("building PS256 signer: %v", err)
+	}
+
+	set := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+		Key:       priv.Public(),
+		KeyID:     "rsa-0",
+		Algorithm: string(jose.PS256),
+		Use:       "sig",
+	}}}
+	jwks, err := json.Marshal(set)
+	if err != nil {
+		t.Fatalf("marshaling JWKS: %v", err)
+	}
+
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwks)
+	if err != nil {
+		t.Fatalf("StaticVerifier with RSA key + PS256: %v", err)
+	}
+	raw, err := jwt.Signed(signer).Claims(baseClaims("alice", testClientID, now)).Serialize()
+	if err != nil {
+		t.Fatalf("signing PS256 JWT: %v", err)
+	}
+	if _, err := verifier.Verify(context.Background(), raw); err != nil {
+		t.Fatalf("Verify PS256 token: %v", err)
+	}
+}
+
 // TestStaticVerifierMalformedJWKS asserts an unparseable JWKS document yields an
 // error and no verifier.
 func TestStaticVerifierMalformedJWKS(t *testing.T) {
