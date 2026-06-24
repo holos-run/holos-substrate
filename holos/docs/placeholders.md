@@ -253,8 +253,10 @@ and one example `Backend`. The **in-cluster wiring** is built and documented in
 the operator runbook ([`docs/runbooks/holos-authenticator.md`](../../docs/runbooks/holos-authenticator.md));
 ADR-23 is `Implemented`. ADR-23 Revision 3 (HOL-1392..HOL-1395) added **KSA /
 static-JWKS backends** — an additive `spec.oidc.jwks` validates service-account
-ID tokens **offline** against a static JWKS (no OIDC discovery), fronting a remote
-cluster's API server 1:1 by host. The following enforcement, tuning, and
+ID tokens minted by a remote cluster **offline** against a static JWKS (no OIDC
+discovery), then impersonates the SA on the management cluster (`spec.server.url`);
+the remote cluster is only the token issuer/JWKS source, with one `Backend` per
+remote cluster keyed 1:1 by host. The following enforcement, tuning, and
 hardening concerns are deliberately deferred to later phases:
 
 - **Static-JWKS key selection / per-key algorithm enforcement (HOL-1396).** The

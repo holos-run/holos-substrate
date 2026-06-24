@@ -291,10 +291,11 @@ set:
 ["system:authenticated", "system:serviceaccounts", "system:serviceaccounts:" + claims["kubernetes.io"].namespace]
 ```
 
-For a token from namespace `remote-ns` this yields
-`["system:authenticated", "system:serviceaccounts", "system:serviceaccounts:remote-ns"]`
+For a token from namespace `app` (the namespace used in the RBAC and ESO
+examples below) this yields
+`["system:authenticated", "system:serviceaccounts", "system:serviceaccounts:app"]`
 — exactly the groups the API server would assign the SA itself, so RBAC bound to
-`system:serviceaccounts` or `system:serviceaccounts:remote-ns` authorizes the
+`system:serviceaccounts` or `system:serviceaccounts:app` authorizes the
 impersonated request as the SA would be authorized. (The expression compiles and
 evaluates under the authenticator's CEL environment; see the
 `internal/authenticator/mapping_test.go` SA-virtual-groups case.)
@@ -313,12 +314,13 @@ metadata:
 rules:
   # The SA username (Impersonate-User: system:serviceaccount:<ns>:<name>),
   # constrained with resourceNames so the credential cannot impersonate
-  # arbitrary users — only the exact remote service account(s) served.
+  # arbitrary users — only the exact remote service account(s) served. The
+  # namespace/name match the ESO SecretStore example below (app/eso-reader).
   - apiGroups: [""]
     resources: ["users"]
     verbs: ["impersonate"]
     resourceNames:
-      - "system:serviceaccount:remote-ns:remote-sa"   # one per remote SA served
+      - "system:serviceaccount:app:eso-reader"   # one per remote SA served
   # The SA virtual groups the CEL expression emits, likewise constrained.
   - apiGroups: [""]
     resources: ["groups"]
@@ -326,7 +328,7 @@ rules:
     resourceNames:
       - "system:authenticated"
       - "system:serviceaccounts"
-      - "system:serviceaccounts:remote-ns"   # one per remote namespace served
+      - "system:serviceaccounts:app"   # one per remote namespace served
 ```
 
 ```yaml

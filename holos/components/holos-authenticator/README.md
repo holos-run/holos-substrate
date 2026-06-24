@@ -71,8 +71,11 @@ references it by name (`provider.name: holos-authenticator`).
 ## Static-JWKS / KSA backends (offline validation)
 
 A `Backend` can validate tokens **offline** against a static JSON Web Key Set
-instead of doing OIDC discovery. Set `spec.oidc.jwks` to the literal
-`{"keys":[…]}` document and the authorizer:
+instead of doing OIDC discovery. Set `spec.oidc.jwks` to the issuer's
+`{"keys":[…]}` document — **base64-encoded**, since the field is a `[]byte`
+(CRD `type: string, format: byte`), the same single-base64-string convention the
+`caBundle` fields use (the rendered `remote-cluster-a` example shows the encoded
+form) — and the authorizer:
 
 - performs **no OIDC discovery and no JWKS HTTP fetch** — it verifies the token
   signature against the keys in `spec.oidc.jwks` directly;

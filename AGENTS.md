@@ -220,9 +220,11 @@ components have been removed. Git history preserves them.
   not part of the controller's API groups; it reuses the controller's
   build/release machinery template. Rev 3 (HOL-1392..HOL-1395) adds **KSA /
   static-JWKS backends**: an additive `spec.oidc.jwks` lets a `Backend` validate
-  service-account ID tokens **offline** against a static JWKS (no OIDC discovery;
-  `iss`/`aud`/`exp` still enforced), fronting a remote cluster's API server 1:1
-  by host — per-`kid` key-selection hardening is deferred to HOL-1396.
+  service-account ID tokens minted by a remote cluster **offline** against a
+  static JWKS (no OIDC discovery; `iss`/`aud`/`exp` still enforced), then
+  impersonate the SA on the management cluster (`spec.server.url`) — the remote
+  cluster is only the token issuer/JWKS source, one `Backend` per remote cluster
+  keyed 1:1 by host; per-`kid` key-selection hardening is deferred to HOL-1396.
   The controller (`holos-controller` namespace)
   and its Quay **and Keycloak** API groups have **shipped** (Quay
   HOL-1309..HOL-1313; Keycloak + `security.holos.run` HOL-1343..HOL-1348) —
