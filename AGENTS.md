@@ -215,10 +215,14 @@ components have been removed. Git history preserves them.
   HOL-1343).
   ADR-23 (the **Holos Authenticator** — an Istio gRPC `ext_authz` authorizer
   for OIDC → Kubernetes impersonation, **`Implemented`** as built in
-  HOL-1385..HOL-1390 — Rev 2, `Updates: ADR-3`) is a separate service in the
+  HOL-1385..HOL-1390 — Rev 3, `Updates: ADR-3`) is a separate service in the
   same monorepo (`cmd/holos-authenticator`, namespace `holos-authenticator`),
   not part of the controller's API groups; it reuses the controller's
-  build/release machinery template.
+  build/release machinery template. Rev 3 (HOL-1392..HOL-1395) adds **KSA /
+  static-JWKS backends**: an additive `spec.oidc.jwks` lets a `Backend` validate
+  service-account ID tokens **offline** against a static JWKS (no OIDC discovery;
+  `iss`/`aud`/`exp` still enforced), fronting a remote cluster's API server 1:1
+  by host — per-`kid` key-selection hardening is deferred to HOL-1396.
   The controller (`holos-controller` namespace)
   and its Quay **and Keycloak** API groups have **shipped** (Quay
   HOL-1309..HOL-1313; Keycloak + `security.holos.run` HOL-1343..HOL-1348) —
@@ -348,7 +352,10 @@ components have been removed. Git history preserves them.
   impersonate → forward, every replica answers Envoy), the
   `authenticator.holos.run` `Backend` CR (fields + in-cluster and external API
   server examples), the default `claims["groups"]` group mapping and CEL
-  overrides, the **impersonation RBAC** the forwarded credential must hold
+  overrides, the **KSA / static-JWKS** backends (ADR-23 Rev 3 — `spec.oidc.jwks`
+  offline validation, the SA-group CEL expression, the 1:1 host↔Backend model for
+  remote clusters, and end-to-end ESO `SecretStore`/`ExternalSecret`
+  verification), the **impersonation RBAC** the forwarded credential must hold
   (`impersonate` on `users`/`groups`), provisioning the `credentialsSecretRef`
   Secret at runtime (never committed), the Istio `extensionProvider` + `CUSTOM`
   `AuthorizationPolicy` wiring, the out-of-band apply ordering (CRD-before-CR;

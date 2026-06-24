@@ -81,9 +81,10 @@ own OIDC client and mapping.
 | `host`                       | yes      | —                                          | The request `:authority`/`Host` value this Backend serves.                  |
 | `server.url`                 | yes      | —                                          | Upstream API server endpoint (in-cluster or external).                      |
 | `server.caBundle`            | no       | system trust                               | PEM x509 CA bundle for the upstream. **Not yet consumed** (see note below): the authorizer does not dial the upstream — Envoy/the waypoint forwards — so upstream TLS trust lives at the routing layer. The field is recorded for the deferred external-egress topology. |
-| `oidc.issuerURL`             | yes      | —                                          | OIDC issuer base URL (issuer discovery + JWKS).                             |
+| `oidc.issuerURL`             | yes      | —                                          | OIDC issuer base URL (issuer discovery + JWKS). When `oidc.jwks` is set it is the expected `iss` claim value only — no discovery is performed. |
 | `oidc.clientID`              | yes      | —                                          | OAuth2 client ID / token audience (`aud`).                                  |
-| `oidc.caBundle`              | no       | system trust                               | PEM x509 CA bundle to trust for the OIDC issuer.                            |
+| `oidc.caBundle`              | no       | system trust                               | PEM x509 CA bundle to trust for the OIDC issuer. Unused when `oidc.jwks` is set (no issuer endpoint is dialed). |
+| `oidc.jwks`                  | no       | empty → OIDC discovery                     | Static JSON Web Key Set (`{"keys":[…]}`, base64). When set, signatures are validated **offline** against these keys with no discovery/JWKS fetch; `issuerURL` becomes the expected `iss` only. See [*KSA / static-JWKS backends*](#ksa--static-jwks-backends). |
 | `oidc.usernameClaim`         | no       | `sub`                                      | Token claim used as the impersonated username.                             |
 | `oidc.groupsClaim`           | no       | `groups`                                   | Token claim carrying groups (used by the default mapping).                 |
 | `groupMapping.celExpression` | no       | empty → default mapping                    | CEL expression over `claims` producing the Kubernetes group list.          |
@@ -169,11 +170,20 @@ the in-cluster wiring is what ships today.
 
 ## OIDC token validation + CEL group mapping
 
-**Validation.** The authorizer performs issuer discovery against
-`oidc.issuerURL`, verifies the JWT signature against the issuer's JWKS, and
-checks `iss`, `aud` (= `oidc.clientID`), and `exp`/`nbf`. A token that fails any
-check is denied (401). The username is taken from `oidc.usernameClaim`
-(default `sub`).
+**Validation.** The authorizer verifies the JWT signature, then checks `iss`
+(= `oidc.issuerURL`), `aud` (= `oidc.clientID`), and `exp`/`nbf`. A token that
+fails any check is denied (401). The username is taken from `oidc.usernameClaim`
+(default `sub`). Signature verification has two modes depending on whether
+`oidc.jwks` is set:
+
+- **Discovery (default, `oidc.jwks` empty).** The authorizer performs issuer
+  discovery against `oidc.issuerURL` and verifies the signature against the
+  issuer's published JWKS, trusting the issuer endpoint with `oidc.caBundle`.
+- **Static JWKS (`oidc.jwks` set).** The authorizer verifies the signature
+  **offline** against the static key set in `oidc.jwks` — **no discovery and no
+  JWKS HTTP fetch**. `oidc.issuerURL` is the expected `iss` value only (not
+  dialed) and `oidc.caBundle` is unused. See [*KSA / static-JWKS
+  backends*](#ksa--static-jwks-backends) below.
 
 **Mapping.** The validated claims are exposed to CEL as a `claims` map, and the
 backend's `groupMapping.celExpression` is evaluated against it to produce the
@@ -193,6 +203,214 @@ admission/CRD validation):
 
 A token missing the mapped claim yields an empty group list (the user is
 impersonated with no groups), not an error.
+
+## KSA / static-JWKS backends
+
+A `Backend` can validate tokens **offline** against a static JWKS rather than
+doing OIDC discovery. This is how the authenticator fronts a **remote cluster's
+Kubernetes API server**: a workload on a remote cluster presents its **projected
+service-account (KSA) ID token** (for example, an [External Secrets
+Operator](https://external-secrets.io/) `SecretStore` token request), and the
+authenticator validates it against the remote cluster's published service-account
+JWKS — which the management cluster generally cannot reach over the network — and
+impersonates the service account on the **management** cluster's API server.
+
+Set `spec.oidc.jwks` and the authorizer performs **no OIDC discovery and no JWKS
+HTTP fetch**: it verifies the token signature against the keys in `jwks`, treats
+`spec.oidc.issuerURL` as the expected `iss` value only (not dialed), ignores
+`spec.oidc.caBundle`, and still enforces `iss`/`aud`/`exp`/`nbf`. A malformed or
+empty JWKS is rejected at reconcile time as an invalid spec (`Accepted=False`/
+`Ready=False`, reason `InvalidSpec`).
+
+> **Key selection matches the discovery path.** Static-JWKS validation currently
+> uses the same global supported-algorithm set as discovery, with **no per-`kid`
+> key selection or per-key algorithm enforcement** — built to parity with the
+> discovery path. Tightening both paths together is the planned hardening tracked
+> in HOL-1396.
+
+The model is **1:1 host↔Backend**: each remote cluster gets its own `Backend`
+with a **unique `spec.host`** (e.g. `remote-cluster-a.holos.internal`), its own
+static JWKS, and its own impersonator credential for the management cluster. The
+component renders `remote-cluster-a` as the worked example (its `jwks` is a
+redacted placeholder).
+
+### 1. Capture the remote cluster's issuer and JWKS
+
+Run against the **remote** cluster (the one issuing the SA tokens):
+
+```bash
+# The issuer => spec.oidc.issuerURL (the expected `iss` claim value).
+kubectl get --raw /.well-known/openid-configuration | jq -r .issuer
+
+# The JWKS document => spec.oidc.jwks (holos/Kubernetes base64-encodes []byte).
+kubectl get --raw /openid/v1/jwks
+```
+
+`spec.oidc.clientID` is the **audience** the remote `SecretStore`'s token request
+asks for (the `aud` the SA token is minted with), matched against the token's
+`aud`. The JWKS is non-secret public-key material and may live in the CR; per the
+**Runtime Secret Handling** guardrail the `credentialsSecretRef` impersonator
+token is created at runtime and **never** committed.
+
+### 2. Populate the Backend
+
+```yaml
+apiVersion: authenticator.holos.run/v1alpha1
+kind: Backend
+metadata:
+  name: remote-cluster-a
+  namespace: holos-authenticator
+spec:
+  host: "remote-cluster-a.holos.internal"     # unique per remote cluster
+  oidc:
+    issuerURL: "https://kubernetes.default.svc" # expected `iss` only (not dialed)
+    clientID: "holos-authenticator"             # the SA token's `aud`
+    usernameClaim: "sub"                        # KSA sub = system:serviceaccount:<ns>:<name>
+    jwks: "<the /openid/v1/jwks document, base64-encoded>"
+  server:
+    url: "https://kubernetes.default.svc"       # the MANAGEMENT cluster's API server
+  groupMapping:
+    celExpression: '["system:authenticated", "system:serviceaccounts", "system:serviceaccounts:" + claims["kubernetes.io"].namespace]'
+  credentialsSecretRef:
+    name: "remote-cluster-a-impersonator-creds"
+```
+
+### 3. The SA-group CEL expression
+
+A KSA ID token's `sub` is `system:serviceaccount:<ns>:<name>`, so the default
+`usernameClaim: sub` already reproduces the SA username for `Impersonate-User`.
+Projected SA tokens also carry a `kubernetes.io` claim whose `namespace` field is
+the SA's namespace. To reproduce the SA's three Kubernetes **virtual groups**,
+set:
+
+```
+["system:authenticated", "system:serviceaccounts", "system:serviceaccounts:" + claims["kubernetes.io"].namespace]
+```
+
+For a token from namespace `remote-ns` this yields
+`["system:authenticated", "system:serviceaccounts", "system:serviceaccounts:remote-ns"]`
+— exactly the groups the API server would assign the SA itself, so RBAC bound to
+`system:serviceaccounts` or `system:serviceaccounts:remote-ns` authorizes the
+impersonated request as the SA would be authorized. (The expression compiles and
+evaluates under the authenticator's CEL environment; see the
+`internal/authenticator/mapping_test.go` SA-virtual-groups case.)
+
+### 4. Impersonation RBAC for the SA virtual groups
+
+The `credentialsSecretRef` identity must hold `impersonate` on the impersonated
+principal — both the SA **username** and the SA **virtual groups** the CEL
+expression emits. On the **management** cluster:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: holos-authenticator-ksa-impersonator
+rules:
+  # The SA username (Impersonate-User: system:serviceaccount:<ns>:<name>).
+  - apiGroups: [""]
+    resources: ["users"]
+    verbs: ["impersonate"]
+  # The SA virtual groups the CEL expression emits.
+  - apiGroups: [""]
+    resources: ["groups"]
+    verbs: ["impersonate"]
+    resourceNames:
+      - "system:authenticated"
+      - "system:serviceaccounts"
+      - "system:serviceaccounts:remote-ns"   # one per remote namespace served
+```
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: holos-authenticator-ksa-impersonator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: holos-authenticator-ksa-impersonator
+subjects:
+  # The management-cluster ServiceAccount whose token is stored in
+  # remote-cluster-a-impersonator-creds.
+  - kind: ServiceAccount
+    name: holos-authenticator-impersonator
+    namespace: holos-authenticator
+```
+
+Restricting the `groups` rule with `resourceNames` (rather than granting
+`impersonate` on all groups) keeps the impersonator's blast radius bounded to the
+exact SA virtual groups. Mirror the existing [*Impersonation RBAC*](#impersonation-rbac-the-forwarded-credential)
+shape; the only KSA-specific addition is the `resourceNames` list of SA virtual
+groups. Provision the credential Secret at runtime as in [*Provisioning the
+credential Secret at runtime*](#provisioning-the-credential-secret-at-runtime),
+using a bound token for the management-cluster impersonator ServiceAccount.
+
+### 5. End-to-end verification (External Secrets Operator)
+
+On the **remote** cluster, an ESO `SecretStore` (or `ClusterSecretStore`)
+fetches from the management cluster's API server **through the authenticator's
+host**, authenticating with a projected SA token whose audience is the Backend's
+`clientID`:
+
+```yaml
+apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata:
+  name: holos-management
+  namespace: app
+spec:
+  provider:
+    kubernetes:
+      # The authenticator host for this remote cluster (routed by Host).
+      server:
+        url: "https://remote-cluster-a.holos.internal"
+        caBundle: "<PEM trusting the authenticator/waypoint serving cert>"
+      remoteNamespace: shared-secrets
+      auth:
+        serviceAccount:
+          name: eso-reader            # SA on the remote cluster
+      # The token audience must equal the Backend's spec.oidc.clientID.
+      authRef:
+        audiences: ["holos-authenticator"]
+```
+
+```yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: shared-config
+  namespace: app
+spec:
+  secretStoreRef:
+    name: holos-management
+    kind: SecretStore
+  target:
+    name: shared-config
+  data:
+    - secretKey: value
+      remoteRef:
+        key: shared-config
+        property: value
+```
+
+Verify:
+
+```bash
+# The Backend is Ready (offline validation, no discovery needed).
+kubectl -n holos-authenticator get backend remote-cluster-a
+# NAME               HOST                              READY   AGE
+# remote-cluster-a   remote-cluster-a.holos.internal   True    1m
+
+# On the remote cluster the ExternalSecret syncs (SecretSynced=True).
+kubectl -n app get externalsecret shared-config
+kubectl -n app get secret shared-config -o jsonpath='{.data.value}' | base64 -d
+```
+
+A failure to sync points at the SA token's `aud` not matching `clientID`, the
+SA-group impersonation RBAC missing on the management cluster, or the Backend's
+`jwks` not matching the remote cluster's current signing keys (a key rotation on
+the remote cluster requires re-capturing `/openid/v1/jwks` into `spec.oidc.jwks`).
 
 ## Impersonation RBAC (the forwarded credential)
 
@@ -378,8 +596,11 @@ See [README.md](../../README.md) (*Container image* → *Multi-arch images* /
 2. **Backend is Ready.** The `Backend` CR reports `Ready=True` once its
    group-mapping CEL compiles, its `spec.server.url` validates as an absolute
    `http`/`https` URL with a host (an invalid URL is rejected `Ready=False` with
-   reason `InvalidSpec`), its OIDC issuer discovery succeeds, and it has claimed
-   its `host`. **The reconciler does not read the credential Secret** —
+   reason `InvalidSpec`), its verifier is built — OIDC issuer discovery succeeds
+   for a discovery backend, or `spec.oidc.jwks` parses to at least one usable key
+   for a static-JWKS backend (a malformed JWKS is rejected `Ready=False` with
+   reason `InvalidSpec`) — and it has claimed its `host`. **The reconciler does
+   not read the credential Secret** —
    the impersonator credential is resolved later, on the `Check` data path
    (failing closed with 403 if absent), so `Ready=True` is **not** a signal that
    the credential Secret exists. Provision the Secret (next section) regardless

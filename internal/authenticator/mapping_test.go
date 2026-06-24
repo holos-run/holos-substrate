@@ -64,6 +64,27 @@ func TestGroupMapperGroups(t *testing.T) {
 			claims: map[string]any{"groups": []any{"dev"}},
 			want:   nil,
 		},
+		{
+			// The SA-virtual-groups expression documented for KSA / static-JWKS
+			// backends (ADR-23 Rev 3, the runbook's "KSA / static-JWKS backends"
+			// section, and the holos-authenticator component's remote-cluster-a
+			// example Backend). A projected service-account ID token carries a
+			// nested kubernetes.io claim whose namespace field reproduces the SA's
+			// three Kubernetes virtual groups. This case proves the documented
+			// expression compiles and evaluates so the docs cannot ship an
+			// expression that does not run.
+			name: "KSA SA-virtual-groups expression",
+			expr: `["system:authenticated", "system:serviceaccounts", "system:serviceaccounts:" + claims["kubernetes.io"].namespace]`,
+			claims: map[string]any{
+				"sub":           "system:serviceaccount:remote-ns:remote-sa",
+				"kubernetes.io": map[string]any{"namespace": "remote-ns"},
+			},
+			want: []string{
+				"system:authenticated",
+				"system:serviceaccounts",
+				"system:serviceaccounts:remote-ns",
+			},
+		},
 	}
 
 	for _, tc := range tests {
