@@ -393,7 +393,7 @@ host**, authenticating with a projected SA token whose audience is the Backend's
 `clientID`:
 
 ```yaml
-apiVersion: external-secrets.io/v1beta1
+apiVersion: external-secrets.io/v1
 kind: SecretStore
 metadata:
   name: holos-management
@@ -417,7 +417,7 @@ spec:
 ```
 
 ```yaml
-apiVersion: external-secrets.io/v1beta1
+apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
   name: shared-config
@@ -448,10 +448,17 @@ metadata:
   name: shared-secrets-reader
   namespace: shared-secrets
 rules:
+  # ESO's kubernetes provider needs get/list/watch on Secrets in the remote
+  # namespace. resourceNames CANNOT restrict list/watch (RBAC only scopes named
+  # resources for get/update/delete), so grant list/watch namespace-wide and
+  # keep the namespace itself the boundary (a dedicated shared-secrets namespace).
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list", "watch"]
-    resourceNames: ["shared-config"]   # scope to the shared secret(s) exposed
+  # ESO validates the SecretStore by issuing a SelfSubjectRulesReview.
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["selfsubjectrulesreviews"]
+    verbs: ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -469,6 +476,11 @@ subjects:
     name: "system:serviceaccounts:app"
     apiGroup: rbac.authorization.k8s.io
 ```
+
+> `selfsubjectrulesreviews` is a non-namespaced `create`-only subresource;
+> granting it via a namespaced `Role` is sufficient for ESO's per-namespace store
+> validation. Keep the shared secrets in a **dedicated** namespace
+> (`shared-secrets`) so the namespace-wide `list`/`watch` is the access boundary.
 
 Verify:
 
