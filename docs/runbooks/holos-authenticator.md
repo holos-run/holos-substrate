@@ -455,10 +455,6 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list", "watch"]
-  # ESO validates the SecretStore by issuing a SelfSubjectRulesReview.
-  - apiGroups: ["authorization.k8s.io"]
-    resources: ["selfsubjectrulesreviews"]
-    verbs: ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -477,10 +473,13 @@ subjects:
     apiGroup: rbac.authorization.k8s.io
 ```
 
-> `selfsubjectrulesreviews` is a non-namespaced `create`-only subresource;
-> granting it via a namespaced `Role` is sufficient for ESO's per-namespace store
-> validation. Keep the shared secrets in a **dedicated** namespace
-> (`shared-secrets`) so the namespace-wide `list`/`watch` is the access boundary.
+> If ESO's SecretStore validation issues a `SelfSubjectRulesReview`, no extra
+> grant is needed: `selfsubjectrulesreviews` is **cluster-scoped** and the
+> default `system:basic-user` ClusterRoleBinding already authorizes every
+> authenticated identity (including the impersonated SA) to `create` it — a
+> namespaced `Role` could not authorize a non-namespaced request anyway. Keep the
+> shared secrets in a **dedicated** namespace (`shared-secrets`) so the
+> namespace-wide `list`/`watch` is the access boundary.
 
 Verify:
 
