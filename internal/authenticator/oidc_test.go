@@ -595,6 +595,153 @@ func TestStaticVerifierBadSignature(t *testing.T) {
 	}
 }
 
+// marshalJWKS serializes the given keys into a JWKS document ({"keys":[...]}) for
+// handing to StaticVerifier or a discovery server.
+func marshalJWKS(t *testing.T, keys ...jose.JSONWebKey) []byte {
+	t.Helper()
+	raw, err := json.Marshal(jose.JSONWebKeySet{Keys: keys})
+	if err != nil {
+		t.Fatalf("marshaling JWKS: %v", err)
+	}
+	return raw
+}
+
+// signWithKID signs claims with priv under alg, stamping the protected header's
+// `kid` to the given value by wrapping the key in a *jose.JSONWebKey (go-jose
+// copies its KeyID into the JWS header). This lets a test forge a token whose kid
+// names one key while the signature is produced by another, or whose alg differs
+// from the key's declared alg.
+func signWithKID(t *testing.T, priv any, alg jose.SignatureAlgorithm, kid string, claims map[string]any) string {
+	t.Helper()
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: alg, Key: &jose.JSONWebKey{Key: priv, KeyID: kid}},
+		(&jose.SignerOptions{}).WithType("JWT"),
+	)
+	if err != nil {
+		t.Fatalf("building signer (alg %s, kid %q): %v", alg, kid, err)
+	}
+	raw, err := jwt.Signed(signer).Claims(claims).Serialize()
+	if err != nil {
+		t.Fatalf("signing JWT: %v", err)
+	}
+	return raw
+}
+
+// TestStaticVerifierKIDMismatch asserts the hardened key selection rejects a
+// mixed-JWKS token whose header `kid` names key B but whose signature was produced
+// by key A — the cross-key confusion the global StaticKeySet (which tries every
+// key and ignores kid) would have accepted.
+func TestStaticVerifierKIDMismatch(t *testing.T) {
+	now := time.Now()
+	keyA := newTestSigningKey(t)
+	keyB := newTestSigningKey(t)
+	jwks := marshalJWKS(t,
+		jose.JSONWebKey{Key: keyA.public, KeyID: "A", Algorithm: string(jose.RS256), Use: "sig"},
+		jose.JSONWebKey{Key: keyB.public, KeyID: "B", Algorithm: string(jose.RS256), Use: "sig"},
+	)
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwks)
+	if err != nil {
+		t.Fatalf("StaticVerifier: %v", err)
+	}
+
+	// Signed by key A's private key, but the header kid names key B.
+	raw := signWithKID(t, keyA.private, jose.RS256, "B", baseClaims("alice", testClientID, now))
+	if _, err := verifier.Verify(context.Background(), raw); err == nil {
+		t.Fatalf("Verify kid-mismatch token = nil error, want rejection")
+	}
+}
+
+// TestStaticVerifierKIDRouting asserts the happy multi-key path: each token is
+// routed to and verified by the key its kid names.
+func TestStaticVerifierKIDRouting(t *testing.T) {
+	now := time.Now()
+	keyA := newTestSigningKey(t)
+	keyB := newTestSigningKey(t)
+	jwks := marshalJWKS(t,
+		jose.JSONWebKey{Key: keyA.public, KeyID: "A", Algorithm: string(jose.RS256), Use: "sig"},
+		jose.JSONWebKey{Key: keyB.public, KeyID: "B", Algorithm: string(jose.RS256), Use: "sig"},
+	)
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwks)
+	if err != nil {
+		t.Fatalf("StaticVerifier: %v", err)
+	}
+
+	rawA := signWithKID(t, keyA.private, jose.RS256, "A", baseClaims("alice", testClientID, now))
+	if _, err := verifier.Verify(context.Background(), rawA); err != nil {
+		t.Fatalf("Verify token routed to key A: %v", err)
+	}
+	rawB := signWithKID(t, keyB.private, jose.RS256, "B", baseClaims("bob", testClientID, now))
+	if _, err := verifier.Verify(context.Background(), rawB); err != nil {
+		t.Fatalf("Verify token routed to key B: %v", err)
+	}
+}
+
+// TestStaticVerifierCrossAlg asserts the per-key alg binding rejects a token
+// signed with an algorithm declared only on a *different* key. Key A authorizes
+// only RS256; the token is signed by key A using PS256 (an alg the RSA key can
+// produce and that key B declares), so the global supported-alg set admits PS256
+// at parse, but key A's binding rejects it.
+func TestStaticVerifierCrossAlg(t *testing.T) {
+	now := time.Now()
+	keyA := newTestSigningKey(t)
+	keyB := newTestSigningKey(t)
+	jwks := marshalJWKS(t,
+		jose.JSONWebKey{Key: keyA.public, KeyID: "A", Algorithm: string(jose.RS256), Use: "sig"},
+		jose.JSONWebKey{Key: keyB.public, KeyID: "B", Algorithm: string(jose.PS256), Use: "sig"},
+	)
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwks)
+	if err != nil {
+		t.Fatalf("StaticVerifier: %v", err)
+	}
+
+	raw := signWithKID(t, keyA.private, jose.PS256, "A", baseClaims("alice", testClientID, now))
+	if _, err := verifier.Verify(context.Background(), raw); err == nil {
+		t.Fatalf("Verify cross-alg token = nil error, want rejection")
+	}
+
+	// Control: the same key A signing under its declared RS256 still verifies, so the
+	// rejection above is specifically the alg binding, not a broken key.
+	ok := signWithKID(t, keyA.private, jose.RS256, "A", baseClaims("alice", testClientID, now))
+	if _, err := verifier.Verify(context.Background(), ok); err != nil {
+		t.Fatalf("Verify key A under its declared RS256: %v", err)
+	}
+}
+
+// TestDiscoverVerifierKIDMismatch asserts the discovery path applies the same
+// hardened kid-binding model as the static path (no divergence): a token whose kid
+// names key B but is signed by key A is rejected, while the correctly-routed token
+// verifies.
+func TestDiscoverVerifierKIDMismatch(t *testing.T) {
+	keyA := newTestSigningKey(t)
+	keyB := newTestSigningKey(t)
+	jwks := marshalJWKS(t,
+		jose.JSONWebKey{Key: keyA.public, KeyID: "A", Algorithm: string(jose.RS256), Use: "sig"},
+		jose.JSONWebKey{Key: keyB.public, KeyID: "B", Algorithm: string(jose.RS256), Use: "sig"},
+	)
+	srv := rawJWKSDiscoveryServer(t, string(jwks))
+
+	verifier, err := DiscoverVerifier(context.Background(), srv.URL, testClientID, nil)
+	if err != nil {
+		t.Fatalf("DiscoverVerifier: %v", err)
+	}
+
+	now := time.Now()
+	claims := baseClaims("alice", testClientID, now)
+	claims["iss"] = srv.URL
+
+	// Signed by key A but the header kid names key B → reject on the discovery path.
+	bad := signWithKID(t, keyA.private, jose.RS256, "B", claims)
+	if _, err := verifier.Verify(context.Background(), bad); err == nil {
+		t.Fatalf("Verify kid-mismatch token via discovery = nil error, want rejection")
+	}
+
+	// Correctly routed to key A → verifies.
+	good := signWithKID(t, keyA.private, jose.RS256, "A", claims)
+	if _, err := verifier.Verify(context.Background(), good); err != nil {
+		t.Fatalf("Verify correctly-routed token via discovery: %v", err)
+	}
+}
+
 // fakeVerifier is a TokenVerifier stub returning a fixed result, used by the
 // Authenticator tests so they exercise the verify→map pipeline without a real
 // OIDC token.
