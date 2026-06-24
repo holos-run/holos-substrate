@@ -351,6 +351,57 @@ func TestStaticVerifierES256(t *testing.T) {
 	}
 }
 
+// TestStaticVerifierMixedAlgs asserts a JWKS mixing an alg-less RSA key with an
+// explicit ES256 key verifies tokens signed by either: the explicit ES256 alg is
+// honored, and RS256 is retained for the alg-less RSA key (go-oidc's default)
+// rather than being dropped when another key carries an alg (Codex round 2).
+func TestStaticVerifierMixedAlgs(t *testing.T) {
+	now := time.Now()
+
+	// RSA key published WITHOUT an alg (relies on the RS256 default).
+	rsaKey := newTestSigningKey(t)
+	// ECDSA key published WITH an explicit ES256 alg.
+	ecPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generating ECDSA key: %v", err)
+	}
+	ecSigner, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.ES256, Key: ecPriv},
+		(&jose.SignerOptions{}).WithType("JWT"),
+	)
+	if err != nil {
+		t.Fatalf("building ES256 signer: %v", err)
+	}
+
+	set := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{
+		{Key: rsaKey.public, KeyID: "rsa-0", Use: "sig"}, // no Algorithm
+		{Key: ecPriv.Public(), KeyID: "es-0", Algorithm: string(jose.ES256), Use: "sig"},
+	}}
+	jwks, err := json.Marshal(set)
+	if err != nil {
+		t.Fatalf("marshaling mixed JWKS: %v", err)
+	}
+
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwks)
+	if err != nil {
+		t.Fatalf("StaticVerifier: %v", err)
+	}
+
+	// RS256 token signed by the alg-less RSA key must verify.
+	rsRaw := rsaKey.sign(t, baseClaims("alice", testClientID, now))
+	if _, err := verifier.Verify(context.Background(), rsRaw); err != nil {
+		t.Fatalf("Verify RS256 token against mixed JWKS: %v", err)
+	}
+	// ES256 token signed by the explicit-alg key must verify.
+	esRaw, err := jwt.Signed(ecSigner).Claims(baseClaims("bob", testClientID, now)).Serialize()
+	if err != nil {
+		t.Fatalf("signing ES256 JWT: %v", err)
+	}
+	if _, err := verifier.Verify(context.Background(), esRaw); err != nil {
+		t.Fatalf("Verify ES256 token against mixed JWKS: %v", err)
+	}
+}
+
 // TestStaticVerifierMalformedJWKS asserts an unparseable JWKS document yields an
 // error and no verifier.
 func TestStaticVerifierMalformedJWKS(t *testing.T) {

@@ -105,29 +105,39 @@ func StaticVerifier(issuerURL, clientID string, jwks []byte) (TokenVerifier, err
 	// strips any private material so a JWKS that accidentally carries a private key
 	// still yields only its public half (defense in depth).
 	var (
-		pubs []crypto.PublicKey
-		algs []string
-		seen = map[string]struct{}{}
+		pubs       []crypto.PublicKey
+		algs       []string
+		seen       = map[string]struct{}{}
+		anyMissing bool
 	)
+	addAlg := func(alg string) {
+		if _, ok := seen[alg]; !ok {
+			seen[alg] = struct{}{}
+			algs = append(algs, alg)
+		}
+	}
 	for _, key := range usableJWKSKeys(keySet) {
 		if key.Use != "" && key.Use != "sig" {
 			continue
 		}
 		pubs = append(pubs, key.Public().Key)
-		// Track the key's signing algorithm so the verifier accepts exactly the algs
+		// Track each key's signing algorithm so the verifier accepts exactly the algs
 		// the issuer publishes rather than go-oidc's RS256-only default — otherwise a
 		// valid ES256/EdDSA/RS512 JWKS would be marked Ready yet fail every token
-		// verification. A key without an alg leaves the default in force for that key.
+		// verification. A key without an alg relies on go-oidc's RS256 default, so
+		// record that we must keep RS256 in the supported set alongside any explicit
+		// algs (a mixed JWKS of an alg-less RSA key plus an ES256 key must verify both).
 		if key.Algorithm == "" {
+			anyMissing = true
 			continue
 		}
-		if _, ok := seen[key.Algorithm]; !ok {
-			seen[key.Algorithm] = struct{}{}
-			algs = append(algs, key.Algorithm)
-		}
+		addAlg(key.Algorithm)
 	}
 	if len(pubs) == 0 {
 		return nil, fmt.Errorf("static JWKS contains no usable signing keys")
+	}
+	if anyMissing {
+		addAlg(oidc.RS256)
 	}
 
 	cfg := &oidc.Config{ClientID: clientID}
