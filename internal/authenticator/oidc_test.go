@@ -3,6 +3,8 @@ package authenticator
 import (
 	"context"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
@@ -303,6 +305,49 @@ func TestStaticVerifierHappyPath(t *testing.T) {
 	}
 	if got := vt.Claims["sub"]; got != "alice" {
 		t.Errorf("sub claim = %v, want alice", got)
+	}
+}
+
+// TestStaticVerifierES256 asserts StaticVerifier honors a non-RS256 JWKS: an
+// ES256 key set must derive SupportedSigningAlgs from the JWKS `alg` so an ES256
+// token verifies, rather than failing under go-oidc's RS256-only default (Codex
+// round 1).
+func TestStaticVerifierES256(t *testing.T) {
+	now := time.Now()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generating ECDSA key: %v", err)
+	}
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.ES256, Key: priv},
+		(&jose.SignerOptions{}).WithType("JWT"),
+	)
+	if err != nil {
+		t.Fatalf("building ES256 signer: %v", err)
+	}
+
+	set := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+		Key:       priv.Public(),
+		KeyID:     "es-0",
+		Algorithm: string(jose.ES256),
+		Use:       "sig",
+	}}}
+	jwks, err := json.Marshal(set)
+	if err != nil {
+		t.Fatalf("marshaling ES256 JWKS: %v", err)
+	}
+
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwks)
+	if err != nil {
+		t.Fatalf("StaticVerifier: %v", err)
+	}
+
+	raw, err := jwt.Signed(signer).Claims(baseClaims("alice", testClientID, now)).Serialize()
+	if err != nil {
+		t.Fatalf("signing ES256 JWT: %v", err)
+	}
+	if _, err := verifier.Verify(context.Background(), raw); err != nil {
+		t.Fatalf("Verify ES256 token against static JWKS: %v", err)
 	}
 }
 

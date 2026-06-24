@@ -98,15 +98,43 @@ func StaticVerifier(issuerURL, clientID string, jwks []byte) (TokenVerifier, err
 	if err := json.Unmarshal(jwks, &keySet); err != nil {
 		return nil, fmt.Errorf("parsing static JWKS: %w", err)
 	}
-	usable := usableJWKSKeys(keySet)
-	if len(usable) == 0 {
-		return nil, fmt.Errorf("static JWKS contains no usable keys")
+
+	// Collect the public signing keys and the algorithms they advertise. A JWK
+	// with use other than "sig" is not a signing key (e.g. an "enc" key), so it is
+	// excluded; an empty use is permitted (RFC 7517 makes use optional). key.Public()
+	// strips any private material so a JWKS that accidentally carries a private key
+	// still yields only its public half (defense in depth).
+	var (
+		pubs []crypto.PublicKey
+		algs []string
+		seen = map[string]struct{}{}
+	)
+	for _, key := range usableJWKSKeys(keySet) {
+		if key.Use != "" && key.Use != "sig" {
+			continue
+		}
+		pubs = append(pubs, key.Public().Key)
+		// Track the key's signing algorithm so the verifier accepts exactly the algs
+		// the issuer publishes rather than go-oidc's RS256-only default — otherwise a
+		// valid ES256/EdDSA/RS512 JWKS would be marked Ready yet fail every token
+		// verification. A key without an alg leaves the default in force for that key.
+		if key.Algorithm == "" {
+			continue
+		}
+		if _, ok := seen[key.Algorithm]; !ok {
+			seen[key.Algorithm] = struct{}{}
+			algs = append(algs, key.Algorithm)
+		}
 	}
-	pubs := make([]crypto.PublicKey, 0, len(usable))
-	for i := range usable {
-		pubs = append(pubs, usable[i].Public().Key)
+	if len(pubs) == 0 {
+		return nil, fmt.Errorf("static JWKS contains no usable signing keys")
 	}
-	verifier := oidc.NewVerifier(issuerURL, &oidc.StaticKeySet{PublicKeys: pubs}, &oidc.Config{ClientID: clientID})
+
+	cfg := &oidc.Config{ClientID: clientID}
+	if len(algs) > 0 {
+		cfg.SupportedSigningAlgs = algs
+	}
+	verifier := oidc.NewVerifier(issuerURL, &oidc.StaticKeySet{PublicKeys: pubs}, cfg)
 	return NewOIDCVerifier(verifier), nil
 }
 
