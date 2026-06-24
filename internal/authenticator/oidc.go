@@ -3,6 +3,10 @@ package authenticator
 import (
 	"context"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/elliptic"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -99,16 +103,15 @@ func StaticVerifier(issuerURL, clientID string, jwks []byte) (TokenVerifier, err
 		return nil, fmt.Errorf("parsing static JWKS: %w", err)
 	}
 
-	// Collect the public signing keys and the algorithms they advertise. A JWK
-	// with use other than "sig" is not a signing key (e.g. an "enc" key), so it is
+	// Collect the public signing keys and the algorithms they accept. A JWK with
+	// use other than "sig" is not a signing key (e.g. an "enc" key), so it is
 	// excluded; an empty use is permitted (RFC 7517 makes use optional). key.Public()
 	// strips any private material so a JWKS that accidentally carries a private key
 	// still yields only its public half (defense in depth).
 	var (
-		pubs       []crypto.PublicKey
-		algs       []string
-		seen       = map[string]struct{}{}
-		anyMissing bool
+		pubs []crypto.PublicKey
+		algs []string
+		seen = map[string]struct{}{}
 	)
 	addAlg := func(alg string) {
 		if _, ok := seen[alg]; !ok {
@@ -120,24 +123,27 @@ func StaticVerifier(issuerURL, clientID string, jwks []byte) (TokenVerifier, err
 		if key.Use != "" && key.Use != "sig" {
 			continue
 		}
-		pubs = append(pubs, key.Public().Key)
-		// Track each key's signing algorithm so the verifier accepts exactly the algs
-		// the issuer publishes rather than go-oidc's RS256-only default — otherwise a
-		// valid ES256/EdDSA/RS512 JWKS would be marked Ready yet fail every token
-		// verification. A key without an alg relies on go-oidc's RS256 default, so
-		// record that we must keep RS256 in the supported set alongside any explicit
-		// algs (a mixed JWKS of an alg-less RSA key plus an ES256 key must verify both).
-		if key.Algorithm == "" {
-			anyMissing = true
+		pub := key.Public().Key
+		pubs = append(pubs, pub)
+
+		// Determine the key's signing algorithm so the verifier accepts exactly the
+		// algs the issuer's keys use rather than go-oidc's RS256-only default —
+		// otherwise a valid ES256/EdDSA/RS512 JWKS would be marked Ready yet fail every
+		// token verification. The JWK `alg` is authoritative when present; RFC 7517
+		// makes it optional, so when absent we infer it from the public key type/curve
+		// (RSA→RS256, P-256→ES256, P-384→ES384, P-521→ES512, Ed25519→EdDSA). A key whose
+		// alg is neither stated nor inferable contributes no entry, leaving go-oidc's
+		// default for that key.
+		if key.Algorithm != "" {
+			addAlg(key.Algorithm)
 			continue
 		}
-		addAlg(key.Algorithm)
+		if alg := inferKeyAlg(pub); alg != "" {
+			addAlg(alg)
+		}
 	}
 	if len(pubs) == 0 {
 		return nil, fmt.Errorf("static JWKS contains no usable signing keys")
-	}
-	if anyMissing {
-		addAlg(oidc.RS256)
 	}
 
 	cfg := &oidc.Config{ClientID: clientID}
@@ -146,6 +152,32 @@ func StaticVerifier(issuerURL, clientID string, jwks []byte) (TokenVerifier, err
 	}
 	verifier := oidc.NewVerifier(issuerURL, &oidc.StaticKeySet{PublicKeys: pubs}, cfg)
 	return NewOIDCVerifier(verifier), nil
+}
+
+// inferKeyAlg returns the JWS signing algorithm implied by a public key whose JWK
+// omits the optional `alg` member: RSA→RS256 (go-oidc's own default), and each
+// NIST curve to its canonical ECDSA alg (P-256→ES256, P-384→ES384, P-521→ES512),
+// Ed25519→EdDSA. An unrecognized key type returns "" so the caller leaves the
+// default in force rather than asserting an algorithm the key cannot use.
+func inferKeyAlg(pub crypto.PublicKey) string {
+	switch k := pub.(type) {
+	case *rsa.PublicKey:
+		return oidc.RS256
+	case *ecdsa.PublicKey:
+		switch k.Curve {
+		case elliptic.P256():
+			return oidc.ES256
+		case elliptic.P384():
+			return oidc.ES384
+		case elliptic.P521():
+			return oidc.ES512
+		}
+		return ""
+	case ed25519.PublicKey:
+		return oidc.EdDSA
+	default:
+		return ""
+	}
 }
 
 // usableJWKSKeys returns the keys in keySet whose material is present and

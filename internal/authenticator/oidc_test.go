@@ -310,8 +310,7 @@ func TestStaticVerifierHappyPath(t *testing.T) {
 
 // TestStaticVerifierES256 asserts StaticVerifier honors a non-RS256 JWKS: an
 // ES256 key set must derive SupportedSigningAlgs from the JWKS `alg` so an ES256
-// token verifies, rather than failing under go-oidc's RS256-only default (Codex
-// round 1).
+// token verifies, rather than failing under go-oidc's RS256-only default.
 func TestStaticVerifierES256(t *testing.T) {
 	now := time.Now()
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -353,8 +352,8 @@ func TestStaticVerifierES256(t *testing.T) {
 
 // TestStaticVerifierMixedAlgs asserts a JWKS mixing an alg-less RSA key with an
 // explicit ES256 key verifies tokens signed by either: the explicit ES256 alg is
-// honored, and RS256 is retained for the alg-less RSA key (go-oidc's default)
-// rather than being dropped when another key carries an alg (Codex round 2).
+// honored, and RS256 is retained for the alg-less RSA key (its inferred alg)
+// rather than being dropped when another key carries an explicit alg.
 func TestStaticVerifierMixedAlgs(t *testing.T) {
 	now := time.Now()
 
@@ -399,6 +398,47 @@ func TestStaticVerifierMixedAlgs(t *testing.T) {
 	}
 	if _, err := verifier.Verify(context.Background(), esRaw); err != nil {
 		t.Fatalf("Verify ES256 token against mixed JWKS: %v", err)
+	}
+}
+
+// TestStaticVerifierAlgLessEC asserts StaticVerifier infers the signing alg from
+// the key type/curve when the JWK omits the optional `alg`: an alg-less P-256 key
+// must accept ES256 tokens, not fall back to RS256-only and reject every token.
+func TestStaticVerifierAlgLessEC(t *testing.T) {
+	now := time.Now()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generating ECDSA key: %v", err)
+	}
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.ES256, Key: priv},
+		(&jose.SignerOptions{}).WithType("JWT"),
+	)
+	if err != nil {
+		t.Fatalf("building ES256 signer: %v", err)
+	}
+
+	set := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+		Key:   priv.Public(),
+		KeyID: "es-0",
+		Use:   "sig", // no Algorithm — must be inferred as ES256 from the P-256 curve
+	}}}
+	jwks, err := json.Marshal(set)
+	if err != nil {
+		t.Fatalf("marshaling alg-less EC JWKS: %v", err)
+	}
+
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwks)
+	if err != nil {
+		t.Fatalf("StaticVerifier: %v", err)
+	}
+
+	raw, err := jwt.Signed(signer).Claims(baseClaims("alice", testClientID, now)).Serialize()
+	if err != nil {
+		t.Fatalf("signing ES256 JWT: %v", err)
+	}
+	if _, err := verifier.Verify(context.Background(), raw); err != nil {
+		t.Fatalf("Verify ES256 token against alg-less EC JWKS: %v", err)
 	}
 }
 
