@@ -575,11 +575,24 @@ freshly bootstrapped cluster until an operator publishes it after the bootstrap
 floor. It is **applied out of band** once its image is published.
 
 > **CRD-before-CR within the directory.** The component bundles the `Backend`
-> CRD **and** the example `Backend` CR in one directory. The out-of-band apply
+> CRD **and** the example `Backend` CRs in one directory. The out-of-band apply
 > must apply `customresourcedefinition-*.yaml` first and wait for it to be
 > `Established` before `backend-*.yaml` (a plain `kubectl apply -f dir/` applies
 > files lexically, and `backend-*.yaml` sorts before
 > `customresourcedefinition-*.yaml`).
+
+> **The rendered example Backends are placeholders — edit before applying.** Both
+> `backend-example.yaml` (discovery) and `backend-remote-cluster-a.yaml`
+> (static-JWKS) ship with **non-functional placeholder values**: `example` names a
+> `credentialsSecretRef` Secret created out of band, and `remote-cluster-a`
+> carries a **redacted placeholder `jwks`** that does not parse to a usable key —
+> applied as-is it reconciles `Ready=False` (reason `InvalidSpec`). They document
+> the shape; before the out-of-band apply, replace `remote-cluster-a`'s `jwks`
+> with the real base64-encoded `/openid/v1/jwks` document (and its
+> `host`/`issuerURL`/`clientID`) per [*KSA / static-JWKS
+> backends*](#ksa--static-jwks-backends) above, or delete the example you are not
+> using. Do not treat the placeholder `remote-cluster-a` as a ready-to-apply
+> Backend.
 
 ## Building and publishing the image
 
