@@ -266,6 +266,134 @@ func TestDiscoverVerifierUnusableJWKSKey(t *testing.T) {
 	}
 }
 
+// jwksDocument builds a JWKS document ({"keys":[...]}) publishing the given
+// public key under a "sig"/RS256 entry, so a test can hand it to StaticVerifier
+// exactly as a real issuer's JWKS would be copied into spec.oidc.jwks.
+func jwksDocument(t *testing.T, pub crypto.PublicKey) []byte {
+	t.Helper()
+	set := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+		Key:       pub,
+		KeyID:     "key-0",
+		Algorithm: string(jose.RS256),
+		Use:       "sig",
+	}}}
+	raw, err := json.Marshal(set)
+	if err != nil {
+		t.Fatalf("marshaling JWKS: %v", err)
+	}
+	return raw
+}
+
+// TestStaticVerifierHappyPath asserts StaticVerifier builds an offline verifier
+// from a static JWKS that validates a correctly-signed token with the right
+// issuer and audience — no network I/O.
+func TestStaticVerifierHappyPath(t *testing.T) {
+	now := time.Now()
+	key := newTestSigningKey(t)
+
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwksDocument(t, key.public))
+	if err != nil {
+		t.Fatalf("StaticVerifier: %v", err)
+	}
+
+	raw := key.sign(t, baseClaims("alice", testClientID, now))
+	vt, err := verifier.Verify(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("Verify happy path: %v", err)
+	}
+	if got := vt.Claims["sub"]; got != "alice" {
+		t.Errorf("sub claim = %v, want alice", got)
+	}
+}
+
+// TestStaticVerifierMalformedJWKS asserts an unparseable JWKS document yields an
+// error and no verifier.
+func TestStaticVerifierMalformedJWKS(t *testing.T) {
+	if _, err := StaticVerifier(testIssuer, testClientID, []byte("not json")); err == nil {
+		t.Fatalf("StaticVerifier with a malformed JWKS = nil error, want failure")
+	}
+}
+
+// TestStaticVerifierEmptyJWKS asserts a JWKS with no keys (and the unusable-key
+// case {"keys":[{}]}) yields an error and no verifier.
+func TestStaticVerifierEmptyJWKS(t *testing.T) {
+	for _, body := range []string{`{"keys":[]}`, `{"keys":[{}]}`} {
+		if _, err := StaticVerifier(testIssuer, testClientID, []byte(body)); err == nil {
+			t.Errorf("StaticVerifier(%q) = nil error, want failure", body)
+		}
+	}
+}
+
+// TestStaticVerifierWrongAudience asserts the offline verifier rejects a token
+// whose audience is not the configured client ID.
+func TestStaticVerifierWrongAudience(t *testing.T) {
+	now := time.Now()
+	key := newTestSigningKey(t)
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwksDocument(t, key.public))
+	if err != nil {
+		t.Fatalf("StaticVerifier: %v", err)
+	}
+
+	raw := key.sign(t, baseClaims("alice", "some-other-client", now))
+	if _, err := verifier.Verify(context.Background(), raw); err == nil {
+		t.Fatalf("Verify wrong-audience token = nil error, want rejection")
+	}
+}
+
+// TestStaticVerifierWrongIssuer asserts the offline verifier rejects a token
+// whose iss claim is not the configured issuer.
+func TestStaticVerifierWrongIssuer(t *testing.T) {
+	now := time.Now()
+	key := newTestSigningKey(t)
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwksDocument(t, key.public))
+	if err != nil {
+		t.Fatalf("StaticVerifier: %v", err)
+	}
+
+	claims := baseClaims("alice", testClientID, now)
+	claims["iss"] = "https://evil.example.test"
+	raw := key.sign(t, claims)
+	if _, err := verifier.Verify(context.Background(), raw); err == nil {
+		t.Fatalf("Verify wrong-issuer token = nil error, want rejection")
+	}
+}
+
+// TestStaticVerifierExpired asserts the offline verifier rejects an expired
+// token (exp/nbf enforcement on the static path).
+func TestStaticVerifierExpired(t *testing.T) {
+	now := time.Now()
+	key := newTestSigningKey(t)
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwksDocument(t, key.public))
+	if err != nil {
+		t.Fatalf("StaticVerifier: %v", err)
+	}
+
+	claims := baseClaims("alice", testClientID, now)
+	claims["exp"] = now.Add(-time.Minute).Unix() // already expired
+	raw := key.sign(t, claims)
+	if _, err := verifier.Verify(context.Background(), raw); err == nil {
+		t.Fatalf("Verify expired token = nil error, want rejection")
+	}
+}
+
+// TestStaticVerifierBadSignature asserts the offline verifier rejects a token
+// signed by a key absent from the static JWKS.
+func TestStaticVerifierBadSignature(t *testing.T) {
+	now := time.Now()
+	trusted := newTestSigningKey(t)
+	other := newTestSigningKey(t) // signs the token but is not in the JWKS
+
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwksDocument(t, trusted.public))
+	if err != nil {
+		t.Fatalf("StaticVerifier: %v", err)
+	}
+
+	raw := other.sign(t, baseClaims("alice", testClientID, now))
+	if _, err := verifier.Verify(context.Background(), raw); err == nil {
+		t.Fatalf("Verify bad-signature token = nil error, want rejection")
+	}
+}
+
 // fakeVerifier is a TokenVerifier stub returning a fixed result, used by the
 // Authenticator tests so they exercise the verify→map pipeline without a real
 // OIDC token.

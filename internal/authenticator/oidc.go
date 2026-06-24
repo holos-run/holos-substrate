@@ -2,6 +2,7 @@ package authenticator
 
 import (
 	"context"
+	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -77,6 +78,51 @@ func (v *oidcVerifier) Verify(ctx context.Context, rawToken string) (*VerifiedTo
 		return nil, fmt.Errorf("decoding OIDC token claims: %w", err)
 	}
 	return &VerifiedToken{Claims: claims}, nil
+}
+
+// StaticVerifier builds a TokenVerifier from a static JWKS document, performing
+// NO network I/O: it validates token signatures against the keys carried inline
+// in jwks (the literal {"keys":[...]} document) instead of discovering the
+// issuer and fetching its JWKS over HTTP. The returned verifier still enforces
+// iss (== issuerURL), aud (== clientID), and exp/nbf, flowing through the same
+// Verify code path as the discovery verifier (it wraps go-oidc's
+// *oidc.IDTokenVerifier built over an oidc.StaticKeySet).
+//
+// It is the offline counterpart to DiscoverVerifier for a token issuer that is
+// unreachable from this cluster (e.g. a remote cluster's Kubernetes API server
+// signing service-account ID tokens). An unparseable JWKS, or a JWKS with no
+// usable keys, is an error so the reconciler rejects the spec rather than
+// registering a backend whose tokens can never be verified.
+func StaticVerifier(issuerURL, clientID string, jwks []byte) (TokenVerifier, error) {
+	var keySet jose.JSONWebKeySet
+	if err := json.Unmarshal(jwks, &keySet); err != nil {
+		return nil, fmt.Errorf("parsing static JWKS: %w", err)
+	}
+	usable := usableJWKSKeys(keySet)
+	if len(usable) == 0 {
+		return nil, fmt.Errorf("static JWKS contains no usable keys")
+	}
+	pubs := make([]crypto.PublicKey, 0, len(usable))
+	for i := range usable {
+		pubs = append(pubs, usable[i].Public().Key)
+	}
+	verifier := oidc.NewVerifier(issuerURL, &oidc.StaticKeySet{PublicKeys: pubs}, &oidc.Config{ClientID: clientID})
+	return NewOIDCVerifier(verifier), nil
+}
+
+// usableJWKSKeys returns the keys in keySet whose material is present and
+// consistent per JSONWebKey.Valid(). A key set like {"keys":[{}]} unmarshals to
+// one element but carries no usable key material; Valid() filters those out. It
+// is the shared usable-key predicate for both the discovery JWKS probe
+// (probeJWKS) and the static verifier (StaticVerifier) so the two never diverge.
+func usableJWKSKeys(keySet jose.JSONWebKeySet) []jose.JSONWebKey {
+	usable := make([]jose.JSONWebKey, 0, len(keySet.Keys))
+	for i := range keySet.Keys {
+		if keySet.Keys[i].Valid() {
+			usable = append(usable, keySet.Keys[i])
+		}
+	}
+	return usable
 }
 
 // DiscoverVerifier performs OIDC discovery against issuerURL and returns a
@@ -168,13 +214,7 @@ func probeJWKS(ctx context.Context, httpClient *http.Client, provider *oidc.Prov
 	if err := json.Unmarshal(body, &keySet); err != nil {
 		return fmt.Errorf("parsing JWKS from %q: %w", claims.JWKSURL, err)
 	}
-	usable := 0
-	for i := range keySet.Keys {
-		if keySet.Keys[i].Valid() {
-			usable++
-		}
-	}
-	if usable == 0 {
+	if len(usableJWKSKeys(keySet)) == 0 {
 		return fmt.Errorf("JWKS from %q contains no usable keys", claims.JWKSURL)
 	}
 	return nil
