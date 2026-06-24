@@ -94,8 +94,9 @@ func (r *BackendReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	return r.reconcileNormal(ctx, logger, backend)
 }
 
-// reconcileNormal compiles the CEL expression, performs OIDC discovery, builds
-// the Store entry, and marks the Backend Ready.
+// reconcileNormal compiles the CEL expression, resolves a token verifier (an
+// offline static-JWKS verifier when spec.oidc.jwks is set, else OIDC discovery),
+// builds the Store entry, and marks the Backend Ready.
 func (r *BackendReconciler) reconcileNormal(ctx context.Context, logger logr.Logger, backend *authenticatorv1alpha1.Backend) (ctrl.Result, error) {
 	key := client.ObjectKeyFromObject(backend).String()
 
@@ -132,16 +133,31 @@ func (r *BackendReconciler) reconcileNormal(ctx context.Context, logger logr.Log
 	// re-asserts Accepted=True idempotently.
 	markAccepted(&backend.Status.Conditions, ReasonReconciled, "spec accepted and group-mapping expression compiled", backend.Generation)
 
-	// Perform OIDC discovery. A failure is a transient operational error (the
-	// issuer may be temporarily unreachable), so it is Programmed=False (not a spec
-	// rejection) and requeues with backoff via the returned error.
-	verifier, err := r.Discover(ctx, backend.Spec.OIDC.IssuerURL, backend.Spec.OIDC.ClientID, backend.Spec.OIDC.CABundle)
-	if err != nil {
-		// Discovery failed: the backend is not usable. Drop it from the Store so the
-		// Check path stops serving a now-unready backend, mark NotReady, and requeue.
-		r.Store.DeleteByKey(key)
-		return r.fail(ctx, backend, ReasonDiscoveryFailed,
-			fmt.Sprintf("OIDC discovery for issuer %q: %v", backend.Spec.OIDC.IssuerURL, err))
+	// Select the verifier source by spec. A static JWKS is pure spec data validated
+	// entirely offline (no external system), so a parse/usable-key failure is an
+	// invalid-spec rejection (Accepted=False), not a transient DiscoveryFailed.
+	// Otherwise discovery is a transient operational concern (the issuer may be
+	// temporarily unreachable): Programmed=False, requeued with backoff.
+	var verifier authenticator.TokenVerifier
+	if len(backend.Spec.OIDC.JWKS) > 0 {
+		verifier, err = authenticator.StaticVerifier(backend.Spec.OIDC.IssuerURL, backend.Spec.OIDC.ClientID, backend.Spec.OIDC.JWKS)
+		if err != nil {
+			// The static JWKS could not yield a verifier: the backend can never become
+			// ready until the spec is corrected, so remove any stale Store entry and
+			// reject (no requeue storm — a spec edit re-triggers the watch).
+			r.Store.DeleteByKey(key)
+			return r.reject(ctx, backend, ReasonInvalidSpec,
+				fmt.Sprintf("invalid spec.oidc.jwks: %v", err))
+		}
+	} else {
+		verifier, err = r.Discover(ctx, backend.Spec.OIDC.IssuerURL, backend.Spec.OIDC.ClientID, backend.Spec.OIDC.CABundle)
+		if err != nil {
+			// Discovery failed: the backend is not usable. Drop it from the Store so the
+			// Check path stops serving a now-unready backend, mark NotReady, and requeue.
+			r.Store.DeleteByKey(key)
+			return r.fail(ctx, backend, ReasonDiscoveryFailed,
+				fmt.Sprintf("OIDC discovery for issuer %q: %v", backend.Spec.OIDC.IssuerURL, err))
+		}
 	}
 
 	// Build the resolved entry and attempt to register it keyed by spec.host. The

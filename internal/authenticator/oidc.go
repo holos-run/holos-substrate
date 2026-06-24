@@ -2,6 +2,11 @@ package authenticator
 
 import (
 	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/elliptic"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -77,6 +82,139 @@ func (v *oidcVerifier) Verify(ctx context.Context, rawToken string) (*VerifiedTo
 		return nil, fmt.Errorf("decoding OIDC token claims: %w", err)
 	}
 	return &VerifiedToken{Claims: claims}, nil
+}
+
+// StaticVerifier builds a TokenVerifier from a static JWKS document, performing
+// NO network I/O: it validates token signatures against the keys carried inline
+// in jwks (the literal {"keys":[...]} document) instead of discovering the
+// issuer and fetching its JWKS over HTTP. The returned verifier still enforces
+// iss (== issuerURL), aud (== clientID), and exp/nbf, flowing through the same
+// Verify code path as the discovery verifier (it wraps go-oidc's
+// *oidc.IDTokenVerifier built over an oidc.StaticKeySet).
+//
+// It is the offline counterpart to DiscoverVerifier for a token issuer that is
+// unreachable from this cluster (e.g. a remote cluster's Kubernetes API server
+// signing service-account ID tokens). An unparseable JWKS, or a JWKS with no
+// usable keys, is an error so the reconciler rejects the spec rather than
+// registering a backend whose tokens can never be verified.
+func StaticVerifier(issuerURL, clientID string, jwks []byte) (TokenVerifier, error) {
+	var keySet jose.JSONWebKeySet
+	if err := json.Unmarshal(jwks, &keySet); err != nil {
+		return nil, fmt.Errorf("parsing static JWKS: %w", err)
+	}
+
+	// Collect the public signing keys and the algorithms they accept. A JWK with
+	// use other than "sig" is not a signing key (e.g. an "enc" key), so it is
+	// excluded; an empty use is permitted (RFC 7517 makes use optional). key.Public()
+	// strips any private material so a JWKS that accidentally carries a private key
+	// still yields only its public half (defense in depth).
+	var (
+		pubs []crypto.PublicKey
+		algs []string
+		seen = map[string]struct{}{}
+	)
+	addAlg := func(alg string) {
+		if _, ok := seen[alg]; !ok {
+			seen[alg] = struct{}{}
+			algs = append(algs, alg)
+		}
+	}
+	for _, key := range usableJWKSKeys(keySet) {
+		if key.Use != "" && key.Use != "sig" {
+			continue
+		}
+		pub := key.Public().Key
+
+		// Determine the asymmetric signing algorithm(s) compatible with this key's
+		// type/curve so the verifier accepts exactly the algs the issuer's keys use
+		// rather than go-oidc's RS256-only default — otherwise a valid ES256/EdDSA/RS512
+		// JWKS would be marked Ready yet fail every token verification. An unsupported
+		// key type (e.g. a symmetric oct key) yields none.
+		compatible := keyAlgs(pub)
+		if len(compatible) == 0 {
+			return nil, fmt.Errorf("static JWKS key %q has an unsupported key type for signature verification", key.KeyID)
+		}
+
+		// The JWK `alg` is authoritative when present (RFC 7517 makes it optional). A
+		// stated alg must be one the key type can actually produce: a symmetric, typo'd,
+		// or mismatched alg (e.g. "HS256" or "ES256" on an RSA key) would otherwise build
+		// a verifier that marks the Backend Ready yet rejects every token at request
+		// time, so reject it here as an invalid spec. When absent, fall back to the
+		// canonical alg for the key type (compatible[0]: RSA→RS256, P-256→ES256, …).
+		if key.Algorithm != "" {
+			if !containsString(compatible, key.Algorithm) {
+				return nil, fmt.Errorf("static JWKS key %q declares alg %q incompatible with its key type", key.KeyID, key.Algorithm)
+			}
+			pubs = append(pubs, pub)
+			addAlg(key.Algorithm)
+			continue
+		}
+		pubs = append(pubs, pub)
+		addAlg(compatible[0])
+	}
+	if len(pubs) == 0 {
+		return nil, fmt.Errorf("static JWKS contains no usable signing keys")
+	}
+
+	cfg := &oidc.Config{ClientID: clientID}
+	if len(algs) > 0 {
+		cfg.SupportedSigningAlgs = algs
+	}
+	verifier := oidc.NewVerifier(issuerURL, &oidc.StaticKeySet{PublicKeys: pubs}, cfg)
+	return NewOIDCVerifier(verifier), nil
+}
+
+// keyAlgs returns the JWS signing algorithms a public key can verify, canonical
+// (default) alg first, for validating a JWK's stated `alg` and for choosing the
+// alg when the JWK omits the optional `alg` member. An RSA key supports the
+// RSASSA-PKCS1-v1.5 and RSASSA-PSS families (RS*/PS*); each NIST curve maps to its
+// single ECDSA alg (P-256→ES256, P-384→ES384, P-521→ES512); Ed25519→EdDSA. An
+// unrecognized or symmetric key type returns nil so the caller rejects it rather
+// than asserting an algorithm the key cannot use.
+func keyAlgs(pub crypto.PublicKey) []string {
+	switch k := pub.(type) {
+	case *rsa.PublicKey:
+		return []string{oidc.RS256, oidc.RS384, oidc.RS512, oidc.PS256, oidc.PS384, oidc.PS512}
+	case *ecdsa.PublicKey:
+		switch k.Curve {
+		case elliptic.P256():
+			return []string{oidc.ES256}
+		case elliptic.P384():
+			return []string{oidc.ES384}
+		case elliptic.P521():
+			return []string{oidc.ES512}
+		}
+		return nil
+	case ed25519.PublicKey:
+		return []string{oidc.EdDSA}
+	default:
+		return nil
+	}
+}
+
+// containsString reports whether s is in xs.
+func containsString(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+// usableJWKSKeys returns the keys in keySet whose material is present and
+// consistent per JSONWebKey.Valid(). A key set like {"keys":[{}]} unmarshals to
+// one element but carries no usable key material; Valid() filters those out. It
+// is the shared usable-key predicate for both the discovery JWKS probe
+// (probeJWKS) and the static verifier (StaticVerifier) so the two never diverge.
+func usableJWKSKeys(keySet jose.JSONWebKeySet) []jose.JSONWebKey {
+	usable := make([]jose.JSONWebKey, 0, len(keySet.Keys))
+	for i := range keySet.Keys {
+		if keySet.Keys[i].Valid() {
+			usable = append(usable, keySet.Keys[i])
+		}
+	}
+	return usable
 }
 
 // DiscoverVerifier performs OIDC discovery against issuerURL and returns a
@@ -168,13 +306,7 @@ func probeJWKS(ctx context.Context, httpClient *http.Client, provider *oidc.Prov
 	if err := json.Unmarshal(body, &keySet); err != nil {
 		return fmt.Errorf("parsing JWKS from %q: %w", claims.JWKSURL, err)
 	}
-	usable := 0
-	for i := range keySet.Keys {
-		if keySet.Keys[i].Valid() {
-			usable++
-		}
-	}
-	if usable == 0 {
+	if len(usableJWKSKeys(keySet)) == 0 {
 		return fmt.Errorf("JWKS from %q contains no usable keys", claims.JWKSURL)
 	}
 	return nil

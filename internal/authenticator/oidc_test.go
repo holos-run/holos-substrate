@@ -3,6 +3,8 @@ package authenticator
 import (
 	"context"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
@@ -263,6 +265,333 @@ func TestDiscoverVerifierUnusableJWKSKey(t *testing.T) {
 	srv := rawJWKSDiscoveryServer(t, `{"keys":[{}]}`)
 	if _, err := DiscoverVerifier(context.Background(), srv.URL, testClientID, nil); err == nil {
 		t.Fatalf("DiscoverVerifier with an unusable JWKS key = nil error, want failure")
+	}
+}
+
+// jwksDocument builds a JWKS document ({"keys":[...]}) publishing the given
+// public key under a "sig"/RS256 entry, so a test can hand it to StaticVerifier
+// exactly as a real issuer's JWKS would be copied into spec.oidc.jwks.
+func jwksDocument(t *testing.T, pub crypto.PublicKey) []byte {
+	t.Helper()
+	set := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+		Key:       pub,
+		KeyID:     "key-0",
+		Algorithm: string(jose.RS256),
+		Use:       "sig",
+	}}}
+	raw, err := json.Marshal(set)
+	if err != nil {
+		t.Fatalf("marshaling JWKS: %v", err)
+	}
+	return raw
+}
+
+// TestStaticVerifierHappyPath asserts StaticVerifier builds an offline verifier
+// from a static JWKS that validates a correctly-signed token with the right
+// issuer and audience — no network I/O.
+func TestStaticVerifierHappyPath(t *testing.T) {
+	now := time.Now()
+	key := newTestSigningKey(t)
+
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwksDocument(t, key.public))
+	if err != nil {
+		t.Fatalf("StaticVerifier: %v", err)
+	}
+
+	raw := key.sign(t, baseClaims("alice", testClientID, now))
+	vt, err := verifier.Verify(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("Verify happy path: %v", err)
+	}
+	if got := vt.Claims["sub"]; got != "alice" {
+		t.Errorf("sub claim = %v, want alice", got)
+	}
+}
+
+// TestStaticVerifierES256 asserts StaticVerifier honors a non-RS256 JWKS: an
+// ES256 key set must derive SupportedSigningAlgs from the JWKS `alg` so an ES256
+// token verifies, rather than failing under go-oidc's RS256-only default.
+func TestStaticVerifierES256(t *testing.T) {
+	now := time.Now()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generating ECDSA key: %v", err)
+	}
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.ES256, Key: priv},
+		(&jose.SignerOptions{}).WithType("JWT"),
+	)
+	if err != nil {
+		t.Fatalf("building ES256 signer: %v", err)
+	}
+
+	set := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+		Key:       priv.Public(),
+		KeyID:     "es-0",
+		Algorithm: string(jose.ES256),
+		Use:       "sig",
+	}}}
+	jwks, err := json.Marshal(set)
+	if err != nil {
+		t.Fatalf("marshaling ES256 JWKS: %v", err)
+	}
+
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwks)
+	if err != nil {
+		t.Fatalf("StaticVerifier: %v", err)
+	}
+
+	raw, err := jwt.Signed(signer).Claims(baseClaims("alice", testClientID, now)).Serialize()
+	if err != nil {
+		t.Fatalf("signing ES256 JWT: %v", err)
+	}
+	if _, err := verifier.Verify(context.Background(), raw); err != nil {
+		t.Fatalf("Verify ES256 token against static JWKS: %v", err)
+	}
+}
+
+// TestStaticVerifierMixedAlgs asserts a JWKS mixing an alg-less RSA key with an
+// explicit ES256 key verifies tokens signed by either: the explicit ES256 alg is
+// honored, and RS256 is retained for the alg-less RSA key (its inferred alg)
+// rather than being dropped when another key carries an explicit alg.
+func TestStaticVerifierMixedAlgs(t *testing.T) {
+	now := time.Now()
+
+	// RSA key published WITHOUT an alg (relies on the RS256 default).
+	rsaKey := newTestSigningKey(t)
+	// ECDSA key published WITH an explicit ES256 alg.
+	ecPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generating ECDSA key: %v", err)
+	}
+	ecSigner, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.ES256, Key: ecPriv},
+		(&jose.SignerOptions{}).WithType("JWT"),
+	)
+	if err != nil {
+		t.Fatalf("building ES256 signer: %v", err)
+	}
+
+	set := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{
+		{Key: rsaKey.public, KeyID: "rsa-0", Use: "sig"}, // no Algorithm
+		{Key: ecPriv.Public(), KeyID: "es-0", Algorithm: string(jose.ES256), Use: "sig"},
+	}}
+	jwks, err := json.Marshal(set)
+	if err != nil {
+		t.Fatalf("marshaling mixed JWKS: %v", err)
+	}
+
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwks)
+	if err != nil {
+		t.Fatalf("StaticVerifier: %v", err)
+	}
+
+	// RS256 token signed by the alg-less RSA key must verify.
+	rsRaw := rsaKey.sign(t, baseClaims("alice", testClientID, now))
+	if _, err := verifier.Verify(context.Background(), rsRaw); err != nil {
+		t.Fatalf("Verify RS256 token against mixed JWKS: %v", err)
+	}
+	// ES256 token signed by the explicit-alg key must verify.
+	esRaw, err := jwt.Signed(ecSigner).Claims(baseClaims("bob", testClientID, now)).Serialize()
+	if err != nil {
+		t.Fatalf("signing ES256 JWT: %v", err)
+	}
+	if _, err := verifier.Verify(context.Background(), esRaw); err != nil {
+		t.Fatalf("Verify ES256 token against mixed JWKS: %v", err)
+	}
+}
+
+// TestStaticVerifierAlgLessEC asserts StaticVerifier infers the signing alg from
+// the key type/curve when the JWK omits the optional `alg`: an alg-less P-256 key
+// must accept ES256 tokens, not fall back to RS256-only and reject every token.
+func TestStaticVerifierAlgLessEC(t *testing.T) {
+	now := time.Now()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generating ECDSA key: %v", err)
+	}
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.ES256, Key: priv},
+		(&jose.SignerOptions{}).WithType("JWT"),
+	)
+	if err != nil {
+		t.Fatalf("building ES256 signer: %v", err)
+	}
+
+	set := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+		Key:   priv.Public(),
+		KeyID: "es-0",
+		Use:   "sig", // no Algorithm — must be inferred as ES256 from the P-256 curve
+	}}}
+	jwks, err := json.Marshal(set)
+	if err != nil {
+		t.Fatalf("marshaling alg-less EC JWKS: %v", err)
+	}
+
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwks)
+	if err != nil {
+		t.Fatalf("StaticVerifier: %v", err)
+	}
+
+	raw, err := jwt.Signed(signer).Claims(baseClaims("alice", testClientID, now)).Serialize()
+	if err != nil {
+		t.Fatalf("signing ES256 JWT: %v", err)
+	}
+	if _, err := verifier.Verify(context.Background(), raw); err != nil {
+		t.Fatalf("Verify ES256 token against alg-less EC JWKS: %v", err)
+	}
+}
+
+// TestStaticVerifierMismatchedAlg asserts a JWK whose stated alg is incompatible
+// with its key type (e.g. a symmetric HS256, or an ES256 alg on an RSA key) is
+// rejected rather than building a verifier that would mark the Backend Ready yet
+// reject every token at request time.
+func TestStaticVerifierMismatchedAlg(t *testing.T) {
+	key := newTestSigningKey(t) // RSA key
+
+	for _, alg := range []string{"HS256", string(jose.ES256), "RS257" /* typo */} {
+		set := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+			Key:       key.public,
+			KeyID:     "rsa-0",
+			Algorithm: alg,
+			Use:       "sig",
+		}}}
+		jwks, err := json.Marshal(set)
+		if err != nil {
+			t.Fatalf("marshaling JWKS: %v", err)
+		}
+		if _, err := StaticVerifier(testIssuer, testClientID, jwks); err == nil {
+			t.Errorf("StaticVerifier with RSA key + alg %q = nil error, want rejection", alg)
+		}
+	}
+}
+
+// TestStaticVerifierRSAFamilyAlg asserts an RSA key may legitimately declare any
+// RSA-family alg (e.g. PS256), not only RS256: the compatible-alg set must accept
+// the whole RS*/PS* family for an RSA key.
+func TestStaticVerifierRSAFamilyAlg(t *testing.T) {
+	now := time.Now()
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generating RSA key: %v", err)
+	}
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.PS256, Key: priv},
+		(&jose.SignerOptions{}).WithType("JWT"),
+	)
+	if err != nil {
+		t.Fatalf("building PS256 signer: %v", err)
+	}
+
+	set := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+		Key:       priv.Public(),
+		KeyID:     "rsa-0",
+		Algorithm: string(jose.PS256),
+		Use:       "sig",
+	}}}
+	jwks, err := json.Marshal(set)
+	if err != nil {
+		t.Fatalf("marshaling JWKS: %v", err)
+	}
+
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwks)
+	if err != nil {
+		t.Fatalf("StaticVerifier with RSA key + PS256: %v", err)
+	}
+	raw, err := jwt.Signed(signer).Claims(baseClaims("alice", testClientID, now)).Serialize()
+	if err != nil {
+		t.Fatalf("signing PS256 JWT: %v", err)
+	}
+	if _, err := verifier.Verify(context.Background(), raw); err != nil {
+		t.Fatalf("Verify PS256 token: %v", err)
+	}
+}
+
+// TestStaticVerifierMalformedJWKS asserts an unparseable JWKS document yields an
+// error and no verifier.
+func TestStaticVerifierMalformedJWKS(t *testing.T) {
+	if _, err := StaticVerifier(testIssuer, testClientID, []byte("not json")); err == nil {
+		t.Fatalf("StaticVerifier with a malformed JWKS = nil error, want failure")
+	}
+}
+
+// TestStaticVerifierEmptyJWKS asserts a JWKS with no keys (and the unusable-key
+// case {"keys":[{}]}) yields an error and no verifier.
+func TestStaticVerifierEmptyJWKS(t *testing.T) {
+	for _, body := range []string{`{"keys":[]}`, `{"keys":[{}]}`} {
+		if _, err := StaticVerifier(testIssuer, testClientID, []byte(body)); err == nil {
+			t.Errorf("StaticVerifier(%q) = nil error, want failure", body)
+		}
+	}
+}
+
+// TestStaticVerifierWrongAudience asserts the offline verifier rejects a token
+// whose audience is not the configured client ID.
+func TestStaticVerifierWrongAudience(t *testing.T) {
+	now := time.Now()
+	key := newTestSigningKey(t)
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwksDocument(t, key.public))
+	if err != nil {
+		t.Fatalf("StaticVerifier: %v", err)
+	}
+
+	raw := key.sign(t, baseClaims("alice", "some-other-client", now))
+	if _, err := verifier.Verify(context.Background(), raw); err == nil {
+		t.Fatalf("Verify wrong-audience token = nil error, want rejection")
+	}
+}
+
+// TestStaticVerifierWrongIssuer asserts the offline verifier rejects a token
+// whose iss claim is not the configured issuer.
+func TestStaticVerifierWrongIssuer(t *testing.T) {
+	now := time.Now()
+	key := newTestSigningKey(t)
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwksDocument(t, key.public))
+	if err != nil {
+		t.Fatalf("StaticVerifier: %v", err)
+	}
+
+	claims := baseClaims("alice", testClientID, now)
+	claims["iss"] = "https://evil.example.test"
+	raw := key.sign(t, claims)
+	if _, err := verifier.Verify(context.Background(), raw); err == nil {
+		t.Fatalf("Verify wrong-issuer token = nil error, want rejection")
+	}
+}
+
+// TestStaticVerifierExpired asserts the offline verifier rejects an expired
+// token (exp/nbf enforcement on the static path).
+func TestStaticVerifierExpired(t *testing.T) {
+	now := time.Now()
+	key := newTestSigningKey(t)
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwksDocument(t, key.public))
+	if err != nil {
+		t.Fatalf("StaticVerifier: %v", err)
+	}
+
+	claims := baseClaims("alice", testClientID, now)
+	claims["exp"] = now.Add(-time.Minute).Unix() // already expired
+	raw := key.sign(t, claims)
+	if _, err := verifier.Verify(context.Background(), raw); err == nil {
+		t.Fatalf("Verify expired token = nil error, want rejection")
+	}
+}
+
+// TestStaticVerifierBadSignature asserts the offline verifier rejects a token
+// signed by a key absent from the static JWKS.
+func TestStaticVerifierBadSignature(t *testing.T) {
+	now := time.Now()
+	trusted := newTestSigningKey(t)
+	other := newTestSigningKey(t) // signs the token but is not in the JWKS
+
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwksDocument(t, trusted.public))
+	if err != nil {
+		t.Fatalf("StaticVerifier: %v", err)
+	}
+
+	raw := other.sign(t, baseClaims("alice", testClientID, now))
+	if _, err := verifier.Verify(context.Background(), raw); err == nil {
+		t.Fatalf("Verify bad-signature token = nil error, want rejection")
 	}
 }
 

@@ -2,9 +2,13 @@ package authenticator
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/json"
 	"fmt"
 	"testing"
 
+	jose "github.com/go-jose/go-jose/v4"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -13,6 +17,36 @@ import (
 	authenticatorv1alpha1 "github.com/holos-run/holos-paas/api/authenticator/v1alpha1"
 	"github.com/holos-run/holos-paas/internal/authenticator"
 )
+
+// validJWKS builds a JWKS document carrying a freshly-generated RSA public key,
+// so a static-JWKS Backend fixture can validate offline without a live issuer.
+func validJWKS(t *testing.T) []byte {
+	t.Helper()
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generating RSA key: %v", err)
+	}
+	set := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+		Key:       priv.Public(),
+		KeyID:     "key-0",
+		Algorithm: string(jose.RS256),
+		Use:       "sig",
+	}}}
+	raw, err := json.Marshal(set)
+	if err != nil {
+		t.Fatalf("marshaling JWKS: %v", err)
+	}
+	return raw
+}
+
+// discoverFailing is a DiscoverFunc that fails if ever called, used by the
+// static-JWKS tests to prove OIDC discovery is skipped when spec.oidc.jwks is set.
+func discoverFailing(called *bool) authenticator.DiscoverFunc {
+	return func(context.Context, string, string, []byte) (authenticator.TokenVerifier, error) {
+		*called = true
+		return nil, fmt.Errorf("Discover must not be called when spec.oidc.jwks is set")
+	}
+}
 
 // makeNamespace creates a uniquely-named namespace so each test's Backend is
 // isolated.
@@ -314,6 +348,80 @@ func TestReconcileHostConflictLoserRecoversAfterWinnerDeleted(t *testing.T) {
 		t.Errorf("B Ready = %q, want True after winner deleted", s)
 	}
 	assertOwner(t, store, host, keyB.String())
+}
+
+// TestReconcileStaticJWKSReadyOffline asserts a Backend carrying a valid static
+// JWKS reaches Ready=True without any OIDC discovery: the injected Discover func
+// fails if invoked, proving the static path skips it. The entry registers in the
+// store keyed by host exactly as the discovery path does.
+func TestReconcileStaticJWKSReadyOffline(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	var discoverCalled bool
+	r, store, _ := newReconciler(discoverFailing(&discoverCalled))
+
+	b := makeBackend(ns, "backend-static", "api-static.example.test")
+	b.Spec.OIDC.JWKS = validJWKS(t)
+	key := createBackend(ctx, t, b)
+
+	if _, err := reconcile(ctx, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if discoverCalled {
+		t.Fatalf("Discover was called for a static-JWKS Backend; discovery must be skipped")
+	}
+
+	got := getBackend(ctx, t, key)
+	for _, ct := range []string{ConditionAccepted, ConditionProgrammed, ConditionReady} {
+		if s := condStatus(got, ct); s != metav1.ConditionTrue {
+			t.Errorf("%s = %q, want True", ct, s)
+		}
+	}
+	if reason := condReason(got, ConditionReady); reason != ReasonReconciled {
+		t.Errorf("Ready reason = %q, want %q", reason, ReasonReconciled)
+	}
+	if _, ok := store.Get("api-static.example.test"); !ok {
+		t.Errorf("store missing entry for host api-static.example.test")
+	}
+}
+
+// TestReconcileMalformedStaticJWKSRejects asserts a Backend whose spec.oidc.jwks
+// is unparseable is rejected as an invalid spec (Accepted/Ready=False, reason
+// InvalidSpec) — not a transient DiscoveryFailed — never requeues with an error,
+// leaves nothing in the store, and never calls Discover.
+func TestReconcileMalformedStaticJWKSRejects(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	var discoverCalled bool
+	r, store, _ := newReconciler(discoverFailing(&discoverCalled))
+
+	b := makeBackend(ns, "backend-bad-jwks", "api-badjwks.example.test")
+	b.Spec.OIDC.JWKS = []byte("not json")
+	key := createBackend(ctx, t, b)
+
+	res, err := reconcile(ctx, r, key)
+	if err != nil {
+		t.Fatalf("reconcile returned error for an invalid JWKS (should not requeue): %v", err)
+	}
+	if res.RequeueAfter != 0 {
+		t.Errorf("RequeueAfter = %v, want 0 for a terminal rejection", res.RequeueAfter)
+	}
+	if discoverCalled {
+		t.Fatalf("Discover was called for a static-JWKS Backend; discovery must be skipped")
+	}
+
+	got := getBackend(ctx, t, key)
+	if s := condStatus(got, ConditionAccepted); s != metav1.ConditionFalse {
+		t.Errorf("Accepted = %q, want False", s)
+	}
+	if reason := condReason(got, ConditionReady); reason != ReasonInvalidSpec {
+		t.Errorf("Ready reason = %q, want %q", reason, ReasonInvalidSpec)
+	}
+	if store.Len() != 0 {
+		t.Errorf("store has %d entries, want 0 for a rejected spec", store.Len())
+	}
 }
 
 // assertOwner fails the test unless host is owned by wantOwner in the store.
