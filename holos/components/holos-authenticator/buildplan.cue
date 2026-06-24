@@ -397,10 +397,12 @@ userDefinedBuildPlan: {
 
 						// A second example Backend demonstrating the static-JWKS / KSA
 						// (Kubernetes service-account) mode (ADR-23 Revision 3,
-						// HOL-1392..HOL-1395).  It fronts ONE remote cluster's API server
-						// so a workload there can present its projected service-account ID
-						// token (e.g. an External Secrets Operator SecretStore token
-						// request) and be impersonated on the management cluster.  Because
+						// HOL-1392..HOL-1395).  A workload on a remote cluster presents its
+						// projected service-account ID token (e.g. an External Secrets
+						// Operator SecretStore token request) and is impersonated on the
+						// MANAGEMENT cluster (spec.server.url below).  The remote cluster is
+						// only the token issuer / JWKS source; spec.host is the per-remote
+						// routing key, not the upstream.  Because
 						// spec.oidc.jwks is set, the authorizer validates the token's
 						// signature OFFLINE against this static key set and performs NO OIDC
 						// discovery: oidc.issuerURL is matched against the `iss` claim only,

@@ -207,13 +207,17 @@ impersonated with no groups), not an error.
 ## KSA / static-JWKS backends
 
 A `Backend` can validate tokens **offline** against a static JWKS rather than
-doing OIDC discovery. This is how the authenticator fronts a **remote cluster's
-Kubernetes API server**: a workload on a remote cluster presents its **projected
-service-account (KSA) ID token** (for example, an [External Secrets
-Operator](https://external-secrets.io/) `SecretStore` token request), and the
-authenticator validates it against the remote cluster's published service-account
-JWKS — which the management cluster generally cannot reach over the network — and
-impersonates the service account on the **management** cluster's API server.
+doing OIDC discovery. This is how the authenticator accepts **service-account
+(KSA) ID tokens minted by a remote cluster**: a workload on a remote cluster
+presents its **projected service-account (KSA) ID token** (for example, an
+[External Secrets Operator](https://external-secrets.io/) `SecretStore` token
+request), and the authenticator validates it against the remote cluster's
+published service-account JWKS — which the management cluster generally cannot
+reach over the network — then impersonates the service account on the
+**management** cluster's API server. The remote cluster is only the token
+**issuer / JWKS source**; the impersonated request is forwarded to
+`spec.server.url`, the **management** cluster's API server (`spec.host` is the
+per-remote-cluster routing key, not the upstream).
 
 Set `spec.oidc.jwks` and the authorizer performs **no OIDC discovery and no JWKS
 HTTP fetch**: it verifies the token signature against the keys in `jwks`, treats
@@ -307,11 +311,15 @@ kind: ClusterRole
 metadata:
   name: holos-authenticator-ksa-impersonator
 rules:
-  # The SA username (Impersonate-User: system:serviceaccount:<ns>:<name>).
+  # The SA username (Impersonate-User: system:serviceaccount:<ns>:<name>),
+  # constrained with resourceNames so the credential cannot impersonate
+  # arbitrary users — only the exact remote service account(s) served.
   - apiGroups: [""]
     resources: ["users"]
     verbs: ["impersonate"]
-  # The SA virtual groups the CEL expression emits.
+    resourceNames:
+      - "system:serviceaccount:remote-ns:remote-sa"   # one per remote SA served
+  # The SA virtual groups the CEL expression emits, likewise constrained.
   - apiGroups: [""]
     resources: ["groups"]
     verbs: ["impersonate"]
@@ -338,11 +346,13 @@ subjects:
     namespace: holos-authenticator
 ```
 
-Restricting the `groups` rule with `resourceNames` (rather than granting
-`impersonate` on all groups) keeps the impersonator's blast radius bounded to the
-exact SA virtual groups. Mirror the existing [*Impersonation RBAC*](#impersonation-rbac-the-forwarded-credential)
-shape; the only KSA-specific addition is the `resourceNames` list of SA virtual
-groups. Provision the credential Secret at runtime as in [*Provisioning the
+Restricting **both** the `users` and `groups` rules with `resourceNames` (rather
+than granting `impersonate` on all users or all groups) keeps the impersonator's
+blast radius bounded to the
+exact SA username and SA virtual groups. Mirror the existing [*Impersonation
+RBAC*](#impersonation-rbac-the-forwarded-credential) shape; the KSA-specific
+addition is the `resourceNames` lists scoping both the SA username and the SA
+virtual groups. Provision the credential Secret at runtime as in [*Provisioning the
 credential Secret at runtime*](#provisioning-the-credential-secret-at-runtime),
 using a bound token for the management-cluster impersonator ServiceAccount.
 
@@ -365,14 +375,16 @@ spec:
       # The authenticator host for this remote cluster (routed by Host).
       server:
         url: "https://remote-cluster-a.holos.internal"
-        caBundle: "<PEM trusting the authenticator/waypoint serving cert>"
+        # base64-encoded CA bundle trusting the authenticator/waypoint serving
+        # cert (the ESO kubernetes provider's caBundle is base64, not raw PEM).
+        caBundle: "<base64 CA bundle>"
       remoteNamespace: shared-secrets
       auth:
         serviceAccount:
           name: eso-reader            # SA on the remote cluster
-      # The token audience must equal the Backend's spec.oidc.clientID.
-      authRef:
-        audiences: ["holos-authenticator"]
+          # The token audience must equal the Backend's spec.oidc.clientID; the
+          # ESO kubernetes provider sets it under auth.serviceAccount.audiences.
+          audiences: ["holos-authenticator"]
 ```
 
 ```yaml

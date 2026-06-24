@@ -85,11 +85,16 @@ with the deviations noted below. `Status` is now `Implemented`.
 ## Static-JWKS / KSA extension (Revision 3)
 
 Revision 3 (HOL-1392..HOL-1395) extends the `Backend` to validate tokens
-**offline** against a static JSON Web Key Set, so the authenticator can front a
-**remote cluster's Kubernetes API server** whose service-account (KSA) token
-issuer is unreachable from this cluster. The motivating case is a remote workload
-(e.g. an External Secrets Operator `SecretStore`) presenting its projected KSA ID
-token to be impersonated on the management cluster.
+**offline** against a static JSON Web Key Set, so the authenticator can accept
+**service-account (KSA) ID tokens minted by a remote cluster** whose token issuer
+(its service-account JWKS endpoint) is unreachable from this cluster. The
+motivating case is a remote workload (e.g. an External Secrets Operator
+`SecretStore`) presenting its projected KSA ID token to be impersonated on the
+**management** cluster. The remote cluster is only the token **issuer / JWKS
+source**; the impersonated request is forwarded to the API server named by the
+`Backend`'s `spec.server.url` — the **management** cluster's API server, not the
+remote one. (`spec.host` is the per-remote-cluster routing key; `spec.server.url`
+is the upstream the impersonated request lands on.)
 
 - **Additive `spec.oidc.jwks` (no new CRD).** The existing `Backend` CR was
   **extended**, not replaced — a single optional `oidc.jwks` field (a base64
