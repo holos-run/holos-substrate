@@ -394,6 +394,88 @@ userDefinedBuildPlan: {
 								credentialsSecretRef: name: "holos-authenticator-backend-creds"
 							}
 						}
+
+						// A second example Backend demonstrating the static-JWKS / KSA
+						// (Kubernetes service-account) mode (ADR-23 Revision 3,
+						// HOL-1392..HOL-1395).  A workload on a remote cluster presents its
+						// projected service-account ID token (e.g. an External Secrets
+						// Operator SecretStore token request) and is impersonated on the
+						// MANAGEMENT cluster (spec.server.url below).  The remote cluster is
+						// only the token issuer / JWKS source; spec.host is the per-remote
+						// routing key, not the upstream.  Because
+						// spec.oidc.jwks is set, the authorizer validates the token's
+						// signature OFFLINE against this static key set and performs NO OIDC
+						// discovery: oidc.issuerURL is matched against the `iss` claim only,
+						// oidc.caBundle is unused (there is no issuer to dial), and the
+						// usual iss/aud/exp/nbf checks still apply.  Each remote cluster
+						// gets its own Backend with a unique spec.host (the 1:1 host model).
+						//
+						// The jwks value below is a REDACTED PLACEHOLDER — an operator
+						// replaces it with the remote cluster's real JWKS document captured
+						// from `kubectl get --raw /openid/v1/jwks` (see the runbook).  The
+						// component is excluded from the bootstrap floor and never applied
+						// automatically, so a placeholder key here is harmless: it documents
+						// the shape without shipping a usable verifier.  The JWKS is
+						// non-secret public-key material, so it may live in the CR (the
+						// Runtime Secret Handling guardrail concerns the impersonator token
+						// in credentialsSecretRef, which is still created out of band).
+						Backend: "remote-cluster-a": {
+							apiVersion: "authenticator.holos.run/v1alpha1"
+							kind:       "Backend"
+							metadata: {
+								name:      "remote-cluster-a"
+								namespace: NAMESPACE
+								labels:    METADATA.labels
+							}
+							spec: {
+								// One unique host per fronted remote cluster.
+								host: "remote-cluster-a.holos.internal"
+								oidc: {
+									// With jwks set, issuerURL is the expected `iss` claim
+									// value of the remote cluster's service-account issuer
+									// (its /.well-known/openid-configuration "issuer"); no
+									// discovery document is fetched.
+									issuerURL: "https://kubernetes.default.svc"
+									// clientID is the audience the remote SecretStore's token
+									// request asks for, matched against the token's `aud`.
+									clientID: "holos-authenticator"
+									// usernameClaim defaults to "sub"; a KSA token's sub is
+									// system:serviceaccount:<ns>:<name>, so the default already
+									// reproduces the SA username for Impersonate-User.  Set
+									// explicitly here for documentation.
+									usernameClaim: "sub"
+									// The remote cluster's JSON Web Key Set, captured from
+									// `kubectl get --raw /openid/v1/jwks` on that cluster.  The
+									// jwks field is []byte (CRD `type: string, format: byte`), so
+									// the value is the base64 encoding of the JWKS document — the
+									// same single-base64-string convention the caBundle fields use.
+									// REDACTED PLACEHOLDER: the base64 of a JWKS document whose only
+									// key is a redacted RSA stub; an operator replaces it with the
+									// base64 of the real /openid/v1/jwks document.
+									jwks: "eyJrZXlzIjpbeyJ1c2UiOiJzaWciLCJrdHkiOiJSU0EiLCJraWQiOiJSRVBMQUNFX1dJVEhfUkVNT1RFX0NMVVNURVJfS0lEIiwiYWxnIjoiUlMyNTYiLCJuIjoiUkVEQUNURURfUExBQ0VIT0xERVJfTU9EVUxVUyIsImUiOiJBUUFCIn1dfQ=="
+								}
+								server: {
+									// The MANAGEMENT cluster's API server — the impersonated
+									// request is forwarded here.  In-cluster, that is the
+									// platform API server; an external management cluster would
+									// set an external URL fronted by a ServiceEntry+waypoint
+									// (deferred, holos/docs/placeholders.md).
+									url: "https://kubernetes.default.svc"
+								}
+								// Reproduce the service account's Kubernetes virtual groups
+								// from the projected-token `kubernetes.io` claim.  The default
+								// usernameClaim already yields the SA username; this CEL
+								// expression yields the SA's three virtual groups so RBAC
+								// bound to system:serviceaccounts[:<ns>] authorizes the
+								// impersonated request exactly as the SA itself would be.
+								groupMapping: celExpression: #"["system:authenticated", "system:serviceaccounts", "system:serviceaccounts:" + claims["kubernetes.io"].namespace]"#
+								// The impersonator credential for the MANAGEMENT cluster,
+								// named here and created at runtime (never committed).  It
+								// must hold impersonate on the SA username and the three SA
+								// virtual groups — see the runbook's impersonation-RBAC section.
+								credentialsSecretRef: name: "remote-cluster-a-impersonator-creds"
+							}
+						}
 					}
 				},
 				{

@@ -31,7 +31,9 @@ credential, so Envoy forwards the request straight to the API server.
   `config/crd/bases/authenticator.holos.run_backends.yaml`);
 - an **AuthorizationPolicy** with `action: CUSTOM` and
   `provider.name: holos-authenticator`, matching the Istio extension provider;
-- one example **Backend** CR.
+- two example **Backend** CRs — the discovery-based `example` (in-cluster
+  Keycloak issuer) and the static-JWKS `remote-cluster-a` (KSA / offline mode,
+  below).
 
 No `Namespace` is emitted: the `holos-authenticator` namespace is owned by the
 central registry (`holos/namespaces.cue`) and rendered by the `namespaces`
@@ -65,6 +67,52 @@ references it by name (`provider.name: holos-authenticator`).
 > waypoint. The full waypoint / `ServiceEntry` topology for an **external** API
 > server target is a deferred follow-up — see `holos/docs/placeholders.md`
 > (finalized in the next phase).
+
+## Static-JWKS / KSA backends (offline validation)
+
+A `Backend` can validate tokens **offline** against a static JSON Web Key Set
+instead of doing OIDC discovery. Set `spec.oidc.jwks` to the issuer's
+`{"keys":[…]}` document — **base64-encoded**, since the field is a `[]byte`
+(CRD `type: string, format: byte`), the same single-base64-string convention the
+`caBundle` fields use (the rendered `remote-cluster-a` example shows the encoded
+form) — and the authorizer:
+
+- performs **no OIDC discovery and no JWKS HTTP fetch** — it verifies the token
+  signature against the keys in `spec.oidc.jwks` directly;
+- treats `spec.oidc.issuerURL` as the **expected `iss` claim value only** (it is
+  not dialed), and ignores `spec.oidc.caBundle` (there is no issuer endpoint to
+  trust);
+- still enforces `iss` (== `issuerURL`), `aud` (== `clientID`), and `exp`/`nbf`,
+  and runs the same CEL group mapping as the discovery path.
+
+A malformed/unparseable JWKS, or one with zero usable keys, is rejected at
+reconcile time as an **invalid spec** (`Accepted=False`/`Ready=False`, reason
+`InvalidSpec`) — not a transient discovery failure. An empty `spec.oidc.jwks`
+is unchanged: the authorizer performs OIDC discovery as before.
+
+> Key selection / per-key algorithm enforcement currently matches the discovery
+> path (the configured supported-algorithm set, no per-`kid` binding). Tightening
+> both paths together (per-`kid` key selection, per-key alg enforcement) is the
+> planned hardening tracked in HOL-1396.
+
+This is the mechanism for a token issuer that is **unreachable** from this
+cluster — most importantly a **remote cluster's Kubernetes API server signing
+service-account (KSA) ID tokens**. The model is **1:1 host↔Backend**: each
+remote cluster gets its own `Backend` with a unique `spec.host` (e.g.
+`remote-cluster-a.holos.internal`), its own static JWKS, and its own
+impersonator credential for the management cluster. The component renders
+`remote-cluster-a` as the worked KSA example; its `jwks` is a **redacted
+placeholder** an operator replaces with the remote cluster's real JWKS document
+(`kubectl get --raw /openid/v1/jwks`). The JWKS is non-secret public-key
+material and may live in the CR; the impersonator token in
+`credentialsSecretRef` is still created at runtime and never committed.
+
+The full operator procedure — capturing the remote JWKS/issuer, the SA-group
+CEL expression, the SA-virtual-group impersonation RBAC, and end-to-end
+External Secrets Operator (`SecretStore`/`ExternalSecret`) verification — is in
+the runbook's [*KSA / static-JWKS
+backends*](../../../docs/runbooks/holos-authenticator.md#ksa--static-jwks-backends)
+section.
 
 ## Impersonation RBAC (the impersonator credential)
 

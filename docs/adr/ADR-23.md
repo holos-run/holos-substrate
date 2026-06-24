@@ -12,6 +12,7 @@
 | -------- | ---------- | ----------- | ----------------------------------------------------------------- |
 | 1        | 2026-06-22 | @jeffmccune | Initial design                                                    |
 | 2        | 2026-06-23 | @jeffmccune | Flipped to `Implemented` — as-built summary and deviations (below) |
+| 3        | 2026-06-24 | @jeffmccune | KSA / static-JWKS extension — additive `spec.oidc.jwks` for offline validation (below) |
 
 ## As-built (Revision 2)
 
@@ -80,6 +81,66 @@ with the deviations noted below. `Status` is now `Implemented`.
   that namespace, and the namespace reserved against tenant projects). Token
   refresh/caching tuning and per-request CEL features beyond the default groups
   mapping are likewise deferred there.
+
+## Static-JWKS / KSA extension (Revision 3)
+
+Revision 3 (HOL-1392..HOL-1395) extends the `Backend` to validate tokens
+**offline** against a static JSON Web Key Set, so the authenticator can accept
+**service-account (KSA) ID tokens minted by a remote cluster** whose token issuer
+(its service-account JWKS endpoint) is unreachable from this cluster. The
+motivating case is a remote workload (e.g. an External Secrets Operator
+`SecretStore`) presenting its projected KSA ID token to be impersonated on the
+**management** cluster. The remote cluster is only the token **issuer / JWKS
+source**; the impersonated request is forwarded to the API server named by the
+`Backend`'s `spec.server.url` — the **management** cluster's API server, not the
+remote one. (`spec.host` is the per-remote-cluster routing key; `spec.server.url`
+is the upstream the impersonated request lands on.)
+
+- **Additive `spec.oidc.jwks` (no new CRD).** The existing `Backend` CR was
+  **extended**, not replaced — a single optional `oidc.jwks` field (a base64
+  `[]byte` holding the literal `{"keys":[…]}` document) carrying the static key
+  set. The `authenticator.holos.run/v1alpha1` group and the `Backend` Kind are
+  unchanged otherwise; backends that omit `jwks` are fully backward-compatible.
+- **Offline validation, `iss`/`aud`/`exp` still enforced.** When `oidc.jwks` is
+  set the authorizer performs **no OIDC discovery and no JWKS HTTP fetch**: it
+  verifies the token signature against the static keys and still checks `iss`
+  (== `oidc.issuerURL`, now the expected `iss` value only — not dialed), `aud`
+  (== `oidc.clientID`), and `exp`/`nbf`. `oidc.caBundle` is unused on this path
+  (there is no issuer endpoint to trust). The CEL group mapping is identical to
+  the discovery path.
+- **KSA impersonation via `sub` + an SA-group CEL expression.** A KSA ID token's
+  `sub` is `system:serviceaccount:<ns>:<name>`, so the default
+  `usernameClaim: sub` already reproduces the SA username for `Impersonate-User`.
+  The SA's Kubernetes **virtual groups** are reproduced from the projected
+  token's `kubernetes.io` claim with the CEL expression
+  `["system:authenticated", "system:serviceaccounts", "system:serviceaccounts:" + claims["kubernetes.io"].namespace]`,
+  so RBAC on the management cluster authorizes the impersonated request exactly as
+  the SA would be. The impersonator `credentialsSecretRef` identity must therefore
+  hold `impersonate` on the SA username and those SA virtual groups (runbook).
+- **Malformed JWKS → `InvalidSpec`.** A static JWKS is pure spec data with no
+  external system involved, so a malformed/unparseable JWKS (or one with zero
+  usable keys) is rejected at reconcile time as an **invalid spec**
+  (`Accepted=False`/`Ready=False`, reason `InvalidSpec`) — not the transient
+  `DiscoveryFailed`. A valid static-JWKS backend reaches `Ready=True` via the same
+  `succeed` path as a discovery backend, with no network I/O.
+- **1:1 host↔Backend for remote clusters.** Each fronted remote cluster gets its
+  own `Backend` with a unique `spec.host`, its own static JWKS, and its own
+  management-cluster impersonator credential. The component renders
+  `remote-cluster-a` as the worked KSA example (a redacted-placeholder `jwks`);
+  it is excluded from the bootstrap floor and never applied automatically.
+- **Key selection kept at parity with discovery (HOL-1396 hardening deferred).**
+  Static-JWKS validation uses the same global supported-algorithm set as the
+  discovery path, with **no per-`kid` key selection or per-key algorithm
+  enforcement** — built to parity with discovery on purpose. Adding per-`kid` key
+  selection and per-key alg enforcement to **both** the static and discovery paths
+  together is a deferred follow-up tracked in **HOL-1396**.
+
+The operator procedure (capturing the remote JWKS/issuer, the SA-group CEL
+expression, the SA-virtual-group impersonation RBAC, and end-to-end ESO
+verification) is in the [runbook's *KSA / static-JWKS
+backends*](../runbooks/holos-authenticator.md#ksa--static-jwks-backends) section;
+the component's static-JWKS mode is documented in its
+[README](../../holos/components/holos-authenticator/README.md).
 
 ## Context and Problem Statement
 

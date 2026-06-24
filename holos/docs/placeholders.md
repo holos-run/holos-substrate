@@ -249,10 +249,24 @@ The `holos-authenticator` component (HOL-1389, [ADR-23](../../docs/adr/ADR-23.md
 finalized in HOL-1390) wires the Holos Authenticator into the platform: the
 manager Deployment + RBAC + Service + Backend CRD, the `envoyExtAuthzGrpc`
 extension provider in `istiod`'s `MeshConfig`, a `CUSTOM` `AuthorizationPolicy`,
-and one example `Backend`. The **in-cluster wiring** is built and documented in
+and two example `Backend`s (the discovery-based `example` and the static-JWKS
+`remote-cluster-a`). The **in-cluster wiring** is built and documented in
 the operator runbook ([`docs/runbooks/holos-authenticator.md`](../../docs/runbooks/holos-authenticator.md));
-ADR-23 is `Implemented`. The following enforcement and tuning concerns are
-deliberately deferred to later phases:
+ADR-23 is `Implemented`. ADR-23 Revision 3 (HOL-1392..HOL-1395) added **KSA /
+static-JWKS backends** — an additive `spec.oidc.jwks` validates service-account
+ID tokens minted by a remote cluster **offline** against a static JWKS (no OIDC
+discovery), then impersonates the SA on the management cluster (`spec.server.url`);
+the remote cluster is only the token issuer/JWKS source, with one `Backend` per
+remote cluster keyed 1:1 by host. The following enforcement, tuning, and
+hardening concerns are deliberately deferred to later phases:
+
+- **Static-JWKS key selection / per-key algorithm enforcement (HOL-1396).** The
+  static-JWKS verifier (ADR-23 Rev 3) was built to **parity with the OIDC
+  discovery path**: it accepts the global supported-algorithm set with **no
+  per-`kid` key selection and no per-key algorithm enforcement**. Adding per-`kid`
+  key selection and per-key alg enforcement to **both** the static and discovery
+  paths together is tracked in **HOL-1396** and intentionally out of scope for the
+  Rev 3 docs/finalize phase.
 
 - **L7 enforcement requires a waypoint.** In ambient mode ztunnel is L4-only, so
   the `CUSTOM` `AuthorizationPolicy` only takes effect once a **waypoint** fronts
