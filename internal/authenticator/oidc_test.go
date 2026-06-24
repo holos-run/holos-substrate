@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -592,6 +593,390 @@ func TestStaticVerifierBadSignature(t *testing.T) {
 	raw := other.sign(t, baseClaims("alice", testClientID, now))
 	if _, err := verifier.Verify(context.Background(), raw); err == nil {
 		t.Fatalf("Verify bad-signature token = nil error, want rejection")
+	}
+}
+
+// marshalJWKS serializes the given keys into a JWKS document ({"keys":[...]}) for
+// handing to StaticVerifier or a discovery server.
+func marshalJWKS(t *testing.T, keys ...jose.JSONWebKey) []byte {
+	t.Helper()
+	raw, err := json.Marshal(jose.JSONWebKeySet{Keys: keys})
+	if err != nil {
+		t.Fatalf("marshaling JWKS: %v", err)
+	}
+	return raw
+}
+
+// signWithKID signs claims with priv under alg, stamping the protected header's
+// `kid` to the given value by wrapping the key in a *jose.JSONWebKey (go-jose
+// copies its KeyID into the JWS header). This lets a test forge a token whose kid
+// names one key while the signature is produced by another, or whose alg differs
+// from the key's declared alg.
+func signWithKID(t *testing.T, priv any, alg jose.SignatureAlgorithm, kid string, claims map[string]any) string {
+	t.Helper()
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: alg, Key: &jose.JSONWebKey{Key: priv, KeyID: kid}},
+		(&jose.SignerOptions{}).WithType("JWT"),
+	)
+	if err != nil {
+		t.Fatalf("building signer (alg %s, kid %q): %v", alg, kid, err)
+	}
+	raw, err := jwt.Signed(signer).Claims(claims).Serialize()
+	if err != nil {
+		t.Fatalf("signing JWT: %v", err)
+	}
+	return raw
+}
+
+// TestStaticVerifierKIDMismatch asserts the hardened key selection rejects a
+// mixed-JWKS token whose header `kid` names key B but whose signature was produced
+// by key A — the cross-key confusion the global StaticKeySet (which tries every
+// key and ignores kid) would have accepted.
+func TestStaticVerifierKIDMismatch(t *testing.T) {
+	now := time.Now()
+	keyA := newTestSigningKey(t)
+	keyB := newTestSigningKey(t)
+	jwks := marshalJWKS(t,
+		jose.JSONWebKey{Key: keyA.public, KeyID: "A", Algorithm: string(jose.RS256), Use: "sig"},
+		jose.JSONWebKey{Key: keyB.public, KeyID: "B", Algorithm: string(jose.RS256), Use: "sig"},
+	)
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwks)
+	if err != nil {
+		t.Fatalf("StaticVerifier: %v", err)
+	}
+
+	// Signed by key A's private key, but the header kid names key B.
+	raw := signWithKID(t, keyA.private, jose.RS256, "B", baseClaims("alice", testClientID, now))
+	if _, err := verifier.Verify(context.Background(), raw); err == nil {
+		t.Fatalf("Verify kid-mismatch token = nil error, want rejection")
+	}
+}
+
+// TestStaticVerifierKIDRouting asserts the happy multi-key path: each token is
+// routed to and verified by the key its kid names.
+func TestStaticVerifierKIDRouting(t *testing.T) {
+	now := time.Now()
+	keyA := newTestSigningKey(t)
+	keyB := newTestSigningKey(t)
+	jwks := marshalJWKS(t,
+		jose.JSONWebKey{Key: keyA.public, KeyID: "A", Algorithm: string(jose.RS256), Use: "sig"},
+		jose.JSONWebKey{Key: keyB.public, KeyID: "B", Algorithm: string(jose.RS256), Use: "sig"},
+	)
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwks)
+	if err != nil {
+		t.Fatalf("StaticVerifier: %v", err)
+	}
+
+	rawA := signWithKID(t, keyA.private, jose.RS256, "A", baseClaims("alice", testClientID, now))
+	if _, err := verifier.Verify(context.Background(), rawA); err != nil {
+		t.Fatalf("Verify token routed to key A: %v", err)
+	}
+	rawB := signWithKID(t, keyB.private, jose.RS256, "B", baseClaims("bob", testClientID, now))
+	if _, err := verifier.Verify(context.Background(), rawB); err != nil {
+		t.Fatalf("Verify token routed to key B: %v", err)
+	}
+}
+
+// TestStaticVerifierCrossAlg asserts the per-key alg binding rejects a token
+// signed with an algorithm declared only on a *different* key. Key A authorizes
+// only RS256; the token is signed by key A using PS256 (an alg the RSA key can
+// produce and that key B declares), so the global supported-alg set admits PS256
+// at parse, but key A's binding rejects it.
+func TestStaticVerifierCrossAlg(t *testing.T) {
+	now := time.Now()
+	keyA := newTestSigningKey(t)
+	keyB := newTestSigningKey(t)
+	jwks := marshalJWKS(t,
+		jose.JSONWebKey{Key: keyA.public, KeyID: "A", Algorithm: string(jose.RS256), Use: "sig"},
+		jose.JSONWebKey{Key: keyB.public, KeyID: "B", Algorithm: string(jose.PS256), Use: "sig"},
+	)
+	verifier, err := StaticVerifier(testIssuer, testClientID, jwks)
+	if err != nil {
+		t.Fatalf("StaticVerifier: %v", err)
+	}
+
+	raw := signWithKID(t, keyA.private, jose.PS256, "A", baseClaims("alice", testClientID, now))
+	if _, err := verifier.Verify(context.Background(), raw); err == nil {
+		t.Fatalf("Verify cross-alg token = nil error, want rejection")
+	}
+
+	// Control: the same key A signing under its declared RS256 still verifies, so the
+	// rejection above is specifically the alg binding, not a broken key.
+	ok := signWithKID(t, keyA.private, jose.RS256, "A", baseClaims("alice", testClientID, now))
+	if _, err := verifier.Verify(context.Background(), ok); err != nil {
+		t.Fatalf("Verify key A under its declared RS256: %v", err)
+	}
+}
+
+// TestDiscoverVerifierKIDMismatch asserts the discovery path applies the same
+// hardened kid-binding model as the static path (no divergence): a token whose kid
+// names key B but is signed by key A is rejected, while the correctly-routed token
+// verifies.
+func TestDiscoverVerifierKIDMismatch(t *testing.T) {
+	keyA := newTestSigningKey(t)
+	keyB := newTestSigningKey(t)
+	jwks := marshalJWKS(t,
+		jose.JSONWebKey{Key: keyA.public, KeyID: "A", Algorithm: string(jose.RS256), Use: "sig"},
+		jose.JSONWebKey{Key: keyB.public, KeyID: "B", Algorithm: string(jose.RS256), Use: "sig"},
+	)
+	srv := rawJWKSDiscoveryServer(t, string(jwks))
+
+	verifier, err := DiscoverVerifier(context.Background(), srv.URL, testClientID, nil)
+	if err != nil {
+		t.Fatalf("DiscoverVerifier: %v", err)
+	}
+
+	now := time.Now()
+	claims := baseClaims("alice", testClientID, now)
+	claims["iss"] = srv.URL
+
+	// Signed by key A but the header kid names key B → reject on the discovery path.
+	bad := signWithKID(t, keyA.private, jose.RS256, "B", claims)
+	if _, err := verifier.Verify(context.Background(), bad); err == nil {
+		t.Fatalf("Verify kid-mismatch token via discovery = nil error, want rejection")
+	}
+
+	// Correctly routed to key A → verifies.
+	good := signWithKID(t, keyA.private, jose.RS256, "A", claims)
+	if _, err := verifier.Verify(context.Background(), good); err != nil {
+		t.Fatalf("Verify correctly-routed token via discovery: %v", err)
+	}
+}
+
+// mutableJWKSDiscoveryServer serves a discovery document (optionally advertising
+// id_token_signing_alg_values_supported) plus a JWKS whose body the test can swap
+// at runtime via the returned setter — modeling issuer key rotation.
+func mutableJWKSDiscoveryServer(t *testing.T, signingAlgs []string, initialJWKS []byte) (*httptest.Server, func([]byte)) {
+	t.Helper()
+	var (
+		mu   sync.Mutex
+		body = initialJWKS
+	)
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		doc := map[string]any{
+			"issuer":   srv.URL,
+			"jwks_uri": srv.URL + "/jwks",
+		}
+		if len(signingAlgs) > 0 {
+			doc["id_token_signing_alg_values_supported"] = signingAlgs
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(doc)
+	})
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		b := body
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(b)
+	})
+
+	return srv, func(b []byte) {
+		mu.Lock()
+		body = b
+		mu.Unlock()
+	}
+}
+
+// TestDiscoverVerifierRefreshOnRotation asserts the discovery verifier picks up an
+// issuer key rotated in *after* it was built: a token bearing the new key's
+// (initially unknown) kid triggers a refresh-on-unknown-kid refetch and verifies,
+// without rebuilding the verifier — preserving go-oidc RemoteKeySet's behavior the
+// snapshot would otherwise have lost.
+func TestDiscoverVerifierRefreshOnRotation(t *testing.T) {
+	keyA := newTestSigningKey(t)
+	keyB := newTestSigningKey(t)
+	jwksA := marshalJWKS(t,
+		jose.JSONWebKey{Key: keyA.public, KeyID: "A", Algorithm: string(jose.RS256), Use: "sig"},
+	)
+	srv, setJWKS := mutableJWKSDiscoveryServer(t, nil, jwksA)
+
+	verifier, err := DiscoverVerifier(context.Background(), srv.URL, testClientID, nil)
+	if err != nil {
+		t.Fatalf("DiscoverVerifier: %v", err)
+	}
+
+	now := time.Now()
+	claims := baseClaims("alice", testClientID, now)
+	claims["iss"] = srv.URL
+
+	// Sanity: key A (in the snapshot) verifies without any refresh.
+	tokenA := signWithKID(t, keyA.private, jose.RS256, "A", claims)
+	if _, err := verifier.Verify(context.Background(), tokenA); err != nil {
+		t.Fatalf("Verify snapshotted key A: %v", err)
+	}
+
+	// The issuer rotates key B in (keeping A). A token bearing the new, snapshot-
+	// unknown kid "B" must trigger a refresh-on-unknown-kid refetch and verify,
+	// without rebuilding the verifier. (The rate-limit is still unconsumed here: key
+	// A verified above without refreshing.)
+	setJWKS(marshalJWKS(t,
+		jose.JSONWebKey{Key: keyA.public, KeyID: "A", Algorithm: string(jose.RS256), Use: "sig"},
+		jose.JSONWebKey{Key: keyB.public, KeyID: "B", Algorithm: string(jose.RS256), Use: "sig"},
+	))
+	tokenB := signWithKID(t, keyB.private, jose.RS256, "B", claims)
+	if _, err := verifier.Verify(context.Background(), tokenB); err != nil {
+		t.Fatalf("Verify rotated-in key B via refresh-on-unknown-kid: %v", err)
+	}
+}
+
+// TestDiscoverVerifierRefreshNewAlg asserts refresh-on-unknown-kid is not blocked
+// at parse when the rotated-in key uses a different (but issuer-advertised) alg than
+// the keys present at build: the comprehensive outer/parse alg gate admits the
+// PS256 token so it reaches the unknown-kid check and triggers the refetch, after
+// which the per-key binding verifies it.
+func TestDiscoverVerifierRefreshNewAlg(t *testing.T) {
+	keyA := newTestSigningKey(t)
+	keyB := newTestSigningKey(t) // RSA, will sign PS256
+	jwksA := marshalJWKS(t,
+		jose.JSONWebKey{Key: keyA.public, KeyID: "A", Algorithm: string(jose.RS256), Use: "sig"},
+	)
+	// The issuer advertises both RS256 and PS256 up front.
+	srv, setJWKS := mutableJWKSDiscoveryServer(t, []string{string(jose.RS256), string(jose.PS256)}, jwksA)
+
+	verifier, err := DiscoverVerifier(context.Background(), srv.URL, testClientID, nil)
+	if err != nil {
+		t.Fatalf("DiscoverVerifier: %v", err)
+	}
+
+	now := time.Now()
+	claims := baseClaims("alice", testClientID, now)
+	claims["iss"] = srv.URL
+
+	// Key A (RS256) verifies from the snapshot without a refresh.
+	tokenA := signWithKID(t, keyA.private, jose.RS256, "A", claims)
+	if _, err := verifier.Verify(context.Background(), tokenA); err != nil {
+		t.Fatalf("Verify snapshotted key A: %v", err)
+	}
+
+	// Issuer rotates in key B declaring PS256. A PS256 token bearing the new kid must
+	// refresh and verify — even though no PS256 key existed when the verifier was
+	// built.
+	setJWKS(marshalJWKS(t,
+		jose.JSONWebKey{Key: keyA.public, KeyID: "A", Algorithm: string(jose.RS256), Use: "sig"},
+		jose.JSONWebKey{Key: keyB.public, KeyID: "B", Algorithm: string(jose.PS256), Use: "sig"},
+	))
+	tokenB := signWithKID(t, keyB.private, jose.PS256, "B", claims)
+	if _, err := verifier.Verify(context.Background(), tokenB); err != nil {
+		t.Fatalf("Verify rotated-in PS256 key B via refresh: %v", err)
+	}
+}
+
+// TestDiscoverVerifierHonorsAdvertisedAlgs asserts the discovery path constrains
+// each key to the issuer's advertised id_token_signing_alg_values_supported: an
+// alg-less RSA key (which the key type alone would widen to the whole RS*/PS*
+// family) is bound to only the advertised RS256, so a PS256 token is rejected while
+// an RS256 token verifies.
+func TestDiscoverVerifierHonorsAdvertisedAlgs(t *testing.T) {
+	key := newTestSigningKey(t)
+	jwks := marshalJWKS(t,
+		jose.JSONWebKey{Key: key.public, KeyID: "rsa-0", Use: "sig"}, // no Algorithm
+	)
+	srv, _ := mutableJWKSDiscoveryServer(t, []string{string(jose.RS256)}, jwks)
+
+	verifier, err := DiscoverVerifier(context.Background(), srv.URL, testClientID, nil)
+	if err != nil {
+		t.Fatalf("DiscoverVerifier: %v", err)
+	}
+
+	now := time.Now()
+	claims := baseClaims("alice", testClientID, now)
+	claims["iss"] = srv.URL
+
+	rs := signWithKID(t, key.private, jose.RS256, "rsa-0", claims)
+	if _, err := verifier.Verify(context.Background(), rs); err != nil {
+		t.Fatalf("Verify advertised RS256 token: %v", err)
+	}
+
+	ps := signWithKID(t, key.private, jose.PS256, "rsa-0", claims)
+	if _, err := verifier.Verify(context.Background(), ps); err == nil {
+		t.Fatalf("Verify unadvertised PS256 token = nil error, want rejection")
+	}
+}
+
+// TestDiscoverVerifierAlgLessHonorsAdvertised asserts an alg-less JWK on the
+// discovery path may verify any alg its key type can produce that the issuer
+// advertises — not just the canonical one: an alg-less RSA key with the issuer
+// advertising RS256+PS256 verifies both an RS256 and a PS256 token.
+func TestDiscoverVerifierAlgLessHonorsAdvertised(t *testing.T) {
+	key := newTestSigningKey(t) // RSA
+	jwks := marshalJWKS(t,
+		jose.JSONWebKey{Key: key.public, KeyID: "rsa-0", Use: "sig"}, // no Algorithm
+	)
+	srv, _ := mutableJWKSDiscoveryServer(t, []string{string(jose.RS256), string(jose.PS256)}, jwks)
+
+	verifier, err := DiscoverVerifier(context.Background(), srv.URL, testClientID, nil)
+	if err != nil {
+		t.Fatalf("DiscoverVerifier: %v", err)
+	}
+
+	now := time.Now()
+	claims := baseClaims("alice", testClientID, now)
+	claims["iss"] = srv.URL
+
+	rs := signWithKID(t, key.private, jose.RS256, "rsa-0", claims)
+	if _, err := verifier.Verify(context.Background(), rs); err != nil {
+		t.Fatalf("Verify RS256 token (alg-less key, advertised RS256+PS256): %v", err)
+	}
+	ps := signWithKID(t, key.private, jose.PS256, "rsa-0", claims)
+	if _, err := verifier.Verify(context.Background(), ps); err != nil {
+		t.Fatalf("Verify PS256 token (alg-less key, advertised RS256+PS256): %v", err)
+	}
+}
+
+// TestDiscoverVerifierUnadvertisedDefaultsRS256 asserts the discovery path holds an
+// issuer that advertises no id_token_signing_alg_values_supported to RS256
+// (go-oidc's conservative default): an RS256 key verifies while an ES256 key the
+// same issuer publishes is excluded, so its ES256 token is rejected.
+func TestDiscoverVerifierUnadvertisedDefaultsRS256(t *testing.T) {
+	rsaKey := newTestSigningKey(t)
+	ecPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generating ECDSA key: %v", err)
+	}
+	ecSigner, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.ES256, Key: &jose.JSONWebKey{Key: ecPriv, KeyID: "es-0"}},
+		(&jose.SignerOptions{}).WithType("JWT"),
+	)
+	if err != nil {
+		t.Fatalf("building ES256 signer: %v", err)
+	}
+
+	// Issuer advertises NO id_token_signing_alg_values_supported, yet publishes both
+	// an RS256 and an ES256 key.
+	jwks := marshalJWKS(t,
+		jose.JSONWebKey{Key: rsaKey.public, KeyID: "rsa-0", Algorithm: string(jose.RS256), Use: "sig"},
+		jose.JSONWebKey{Key: ecPriv.Public(), KeyID: "es-0", Algorithm: string(jose.ES256), Use: "sig"},
+	)
+	srv, _ := mutableJWKSDiscoveryServer(t, nil, jwks)
+
+	verifier, err := DiscoverVerifier(context.Background(), srv.URL, testClientID, nil)
+	if err != nil {
+		t.Fatalf("DiscoverVerifier: %v", err)
+	}
+
+	now := time.Now()
+	claims := baseClaims("alice", testClientID, now)
+	claims["iss"] = srv.URL
+
+	// RS256 is the conservative default → verifies.
+	rs := signWithKID(t, rsaKey.private, jose.RS256, "rsa-0", claims)
+	if _, err := verifier.Verify(context.Background(), rs); err != nil {
+		t.Fatalf("Verify RS256 token from unadvertised issuer: %v", err)
+	}
+
+	// ES256 is not advertised → the ES key was excluded → token rejected.
+	claims["sub"] = "bob"
+	esRaw, err := jwt.Signed(ecSigner).Claims(claims).Serialize()
+	if err != nil {
+		t.Fatalf("signing ES256 JWT: %v", err)
+	}
+	if _, err := verifier.Verify(context.Background(), esRaw); err == nil {
+		t.Fatalf("Verify ES256 token from unadvertised issuer = nil error, want rejection")
 	}
 }
 
