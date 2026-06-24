@@ -50,6 +50,7 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 				IssuerURL:     "https://keycloak.holos.internal/realms/holos",
 				ClientID:      "holos-authenticator",
 				CABundle:      []byte("-----BEGIN CERTIFICATE-----\noidc\n-----END CERTIFICATE-----\n"),
+				JWKS:          []byte(`{"keys":[{"kty":"RSA","kid":"k1"}]}`),
 				UsernameClaim: "sub",
 				GroupsClaim:   "groups",
 			},
@@ -66,6 +67,9 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 	if &clone.Spec.OIDC.CABundle == &backend.Spec.OIDC.CABundle {
 		t.Error("DeepCopy did not clone the OIDC.CABundle slice")
 	}
+	if &clone.Spec.OIDC.JWKS == &backend.Spec.OIDC.JWKS {
+		t.Error("DeepCopy did not clone the OIDC.JWKS slice")
+	}
 	clone.Spec.Server.CABundle[0] = 'X'
 	if backend.Spec.Server.CABundle[0] == 'X' {
 		t.Error("mutating the clone's Server.CABundle changed the original (shared backing array)")
@@ -73,6 +77,10 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 	clone.Spec.OIDC.CABundle[0] = 'Y'
 	if backend.Spec.OIDC.CABundle[0] == 'Y' {
 		t.Error("mutating the clone's OIDC.CABundle changed the original (shared backing array)")
+	}
+	clone.Spec.OIDC.JWKS[0] = 'Z'
+	if backend.Spec.OIDC.JWKS[0] == 'Z' {
+		t.Error("mutating the clone's OIDC.JWKS changed the original (shared backing array)")
 	}
 	if clone.Spec.OIDC.ClientID != "holos-authenticator" {
 		t.Errorf("cloned OIDC.ClientID = %q, want holos-authenticator", clone.Spec.OIDC.ClientID)
