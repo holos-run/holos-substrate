@@ -126,8 +126,9 @@ func StaticVerifier(issuerURL, clientID string, jwks []byte) (TokenVerifier, err
 // signingKey is one trusted JWK reduced to what signature verification needs: its
 // key id (possibly empty), the public key material, and the JWS algorithms its
 // JWK metadata authorizes it to verify under. algs holds the single stated `alg`
-// when the JWK declares one, otherwise the canonical alg for the key type (and, on
-// the discovery path, intersected with the issuer's advertised algs).
+// when the JWK declares one; otherwise the algs the key type can produce, narrowed
+// to the issuer's advertised set on the discovery path or to the canonical alg on
+// the static path.
 type signingKey struct {
 	keyID string
 	algs  []jose.SignatureAlgorithm
@@ -234,15 +235,13 @@ func reduceJWKS(keySet jose.JSONWebKeySet, strict bool, advertisedAlgs []string)
 			continue
 		}
 
-		// The JWK `alg` is authoritative when present (RFC 7517 makes it optional). A
-		// stated alg must be one the key type can actually produce: a symmetric, typo'd,
-		// or mismatched alg (e.g. "HS256" or "ES256" on an RSA key) binds the key to an
-		// alg it can never verify under. When absent, the key is bound to its canonical
-		// alg for the key type (compatible[0]: RSA→RS256, P-256→ES256, …) — NOT the whole
-		// family, so an alg-less key is never silently widened past the single algorithm
-		// the issuer's tokens actually use.
 		var algs []string
-		if key.Algorithm != "" {
+		switch {
+		case key.Algorithm != "":
+			// The JWK `alg` is authoritative when present (RFC 7517 makes it optional). A
+			// stated alg must be one the key type can actually produce: a symmetric, typo'd,
+			// or mismatched alg (e.g. "HS256" or "ES256" on an RSA key) binds the key to an
+			// alg it can never verify under.
 			if !containsString(compatible, key.Algorithm) {
 				if strict {
 					return nil, fmt.Errorf("key %q declares alg %q incompatible with its key type", key.KeyID, key.Algorithm)
@@ -250,7 +249,18 @@ func reduceJWKS(keySet jose.JSONWebKeySet, strict bool, advertisedAlgs []string)
 				continue
 			}
 			algs = []string{key.Algorithm}
-		} else {
+		case len(advertisedAlgs) > 0:
+			// Alg-less key on the discovery path: the JWK did not restrict the alg, so the
+			// key may verify any alg its type can produce that the issuer advertises — the
+			// advertised set is the external policy, applied by the intersection below. This
+			// admits, e.g., a PS256 token from an alg-less RSA key when the issuer advertises
+			// RS256+PS256, while an unadvertised issuer (defaulted to RS256 by the caller)
+			// still yields RS256 only.
+			algs = compatible
+		default:
+			// Alg-less key with no advertised policy (the static path): bind to the canonical
+			// alg for the key type (compatible[0]: RSA→RS256, P-256→ES256, …) — a conservative
+			// default, never the whole family.
 			algs = []string{compatible[0]}
 		}
 
@@ -331,7 +341,7 @@ func (k *hardenedKeySet) verifyOnce(rawToken string) (payload []byte, refreshabl
 	matchedKID := false
 	for _, sk := range keys {
 		// A token naming a kid is verified only against the key carrying that kid; a
-		// key without a kid matches a token without a kid (go-oidc's RemoteKeySet
+		// token with no kid is tried against every loaded key (go-oidc's RemoteKeySet
 		// convention). This rejects a token whose kid points at key B but is signed by
 		// key A.
 		if tokenKID != "" && sk.keyID != tokenKID {

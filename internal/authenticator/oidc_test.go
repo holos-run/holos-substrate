@@ -898,6 +898,36 @@ func TestDiscoverVerifierHonorsAdvertisedAlgs(t *testing.T) {
 	}
 }
 
+// TestDiscoverVerifierAlgLessHonorsAdvertised asserts an alg-less JWK on the
+// discovery path may verify any alg its key type can produce that the issuer
+// advertises — not just the canonical one: an alg-less RSA key with the issuer
+// advertising RS256+PS256 verifies both an RS256 and a PS256 token.
+func TestDiscoverVerifierAlgLessHonorsAdvertised(t *testing.T) {
+	key := newTestSigningKey(t) // RSA
+	jwks := marshalJWKS(t,
+		jose.JSONWebKey{Key: key.public, KeyID: "rsa-0", Use: "sig"}, // no Algorithm
+	)
+	srv, _ := mutableJWKSDiscoveryServer(t, []string{string(jose.RS256), string(jose.PS256)}, jwks)
+
+	verifier, err := DiscoverVerifier(context.Background(), srv.URL, testClientID, nil)
+	if err != nil {
+		t.Fatalf("DiscoverVerifier: %v", err)
+	}
+
+	now := time.Now()
+	claims := baseClaims("alice", testClientID, now)
+	claims["iss"] = srv.URL
+
+	rs := signWithKID(t, key.private, jose.RS256, "rsa-0", claims)
+	if _, err := verifier.Verify(context.Background(), rs); err != nil {
+		t.Fatalf("Verify RS256 token (alg-less key, advertised RS256+PS256): %v", err)
+	}
+	ps := signWithKID(t, key.private, jose.PS256, "rsa-0", claims)
+	if _, err := verifier.Verify(context.Background(), ps); err != nil {
+		t.Fatalf("Verify PS256 token (alg-less key, advertised RS256+PS256): %v", err)
+	}
+}
+
 // TestDiscoverVerifierUnadvertisedDefaultsRS256 asserts the discovery path holds an
 // issuer that advertises no id_token_signing_alg_values_supported to RS256
 // (go-oidc's conservative default): an RS256 key verifies while an ES256 key the
