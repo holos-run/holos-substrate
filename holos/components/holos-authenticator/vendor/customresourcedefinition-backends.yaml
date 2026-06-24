@@ -157,8 +157,25 @@ spec:
                       IssuerURL is the OIDC issuer (the `iss` claim and OIDC discovery base URL,
                       e.g. https://keycloak.holos.internal/realms/holos). The authorizer fetches
                       the issuer's discovery document and JWKS to validate token signatures.
-                      Required.
+                      When JWKS is set, IssuerURL is instead the expected `iss` claim value only
+                      and no discovery document/JWKS is fetched: token signatures are validated
+                      against the static JWKS. Required.
                     minLength: 1
+                    type: string
+                  jwks:
+                    description: |-
+                      JWKS carries a static copy of the issuer's JSON Web Key Set (the literal
+                      {"keys":[...]} document) used to validate token signatures **offline**. When
+                      set, the authorizer does NOT perform OIDC discovery or fetch the issuer's
+                      JWKS over HTTP: it verifies the token signature against these keys and still
+                      enforces iss (== IssuerURL), aud (== ClientID), and exp/nbf. This is the
+                      mechanism for a token issuer that is unreachable from this cluster — e.g. a
+                      remote cluster's Kubernetes API server signing service-account ID tokens.
+                      When empty, the authorizer performs OIDC discovery as before (the default,
+                      backward-compatible behavior). Serialized as a single base64 string per the
+                      shared CABundle convention in common_types.go. oidc.caBundle is unused when
+                      JWKS is set (there is no HTTP fetch to establish trust for).
+                    format: byte
                     type: string
                   usernameClaim:
                     default: sub
