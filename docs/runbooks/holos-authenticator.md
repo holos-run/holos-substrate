@@ -435,6 +435,41 @@ spec:
         property: value
 ```
 
+Impersonation only lets the authenticator's credential **act as** the SA; the
+**impersonated** SA still needs its own RBAC on the management cluster to read the
+secret. Grant the impersonated identity read access to Secrets in
+`shared-secrets` — bind to the SA's virtual group (so any SA in `app` is covered)
+or to the specific SA. On the **management** cluster:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: shared-secrets-reader
+  namespace: shared-secrets
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+    resourceNames: ["shared-config"]   # scope to the shared secret(s) exposed
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: shared-secrets-reader
+  namespace: shared-secrets
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: shared-secrets-reader
+subjects:
+  # The impersonated SA virtual group (system:serviceaccounts:<ns>) — or bind to
+  # the exact SA user system:serviceaccount:app:eso-reader for tighter scope.
+  - kind: Group
+    name: "system:serviceaccounts:app"
+    apiGroup: rbac.authorization.k8s.io
+```
+
 Verify:
 
 ```bash
@@ -449,8 +484,11 @@ kubectl -n app get secret shared-config -o jsonpath='{.data.value}' | base64 -d
 ```
 
 A failure to sync points at the SA token's `aud` not matching `clientID`, the
-SA-group impersonation RBAC missing on the management cluster, or the Backend's
-`jwks` not matching the remote cluster's current signing keys (a key rotation on
+SA-group impersonation RBAC (step 4) missing on the management cluster, the
+impersonated SA lacking **read** RBAC on the `shared-secrets` Secret (the
+`shared-secrets-reader` Role above — impersonation grants the right to act as the
+SA, not the SA's own read access), or the Backend's `jwks` not matching the remote
+cluster's current signing keys (a key rotation on
 the remote cluster requires re-capturing `/openid/v1/jwks` into `spec.oidc.jwks`).
 
 ## Impersonation RBAC (the forwarded credential)
