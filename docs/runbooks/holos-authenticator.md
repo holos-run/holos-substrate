@@ -303,42 +303,38 @@ evaluates under the authenticator's CEL environment; see the
 ### 4. Impersonation RBAC for the SA virtual groups
 
 The `credentialsSecretRef` identity must hold `impersonate` on the impersonated
-principal — both the SA **username** and the SA **virtual groups** the CEL
-expression emits. On the **management** cluster:
+principal — both the SA **identity** and the SA **virtual groups** the CEL
+expression emits. **A subtlety:** when `Impersonate-User` has the form
+`system:serviceaccount:<ns>:<name>`, the Kubernetes API server authorizes the
+impersonation against the **`serviceaccounts`** resource (in namespace `<ns>`,
+name `<name>`) — **not** the `users` resource. Granting `impersonate` on `users`
+with that value as a `resourceName` does **not** work and the request still 403s.
+So scope the SA identity with a **namespaced `Role`** on `serviceaccounts`, and
+the (cluster-scoped) virtual groups with a `ClusterRole` on `groups`. On the
+**management** cluster:
 
 ```yaml
+# 1. The SA identity: a namespaced Role in the SA's namespace (app), scoped to
+#    the exact ServiceAccount, on the serviceaccounts resource.
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: holos-authenticator-ksa-impersonator
+  namespace: app            # the impersonated SA's namespace
 rules:
-  # The SA username (Impersonate-User: system:serviceaccount:<ns>:<name>),
-  # constrained with resourceNames so the credential cannot impersonate
-  # arbitrary users — only the exact remote service account(s) served. The
-  # namespace/name match the ESO SecretStore example below (app/eso-reader).
   - apiGroups: [""]
-    resources: ["users"]
+    resources: ["serviceaccounts"]
     verbs: ["impersonate"]
-    resourceNames:
-      - "system:serviceaccount:app:eso-reader"   # one per remote SA served
-  # The SA virtual groups the CEL expression emits, likewise constrained.
-  - apiGroups: [""]
-    resources: ["groups"]
-    verbs: ["impersonate"]
-    resourceNames:
-      - "system:authenticated"
-      - "system:serviceaccounts"
-      - "system:serviceaccounts:app"   # one per remote namespace served
-```
-
-```yaml
+    resourceNames: ["eso-reader"]   # the exact remote SA served
+---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: holos-authenticator-ksa-impersonator
+  namespace: app
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
+  kind: Role
   name: holos-authenticator-ksa-impersonator
 subjects:
   # The management-cluster ServiceAccount whose token is stored in
@@ -348,15 +344,46 @@ subjects:
     namespace: holos-authenticator
 ```
 
-Restricting **both** the `users` and `groups` rules with `resourceNames` (rather
-than granting `impersonate` on all users or all groups) keeps the impersonator's
-blast radius bounded to the
-exact SA username and SA virtual groups. Mirror the existing [*Impersonation
+```yaml
+# 2. The SA virtual groups: a ClusterRole on the groups resource, constrained
+#    with resourceNames to exactly the groups the CEL expression emits.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: holos-authenticator-ksa-impersonator
+rules:
+  - apiGroups: [""]
+    resources: ["groups"]
+    verbs: ["impersonate"]
+    resourceNames:
+      - "system:authenticated"
+      - "system:serviceaccounts"
+      - "system:serviceaccounts:app"   # one per remote namespace served
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: holos-authenticator-ksa-impersonator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: holos-authenticator-ksa-impersonator
+subjects:
+  - kind: ServiceAccount
+    name: holos-authenticator-impersonator
+    namespace: holos-authenticator
+```
+
+Scoping the `serviceaccounts` rule with `resourceNames` (and the namespaced
+`Role`) and the `groups` rule with `resourceNames` keeps the impersonator's blast
+radius bounded to the exact SA and SA virtual groups — never "all users" or "all
+groups". This mirrors the existing [*Impersonation
 RBAC*](#impersonation-rbac-the-forwarded-credential) shape; the KSA-specific
-addition is the `resourceNames` lists scoping both the SA username and the SA
-virtual groups. Provision the credential Secret at runtime as in [*Provisioning the
-credential Secret at runtime*](#provisioning-the-credential-secret-at-runtime),
-using a bound token for the management-cluster impersonator ServiceAccount.
+points are impersonating the SA via the `serviceaccounts` resource (not `users`)
+and the SA-virtual-groups `resourceNames`. Provision the credential Secret at
+runtime as in [*Provisioning the credential Secret at
+runtime*](#provisioning-the-credential-secret-at-runtime), using a bound token
+for the management-cluster impersonator ServiceAccount.
 
 ### 5. End-to-end verification (External Secrets Operator)
 
