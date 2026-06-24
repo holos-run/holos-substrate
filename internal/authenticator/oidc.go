@@ -126,7 +126,8 @@ func StaticVerifier(issuerURL, clientID string, jwks []byte) (TokenVerifier, err
 // signingKey is one trusted JWK reduced to what signature verification needs: its
 // key id (possibly empty), the public key material, and the JWS algorithms its
 // JWK metadata authorizes it to verify under. algs holds the single stated `alg`
-// when the JWK declares one, otherwise the full family the key type can produce.
+// when the JWK declares one, otherwise the canonical alg for the key type (and, on
+// the discovery path, intersected with the issuer's advertised algs).
 type signingKey struct {
 	keyID string
 	algs  []jose.SignatureAlgorithm
@@ -508,6 +509,14 @@ func DiscoverVerifier(ctx context.Context, issuerURL, clientID string, caBundle 
 	jwksURL, advertisedAlgs, err := discoveryClaims(provider)
 	if err != nil {
 		return nil, fmt.Errorf("OIDC discovery for issuer %q: %w", issuerURL, err)
+	}
+	// Per OIDC Core, id_token_signing_alg_values_supported SHOULD be advertised and
+	// RS256 MUST be supported; go-oidc's verifier defaults to RS256 when the issuer
+	// omits it. Match that conservative default rather than accepting whatever algs
+	// the JWKS keys happen to declare, so an issuer that advertises nothing is held to
+	// RS256 — an ES/PS/EdDSA issuer must advertise its algs (as Keycloak does).
+	if len(advertisedAlgs) == 0 {
+		advertisedAlgs = []string{oidc.RS256}
 	}
 	keySet, err := fetchJWKSFromURL(ctx, httpClient, jwksURL)
 	if err != nil {

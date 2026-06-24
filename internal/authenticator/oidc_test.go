@@ -898,6 +898,58 @@ func TestDiscoverVerifierHonorsAdvertisedAlgs(t *testing.T) {
 	}
 }
 
+// TestDiscoverVerifierUnadvertisedDefaultsRS256 asserts the discovery path holds an
+// issuer that advertises no id_token_signing_alg_values_supported to RS256
+// (go-oidc's conservative default): an RS256 key verifies while an ES256 key the
+// same issuer publishes is excluded, so its ES256 token is rejected.
+func TestDiscoverVerifierUnadvertisedDefaultsRS256(t *testing.T) {
+	rsaKey := newTestSigningKey(t)
+	ecPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generating ECDSA key: %v", err)
+	}
+	ecSigner, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.ES256, Key: &jose.JSONWebKey{Key: ecPriv, KeyID: "es-0"}},
+		(&jose.SignerOptions{}).WithType("JWT"),
+	)
+	if err != nil {
+		t.Fatalf("building ES256 signer: %v", err)
+	}
+
+	// Issuer advertises NO id_token_signing_alg_values_supported, yet publishes both
+	// an RS256 and an ES256 key.
+	jwks := marshalJWKS(t,
+		jose.JSONWebKey{Key: rsaKey.public, KeyID: "rsa-0", Algorithm: string(jose.RS256), Use: "sig"},
+		jose.JSONWebKey{Key: ecPriv.Public(), KeyID: "es-0", Algorithm: string(jose.ES256), Use: "sig"},
+	)
+	srv, _ := mutableJWKSDiscoveryServer(t, nil, jwks)
+
+	verifier, err := DiscoverVerifier(context.Background(), srv.URL, testClientID, nil)
+	if err != nil {
+		t.Fatalf("DiscoverVerifier: %v", err)
+	}
+
+	now := time.Now()
+	claims := baseClaims("alice", testClientID, now)
+	claims["iss"] = srv.URL
+
+	// RS256 is the conservative default → verifies.
+	rs := signWithKID(t, rsaKey.private, jose.RS256, "rsa-0", claims)
+	if _, err := verifier.Verify(context.Background(), rs); err != nil {
+		t.Fatalf("Verify RS256 token from unadvertised issuer: %v", err)
+	}
+
+	// ES256 is not advertised → the ES key was excluded → token rejected.
+	claims["sub"] = "bob"
+	esRaw, err := jwt.Signed(ecSigner).Claims(claims).Serialize()
+	if err != nil {
+		t.Fatalf("signing ES256 JWT: %v", err)
+	}
+	if _, err := verifier.Verify(context.Background(), esRaw); err == nil {
+		t.Fatalf("Verify ES256 token from unadvertised issuer = nil error, want rejection")
+	}
+}
+
 // fakeVerifier is a TokenVerifier stub returning a fixed result, used by the
 // Authenticator tests so they exercise the verify→map pipeline without a real
 // OIDC token.
