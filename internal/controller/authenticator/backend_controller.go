@@ -167,13 +167,22 @@ func (r *BackendReconciler) reconcileNormal(ctx context.Context, logger logr.Log
 	// when this key lost the tie-break: report Ready=False/HostConflict (and requeue
 	// so it recovers if the winner is later deleted) rather than silently
 	// overwriting the data-path routing for that host.
+	// Resolve the credential ref to a value. credentialsSecretRef is a pointer so
+	// the CRD CEL rule can distinguish an omitted ref from a set one; a nil ref
+	// means "use the default Secret", which resolveImpersonatorToken already
+	// produces from a zero SecretReference (its Name defaults to
+	// DefaultCredentialsSecretName). Keep Entry's value-typed field unchanged.
+	var credRef authenticatorv1alpha1.SecretReference
+	if backend.Spec.CredentialsSecretRef != nil {
+		credRef = *backend.Spec.CredentialsSecretRef
+	}
 	entry := &authenticator.Entry{
 		Host:                 backend.Spec.Host,
 		Authenticator:        authenticator.NewAuthenticator(verifier, mapper, backend.Spec.OIDC.UsernameClaim),
 		UsernameClaim:        backend.Spec.OIDC.UsernameClaim,
 		ServerURL:            backend.Spec.Server.URL,
 		ServerCABundle:       backend.Spec.Server.CABundle,
-		CredentialsSecretRef: backend.Spec.CredentialsSecretRef,
+		CredentialsSecretRef: credRef,
 	}
 	if !r.Store.Set(key, entry) {
 		owner, _ := r.Store.Owner(backend.Spec.Host)
