@@ -32,6 +32,7 @@ import (
 	rpcstatus "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -287,13 +288,14 @@ func bearerToken(headers map[string]string) (string, bool) {
 
 // okResponse builds the allow CheckResponse carrying the Kubernetes impersonation
 // headers. Impersonate-User and Authorization use OVERWRITE_IF_EXISTS_OR_ADD so
-// they replace any caller-supplied value; each Impersonate-Group uses
-// APPEND_IF_EXISTS_OR_ADD so the groups accumulate rather than the last value
-// overwriting the rest. When Envoy applies several APPEND_IF_EXISTS_OR_ADD
-// options for the same header it comma-concatenates their values into a single
-// header line — Impersonate-Group: dev,ops — rather than emitting one header line
-// per value. The Kubernetes API server's impersonation feature requires one
-// Impersonate-Group header per group and does NOT split a comma-separated value,
+// they replace any caller-supplied value; each Impersonate-Group is an append
+// header (see appendHeader — it sets the deprecated append=true bool that Envoy's
+// ext_authz path actually reads, not just AppendAction) so the groups accumulate
+// rather than the last value overwriting the rest. Envoy comma-concatenates the
+// appended values into a single header line — Impersonate-Group: dev,ops — rather
+// than emitting one header line per value. The Kubernetes API server's
+// impersonation feature requires one Impersonate-Group header per group and does
+// NOT split a comma-separated value,
 // so this comma-joined header MUST be paired with an Envoy Lua filter that unpacks
 // the comma list into one Impersonate-Group header per element before the request
 // reaches the API server. See docs/runbooks/holos-authenticator.md ("Splitting the
@@ -356,16 +358,27 @@ func overwriteHeader(name, value string) *corev3.HeaderValueOption {
 	}
 }
 
-// appendHeader builds a HeaderValueOption with AppendAction
-// APPEND_IF_EXISTS_OR_ADD, so repeated calls for the same header name accumulate
-// rather than overwrite. Envoy applies these by comma-concatenating the values
-// into a single header line (Impersonate-Group: dev,ops), not by emitting one line
-// per value; a paired Lua filter splits that comma list back into one
+// appendHeader builds a HeaderValueOption that makes repeated calls for the same
+// header name accumulate rather than overwrite, so Envoy comma-concatenates the
+// values into a single header line (Impersonate-Group: dev,ops) instead of letting
+// the last value win; a paired Lua filter splits that comma list back into one
 // Impersonate-Group header per group for the API server (see okResponse and the
 // runbook).
+//
+// It sets BOTH append fields, and the deprecated Append bool is load-bearing.
+// Envoy's ext_authz gRPC client (toAuthzResponseHeader) decides between append and
+// overwrite for an authorizer's OkHttpResponse headers by reading the deprecated
+// HeaderValueOption.append BoolValue and IGNORES the append_action enum entirely.
+// That bool defaults to false for the ext_authz response path, so a header carrying
+// only AppendAction: APPEND_IF_EXISTS_OR_ADD is treated as an overwrite — the last
+// group silently wins and multi-group impersonation breaks. Setting
+// Append: wrapperspb.Bool(true) is what actually selects the comma-join branch on
+// Envoy 1.29 (Istio 1.29.2); AppendAction is kept as the non-deprecated statement
+// of the same intent for forward compatibility. See HOL-1414.
 func appendHeader(name, value string) *corev3.HeaderValueOption {
 	return &corev3.HeaderValueOption{
 		Header:       &corev3.HeaderValue{Key: name, Value: value},
+		Append:       wrapperspb.Bool(true),
 		AppendAction: corev3.HeaderValueOption_APPEND_IF_EXISTS_OR_ADD,
 	}
 }

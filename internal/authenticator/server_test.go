@@ -223,6 +223,33 @@ func TestCheckAllowNoGroups(t *testing.T) {
 	assertHeaderOptions(t, resp.GetOkResponse().GetHeaders(), want)
 }
 
+// TestAppendHeaderSetsDeprecatedAppendBool pins the HOL-1414 fix: each
+// Impersonate-Group append header MUST set the deprecated append=true bool, not
+// only AppendAction. Envoy 1.29's ext_authz gRPC client (Istio 1.29.2) decides
+// append-vs-overwrite for an authorizer's response headers by reading the
+// deprecated HeaderValueOption.append BoolValue and ignores append_action; that
+// bool defaults to false on the ext_authz path, so without append=true the groups
+// overwrite each other and multi-group impersonation silently breaks. The overwrite
+// helper must leave the bool unset so Impersonate-User / Authorization keep
+// replacing any caller-supplied value.
+func TestAppendHeaderSetsDeprecatedAppendBool(t *testing.T) {
+	appended := appendHeader(headerImpersonateGroup, "dev")
+	if got := appended.GetAppend().GetValue(); got != true {
+		t.Errorf("appendHeader append bool = %v, want true (Envoy ext_authz reads the deprecated append bool, not append_action)", got)
+	}
+	if got, want := appended.GetAppendAction(), corev3.HeaderValueOption_APPEND_IF_EXISTS_OR_ADD; got != want {
+		t.Errorf("appendHeader append action = %v, want %v", got, want)
+	}
+
+	overwritten := overwriteHeader(headerImpersonateUser, "alice")
+	if got := overwritten.GetAppend().GetValue(); got != false {
+		t.Errorf("overwriteHeader append bool = %v, want false (overwrite must not append)", got)
+	}
+	if got, want := overwritten.GetAppendAction(), corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD; got != want {
+		t.Errorf("overwriteHeader append action = %v, want %v", got, want)
+	}
+}
+
 // TestCheckDeniesUnsafeGroup asserts a request whose mapped groups include a value
 // that is unsafe under the comma-joined Impersonate-Group encoding is denied
 // fail-closed (HTTP 403). Groups are returned as APPEND_IF_EXISTS_OR_ADD
@@ -631,7 +658,9 @@ func assertDenied(t *testing.T, resp *authv3.CheckResponse, httpStatus typev3.St
 }
 
 // assertHeaderOptions asserts got matches want exactly, in order, comparing each
-// option's header name, value, and append action.
+// option's header name, value, append action, and the deprecated append bool. The
+// append bool is what Envoy's ext_authz path actually reads to choose append vs.
+// overwrite (see appendHeader), so it is part of the contract, not incidental.
 func assertHeaderOptions(t *testing.T, got, want []*corev3.HeaderValueOption) {
 	t.Helper()
 	if len(got) != len(want) {
@@ -647,6 +676,10 @@ func assertHeaderOptions(t *testing.T, got, want []*corev3.HeaderValueOption) {
 		if got[i].GetAppendAction() != want[i].GetAppendAction() {
 			t.Errorf("header[%d] %q append action = %v, want %v", i,
 				gh.GetKey(), got[i].GetAppendAction(), want[i].GetAppendAction())
+		}
+		if got[i].GetAppend().GetValue() != want[i].GetAppend().GetValue() {
+			t.Errorf("header[%d] %q append bool = %v, want %v", i,
+				gh.GetKey(), got[i].GetAppend().GetValue(), want[i].GetAppend().GetValue())
 		}
 	}
 }

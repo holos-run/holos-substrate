@@ -55,8 +55,9 @@ On each `Check` the authorizer:
 6. **Returns the OK response** setting `Impersonate-User` (the username claim),
    one `Impersonate-Group` append option per mapped group, and overwriting
    `Authorization` with the impersonator credential's `Bearer <token>`. Each
-   group is an `APPEND_IF_EXISTS_OR_ADD` header option; **Envoy comma-joins
-   repeated append options for the same header into a single
+   group option sets the deprecated `append: true` bool (the field Envoy's
+   ext_authz path actually reads — HOL-1414) alongside `APPEND_IF_EXISTS_OR_ADD`;
+   **Envoy comma-joins repeated append options for the same header into a single
    `Impersonate-Group: a,b` line**, which the API server does **not** split — so
    this must be paired with a Lua filter that unpacks the comma list into one
    header per group (see [*Splitting the comma-joined `Impersonate-Group`
@@ -805,17 +806,25 @@ spec:
 
 ## Splitting the comma-joined `Impersonate-Group` header
 
-The authorizer returns one `Impersonate-Group` **append option**
-(`APPEND_IF_EXISTS_OR_ADD`) per mapped group. This is deliberate, but it is **not**
-the value the API server ultimately needs: when Envoy applies several
-`APPEND_IF_EXISTS_OR_ADD` options for the **same** header name, it
-**comma-concatenates** their values into a single header line —
+The authorizer returns one `Impersonate-Group` **append option** per mapped group.
+Each option sets **both** the deprecated `append: true` bool **and**
+`appendAction: APPEND_IF_EXISTS_OR_ADD`, and the bool is the load-bearing one:
+Envoy's ext_authz gRPC client (Istio 1.29.2 / Envoy 1.29) decides append-vs-overwrite
+for an authorizer's response headers by reading the deprecated
+`HeaderValueOption.append` `BoolValue` and **ignores** `append_action` entirely. That
+bool defaults to `false` on the ext_authz path, so an option carrying only
+`appendAction` is treated as an **overwrite** — the last group silently wins and the
+Lua split filter below has nothing to split (it is a documented no-op). With
+`append: true` set (HOL-1414), Envoy **comma-concatenates** the values of the
+same-named options into a single header line —
 
 ```text
 Impersonate-Group: dev,ops
 ```
 
-— rather than emitting one `Impersonate-Group` line per value. The Kubernetes API
+— rather than letting the last value overwrite the rest. This is **not** the value
+the API server ultimately needs: the API server expects one `Impersonate-Group` line
+per value, not a comma list. The Kubernetes API
 server's impersonation feature expects **one `Impersonate-Group` header per
 group** and treats a comma-separated value as a **single literal group name**
 (`"dev,ops"`), so left as-is the user would be impersonated into a non-existent
