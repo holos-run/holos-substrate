@@ -7,8 +7,10 @@
 //
 // The ext_authz Check (HOL-1388) routes each request to a Backend by Host,
 // validates the caller's OIDC bearer token, and on success returns an OK response
-// that sets Kubernetes impersonation headers (Impersonate-User, one
-// Impersonate-Group per mapped group), injects the backend's privileged
+// that sets Kubernetes impersonation headers (Impersonate-User, plus one
+// Impersonate-Group APPEND_IF_EXISTS_OR_ADD option per mapped group that Envoy
+// comma-joins into a single header — paired with a Lua split filter, see
+// okResponse), injects the backend's privileged
 // credential as the upstream Authorization, and removes the caller's original
 // token — so Envoy forwards the request straight to the API server. Any failure
 // (unknown host, missing/invalid token, credential read failure, internal error)
@@ -126,9 +128,12 @@ func NewCheckServer(store *Store, reader client.Reader, writer client.Client, na
 //  4. Resolve the backend's privileged impersonator credential (a minted
 //     ServiceAccount token or the credential Secret); resolution failure →
 //     Denied 403.
-//  5. Return OK setting Impersonate-User, one Impersonate-Group per mapped group,
-//     and the impersonator token as Authorization, removing the caller's original
-//     Authorization.
+//  5. Return OK setting Impersonate-User and one Impersonate-Group
+//     APPEND_IF_EXISTS_OR_ADD option per mapped group (Envoy comma-joins them into
+//     one header, paired with a Lua split filter — see okResponse), with the
+//     impersonator token as the upstream Authorization, removing the caller's
+//     original Authorization. Groups unsafe under that encoding (a comma or
+//     surrounding whitespace) are denied fail-closed before this step.
 //
 // Every failure path — including any internal error — returns a Denied response,
 // never OK, so the authorizer fails closed. The gRPC error return is always nil:
@@ -185,6 +190,22 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (*aut
 		return deniedResponse(typev3.StatusCode_Unauthorized, "invalid token", nil), nil
 	}
 
+	// 4b. Reject any mapped group that is unsafe under the comma-joined
+	// Impersonate-Group encoding (failure-closed). Each group is returned as an
+	// APPEND_IF_EXISTS_OR_ADD Impersonate-Group option that Envoy comma-joins into a
+	// single header (see okResponse), which the paired Lua filter splits back on
+	// commas and trims of surrounding whitespace. Two group shapes break that
+	// round-trip and could smuggle a different group:
+	//   - a comma in the value ("dev,system:masters") splits into two groups; and
+	//   - leading/trailing whitespace (" system:masters") is trimmed by the split
+	//     filter into the bare group.
+	// Both are denied rather than impersonated. The username is set with a single
+	// overwrite header (no comma-join, no split filter), so it needs no such guard.
+	if group, ok := firstUnsafeGroup(identity.Groups); ok {
+		s.log.V(1).Info("denying request: mapped group is unsafe for the Impersonate-Group encoding", "host", host, "group", group)
+		return deniedResponse(typev3.StatusCode_Forbidden, "mapped group contains a comma or surrounding whitespace", nil), nil
+	}
+
 	// 5. Resolve the backend's privileged impersonator credential from whichever
 	// source the backend declares: a minted ServiceAccount token (serviceAccountRef)
 	// or the credential Secret (credentialsSecretRef). A failure — a missing Secret,
@@ -224,6 +245,26 @@ func firstImpersonationHeader(headers map[string]string) (string, bool) {
 	return "", false
 }
 
+// firstUnsafeGroup returns the first group that is unsafe under the comma-joined
+// Impersonate-Group encoding and true, or ("", false) if all groups are safe. A
+// group is unsafe when it contains a comma or has leading/trailing whitespace,
+// because Envoy joins the per-group append options into one comma-separated header
+// (see okResponse) and the paired Lua filter splits it back on commas and trims
+// each element: a comma in a value would fan it into multiple impersonated groups,
+// and surrounding whitespace (" system:masters") would be trimmed into the bare
+// group — both privilege-escalation smuggling vectors. The Check path denies such
+// a request fail-closed rather than emitting it. (Whitespace interior to a value
+// is left intact; only the surrounding whitespace the split filter would strip is
+// rejected.)
+func firstUnsafeGroup(groups []string) (string, bool) {
+	for _, group := range groups {
+		if strings.Contains(group, ",") || strings.TrimSpace(group) != group {
+			return group, true
+		}
+	}
+	return "", false
+}
+
 // bearerToken extracts the bearer token from the request's Authorization header.
 // Envoy lowercases header keys in the ext_authz Headers map, so the lookup is by
 // the lowercase "authorization" key. The "Bearer " scheme prefix is matched
@@ -247,11 +288,16 @@ func bearerToken(headers map[string]string) (string, bool) {
 // okResponse builds the allow CheckResponse carrying the Kubernetes impersonation
 // headers. Impersonate-User and Authorization use OVERWRITE_IF_EXISTS_OR_ADD so
 // they replace any caller-supplied value; each Impersonate-Group uses
-// APPEND_IF_EXISTS_OR_ADD so the groups accumulate into repeated headers — for a
-// non-inline header like Impersonate-Group, Envoy's APPEND_IF_EXISTS_OR_ADD adds
-// a duplicate header entry per value rather than comma-concatenating, which is
-// exactly the standard repeated-header multi-group impersonation encoding the API
-// server expects, compatible with any conformant cluster.
+// APPEND_IF_EXISTS_OR_ADD so the groups accumulate rather than the last value
+// overwriting the rest. When Envoy applies several APPEND_IF_EXISTS_OR_ADD
+// options for the same header it comma-concatenates their values into a single
+// header line — Impersonate-Group: dev,ops — rather than emitting one header line
+// per value. The Kubernetes API server's impersonation feature requires one
+// Impersonate-Group header per group and does NOT split a comma-separated value,
+// so this comma-joined header MUST be paired with an Envoy Lua filter that unpacks
+// the comma list into one Impersonate-Group header per element before the request
+// reaches the API server. See docs/runbooks/holos-authenticator.md ("Splitting the
+// comma-joined Impersonate-Group header") and ADR-23.
 //
 // The caller's original Authorization is NOT listed in HeadersToRemove. Setting
 // Authorization with OVERWRITE_IF_EXISTS_OR_ADD already discards any
@@ -310,9 +356,13 @@ func overwriteHeader(name, value string) *corev3.HeaderValueOption {
 	}
 }
 
-// appendHeader builds a HeaderValueOption that appends value as another instance
-// of header name, so repeated calls accumulate into multiple same-named headers
-// (the multi-group Impersonate-Group encoding).
+// appendHeader builds a HeaderValueOption with AppendAction
+// APPEND_IF_EXISTS_OR_ADD, so repeated calls for the same header name accumulate
+// rather than overwrite. Envoy applies these by comma-concatenating the values
+// into a single header line (Impersonate-Group: dev,ops), not by emitting one line
+// per value; a paired Lua filter splits that comma list back into one
+// Impersonate-Group header per group for the API server (see okResponse and the
+// runbook).
 func appendHeader(name, value string) *corev3.HeaderValueOption {
 	return &corev3.HeaderValueOption{
 		Header:       &corev3.HeaderValue{Key: name, Value: value},

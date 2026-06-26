@@ -11,6 +11,17 @@ returns an OK response that sets `Impersonate-User` / `Impersonate-Group`
 headers and replaces the caller's `Authorization` with the backend's privileged
 credential, so Envoy forwards the request straight to the API server.
 
+> **`Impersonate-Group` is comma-joined and needs a paired Lua split filter.** The
+> authorizer emits one `Impersonate-Group` `APPEND_IF_EXISTS_OR_ADD` option per
+> group; Envoy comma-joins repeated append options for the same header into a
+> single `Impersonate-Group: a,b` line, which the API server does **not** split.
+> The header must be paired with an Envoy Lua filter that unpacks the comma list
+> into one header per group — see the runbook's [*Splitting the comma-joined
+> `Impersonate-Group` header*](../../../docs/runbooks/holos-authenticator.md#splitting-the-comma-joined-impersonate-group-header)
+> and [ADR-23](../../../docs/adr/ADR-23.md) Revision 6. Like the `CUSTOM`
+> `AuthorizationPolicy`, the filter belongs to the deferred waypoint topology and
+> is not yet rendered by this component.
+
 ## What this component renders
 
 `buildplan.cue` emits, into

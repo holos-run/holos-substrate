@@ -223,6 +223,40 @@ func TestCheckAllowNoGroups(t *testing.T) {
 	assertHeaderOptions(t, resp.GetOkResponse().GetHeaders(), want)
 }
 
+// TestCheckDeniesUnsafeGroup asserts a request whose mapped groups include a value
+// that is unsafe under the comma-joined Impersonate-Group encoding is denied
+// fail-closed (HTTP 403). Groups are returned as APPEND_IF_EXISTS_OR_ADD
+// Impersonate-Group options that Envoy comma-joins into one header, which the
+// paired Lua filter splits back on commas and trims of surrounding whitespace; a
+// value holding its own comma ("dev,system:masters") would fan out into multiple
+// impersonated groups, and surrounding whitespace (" system:masters") would be
+// trimmed into the bare group — both must be rejected, not impersonated (HOL-1413).
+func TestCheckDeniesUnsafeGroup(t *testing.T) {
+	const host = "api.example.com"
+	cases := map[string][]any{
+		"comma":           {"dev,system:masters", "ops"},
+		"leading-space":   {" system:masters", "ops"},
+		"trailing-space":  {"system:masters ", "ops"},
+		"leading-tab":     {"\tsystem:masters", "ops"},
+		"whitespace-only": {"  ", "ops"},
+	}
+	for name, groups := range cases {
+		t.Run(name, func(t *testing.T) {
+			store := NewStore()
+			store.Set(testNamespace+"/backend", &Entry{
+				Host:                 host,
+				Authenticator:        newTestAuthenticator(t, map[string]any{"sub": "alice", "groups": groups}, "sub"),
+				CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
+			})
+			reader := secretReader(t, credentialSecret("creds", "imp"))
+			client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, logr.Discard()))
+
+			resp := mustCheck(t, client, checkRequest(host, map[string]string{"authorization": "Bearer good"}))
+			assertDenied(t, resp, typev3.StatusCode_Forbidden)
+		})
+	}
+}
+
 // TestCheckInboundImpersonationHeaderDenies asserts that a request carrying any
 // client-supplied Impersonate-* header is denied fail-closed (HTTP 403), closing
 // the header-smuggling / confused-deputy hole (ADR-23): the authorizer injects
