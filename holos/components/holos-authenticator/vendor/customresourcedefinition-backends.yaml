@@ -158,6 +158,26 @@ spec:
                       which would otherwise bypass the default and persist an invalid claim name.
                     minLength: 1
                     type: string
+                  groupsPrefix:
+                    description: |-
+                      GroupsPrefix is prepended to every group read from the groups claim (the
+                      claim named by GroupsClaim) before it is impersonated as a Kubernetes group.
+                      The recommended value is "oidc:" — like the apiserver --oidc-groups-prefix=oidc:
+                      flag, prefixing isolates the external identity provider's group namespace so
+                      it cannot impersonate Kubernetes built-in system: groups (e.g. a token
+                      asserting "system:masters" becomes "oidc:system:masters"). It is honored only
+                      with the default group mapping (when spec.groupMapping.celExpression is empty,
+                      where the authorizer reads the groups claim directly) and is mutually
+                      exclusive with spec.groupMapping.celExpression — a CEL expression returns the
+                      final group set itself, so it must encode any prefix it wants. The
+                      mutual-exclusion is enforced by a CEL validation rule on BackendSpec. There is
+                      no default: an omitted GroupsPrefix prepends nothing, preserving the existing
+                      behavior.
+
+                      Phase note (HOL-1406): this phase ships the field and validation only; the
+                      controller still builds the default mapping without reading GroupsPrefix.
+                      Runtime prefixing lands in HOL-1407.
+                    type: string
                   issuerURL:
                     description: |-
                       IssuerURL is the OIDC issuer (the `iss` claim and OIDC discovery base URL,
@@ -278,6 +298,9 @@ spec:
             - message: credentialsSecretRef and serviceAccountRef are mutually exclusive;
                 set at most one
               rule: '!(has(self.credentialsSecretRef) && has(self.serviceAccountRef))'
+            - message: oidc.groupsPrefix and groupMapping.celExpression are mutually
+                exclusive; groupsPrefix is honored only with the default mapping
+              rule: '!(has(self.oidc.groupsPrefix) && has(self.groupMapping.celExpression))'
           status:
             description: |-
               BackendStatus defines the observed state of a Backend. It follows the

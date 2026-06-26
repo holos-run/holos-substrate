@@ -93,6 +93,27 @@ type OIDCConfig struct {
 	// +kubebuilder:default=groups
 	// +kubebuilder:validation:MinLength=1
 	GroupsClaim string `json:"groupsClaim,omitempty"`
+
+	// GroupsPrefix is prepended to every group read from the groups claim (the
+	// claim named by GroupsClaim) before it is impersonated as a Kubernetes group.
+	// The recommended value is "oidc:" — like the apiserver --oidc-groups-prefix=oidc:
+	// flag, prefixing isolates the external identity provider's group namespace so
+	// it cannot impersonate Kubernetes built-in system: groups (e.g. a token
+	// asserting "system:masters" becomes "oidc:system:masters"). It is honored only
+	// with the default group mapping (when spec.groupMapping.celExpression is empty,
+	// where the authorizer reads the groups claim directly) and is mutually
+	// exclusive with spec.groupMapping.celExpression — a CEL expression returns the
+	// final group set itself, so it must encode any prefix it wants. The
+	// mutual-exclusion is enforced by a CEL validation rule on BackendSpec. There is
+	// no default: an omitted GroupsPrefix prepends nothing, preserving the existing
+	// behavior.
+	//
+	// Phase note (HOL-1406): this phase ships the field and validation only; the
+	// controller still builds the default mapping without reading GroupsPrefix.
+	// Runtime prefixing lands in HOL-1407.
+	//
+	// +optional
+	GroupsPrefix string `json:"groupsPrefix,omitempty"`
 }
 
 // GroupMapping configures how validated token claims are mapped to the
@@ -123,6 +144,7 @@ type GroupMapping struct {
 // until then. The fields are additive and backward-compatible.
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.credentialsSecretRef) && has(self.serviceAccountRef))",message="credentialsSecretRef and serviceAccountRef are mutually exclusive; set at most one"
+// +kubebuilder:validation:XValidation:rule="!(has(self.oidc.groupsPrefix) && has(self.groupMapping.celExpression))",message="oidc.groupsPrefix and groupMapping.celExpression are mutually exclusive; groupsPrefix is honored only with the default mapping"
 type BackendSpec struct {
 	// Host is the request :authority/Host header value this Backend matches. The
 	// authorizer routes an inbound request to this Backend when the request's

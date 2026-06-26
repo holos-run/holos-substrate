@@ -506,6 +506,57 @@ func TestBackendCredentialRefMutualExclusion(t *testing.T) {
 	}
 }
 
+// TestBackendGroupsPrefixMutualExclusion asserts the CRD CEL validation rule
+// (x-kubernetes-validations on BackendSpec) rejects a Backend that sets BOTH
+// oidc.groupsPrefix and groupMapping.celExpression, and admits a Backend that
+// sets only oidc.groupsPrefix (which round-trips). The rejection is enforced by
+// the API server at admission time (HOL-1406), so the assertion is on the Create
+// error, not the reconciler.
+func TestBackendGroupsPrefixMutualExclusion(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	cases := []struct {
+		name          string
+		groupsPrefix  string
+		celExpression string
+		wantReject    bool
+	}{
+		{name: "both-rejected", groupsPrefix: "oidc:", celExpression: "claims.groups", wantReject: true},
+		{name: "only-groupsPrefix", groupsPrefix: "oidc:", wantReject: false},
+		{name: "only-celExpression", celExpression: "claims.groups", wantReject: false},
+		{name: "neither", wantReject: false},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := makeBackend(ns, fmt.Sprintf("gp-mutex-%d", i), fmt.Sprintf("api-gp-mutex-%d.example.test", i))
+			b.Spec.OIDC.GroupsPrefix = tc.groupsPrefix
+			b.Spec.GroupMapping.CELExpression = tc.celExpression
+
+			err := shared.k8sClient.Create(ctx, b)
+			if tc.wantReject {
+				if err == nil {
+					t.Fatalf("Create accepted a Backend setting both oidc.groupsPrefix and groupMapping.celExpression; want CEL rejection")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Create rejected a valid Backend (%s): %v", tc.name, err)
+			}
+			t.Cleanup(func() { _ = shared.k8sClient.Delete(context.Background(), b) })
+
+			// The only-groupsPrefix case must round-trip the field through the API server.
+			if tc.groupsPrefix != "" {
+				got := getBackend(ctx, t, client.ObjectKeyFromObject(b))
+				if got.Spec.OIDC.GroupsPrefix != tc.groupsPrefix {
+					t.Errorf("oidc.groupsPrefix = %q, want %q after round-trip", got.Spec.OIDC.GroupsPrefix, tc.groupsPrefix)
+				}
+			}
+		})
+	}
+}
+
 // TestBackendServiceAccountRefDefaults asserts the CRD applies the
 // ServiceAccountReference defaults — name holos-authenticator-impersonator and
 // expirationSeconds 3600 — when a Backend sets serviceAccountRef with those

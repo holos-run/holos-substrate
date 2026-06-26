@@ -53,6 +53,7 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 				JWKS:          []byte(`{"keys":[{"kty":"RSA","kid":"k1"}]}`),
 				UsernameClaim: "sub",
 				GroupsClaim:   "groups",
+				GroupsPrefix:  "oidc:",
 			},
 			GroupMapping:         GroupMapping{CELExpression: "claims.groups"},
 			CredentialsSecretRef: &SecretReference{Name: "custom-creds", Key: "token"},
@@ -91,6 +92,9 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 	}
 	if clone.Spec.OIDC.ClientID != "holos-authenticator" {
 		t.Errorf("cloned OIDC.ClientID = %q, want holos-authenticator", clone.Spec.OIDC.ClientID)
+	}
+	if clone.Spec.OIDC.GroupsPrefix != "oidc:" {
+		t.Errorf("cloned OIDC.GroupsPrefix = %q, want oidc:", clone.Spec.OIDC.GroupsPrefix)
 	}
 }
 
