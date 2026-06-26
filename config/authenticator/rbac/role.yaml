@@ -58,3 +58,11 @@ rules:
   - secrets
   verbs:
   - get
+- apiGroups:
+  - ""
+  resourceNames:
+  - holos-authenticator-impersonator
+  resources:
+  - serviceaccounts/token
+  verbs:
+  - create

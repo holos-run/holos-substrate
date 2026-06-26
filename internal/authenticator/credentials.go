@@ -50,6 +50,43 @@ func AuthorizerNamespace() string {
 	return DefaultAuthorizerNamespace
 }
 
+// resolveCredential resolves the backend's privileged impersonator token from
+// whichever credential source the Entry declares. It is the single dispatch point
+// for the Check path's credential resolution so the precedence rule lives in one
+// place: when entry.ServiceAccountRef is set, mint a short-lived token for that
+// ServiceAccount via tm (the TokenRequest path, HOL-1400); otherwise read the
+// credential Secret named by entry.CredentialsSecretRef (the original path).
+//
+// The two sources are mutually exclusive at the CRD level (a CEL rule rejects
+// setting both), but the precedence here is also the runtime defense the AC
+// requires: were both ever populated on an Entry, the ServiceAccount path is
+// chosen deterministically — and choosing the minted, short-lived credential over
+// a possibly-stale long-lived Secret is the fail-closed-safe pick. The reconciler
+// normalizes ServiceAccountRef's defaults before storing it, so name/expiration
+// are already populated here.
+//
+// tm may be nil when the authorizer was constructed without a writable client
+// (e.g. a Check path that only ever serves Secret-backed backends in a test). A
+// nil tm with a ServiceAccount-backed Entry is a configuration fault, returned as
+// a *missingCredentialError so the Check path denies fail-closed rather than
+// panicking.
+func resolveCredential(ctx context.Context, reader client.Reader, tm *TokenManager, namespace string, entry *Entry) (string, error) {
+	if entry.ServiceAccountRef != nil {
+		if tm == nil {
+			return "", &missingCredentialError{
+				msg: "serviceAccountRef is set but the authorizer has no TokenManager (no writable client wired)",
+			}
+		}
+		ref := entry.ServiceAccountRef
+		var expirationSeconds int64
+		if ref.ExpirationSeconds != nil {
+			expirationSeconds = *ref.ExpirationSeconds
+		}
+		return tm.Token(ctx, ref.Name, ref.Audience, expirationSeconds)
+	}
+	return resolveImpersonatorToken(ctx, reader, namespace, entry.CredentialsSecretRef)
+}
+
 // resolveImpersonatorToken reads the backend's privileged credential Secret named
 // by ref (defaulting to holos-authenticator-backend-creds) from the authorizer's
 // own namespace and returns the bearer token it carries — the identity the

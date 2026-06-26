@@ -39,9 +39,21 @@ type Entry struct {
 	ServerCABundle []byte
 
 	// CredentialsSecretRef names the Secret holding the backend's privileged
-	// impersonator credential. The Check path (HOL-1388) resolves it; this phase
-	// only records the ref so the Check path need not re-read the Backend CR.
+	// impersonator credential. The Check path (HOL-1388) resolves it; the
+	// reconciler records the ref so the Check path need not re-read the Backend CR.
+	// It is used only when ServiceAccountRef is nil — the two credential sources are
+	// mutually exclusive (CRD CEL rule plus the runtime precedence in the Check
+	// path).
 	CredentialsSecretRef authenticatorv1alpha1.SecretReference
+
+	// ServiceAccountRef, when non-nil, names a ServiceAccount in the authorizer's
+	// own namespace the Check path mints a short-lived impersonator token for (via
+	// the TokenRequest API and the shared TokenManager), in preference to reading
+	// the credential Secret. The reconciler records it normalized with its defaults
+	// (Name=DefaultImpersonatorServiceAccountName, ExpirationSeconds=3600) so the
+	// Check path need not re-apply CRD defaults. A nil ref selects the
+	// CredentialsSecretRef Secret path (HOL-1400).
+	ServiceAccountRef *authenticatorv1alpha1.ServiceAccountReference
 }
 
 // Store is a concurrency-safe registry of ready Backends keyed by spec.host. The

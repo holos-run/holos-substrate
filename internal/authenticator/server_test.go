@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -70,6 +71,39 @@ func credentialSecret(name, token string) *corev1.Secret {
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
 		Data:       map[string][]byte{credentialKeyToken: []byte(token)},
 	}
+}
+
+// fakeMintClient is a minimal client.Client whose token sub-resource Create either
+// populates the TokenRequest status with a fixed token (modeling a successful
+// TokenRequest mint) or returns err (modeling a mint failure), without a live API
+// server. Only SubResource("token").Create is exercised by the SA-path Check
+// tests; every other method panics so an unexpected call is caught loudly.
+type fakeMintClient struct {
+	client.Client
+	token string
+	err   error
+}
+
+func (c *fakeMintClient) SubResource(string) client.SubResourceClient {
+	return &fakeMintSubResource{parent: c}
+}
+
+type fakeMintSubResource struct {
+	client.SubResourceClient
+	parent *fakeMintClient
+}
+
+func (s *fakeMintSubResource) Create(_ context.Context, _ client.Object, sub client.Object, _ ...client.SubResourceCreateOption) error {
+	if s.parent.err != nil {
+		return s.parent.err
+	}
+	tr, ok := sub.(*authenticationv1.TokenRequest)
+	if !ok {
+		return fmt.Errorf("fakeMintClient: unexpected sub-resource type %T", sub)
+	}
+	tr.Status.Token = s.parent.token
+	tr.Status.ExpirationTimestamp = metav1.NewTime(time.Now().Add(time.Hour))
+	return nil
 }
 
 // serveCheck starts srv over an in-memory bufconn listener and returns a connected
@@ -132,7 +166,7 @@ func TestCheckAllowSetsImpersonationHeaders(t *testing.T) {
 		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
 	})
 	reader := secretReader(t, credentialSecret("creds", "impersonator-token"))
-	client := serveCheck(t, NewCheckServer(store, reader, testNamespace, logr.Discard()))
+	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, logr.Discard()))
 
 	resp := mustCheck(t, client, checkRequest(host, map[string]string{
 		"authorization": "Bearer caller-token",
@@ -176,7 +210,7 @@ func TestCheckAllowNoGroups(t *testing.T) {
 		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
 	})
 	reader := secretReader(t, credentialSecret("creds", "imp"))
-	client := serveCheck(t, NewCheckServer(store, reader, testNamespace, logr.Discard()))
+	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, logr.Discard()))
 
 	resp := mustCheck(t, client, checkRequest(host, map[string]string{"authorization": "Bearer t"}))
 	if got, want := codes.Code(resp.GetStatus().GetCode()), codes.OK; got != want {
@@ -205,7 +239,7 @@ func TestCheckInboundImpersonationHeaderDenies(t *testing.T) {
 		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
 	})
 	reader := secretReader(t, credentialSecret("creds", "imp"))
-	client := serveCheck(t, NewCheckServer(store, reader, testNamespace, logr.Discard()))
+	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, logr.Discard()))
 
 	// Envoy lowercases header keys in the ext_authz Headers map.
 	smuggled := []string{
@@ -227,7 +261,7 @@ func TestCheckInboundImpersonationHeaderDenies(t *testing.T) {
 
 // TestCheckUnknownHostDenies asserts an unconfigured host is denied with HTTP 403.
 func TestCheckUnknownHostDenies(t *testing.T) {
-	client := serveCheck(t, NewCheckServer(NewStore(), secretReader(t), testNamespace, logr.Discard()))
+	client := serveCheck(t, NewCheckServer(NewStore(), secretReader(t), nil, testNamespace, logr.Discard()))
 
 	resp := mustCheck(t, client, checkRequest("unknown.example.com", map[string]string{
 		"authorization": "Bearer t",
@@ -244,7 +278,7 @@ func TestCheckMissingTokenDenies(t *testing.T) {
 		Host:          host,
 		Authenticator: newTestAuthenticator(t, map[string]any{"sub": "alice"}, "sub"),
 	})
-	client := serveCheck(t, NewCheckServer(store, secretReader(t), testNamespace, logr.Discard()))
+	client := serveCheck(t, NewCheckServer(store, secretReader(t), nil, testNamespace, logr.Discard()))
 
 	// No Authorization header at all.
 	resp := mustCheck(t, client, checkRequest(host, map[string]string{}))
@@ -263,7 +297,7 @@ func TestCheckNonBearerTokenDenies(t *testing.T) {
 		Host:          host,
 		Authenticator: newTestAuthenticator(t, map[string]any{"sub": "alice"}, "sub"),
 	})
-	client := serveCheck(t, NewCheckServer(store, secretReader(t), testNamespace, logr.Discard()))
+	client := serveCheck(t, NewCheckServer(store, secretReader(t), nil, testNamespace, logr.Discard()))
 
 	resp := mustCheck(t, client, checkRequest(host, map[string]string{
 		"authorization": "Basic dXNlcjpwYXNz",
@@ -282,7 +316,7 @@ func TestCheckInvalidTokenDenies(t *testing.T) {
 		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
 	})
 	reader := secretReader(t, credentialSecret("creds", "imp"))
-	client := serveCheck(t, NewCheckServer(store, reader, testNamespace, logr.Discard()))
+	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, logr.Discard()))
 
 	resp := mustCheck(t, client, checkRequest(host, map[string]string{"authorization": "Bearer bad"}))
 	assertDenied(t, resp, typev3.StatusCode_Unauthorized)
@@ -300,7 +334,7 @@ func TestCheckCredentialReadFailureDenies(t *testing.T) {
 		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "absent"},
 	})
 	// Reader has no Secret named "absent".
-	client := serveCheck(t, NewCheckServer(store, secretReader(t), testNamespace, logr.Discard()))
+	client := serveCheck(t, NewCheckServer(store, secretReader(t), nil, testNamespace, logr.Discard()))
 
 	resp := mustCheck(t, client, checkRequest(host, map[string]string{"authorization": "Bearer good"}))
 	assertDenied(t, resp, typev3.StatusCode_Forbidden)
@@ -321,7 +355,7 @@ func TestCheckMultipleBackendsRouteByHost(t *testing.T) {
 		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds-b"},
 	})
 	reader := secretReader(t, credentialSecret("creds-a", "tok-a"), credentialSecret("creds-b", "tok-b"))
-	client := serveCheck(t, NewCheckServer(store, reader, testNamespace, logr.Discard()))
+	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, logr.Discard()))
 
 	respA := mustCheck(t, client, checkRequest("a.example.com", map[string]string{"authorization": "Bearer x"}))
 	assertHeaderOptions(t, respA.GetOkResponse().GetHeaders(), []*corev3.HeaderValueOption{
@@ -352,7 +386,7 @@ func TestCheckCustomTokenKey(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "creds", Namespace: testNamespace},
 		Data:       map[string][]byte{"sa-token": []byte("custom-key-token")},
 	}
-	client := serveCheck(t, NewCheckServer(store, secretReader(t, secret), testNamespace, logr.Discard()))
+	client := serveCheck(t, NewCheckServer(store, secretReader(t, secret), nil, testNamespace, logr.Discard()))
 
 	resp := mustCheck(t, client, checkRequest(host, map[string]string{"authorization": "Bearer x"}))
 	assertHeaderOptions(t, resp.GetOkResponse().GetHeaders(), []*corev3.HeaderValueOption{
@@ -360,6 +394,119 @@ func TestCheckCustomTokenKey(t *testing.T) {
 		overwriteHeader(headerAuthorization, "Bearer custom-key-token"),
 	})
 }
+
+// TestCheckServiceAccountSourceMintsToken asserts that when a backend's Entry
+// carries a ServiceAccountRef, the Check path resolves its impersonator credential
+// by minting a token via the TokenManager (the serviceAccountRef source) rather
+// than reading a credential Secret. The minted token is what is forwarded as the
+// upstream Authorization.
+func TestCheckServiceAccountSourceMintsToken(t *testing.T) {
+	const host = "api.example.com"
+	store := NewStore()
+	store.Set(testNamespace+"/backend", &Entry{
+		Host:              host,
+		Authenticator:     newTestAuthenticator(t, map[string]any{"sub": "alice", "groups": []any{"dev"}}, "sub"),
+		ServiceAccountRef: &authenticatorv1alpha1.ServiceAccountReference{Name: "impersonator", ExpirationSeconds: ptrInt64(3600)},
+	})
+
+	// A reader with NO Secret proves the SA path is taken: a Secret read would fail.
+	srv := &CheckServer{
+		store:        store,
+		reader:       secretReader(t),
+		tokenManager: NewTokenManager(&fakeMintClient{token: "minted-sa-token"}, testNamespace),
+		namespace:    testNamespace,
+		log:          logr.Discard(),
+	}
+	client := serveCheck(t, srv)
+
+	resp := mustCheck(t, client, checkRequest(host, map[string]string{"authorization": "Bearer caller"}))
+	if got, want := codes.Code(resp.GetStatus().GetCode()), codes.OK; got != want {
+		t.Fatalf("status code = %v, want %v", got, want)
+	}
+	assertHeaderOptions(t, resp.GetOkResponse().GetHeaders(), []*corev3.HeaderValueOption{
+		overwriteHeader(headerImpersonateUser, "alice"),
+		appendHeader(headerImpersonateGroup, "dev"),
+		overwriteHeader(headerAuthorization, "Bearer minted-sa-token"),
+	})
+}
+
+// TestCheckServiceAccountPreferredOverSecret asserts that if an Entry somehow
+// carries BOTH a ServiceAccountRef and a CredentialsSecretRef (the CRD CEL rule
+// rejects this, but the Check path defends it at runtime), the ServiceAccount
+// source wins deterministically — the minted token is forwarded, not the Secret's.
+func TestCheckServiceAccountPreferredOverSecret(t *testing.T) {
+	const host = "api.example.com"
+	store := NewStore()
+	store.Set(testNamespace+"/backend", &Entry{
+		Host:                 host,
+		Authenticator:        newTestAuthenticator(t, map[string]any{"sub": "alice"}, "sub"),
+		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
+		ServiceAccountRef:    &authenticatorv1alpha1.ServiceAccountReference{Name: "impersonator", ExpirationSeconds: ptrInt64(3600)},
+	})
+	reader := secretReader(t, credentialSecret("creds", "secret-token"))
+	srv := &CheckServer{
+		store:        store,
+		reader:       reader,
+		tokenManager: NewTokenManager(&fakeMintClient{token: "minted-sa-token"}, testNamespace),
+		namespace:    testNamespace,
+		log:          logr.Discard(),
+	}
+	client := serveCheck(t, srv)
+
+	resp := mustCheck(t, client, checkRequest(host, map[string]string{"authorization": "Bearer caller"}))
+	assertHeaderOptions(t, resp.GetOkResponse().GetHeaders(), []*corev3.HeaderValueOption{
+		overwriteHeader(headerImpersonateUser, "alice"),
+		overwriteHeader(headerAuthorization, "Bearer minted-sa-token"),
+	})
+}
+
+// TestCheckServiceAccountMintFailureDenies asserts a TokenRequest mint failure on
+// the serviceAccountRef path denies fail-closed (HTTP 403), exactly as a missing
+// credential Secret does — the caller is authenticated but the authorizer cannot
+// mint the impersonator credential.
+func TestCheckServiceAccountMintFailureDenies(t *testing.T) {
+	const host = "api.example.com"
+	store := NewStore()
+	store.Set(testNamespace+"/backend", &Entry{
+		Host:              host,
+		Authenticator:     newTestAuthenticator(t, map[string]any{"sub": "alice"}, "sub"),
+		ServiceAccountRef: &authenticatorv1alpha1.ServiceAccountReference{Name: "impersonator", ExpirationSeconds: ptrInt64(3600)},
+	})
+	srv := &CheckServer{
+		store:        store,
+		reader:       secretReader(t),
+		tokenManager: NewTokenManager(&fakeMintClient{err: fmt.Errorf("forbidden")}, testNamespace),
+		namespace:    testNamespace,
+		log:          logr.Discard(),
+	}
+	client := serveCheck(t, srv)
+
+	resp := mustCheck(t, client, checkRequest(host, map[string]string{"authorization": "Bearer caller"}))
+	assertDenied(t, resp, typev3.StatusCode_Forbidden)
+}
+
+// TestCheckServiceAccountNoTokenManagerDenies asserts that a ServiceAccount-backed
+// backend served by a CheckServer with no TokenManager (no writable client wired)
+// denies fail-closed rather than panicking — the resolveCredential nil-manager
+// guard.
+func TestCheckServiceAccountNoTokenManagerDenies(t *testing.T) {
+	const host = "api.example.com"
+	store := NewStore()
+	store.Set(testNamespace+"/backend", &Entry{
+		Host:              host,
+		Authenticator:     newTestAuthenticator(t, map[string]any{"sub": "alice"}, "sub"),
+		ServiceAccountRef: &authenticatorv1alpha1.ServiceAccountReference{Name: "impersonator", ExpirationSeconds: ptrInt64(3600)},
+	})
+	// nil writer ⇒ no TokenManager.
+	client := serveCheck(t, NewCheckServer(store, secretReader(t), nil, testNamespace, logr.Discard()))
+
+	resp := mustCheck(t, client, checkRequest(host, map[string]string{"authorization": "Bearer caller"}))
+	assertDenied(t, resp, typev3.StatusCode_Forbidden)
+}
+
+// ptrInt64 returns a pointer to v, for the ServiceAccountReference.ExpirationSeconds
+// pointer field in test fixtures.
+func ptrInt64(v int64) *int64 { return &v }
 
 // TestGRPCServerStartStop runs the GRPCServer Runnable on a real loopback
 // listener, dials it, calls Check, and then cancels the context to confirm Start
@@ -378,7 +525,7 @@ func TestGRPCServerStartStop(t *testing.T) {
 
 	g := &GRPCServer{
 		Listener: lis,
-		Check:    NewCheckServer(NewStore(), secretReader(t), testNamespace, logr.Discard()),
+		Check:    NewCheckServer(NewStore(), secretReader(t), nil, testNamespace, logr.Discard()),
 		Log:      logr.Discard(),
 	}
 
