@@ -15,6 +15,7 @@
 | 3        | 2026-06-24 | @jeffmccune | KSA / static-JWKS extension — additive `spec.oidc.jwks` for offline validation (below) |
 | 4        | 2026-06-25 | @jeffmccune | `serviceAccountRef` credential source — additive TokenRequest-minted impersonator credential, default impersonate-only SA, impersonation-scope ratification (below) |
 | 5        | 2026-06-25 | @jeffmccune | Group-prefix extension — additive `spec.oidc.groupsPrefix` for the default groups-claim mapping (below) |
+| 6        | 2026-06-26 | @jeffmccune | Group encoding correction — `Impersonate-Group` is emitted as `APPEND_IF_EXISTS_OR_ADD`, Envoy comma-joins it, and it must be paired with a Lua split filter (below) |
 
 ## As-built (Revision 2)
 
@@ -28,7 +29,10 @@ with the deviations noted below. `Status` is now `Implemented`.
   the OIDC token (issuer discovery + JWKS, `iss`/`aud`/`exp`), maps claims to
   groups via CEL (default `claims["<groupsClaim>"]`, i.e. `claims["groups"]`),
   and returns `Impersonate-User`/`Impersonate-Group` plus the impersonator
-  credential, overwriting `Authorization`. The `authenticator.holos.run/v1alpha1`
+  credential, overwriting `Authorization` (the groups are emitted as
+  `APPEND_IF_EXISTS_OR_ADD` options that Envoy comma-joins into one
+  `Impersonate-Group` header, paired with a Lua split filter — Revision 6). The
+  `authenticator.holos.run/v1alpha1`
   `Backend` CRD carries the ADR-22 status contract. The operator guide is
   [the runbook](../runbooks/holos-authenticator.md).
 - **Deviation: inbound `Authorization` is accepted and overwritten, not
@@ -326,6 +330,47 @@ rationale, the mutual-exclusion rule, and an example) is in the
 mapping*](../runbooks/holos-authenticator.md#oidc-token-validation--cel-group-mapping)
 section.
 
+## Group encoding: comma-joined `Impersonate-Group` + Lua split filter (Revision 6)
+
+Revision 6 (HOL-1413) corrects how the multi-group `Impersonate-Group` encoding is
+described, and records the Envoy Lua filter it must be paired with. The original
+as-built note (Revision 2) claimed the authorizer's per-group
+`APPEND_IF_EXISTS_OR_ADD` header options produced **repeated `Impersonate-Group`
+header lines** "compatible with any conformant cluster." That is not how Envoy
+applies them.
+
+- **Envoy comma-joins repeated `APPEND_IF_EXISTS_OR_ADD` options.** The authorizer
+  emits one `Impersonate-Group` `APPEND_IF_EXISTS_OR_ADD` `HeaderValueOption` per
+  mapped group (so the groups accumulate rather than the last value overwriting the
+  rest). When Envoy applies several append options for the **same** header name it
+  **comma-concatenates** their values into a **single** header line —
+  `Impersonate-Group: dev,ops` — it does **not** emit one `Impersonate-Group` line
+  per value.
+- **The API server does not split a comma-separated value.** Kubernetes
+  impersonation requires **one `Impersonate-Group` header per group** and treats a
+  comma-separated value as a single literal group name (`"dev,ops"`). Left as-is,
+  the impersonated user lands in a non-existent group and loses their real group
+  memberships — a correctness (and potential authorization) defect, not merely a
+  cosmetic one.
+- **Pair the response with a Lua split filter.** The comma-joined header must be
+  unpacked back into one header per group by an Envoy **Lua HTTP filter** that runs
+  **after** ext_authz (so it sees the injected header) and **before** egress to the
+  API server: it reads `Impersonate-Group`, removes it, and re-adds one header per
+  comma-delimited element. The worked `EnvoyFilter` (the `INSERT_AFTER`
+  `envoy.filters.http.ext_authz` patch and the `inline_code` Lua) is in the
+  [runbook's *Splitting the comma-joined `Impersonate-Group`
+  header*](../runbooks/holos-authenticator.md#splitting-the-comma-joined-impersonate-group-header)
+  section.
+- **Not yet rendered — it belongs to the deferred waypoint topology.** Like the
+  `CUSTOM` `AuthorizationPolicy`, the Lua `EnvoyFilter` only takes effect once a
+  **waypoint** fronts the protected route and must target that same waypoint. The
+  full waypoint / `ServiceEntry` egress topology remains a deferred follow-up
+  (recorded in [`holos/docs/placeholders.md`](../../holos/docs/placeholders.md)),
+  so Revision 6 documents the required filter as the companion to that topology
+  rather than shipping it in the deploy tree today. The authorizer's response
+  encoding (per-group append options) is unchanged; only the documentation is
+  corrected and the paired filter recorded.
+
 ## Context and Problem Statement
 
 The platform needs a minimal Istio **external authorizer** that lets Envoy (an
@@ -453,14 +498,21 @@ On each request Envoy forwards to the authorizer's `Check`, the authenticator
    claim directly to Kubernetes groups; a backend may override it (e.g. to derive
    groups from a different claim, prefix them, or filter them).
 5. **Returns Kubernetes impersonation headers.** On success it returns an
-   `OkResponse` injecting `Impersonate-User` and one `Impersonate-Group` header
-   per mapped group, **compatible with any conformant cluster**, plus the
-   backend's own privileged credential (an `Authorization: Bearer <token>` for a
-   ServiceAccount holding the `impersonate` verb), having first removed every
-   inbound impersonation/`Authorization` header per step 2 so only the derived
-   values reach the upstream. Envoy then forwards the request to the upstream API
-   server with those headers and **no other reverse proxy** in the path; the API
-   server authorizes the request as the impersonated user with their real groups.
+   `OkResponse` injecting `Impersonate-User` and one `Impersonate-Group`
+   `APPEND_IF_EXISTS_OR_ADD` option per mapped group, plus the backend's own
+   privileged credential (an `Authorization: Bearer <token>` for a ServiceAccount
+   holding the `impersonate` verb), having first removed every inbound
+   impersonation/`Authorization` header per step 2 so only the derived values reach
+   the upstream. Envoy **comma-joins** the repeated append options into a single
+   `Impersonate-Group: a,b` header (it does not emit one line per value); because
+   the API server requires one `Impersonate-Group` header per group and does not
+   split a comma-separated value, this header **must be paired with an Envoy Lua
+   filter** that unpacks the comma list into one header per group before the request
+   reaches the upstream — see Revision 6 below and the
+   [runbook](../runbooks/holos-authenticator.md). Envoy then forwards the request
+   to the upstream API server with those headers and **no other reverse proxy** in
+   the path; the API server authorizes the request as the impersonated user with
+   their real groups.
 
 ### Configuration as Kubernetes custom resources: `authenticator.holos.run`
 

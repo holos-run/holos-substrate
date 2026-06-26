@@ -275,6 +275,20 @@ hardening concerns are deliberately deferred to later phases:
   in-cluster API server and the example policy selects the authenticator's own
   pods; the full waypoint / `ServiceEntry` egress topology is not yet built.
 
+- **Lua filter to split the comma-joined `Impersonate-Group` header (ADR-23
+  Rev 6, HOL-1413).** The authorizer emits one `Impersonate-Group`
+  `APPEND_IF_EXISTS_OR_ADD` option per mapped group; Envoy comma-joins repeated
+  append options for the same header into a single `Impersonate-Group: a,b` line,
+  which the Kubernetes API server treats as one literal group name rather than
+  splitting. The required companion is an Envoy **Lua HTTP filter** (an
+  `EnvoyFilter` patching `INSERT_AFTER` `envoy.filters.http.ext_authz`) that
+  unpacks the comma list into one header per group before egress — the worked
+  `EnvoyFilter`/Lua is in the [runbook's *Splitting the comma-joined
+  `Impersonate-Group` header*](../../docs/runbooks/holos-authenticator.md#splitting-the-comma-joined-impersonate-group-header).
+  Like the `CUSTOM` `AuthorizationPolicy` it only has an effect once a **waypoint**
+  fronts the protected route and must target that same waypoint, so it ships with
+  the deferred waypoint topology above rather than the in-cluster wiring today.
+
 - **Tenant use of the extension provider must be enforced, not just documented.**
   The provider is registered mesh-wide, so a `CUSTOM` `AuthorizationPolicy`
   naming `provider.name: holos-authenticator` could in principle be attached to a

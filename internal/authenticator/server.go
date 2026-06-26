@@ -247,11 +247,16 @@ func bearerToken(headers map[string]string) (string, bool) {
 // okResponse builds the allow CheckResponse carrying the Kubernetes impersonation
 // headers. Impersonate-User and Authorization use OVERWRITE_IF_EXISTS_OR_ADD so
 // they replace any caller-supplied value; each Impersonate-Group uses
-// APPEND_IF_EXISTS_OR_ADD so the groups accumulate into repeated headers — for a
-// non-inline header like Impersonate-Group, Envoy's APPEND_IF_EXISTS_OR_ADD adds
-// a duplicate header entry per value rather than comma-concatenating, which is
-// exactly the standard repeated-header multi-group impersonation encoding the API
-// server expects, compatible with any conformant cluster.
+// APPEND_IF_EXISTS_OR_ADD so the groups accumulate rather than the last value
+// overwriting the rest. When Envoy applies several APPEND_IF_EXISTS_OR_ADD
+// options for the same header it comma-concatenates their values into a single
+// header line — Impersonate-Group: dev,ops — rather than emitting one header line
+// per value. The Kubernetes API server's impersonation feature requires one
+// Impersonate-Group header per group and does NOT split a comma-separated value,
+// so this comma-joined header MUST be paired with an Envoy Lua filter that unpacks
+// the comma list into one Impersonate-Group header per element before the request
+// reaches the API server. See docs/runbooks/holos-authenticator.md ("Splitting the
+// comma-joined Impersonate-Group header") and ADR-23.
 //
 // The caller's original Authorization is NOT listed in HeadersToRemove. Setting
 // Authorization with OVERWRITE_IF_EXISTS_OR_ADD already discards any
@@ -310,9 +315,13 @@ func overwriteHeader(name, value string) *corev3.HeaderValueOption {
 	}
 }
 
-// appendHeader builds a HeaderValueOption that appends value as another instance
-// of header name, so repeated calls accumulate into multiple same-named headers
-// (the multi-group Impersonate-Group encoding).
+// appendHeader builds a HeaderValueOption with AppendAction
+// APPEND_IF_EXISTS_OR_ADD, so repeated calls for the same header name accumulate
+// rather than overwrite. Envoy applies these by comma-concatenating the values
+// into a single header line (Impersonate-Group: dev,ops), not by emitting one line
+// per value; a paired Lua filter splits that comma list back into one
+// Impersonate-Group header per group for the API server (see okResponse and the
+// runbook).
 func appendHeader(name, value string) *corev3.HeaderValueOption {
 	return &corev3.HeaderValueOption{
 		Header:       &corev3.HeaderValue{Key: name, Value: value},
