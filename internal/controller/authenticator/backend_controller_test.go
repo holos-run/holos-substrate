@@ -536,3 +536,82 @@ func TestBackendServiceAccountRefDefaults(t *testing.T) {
 		t.Errorf("serviceAccountRef.expirationSeconds = %d, want 3600", *saRef.ExpirationSeconds)
 	}
 }
+
+// TestReconcileRecordsServiceAccountRef asserts that reconciling a Backend whose
+// spec sets serviceAccountRef records the resolved ref (normalized with its
+// defaults) on the Store Entry the Check path reads, and leaves CredentialsSecretRef
+// at its zero value (HOL-1400). It is the reconciler half of the Check path's
+// serviceAccountRef credential source.
+func TestReconcileRecordsServiceAccountRef(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	r, store, _ := newReconciler(discoverOK)
+	b := makeBackend(ns, "sa-record", "api-sa-record.example.test")
+	// Set only the name and audience; expirationSeconds is defaulted by the CRD.
+	b.Spec.ServiceAccountRef = &authenticatorv1alpha1.ServiceAccountReference{
+		Name:     "custom-impersonator",
+		Audience: "https://kubernetes.default.svc",
+	}
+	key := createBackend(ctx, t, b)
+	t.Cleanup(func() { _ = shared.k8sClient.Delete(context.Background(), b) })
+
+	if _, err := reconcile(ctx, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	entry, ok := store.Get("api-sa-record.example.test")
+	if !ok {
+		t.Fatalf("store missing entry for host api-sa-record.example.test")
+	}
+	if entry.ServiceAccountRef == nil {
+		t.Fatalf("entry.ServiceAccountRef is nil; want the recorded ref")
+	}
+	if got := entry.ServiceAccountRef.Name; got != "custom-impersonator" {
+		t.Errorf("entry.ServiceAccountRef.Name = %q, want %q", got, "custom-impersonator")
+	}
+	if got := entry.ServiceAccountRef.Audience; got != "https://kubernetes.default.svc" {
+		t.Errorf("entry.ServiceAccountRef.Audience = %q, want %q", got, "https://kubernetes.default.svc")
+	}
+	if entry.ServiceAccountRef.ExpirationSeconds == nil || *entry.ServiceAccountRef.ExpirationSeconds != 3600 {
+		t.Errorf("entry.ServiceAccountRef.ExpirationSeconds = %v, want 3600", entry.ServiceAccountRef.ExpirationSeconds)
+	}
+	if entry.CredentialsSecretRef != (authenticatorv1alpha1.SecretReference{}) {
+		t.Errorf("entry.CredentialsSecretRef = %+v, want zero value", entry.CredentialsSecretRef)
+	}
+}
+
+// TestReconcileNormalizesServiceAccountRefDefaults asserts the reconciler applies
+// the ServiceAccountReference defaults defensively when building the Entry even if
+// the spec's subfields are unset — so the Check path's TokenManager always receives
+// a fully-resolved name and expiration. (The CRD also defaults these; this guards
+// the Entry path independently.)
+func TestReconcileNormalizesServiceAccountRefDefaults(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	r, store, _ := newReconciler(discoverOK)
+	b := makeBackend(ns, "sa-normalize", "api-sa-normalize.example.test")
+	b.Spec.ServiceAccountRef = &authenticatorv1alpha1.ServiceAccountReference{}
+	key := createBackend(ctx, t, b)
+	t.Cleanup(func() { _ = shared.k8sClient.Delete(context.Background(), b) })
+
+	if _, err := reconcile(ctx, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	entry, ok := store.Get("api-sa-normalize.example.test")
+	if !ok {
+		t.Fatalf("store missing entry")
+	}
+	saRef := entry.ServiceAccountRef
+	if saRef == nil {
+		t.Fatalf("entry.ServiceAccountRef is nil")
+	}
+	if saRef.Name != authenticatorv1alpha1.DefaultImpersonatorServiceAccountName {
+		t.Errorf("entry SA name = %q, want %q", saRef.Name, authenticatorv1alpha1.DefaultImpersonatorServiceAccountName)
+	}
+	if saRef.ExpirationSeconds == nil || *saRef.ExpirationSeconds != 3600 {
+		t.Errorf("entry SA expirationSeconds = %v, want 3600", saRef.ExpirationSeconds)
+	}
+}

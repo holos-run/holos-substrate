@@ -81,9 +81,18 @@ type CheckServer struct {
 	// seen immediately and no cluster-wide Secret informer cache is required.
 	reader client.Reader
 
+	// tokenManager mints, caches, and rotates ServiceAccount tokens via the
+	// TokenRequest API for backends whose Entry carries a ServiceAccountRef
+	// (HOL-1400). It holds the manager's writable client because TokenRequest is a
+	// create. It may be nil when no writable client was wired (e.g. Secret-only test
+	// servers); a nil manager with a ServiceAccount-backed backend is handled
+	// fail-closed in resolveCredential.
+	tokenManager *TokenManager
+
 	// namespace is the authorizer's own namespace, where every backend credential
-	// Secret lives (the Backend's spec.credentialsSecretRef names only the Secret,
-	// not a namespace).
+	// Secret and impersonator ServiceAccount lives (the Backend's
+	// spec.credentialsSecretRef / spec.serviceAccountRef name only the object, not a
+	// namespace).
 	namespace string
 
 	log logr.Logger
@@ -91,10 +100,18 @@ type CheckServer struct {
 
 // NewCheckServer returns a CheckServer that resolves backends from store, reads
 // impersonator credential Secrets from namespace via reader (the manager's
-// APIReader), and logs through log. store is the same registry the
-// BackendReconciler writes, so the Check path sees backends as they become ready.
-func NewCheckServer(store *Store, reader client.Reader, namespace string, log logr.Logger) *CheckServer {
-	return &CheckServer{store: store, reader: reader, namespace: namespace, log: log}
+// APIReader), mints ServiceAccount tokens via writer (the manager's writable
+// client, used for the TokenRequest create), and logs through log. store is the
+// same registry the BackendReconciler writes, so the Check path sees backends as
+// they become ready. writer may be nil for a Secret-only server (e.g. in tests);
+// a backend that resolves its credential from a ServiceAccount then denies
+// fail-closed.
+func NewCheckServer(store *Store, reader client.Reader, writer client.Client, namespace string, log logr.Logger) *CheckServer {
+	var tm *TokenManager
+	if writer != nil {
+		tm = NewTokenManager(writer, namespace)
+	}
+	return &CheckServer{store: store, reader: reader, tokenManager: tm, namespace: namespace, log: log}
 }
 
 // Check implements envoy.service.auth.v3.Authorization. It executes the full
@@ -106,7 +123,8 @@ func NewCheckServer(store *Store, reader client.Reader, namespace string, log lo
 //     401 with a WWW-Authenticate challenge.
 //  3. Validate the OIDC token and map groups via the backend's Authenticator;
 //     invalid → Denied 401.
-//  4. Resolve the backend's privileged impersonator credential; read failure →
+//  4. Resolve the backend's privileged impersonator credential (a minted
+//     ServiceAccount token or the credential Secret); resolution failure →
 //     Denied 403.
 //  5. Return OK setting Impersonate-User, one Impersonate-Group per mapped group,
 //     and the impersonator token as Authorization, removing the caller's original
@@ -167,11 +185,14 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (*aut
 		return deniedResponse(typev3.StatusCode_Unauthorized, "invalid token", nil), nil
 	}
 
-	// 5. Resolve the backend's privileged impersonator credential. A read failure
-	// is a 403 and fails closed — the caller is authenticated but the authorizer
-	// cannot act on their behalf, which is an internal/configuration fault, not a
-	// client authentication error.
-	impersonatorToken, err := resolveImpersonatorToken(ctx, s.reader, s.namespace, entry.CredentialsSecretRef)
+	// 5. Resolve the backend's privileged impersonator credential from whichever
+	// source the backend declares: a minted ServiceAccount token (serviceAccountRef)
+	// or the credential Secret (credentialsSecretRef). A failure — a missing Secret,
+	// a TokenRequest mint error, or an unwired TokenManager — is a 403 and fails
+	// closed: the caller is authenticated but the authorizer cannot act on their
+	// behalf, which is an internal/configuration fault, not a client authentication
+	// error.
+	impersonatorToken, err := resolveCredential(ctx, s.reader, s.tokenManager, s.namespace, entry)
 	if err != nil {
 		s.log.Error(err, "denying request: cannot resolve impersonator credential", "host", host)
 		return deniedResponse(typev3.StatusCode_Forbidden, "credential unavailable", nil), nil

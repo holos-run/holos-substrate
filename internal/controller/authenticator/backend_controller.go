@@ -176,6 +176,14 @@ func (r *BackendReconciler) reconcileNormal(ctx context.Context, logger logr.Log
 	if backend.Spec.CredentialsSecretRef != nil {
 		credRef = *backend.Spec.CredentialsSecretRef
 	}
+	// Record the ServiceAccount credential source when set, normalized with its CRD
+	// defaults so the Check path need not re-apply them — the CRD defaults populate
+	// for an API-server-validated CR, but normalizing here keeps the Check path's
+	// minting deterministic even if an Entry were ever built from a CR that bypassed
+	// defaulting (HOL-1400). serviceAccountRef and credentialsSecretRef are mutually
+	// exclusive (the CRD CEL rule); the Check path additionally prefers the SA path
+	// when both are somehow present, so recording the SA ref is sufficient.
+	saRef := normalizeServiceAccountRef(backend.Spec.ServiceAccountRef)
 	entry := &authenticator.Entry{
 		Host:                 backend.Spec.Host,
 		Authenticator:        authenticator.NewAuthenticator(verifier, mapper, backend.Spec.OIDC.UsernameClaim),
@@ -183,6 +191,7 @@ func (r *BackendReconciler) reconcileNormal(ctx context.Context, logger logr.Log
 		ServerURL:            backend.Spec.Server.URL,
 		ServerCABundle:       backend.Spec.Server.CABundle,
 		CredentialsSecretRef: credRef,
+		ServiceAccountRef:    saRef,
 	}
 	if !r.Store.Set(key, entry) {
 		owner, _ := r.Store.Owner(backend.Spec.Host)
@@ -335,6 +344,29 @@ func (r *BackendReconciler) backendsSharingHost(ctx context.Context, obj client.
 		reqs = append(reqs, reconcilepkg.Request{NamespacedName: client.ObjectKeyFromObject(b)})
 	}
 	return reqs
+}
+
+// normalizeServiceAccountRef returns a copy of ref with its CRD defaults applied
+// (Name=DefaultImpersonatorServiceAccountName when empty,
+// ExpirationSeconds=DefaultTokenExpirationSeconds when nil or non-positive), or nil
+// when ref is nil. The CRD defaults populate these for any API-server-validated
+// Backend, but normalizing here makes the Check path's TokenManager.Token call
+// deterministic regardless — the Entry carries a fully-resolved ref, so the Check
+// path applies no further defaulting. The returned ref is a fresh value so the
+// Entry never aliases the live spec's pointer.
+func normalizeServiceAccountRef(ref *authenticatorv1alpha1.ServiceAccountReference) *authenticatorv1alpha1.ServiceAccountReference {
+	if ref == nil {
+		return nil
+	}
+	out := *ref
+	if out.Name == "" {
+		out.Name = authenticatorv1alpha1.DefaultImpersonatorServiceAccountName
+	}
+	if out.ExpirationSeconds == nil || *out.ExpirationSeconds <= 0 {
+		def := authenticator.DefaultTokenExpirationSeconds
+		out.ExpirationSeconds = &def
+	}
+	return &out
 }
 
 // validateServerURL checks that the upstream API server URL is a well-formed
