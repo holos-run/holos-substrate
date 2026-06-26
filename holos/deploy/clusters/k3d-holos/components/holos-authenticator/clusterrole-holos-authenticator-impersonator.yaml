@@ -1,0 +1,16 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: holos-authenticator
+  name: holos-authenticator-impersonator
+rules:
+- apiGroups:
+  - ""
+  resourceNames:
+  - system:authenticated
+  - system:serviceaccounts
+  resources:
+  - groups
+  verbs:
+  - impersonate

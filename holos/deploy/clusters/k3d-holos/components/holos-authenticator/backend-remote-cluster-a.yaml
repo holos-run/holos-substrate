@@ -6,8 +6,6 @@ metadata:
   name: remote-cluster-a
   namespace: holos-authenticator
 spec:
-  credentialsSecretRef:
-    name: remote-cluster-a-impersonator-creds
   groupMapping:
     celExpression: '["system:authenticated", "system:serviceaccounts", "system:serviceaccounts:"
       + claims["kubernetes.io"].namespace]'
@@ -19,3 +17,4 @@ spec:
     usernameClaim: sub
   server:
     url: https://kubernetes.default.svc
+  serviceAccountRef: {}

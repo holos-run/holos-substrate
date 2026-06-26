@@ -222,10 +222,26 @@ userDefinedBuildPlan: {
 							}]
 						}
 
-						// Namespaced Role granting the manager read access to Secrets in
-						// its own namespace — the per-Backend impersonator credential
-						// (credentialsSecretRef) the authorizer resolves at request time.
-						// From the generated config/authenticator/rbac/role.yaml.
+						// Namespaced Role granting the manager (1) read access to Secrets
+						// in its own namespace — the per-Backend impersonator credential
+						// (credentialsSecretRef) the authorizer resolves at request time —
+						// and (2) create on serviceaccounts/token, scoped by resourceNames
+						// to the default holos-authenticator-impersonator ServiceAccount, so
+						// the controller can mint a bearer token via the TokenRequest API for
+						// a Backend's spec.serviceAccountRef (HOL-1400/HOL-1401).  Authored
+						// here from the generated config/authenticator/rbac/role.yaml (the
+						// kubebuilder source of truth); keep the two in lock-step — the
+						// resourceNames scope is intentional and matches the marker, NOT
+						// widened here.
+						//
+						// Consequence of the resourceNames scope: a Backend that overrides
+						// spec.serviceAccountRef.name to a NON-default ServiceAccount mints
+						// against a name this Role does not authorize, so the TokenRequest
+						// 403s and the Backend's credential resolution fails closed.  That is
+						// the supported posture — the default impersonator SA is the one this
+						// component grants token-mint on; an operator serving a different SA
+						// adds a matching resourceNames entry to this Role (and the kubebuilder
+						// marker) for that name.
 						Role: (NAME): {
 							apiVersion: "rbac.authorization.k8s.io/v1"
 							kind:       "Role"
@@ -234,11 +250,19 @@ userDefinedBuildPlan: {
 								namespace: NAMESPACE
 								labels:    METADATA.labels
 							}
-							rules: [{
-								apiGroups: [""]
-								resources: ["secrets"]
-								verbs: ["get"]
-							}]
+							rules: [
+								{
+									apiGroups: [""]
+									resources: ["secrets"]
+									verbs: ["get"]
+								},
+								{
+									apiGroups: [""]
+									resources: ["serviceaccounts/token"]
+									resourceNames: ["holos-authenticator-impersonator"]
+									verbs: ["create"]
+								},
+							]
 						}
 
 						RoleBinding: (NAME): {
@@ -257,6 +281,91 @@ userDefinedBuildPlan: {
 							subjects: [{
 								kind:      "ServiceAccount"
 								name:      NAME
+								namespace: NAMESPACE
+							}]
+						}
+
+						// The default impersonator identity.  A Backend's
+						// spec.serviceAccountRef defaults to this ServiceAccount
+						// (DefaultImpersonatorServiceAccountName,
+						// api/authenticator/v1alpha1/common_types.go): the controller mints a
+						// bearer token for it via the TokenRequest API (HOL-1400) and the
+						// upstream API server authenticates the forwarded impersonated request
+						// AS this SA.  It is deliberately distinct from the manager's own NAME
+						// ServiceAccount — the manager identity reconciles Backends and mints
+						// tokens; this identity carries ONLY the impersonate privilege below,
+						// so a leaked impersonator token can do nothing but impersonate.
+						ServiceAccount: "holos-authenticator-impersonator": {
+							apiVersion: "v1"
+							kind:       "ServiceAccount"
+							metadata: {
+								name:      "holos-authenticator-impersonator"
+								namespace: NAMESPACE
+								labels:    METADATA.labels
+							}
+						}
+
+						// The impersonate-only ClusterRole bound to the impersonator SA.  It
+						// grants ONLY impersonate (no other verb, no other access), so the
+						// token the controller mints for this SA can assume a caller's
+						// Kubernetes identity (Impersonate-User / Impersonate-Group) on the
+						// upstream API server but holds no direct access of its own.
+						//
+						// CRITICAL SAFETY NOTE on what the committed default does and does NOT
+						// grant.  An `impersonate` rule on `users` or `serviceaccounts` with
+						// NO resourceNames means "impersonate ANY user / ANY serviceaccount",
+						// and an empty `resourceNames: []` is treated by the API server as
+						// equivalent to omitting it — i.e. it does NOT restrict to nothing, it
+						// authorizes everything.  Shipping that as the committed default would
+						// be a cluster-wide escalation credential (impersonate any user, or
+						// system:masters via groups), which the runbook's impersonation-RBAC
+						// section forbids: the impersonator's blast radius must be "never 'all
+						// users' or 'all groups'".
+						//
+						// So the committed default grants impersonate ONLY on the two
+						// namespace-INDEPENDENT SA virtual groups every KSA token carries
+						// (system:authenticated, system:serviceaccounts) — the safe baseline
+						// the remote-cluster-a CEL expression emits, scoped with resourceNames.
+						// It deliberately does NOT grant impersonate on `users` or on
+						// `serviceaccounts`, nor on the per-namespace
+						// system:serviceaccounts:<ns> group: those are identity- and
+						// deployment-specific.  The operator grants them per-Backend — a
+						// namespaced Role on the exact `serviceaccounts` name and a ClusterRole
+						// on the `system:serviceaccounts:<ns>` group, bound to THIS same SA —
+						// per the runbook's "Impersonation RBAC for the SA virtual groups"
+						// section.  This is the secure realization of the impersonate-only
+						// default: the capability is impersonate and nothing else, bounded to a
+						// safe baseline rather than shipped unbounded.
+						ClusterRole: "holos-authenticator-impersonator": {
+							apiVersion: "rbac.authorization.k8s.io/v1"
+							kind:       "ClusterRole"
+							metadata: {
+								name: "holos-authenticator-impersonator"
+								labels: METADATA.labels
+							}
+							rules: [{
+								apiGroups: [""]
+								resources: ["groups"]
+								verbs: ["impersonate"]
+								resourceNames: ["system:authenticated", "system:serviceaccounts"]
+							}]
+						}
+
+						ClusterRoleBinding: "holos-authenticator-impersonator": {
+							apiVersion: "rbac.authorization.k8s.io/v1"
+							kind:       "ClusterRoleBinding"
+							metadata: {
+								name: "holos-authenticator-impersonator"
+								labels: METADATA.labels
+							}
+							roleRef: {
+								apiGroup: "rbac.authorization.k8s.io"
+								kind:     "ClusterRole"
+								name:     "holos-authenticator-impersonator"
+							}
+							subjects: [{
+								kind:      "ServiceAccount"
+								name:      "holos-authenticator-impersonator"
 								namespace: NAMESPACE
 							}]
 						}
@@ -469,11 +578,32 @@ userDefinedBuildPlan: {
 								// bound to system:serviceaccounts[:<ns>] authorizes the
 								// impersonated request exactly as the SA itself would be.
 								groupMapping: celExpression: #"["system:authenticated", "system:serviceaccounts", "system:serviceaccounts:" + claims["kubernetes.io"].namespace]"#
-								// The impersonator credential for the MANAGEMENT cluster,
-								// named here and created at runtime (never committed).  It
-								// must hold impersonate on the SA username and the three SA
-								// virtual groups — see the runbook's impersonation-RBAC section.
-								credentialsSecretRef: name: "remote-cluster-a-impersonator-creds"
+								// The impersonator credential for the MANAGEMENT cluster
+								// sourced from the default impersonate-only ServiceAccount
+								// (the serviceAccountRef KSA path, HOL-1400/HOL-1401): the
+								// controller mints a bearer token for it via the TokenRequest
+								// API rather than reading a committed Secret.  An empty
+								// serviceAccountRef defaults to the
+								// holos-authenticator-impersonator ServiceAccount, the API
+								// server's default audience, and a 3600s expiration; the
+								// minted token is cached and rotated before expiry.  This is
+								// mutually exclusive with credentialsSecretRef (the `example`
+								// Backend above shows that Secret path).
+								//
+								// NOT ready out of the box: the bound ClusterRole
+								// (holos-authenticator-impersonator above) grants impersonate
+								// ONLY on the namespace-independent SA virtual groups
+								// (system:authenticated, system:serviceaccounts).  For this
+								// example to actually impersonate, the operator must additionally
+								// grant THIS SA impersonate on the served SA identity
+								// (a namespaced Role on the `serviceaccounts` resource, scoped to
+								// the exact SA name) and on the per-namespace
+								// `system:serviceaccounts:<ns>` group the CEL expression above
+								// emits — per the runbook's "Impersonation RBAC for the SA virtual
+								// groups" section.  Those per-Backend grants are deliberately NOT
+								// in the committed default, which would otherwise be a cluster-wide
+								// escalation credential.
+								serviceAccountRef: {}
 							}
 						}
 					}
