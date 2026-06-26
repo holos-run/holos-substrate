@@ -63,16 +63,22 @@ spec:
               until then. The fields are additive and backward-compatible.
             properties:
               credentialsSecretRef:
-                default:
-                  name: holos-authenticator-backend-creds
                 description: |-
                   CredentialsSecretRef names the Secret holding the backend's privileged
                   Kubernetes credential — the impersonator identity the authorizer
                   authenticates to the upstream API server with. A Secret named
                   holos-authenticator-backend-creds in the authorizer's own namespace is the
-                  suggested convention, and the field defaults to that name when omitted.
-                  This is the resource's only authentication dependency; its material is
-                  created at runtime and never committed (secret-handling guardrail).
+                  suggested convention; a nil ref (the field omitted) resolves a Secret of that
+                  default name. It is mutually exclusive with serviceAccountRef (enforced by a
+                  CEL validation rule on this spec). This is the resource's only authentication
+                  dependency when set; its material is created at runtime and never committed
+                  (secret-handling guardrail).
+
+                  It is a pointer (rather than a value) so the API server can distinguish an
+                  omitted credentialsSecretRef from an explicitly-set one — the CEL
+                  mutual-exclusion rule's has() check relies on that distinction. A nil pointer
+                  means "use the default Secret"; the field is intentionally not defaulted so a
+                  Backend setting serviceAccountRef instead leaves credentialsSecretRef nil.
                 properties:
                   key:
                     description: |-
@@ -216,11 +222,61 @@ spec:
                 required:
                 - url
                 type: object
+              serviceAccountRef:
+                description: |-
+                  ServiceAccountRef names a ServiceAccount in the authorizer's own namespace
+                  the authorizer mints a short-lived token for (via the TokenRequest API) to
+                  obtain the backend's privileged impersonator credential, as an alternative to
+                  a long-lived credentialsSecretRef. It is mutually exclusive with
+                  credentialsSecretRef (enforced by a CEL validation rule on this spec). When
+                  omitted, the authorizer uses credentialsSecretRef. See ServiceAccountReference
+                  in common_types.go.
+
+                  Phase note (HOL-1399): this phase ships the field, defaults, and validation
+                  only; the controller still resolves the credential exclusively from
+                  credentialsSecretRef. The TokenRequest minting/caching/rotation that consumes
+                  serviceAccountRef lands in HOL-1400.
+                properties:
+                  audience:
+                    description: |-
+                      Audience requested for the minted token (the TokenRequest spec.audiences).
+                      When empty the authorizer requests the API server's default audience (the
+                      audience of the cluster the authorizer runs in), which is the common case for
+                      impersonating against the local API server. Set it to target a token bound to
+                      a specific audience.
+                    type: string
+                  expirationSeconds:
+                    default: 3600
+                    description: |-
+                      ExpirationSeconds is the requested lifetime of the minted token (the
+                      TokenRequest spec.expirationSeconds). The authorizer caches and rotates the
+                      token within this lifetime. When omitted it defaults to 3600 (one hour). The
+                      Minimum of 600 (ten minutes) rejects an impractically short lifetime that
+                      would force near-continuous re-minting; the API server may still clamp the
+                      effective expiry to its own configured bounds.
+                    format: int64
+                    minimum: 600
+                    type: integer
+                  name:
+                    default: holos-authenticator-impersonator
+                    description: |-
+                      Name of the ServiceAccount in the authorizer's own namespace the authorizer
+                      mints a token for. When omitted it defaults to
+                      holos-authenticator-impersonator (the shipped impersonator SA). MinLength=1
+                      rejects an explicit empty string, which would otherwise bypass the default
+                      and leave the resolver with a blank ServiceAccount name.
+                    minLength: 1
+                    type: string
+                type: object
             required:
             - host
             - oidc
             - server
             type: object
+            x-kubernetes-validations:
+            - message: credentialsSecretRef and serviceAccountRef are mutually exclusive;
+                set at most one
+              rule: '!(has(self.credentialsSecretRef) && has(self.serviceAccountRef))'
           status:
             description: |-
               BackendStatus defines the observed state of a Backend. It follows the
