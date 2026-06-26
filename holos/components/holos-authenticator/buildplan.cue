@@ -222,10 +222,15 @@ userDefinedBuildPlan: {
 							}]
 						}
 
-						// Namespaced Role granting the manager read access to Secrets in
-						// its own namespace — the per-Backend impersonator credential
-						// (credentialsSecretRef) the authorizer resolves at request time.
-						// From the generated config/authenticator/rbac/role.yaml.
+						// Namespaced Role granting the manager (1) read access to Secrets
+						// in its own namespace — the per-Backend impersonator credential
+						// (credentialsSecretRef) the authorizer resolves at request time —
+						// and (2) create on serviceaccounts/token, scoped by resourceNames
+						// to the default holos-authenticator-impersonator ServiceAccount, so
+						// the controller can mint a bearer token via the TokenRequest API for
+						// a Backend's spec.serviceAccountRef (HOL-1400/HOL-1401).  Authored
+						// here from the generated config/authenticator/rbac/role.yaml (the
+						// kubebuilder source of truth); keep the two in lock-step.
 						Role: (NAME): {
 							apiVersion: "rbac.authorization.k8s.io/v1"
 							kind:       "Role"
@@ -234,11 +239,19 @@ userDefinedBuildPlan: {
 								namespace: NAMESPACE
 								labels:    METADATA.labels
 							}
-							rules: [{
-								apiGroups: [""]
-								resources: ["secrets"]
-								verbs: ["get"]
-							}]
+							rules: [
+								{
+									apiGroups: [""]
+									resources: ["secrets"]
+									verbs: ["get"]
+								},
+								{
+									apiGroups: [""]
+									resources: ["serviceaccounts/token"]
+									resourceNames: ["holos-authenticator-impersonator"]
+									verbs: ["create"]
+								},
+							]
 						}
 
 						RoleBinding: (NAME): {
@@ -257,6 +270,67 @@ userDefinedBuildPlan: {
 							subjects: [{
 								kind:      "ServiceAccount"
 								name:      NAME
+								namespace: NAMESPACE
+							}]
+						}
+
+						// The default impersonator identity.  A Backend's
+						// spec.serviceAccountRef defaults to this ServiceAccount
+						// (DefaultImpersonatorServiceAccountName,
+						// api/authenticator/v1alpha1/common_types.go): the controller mints a
+						// bearer token for it via the TokenRequest API (HOL-1400) and the
+						// upstream API server authenticates the forwarded impersonated request
+						// AS this SA.  It is deliberately distinct from the manager's own NAME
+						// ServiceAccount — the manager identity reconciles Backends and mints
+						// tokens; this identity carries ONLY the impersonate privilege below,
+						// so a leaked impersonator token can do nothing but impersonate.
+						ServiceAccount: "holos-authenticator-impersonator": {
+							apiVersion: "v1"
+							kind:       "ServiceAccount"
+							metadata: {
+								name:      "holos-authenticator-impersonator"
+								namespace: NAMESPACE
+								labels:    METADATA.labels
+							}
+						}
+
+						// The impersonate-only ClusterRole bound to the impersonator SA.  It
+						// grants ONLY impersonate on users/groups/serviceaccounts and nothing
+						// else, so the token the controller mints for this SA can assume any
+						// caller's Kubernetes identity (Impersonate-User /
+						// Impersonate-Group) on the upstream API server but holds no direct
+						// access of its own.  A real deployment may tighten the verbs to
+						// specific resourceNames; the unrestricted impersonate here documents
+						// the default capability the ext_authz path requires.
+						ClusterRole: "holos-authenticator-impersonator": {
+							apiVersion: "rbac.authorization.k8s.io/v1"
+							kind:       "ClusterRole"
+							metadata: {
+								name: "holos-authenticator-impersonator"
+								labels: METADATA.labels
+							}
+							rules: [{
+								apiGroups: [""]
+								resources: ["users", "groups", "serviceaccounts"]
+								verbs: ["impersonate"]
+							}]
+						}
+
+						ClusterRoleBinding: "holos-authenticator-impersonator": {
+							apiVersion: "rbac.authorization.k8s.io/v1"
+							kind:       "ClusterRoleBinding"
+							metadata: {
+								name: "holos-authenticator-impersonator"
+								labels: METADATA.labels
+							}
+							roleRef: {
+								apiGroup: "rbac.authorization.k8s.io"
+								kind:     "ClusterRole"
+								name:     "holos-authenticator-impersonator"
+							}
+							subjects: [{
+								kind:      "ServiceAccount"
+								name:      "holos-authenticator-impersonator"
 								namespace: NAMESPACE
 							}]
 						}
@@ -469,11 +543,21 @@ userDefinedBuildPlan: {
 								// bound to system:serviceaccounts[:<ns>] authorizes the
 								// impersonated request exactly as the SA itself would be.
 								groupMapping: celExpression: #"["system:authenticated", "system:serviceaccounts", "system:serviceaccounts:" + claims["kubernetes.io"].namespace]"#
-								// The impersonator credential for the MANAGEMENT cluster,
-								// named here and created at runtime (never committed).  It
-								// must hold impersonate on the SA username and the three SA
-								// virtual groups — see the runbook's impersonation-RBAC section.
-								credentialsSecretRef: name: "remote-cluster-a-impersonator-creds"
+								// The impersonator credential for the MANAGEMENT cluster
+								// sourced from the default impersonate-only ServiceAccount
+								// (the serviceAccountRef KSA path, HOL-1400/HOL-1401): the
+								// controller mints a bearer token for it via the TokenRequest
+								// API rather than reading a committed Secret.  An empty
+								// serviceAccountRef defaults to the
+								// holos-authenticator-impersonator ServiceAccount, the API
+								// server's default audience, and a 3600s expiration; the
+								// minted token is cached and rotated before expiry.  The SA's
+								// bound ClusterRole (holos-authenticator-impersonator above)
+								// holds impersonate on users/groups/serviceaccounts, so it can
+								// assume the SA username and the three virtual groups mapped
+								// above.  This is mutually exclusive with credentialsSecretRef
+								// (the `example` Backend above shows that Secret path).
+								serviceAccountRef: {}
 							}
 						}
 					}
