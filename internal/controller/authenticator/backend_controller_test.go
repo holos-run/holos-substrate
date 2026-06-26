@@ -12,6 +12,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	authenticatorv1alpha1 "github.com/holos-run/holos-paas/api/authenticator/v1alpha1"
@@ -504,6 +506,147 @@ func TestBackendCredentialRefMutualExclusion(t *testing.T) {
 			t.Cleanup(func() { _ = shared.k8sClient.Delete(context.Background(), b) })
 		})
 	}
+}
+
+// TestBackendGroupsPrefixMutualExclusion asserts the CRD CEL validation rule
+// (x-kubernetes-validations on BackendSpec) rejects a Backend that sets BOTH
+// oidc.groupsPrefix and groupMapping.celExpression, and admits a Backend that
+// sets only oidc.groupsPrefix (which round-trips). The rejection is enforced by
+// the API server at admission time (HOL-1406), so the assertion is on the Create
+// error, not the reconciler.
+func TestBackendGroupsPrefixMutualExclusion(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	cases := []struct {
+		name          string
+		groupsPrefix  string
+		celExpression string
+		wantReject    bool
+	}{
+		{name: "both-rejected", groupsPrefix: "oidc:", celExpression: "claims.groups", wantReject: true},
+		{name: "only-groupsPrefix", groupsPrefix: "oidc:", wantReject: false},
+		{name: "only-celExpression", celExpression: "claims.groups", wantReject: false},
+		{name: "neither", wantReject: false},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := makeBackend(ns, fmt.Sprintf("gp-mutex-%d", i), fmt.Sprintf("api-gp-mutex-%d.example.test", i))
+			b.Spec.OIDC.GroupsPrefix = tc.groupsPrefix
+			b.Spec.GroupMapping.CELExpression = tc.celExpression
+
+			err := shared.k8sClient.Create(ctx, b)
+			if tc.wantReject {
+				if err == nil {
+					t.Fatalf("Create accepted a Backend setting both oidc.groupsPrefix and groupMapping.celExpression; want CEL rejection")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Create rejected a valid Backend (%s): %v", tc.name, err)
+			}
+			t.Cleanup(func() { _ = shared.k8sClient.Delete(context.Background(), b) })
+
+			// The only-groupsPrefix case must round-trip the field through the API server.
+			if tc.groupsPrefix != "" {
+				got := getBackend(ctx, t, client.ObjectKeyFromObject(b))
+				if got.Spec.OIDC.GroupsPrefix != tc.groupsPrefix {
+					t.Errorf("oidc.groupsPrefix = %q, want %q after round-trip", got.Spec.OIDC.GroupsPrefix, tc.groupsPrefix)
+				}
+			}
+		})
+	}
+}
+
+// TestBackendGroupsPrefixRejectsExplicitEmpty asserts the CRD MinLength=1 rule
+// rejects a Backend that sets oidc.groupsPrefix to an explicit empty string. The
+// typed client drops "" via omitempty, so this uses an unstructured object to
+// send the literal empty value a raw JSON/YAML client would, proving the
+// validation guards the wire format rather than just the Go zero value.
+func TestBackendGroupsPrefixRejectsExplicitEmpty(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	u := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "authenticator.holos.run/v1alpha1",
+		"kind":       "Backend",
+		"metadata": map[string]any{
+			"name":      "gp-empty",
+			"namespace": ns,
+		},
+		"spec": map[string]any{
+			"host":   "api-gp-empty.example.test",
+			"server": map[string]any{"url": "https://api.example.test:6443"},
+			"oidc": map[string]any{
+				"issuerURL":    "https://issuer.example.test/realms/holos",
+				"clientID":     "holos-authenticator",
+				"groupsPrefix": "",
+			},
+		},
+	}}
+	u.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "authenticator.holos.run", Version: "v1alpha1", Kind: "Backend",
+	})
+
+	err := shared.k8sClient.Create(ctx, u)
+	if err == nil {
+		_ = shared.k8sClient.Delete(context.Background(), u)
+		t.Fatalf("Create accepted a Backend with an explicit empty oidc.groupsPrefix; want MinLength rejection")
+	}
+}
+
+// TestBackendGroupsPrefixWithExplicitEmptyCEL asserts the CRD admits a Backend
+// setting oidc.groupsPrefix while sending an explicit empty groupMapping.celExpression
+// is rejected by MinLength=1 on celExpression — so the groupsPrefix↔celExpression
+// has() mutual-exclusion rule never fires spuriously on the default-mapping
+// wire-format case (HOL-1406, review round 2). The typed client drops "" via
+// omitempty, so this uses an unstructured object to send the literal empty value.
+func TestBackendGroupsPrefixWithExplicitEmptyCEL(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	newBackend := func(name string, oidc, groupMapping map[string]any) *unstructured.Unstructured {
+		u := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "authenticator.holos.run/v1alpha1",
+			"kind":       "Backend",
+			"metadata":   map[string]any{"name": name, "namespace": ns},
+			"spec": map[string]any{
+				"host":         "api-" + name + ".example.test",
+				"server":       map[string]any{"url": "https://api.example.test:6443"},
+				"oidc":         oidc,
+				"groupMapping": groupMapping,
+			},
+		}}
+		u.SetGroupVersionKind(schema.GroupVersionKind{
+			Group: "authenticator.holos.run", Version: "v1alpha1", Kind: "Backend",
+		})
+		return u
+	}
+
+	baseOIDC := func() map[string]any {
+		return map[string]any{
+			"issuerURL":    "https://issuer.example.test/realms/holos",
+			"clientID":     "holos-authenticator",
+			"groupsPrefix": "oidc:",
+		}
+	}
+
+	// Explicit empty celExpression is rejected by MinLength=1 (omit it for the
+	// default mapping) — so the has() mutual-exclusion check never sees a present
+	// but empty celExpression alongside groupsPrefix.
+	bad := newBackend("gp-empty-cel", baseOIDC(), map[string]any{"celExpression": ""})
+	if err := shared.k8sClient.Create(ctx, bad); err == nil {
+		_ = shared.k8sClient.Delete(context.Background(), bad)
+		t.Fatalf("Create accepted a Backend with an explicit empty groupMapping.celExpression; want MinLength rejection")
+	}
+
+	// Omitting celExpression entirely (the default mapping) is admitted alongside groupsPrefix.
+	good := newBackend("gp-default-mapping", baseOIDC(), map[string]any{})
+	if err := shared.k8sClient.Create(ctx, good); err != nil {
+		t.Fatalf("Create rejected a Backend with groupsPrefix and the default (omitted) celExpression: %v", err)
+	}
+	t.Cleanup(func() { _ = shared.k8sClient.Delete(context.Background(), good) })
 }
 
 // TestBackendServiceAccountRefDefaults asserts the CRD applies the

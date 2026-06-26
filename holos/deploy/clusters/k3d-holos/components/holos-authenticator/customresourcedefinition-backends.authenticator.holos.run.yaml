@@ -115,6 +115,11 @@ spec:
                       than defaulted to a static `claims.groups` string, so that configuring a
                       non-default groupsClaim is honored without also having to override this
                       expression. Set it only to transform the groups (e.g. prefix or filter).
+                      MinLength=1 rejects an explicit empty string, which is an ambiguous no-op
+                      (semantically equivalent to omitting the field for the default mapping) that
+                      would also make the spec.oidc.groupsPrefix mutual-exclusion has() check fire
+                      spuriously; omit the field to select the default mapping.
+                    minLength: 1
                     type: string
                 type: object
               host:
@@ -155,6 +160,32 @@ spec:
                       group mapping reads it directly when spec.groupMapping.celExpression is
                       empty). Defaults to "groups". MinLength=1 rejects an explicit empty string,
                       which would otherwise bypass the default and persist an invalid claim name.
+                    minLength: 1
+                    type: string
+                  groupsPrefix:
+                    description: |-
+                      GroupsPrefix is prepended to every group read from the groups claim (the
+                      claim named by GroupsClaim) before it is impersonated as a Kubernetes group.
+                      The recommended value is "oidc:" — like the apiserver --oidc-groups-prefix=oidc:
+                      flag, prefixing isolates the external identity provider's group namespace so
+                      it cannot impersonate Kubernetes built-in system: groups (e.g. a token
+                      asserting "system:masters" becomes "oidc:system:masters"). It is honored only
+                      with the default group mapping (when spec.groupMapping.celExpression is empty,
+                      where the authorizer reads the groups claim directly) and is mutually
+                      exclusive with spec.groupMapping.celExpression — a CEL expression returns the
+                      final group set itself, so it must encode any prefix it wants. The
+                      mutual-exclusion is enforced by a CEL validation rule on BackendSpec. There is
+                      no default: an omitted GroupsPrefix prepends nothing, preserving the existing
+                      behavior. MinLength=1 rejects an explicit empty string, which would otherwise
+                      be an ambiguous no-op alongside the mutual-exclusion rule; omit the field to
+                      prepend nothing.
+
+                      Phase note (HOL-1406): this phase is API-only. The field, its doc, and the
+                      CEL mutual-exclusion validation ship now, but the field is INERT at runtime —
+                      the controller still builds the default mapping without reading GroupsPrefix,
+                      so setting it does not yet prefix any impersonated group. Runtime prefixing
+                      (honoring this field in the default mapper) lands in HOL-1407. This mirrors
+                      the API-only-first rollout of spec.serviceAccountRef (HOL-1399).
                     minLength: 1
                     type: string
                   issuerURL:
@@ -277,6 +308,9 @@ spec:
             - message: credentialsSecretRef and serviceAccountRef are mutually exclusive;
                 set at most one
               rule: '!(has(self.credentialsSecretRef) && has(self.serviceAccountRef))'
+            - message: oidc.groupsPrefix and groupMapping.celExpression are mutually
+                exclusive; groupsPrefix is honored only with the default mapping
+              rule: '!(has(self.oidc.groupsPrefix) && has(self.groupMapping.celExpression))'
           status:
             description: |-
               BackendStatus defines the observed state of a Backend. It follows the

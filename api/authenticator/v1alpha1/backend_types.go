@@ -93,6 +93,33 @@ type OIDCConfig struct {
 	// +kubebuilder:default=groups
 	// +kubebuilder:validation:MinLength=1
 	GroupsClaim string `json:"groupsClaim,omitempty"`
+
+	// GroupsPrefix is prepended to every group read from the groups claim (the
+	// claim named by GroupsClaim) before it is impersonated as a Kubernetes group.
+	// The recommended value is "oidc:" — like the apiserver --oidc-groups-prefix=oidc:
+	// flag, prefixing isolates the external identity provider's group namespace so
+	// it cannot impersonate Kubernetes built-in system: groups (e.g. a token
+	// asserting "system:masters" becomes "oidc:system:masters"). It is honored only
+	// with the default group mapping (when spec.groupMapping.celExpression is empty,
+	// where the authorizer reads the groups claim directly) and is mutually
+	// exclusive with spec.groupMapping.celExpression — a CEL expression returns the
+	// final group set itself, so it must encode any prefix it wants. The
+	// mutual-exclusion is enforced by a CEL validation rule on BackendSpec. There is
+	// no default: an omitted GroupsPrefix prepends nothing, preserving the existing
+	// behavior. MinLength=1 rejects an explicit empty string, which would otherwise
+	// be an ambiguous no-op alongside the mutual-exclusion rule; omit the field to
+	// prepend nothing.
+	//
+	// Phase note (HOL-1406): this phase is API-only. The field, its doc, and the
+	// CEL mutual-exclusion validation ship now, but the field is INERT at runtime —
+	// the controller still builds the default mapping without reading GroupsPrefix,
+	// so setting it does not yet prefix any impersonated group. Runtime prefixing
+	// (honoring this field in the default mapper) lands in HOL-1407. This mirrors
+	// the API-only-first rollout of spec.serviceAccountRef (HOL-1399).
+	//
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	GroupsPrefix string `json:"groupsPrefix,omitempty"`
 }
 
 // GroupMapping configures how validated token claims are mapped to the
@@ -107,8 +134,13 @@ type GroupMapping struct {
 	// than defaulted to a static `claims.groups` string, so that configuring a
 	// non-default groupsClaim is honored without also having to override this
 	// expression. Set it only to transform the groups (e.g. prefix or filter).
+	// MinLength=1 rejects an explicit empty string, which is an ambiguous no-op
+	// (semantically equivalent to omitting the field for the default mapping) that
+	// would also make the spec.oidc.groupsPrefix mutual-exclusion has() check fire
+	// spuriously; omit the field to select the default mapping.
 	//
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	CELExpression string `json:"celExpression,omitempty"`
 }
 
@@ -123,6 +155,7 @@ type GroupMapping struct {
 // until then. The fields are additive and backward-compatible.
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.credentialsSecretRef) && has(self.serviceAccountRef))",message="credentialsSecretRef and serviceAccountRef are mutually exclusive; set at most one"
+// +kubebuilder:validation:XValidation:rule="!(has(self.oidc.groupsPrefix) && has(self.groupMapping.celExpression))",message="oidc.groupsPrefix and groupMapping.celExpression are mutually exclusive; groupsPrefix is honored only with the default mapping"
 type BackendSpec struct {
 	// Host is the request :authority/Host header value this Backend matches. The
 	// authorizer routes an inbound request to this Backend when the request's
