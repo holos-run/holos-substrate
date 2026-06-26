@@ -171,11 +171,17 @@ spec:
                       final group set itself, so it must encode any prefix it wants. The
                       mutual-exclusion is enforced by a CEL validation rule on BackendSpec. There is
                       no default: an omitted GroupsPrefix prepends nothing, preserving the existing
-                      behavior.
+                      behavior. MinLength=1 rejects an explicit empty string, which would otherwise
+                      be an ambiguous no-op alongside the mutual-exclusion rule; omit the field to
+                      prepend nothing.
 
-                      Phase note (HOL-1406): this phase ships the field and validation only; the
-                      controller still builds the default mapping without reading GroupsPrefix.
-                      Runtime prefixing lands in HOL-1407.
+                      Phase note (HOL-1406): this phase is API-only. The field, its doc, and the
+                      CEL mutual-exclusion validation ship now, but the field is INERT at runtime —
+                      the controller still builds the default mapping without reading GroupsPrefix,
+                      so setting it does not yet prefix any impersonated group. Runtime prefixing
+                      (honoring this field in the default mapper) lands in HOL-1407. This mirrors
+                      the API-only-first rollout of spec.serviceAccountRef (HOL-1399).
+                    minLength: 1
                     type: string
                   issuerURL:
                     description: |-
