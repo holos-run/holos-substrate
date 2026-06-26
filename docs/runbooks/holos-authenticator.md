@@ -92,7 +92,8 @@ own OIDC client and mapping.
 | `oidc.jwks`                  | no       | empty → OIDC discovery                     | Static JSON Web Key Set (`{"keys":[…]}`, base64). When set, signatures are validated **offline** against these keys with no discovery/JWKS fetch; `issuerURL` becomes the expected `iss` only. See [*KSA / static-JWKS backends*](#ksa--static-jwks-backends). |
 | `oidc.usernameClaim`         | no       | `sub`                                      | Token claim used as the impersonated username.                             |
 | `oidc.groupsClaim`           | no       | `groups`                                   | Token claim carrying groups (used by the default mapping).                 |
-| `groupMapping.celExpression` | no       | empty → default mapping                    | CEL expression over `claims` producing the Kubernetes group list.          |
+| `oidc.groupsPrefix`          | no       | empty → no prefix                          | Prefix prepended to every group from the default mapping (the apiserver `--oidc-groups-prefix` equivalent; recommended `oidc:`). Honored only with the default mapping and **mutually exclusive** with `groupMapping.celExpression`. See [*OIDC token validation + CEL group mapping*](#oidc-token-validation--cel-group-mapping). |
+| `groupMapping.celExpression` | no       | empty → default mapping                    | CEL expression over `claims` producing the Kubernetes group list. Mutually exclusive with `oidc.groupsPrefix`. |
 | `credentialsSecretRef.name`  | no       | `holos-authenticator-backend-creds`        | Name of the Secret holding the privileged impersonator credential (resolved in the authorizer's own namespace). Mutually exclusive with `serviceAccountRef`. |
 | `credentialsSecretRef.key`   | no       | `token`                                    | Secret key to read the raw bearer token from (the conventional `token` key when omitted). |
 | `serviceAccountRef.name`     | no       | `holos-authenticator-impersonator`         | Name of a ServiceAccount in the `holos-authenticator` namespace whose token the controller mints/rotates via TokenRequest as the impersonator credential. Mutually exclusive with `credentialsSecretRef`. See [*Provisioning the credential*](#provisioning-the-credential-serviceaccountref-or-a-runtime-secret). |
@@ -210,16 +211,64 @@ authorizer uses the default expression `claims["<groupsClaim>"]` — i.e.
 token's `groups` claim maps directly to Kubernetes groups (the default
 `groups`→groups mapping).
 
-A backend may override the expression to derive groups from a different claim,
-prefix them, or filter them. Examples (the syntax Kubernetes already uses for
-admission/CRD validation):
+**Prefixing the default mapping (`oidc.groupsPrefix`).** Set `oidc.groupsPrefix`
+to prepend a prefix to **every** group the default mapping produces — the
+equivalent of the apiserver `--oidc-groups-prefix=oidc:` flag. With
+`oidc.groupsClaim: groups` and `oidc.groupsPrefix: "oidc:"` a token's `dev`,
+`ops` groups are impersonated as `oidc:dev`, `oidc:ops`. **The recommended value
+is `oidc:`**, and it is a security recommendation: prefixing isolates the
+external IdP's group namespace so a token cannot impersonate Kubernetes built-in
+`system:` groups — a claim asserting `system:masters` becomes
+`oidc:system:masters`, which holds no privilege, instead of the real
+cluster-admin group. Without a prefix the groups claim is impersonated verbatim,
+so an IdP able to mint an arbitrary `groups` claim could assert a `system:` group
+directly. `oidc.groupsPrefix` is honored **only with the default mapping** and is
+**mutually exclusive** with `groupMapping.celExpression` — a CEL expression
+returns the final group set itself, so it must encode any prefix it wants. The
+API server rejects a `Backend` that sets both (a CEL `XValidation` rule on
+`BackendSpec`). Omit the field to prepend nothing; there is no default and an
+explicit empty string is rejected.
+
+A backend may instead override the expression to derive groups from a different
+claim, prefix them, or filter them. Examples (the syntax Kubernetes already uses
+for admission/CRD validation):
 
 - `claims["groups"]` — the default; the `groups` claim verbatim.
-- `claims.groups.map(g, "oidc:" + g)` — prefix every group with `oidc:`.
+- `claims["groups"].map(g, "oidc:" + g)` — prefix every group with `oidc:`. This
+  is the CEL equivalent of `oidc.groupsPrefix: "oidc:"`; prefer the first-class
+  field for a plain prefix and reserve the CEL form for prefixing combined with
+  other transforms.
 - `claims.roles` — map a different claim (`roles`) to groups.
 
 A token missing the mapped claim yields an empty group list (the user is
-impersonated with no groups), not an error.
+impersonated with no groups), not an error — and this holds with a prefix set:
+the `.map(g, "<prefix>" + g)` form preserves the missing-claim → no-groups
+behavior.
+
+### Example: default mapping with a group prefix
+
+```yaml
+apiVersion: authenticator.holos.run/v1alpha1
+kind: Backend
+metadata:
+  name: prefixed
+  namespace: holos-authenticator
+spec:
+  host: "api.prefixed.holos.internal"
+  oidc:
+    issuerURL: "https://keycloak.holos.internal/realms/holos"
+    clientID: "holos-authenticator"
+    groupsPrefix: "oidc:"
+  server:
+    url: "https://kubernetes.default.svc"
+  credentialsSecretRef:
+    name: "holos-authenticator-backend-creds"
+```
+
+With this `Backend` a token whose `groups` claim is `["dev", "ops"]` is
+impersonated with the Kubernetes groups `oidc:dev` and `oidc:ops`. Do **not** also
+set `groupMapping.celExpression` — the two are mutually exclusive and the API
+server rejects a `Backend` that sets both.
 
 ## KSA / static-JWKS backends
 
