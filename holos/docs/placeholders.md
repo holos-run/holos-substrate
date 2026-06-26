@@ -307,6 +307,29 @@ hardening concerns are deliberately deferred to later phases:
   credential-Secret caching tuning (TTLs, negative caching, refresh on rotation)
   are left at conservative defaults; performance tuning of these is deferred.
 
+- **`serviceAccountRef` token binding and cache tuning (ADR-23 Rev 4).** The
+  `serviceAccountRef` credential source (HOL-1399..HOL-1402) mints the outbound
+  impersonator token via TokenRequest **without a `BoundObjectRef`** (matching
+  `kubectl create token`), caches it keyed by name + audience + expirationSeconds,
+  and rotates it with a fixed margin (the smaller of 5m or 20% of lifetime).
+  Tightening these — binding the minted token to a bound object (e.g. the manager
+  Pod or a Secret) so it is invalidated on object deletion, and making the cache /
+  rotation-margin parameters tunable rather than hard-coded — is deferred. The
+  shipped defaults are deliberately conservative and require no configuration.
+
+- **Per-identity impersonate scope is operator-applied, not yet templated
+  (ADR-23 Rev 4).** The shipped default `holos-authenticator-impersonator`
+  ClusterRole is impersonate-only and bounded to the SA virtual groups
+  `system:authenticated`/`system:serviceaccounts` (the ratified narrowing of the
+  parent AC's literal `users`/`groups`/`serviceaccounts` request). A real
+  `Backend` that impersonates a specific user, a per-namespace
+  `system:serviceaccounts:<ns>` group, or a specific ServiceAccount needs an
+  **operator-applied per-`Backend`** Role/ClusterRole (the worked example is in
+  the runbook). Generating that per-`Backend` impersonation RBAC from the
+  `Backend`/`groupMapping` spec — so the scope is declared once and rendered, not
+  hand-authored — is a possible future follow-up; today it is intentionally manual
+  to keep the privileged grant under explicit operator control.
+
 - **Per-request CEL features beyond the default groups mapping.** The
   `groupMapping.celExpression` maps validated claims to a Kubernetes group list;
   the default is `claims["<groupsClaim>"]` (i.e. `claims["groups"]`). Richer

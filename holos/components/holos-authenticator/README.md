@@ -25,14 +25,22 @@ credential, so Envoy forwards the request straight to the API server.
   (`holos-authenticator-role`/`-rolebinding`, from the generated
   `config/authenticator/rbac/role.yaml`) and the namespaced **Role** +
   **RoleBinding** granting the manager `get` on Secrets in its own namespace
-  (the per-Backend `credentialsSecretRef`);
+  (the per-Backend `credentialsSecretRef`) **and** `create` on
+  `serviceaccounts/token` scoped by `resourceNames` to
+  `holos-authenticator-impersonator` (the `serviceAccountRef` TokenRequest mint);
+- the default impersonator **ServiceAccount** (`holos-authenticator-impersonator`,
+  distinct from the manager's own SA) plus an impersonate-only **ClusterRole** +
+  **ClusterRoleBinding** (`holos-authenticator-impersonator`) — the SA a
+  `Backend`'s `spec.serviceAccountRef` defaults to (see *Impersonation RBAC*
+  below);
 - a **Service** exposing the gRPC and metrics ports;
 - the generated **Backend CRD** (vendored from
   `config/crd/bases/authenticator.holos.run_backends.yaml`);
 - an **AuthorizationPolicy** with `action: CUSTOM` and
   `provider.name: holos-authenticator`, matching the Istio extension provider;
-- two example **Backend** CRs — the discovery-based `example` (in-cluster
-  Keycloak issuer) and the static-JWKS `remote-cluster-a` (KSA / offline mode,
+- two example **Backend** CRs, one per credential source — the discovery-based
+  `example` (in-cluster Keycloak issuer, `credentialsSecretRef`) and the
+  static-JWKS `remote-cluster-a` (KSA / offline mode, `serviceAccountRef: {}`,
   below).
 
 No `Namespace` is emitted: the `holos-authenticator` namespace is owned by the
@@ -104,8 +112,12 @@ impersonator credential for the management cluster. The component renders
 `remote-cluster-a` as the worked KSA example; its `jwks` is a **redacted
 placeholder** an operator replaces with the remote cluster's real JWKS document
 (`kubectl get --raw /openid/v1/jwks`). The JWKS is non-secret public-key
-material and may live in the CR; the impersonator token in
-`credentialsSecretRef` is still created at runtime and never committed.
+material and may live in the CR. This **inbound** validation is independent of
+the **outbound** impersonator credential: the rendered `remote-cluster-a`
+example uses `serviceAccountRef: {}` (the controller mints/rotates the default
+impersonator SA token — no Secret), and an external management cluster would use
+`credentialsSecretRef` (a runtime Secret, never committed) instead. See
+*Credential sources* below.
 
 The full operator procedure — capturing the remote JWKS/issuer, the SA-group
 CEL expression, the SA-virtual-group impersonation RBAC, and end-to-end
@@ -114,12 +126,45 @@ the runbook's [*KSA / static-JWKS
 backends*](../../../docs/runbooks/holos-authenticator.md#ksa--static-jwks-backends)
 section.
 
-## Impersonation RBAC (the impersonator credential)
+## Credential sources: `serviceAccountRef` and `credentialsSecretRef`
 
-The credential named by a `Backend`'s `spec.credentialsSecretRef` is the
-**impersonator identity** the upstream API server authenticates Envoy as. It
-**must** hold RBAC that grants `impersonate` on `users` and `groups` (and, if a
-mapped group is a system group, on the relevant subresources). For example:
+A `Backend`'s **outbound impersonator credential** — the identity the upstream
+API server authenticates Envoy as — comes from one of two **mutually exclusive**
+spec fields (a CRD-level CEL validation rejects setting both):
+
+- **`spec.serviceAccountRef`** (ADR-23 Rev 4) — reference a ServiceAccount in the
+  `holos-authenticator` namespace and the controller **mints and rotates** its
+  bearer token via the Kubernetes TokenRequest API. No manual `kubectl create
+  token`, no Secret. `serviceAccountRef.name` defaults to the shipped
+  **`holos-authenticator-impersonator`** SA; `audience` defaults to the API
+  server's default audience; `expirationSeconds` defaults to `3600` (min `600`).
+  Tokens are cached (keyed by name + audience + expirationSeconds) and rotated
+  before expiry (margin = the smaller of 5m or 20% of lifetime), minted **without**
+  a `BoundObjectRef`. The manager's namespaced `Role` grants `create` on
+  `serviceaccounts/token` scoped by `resourceNames` to
+  `holos-authenticator-impersonator`.
+- **`spec.credentialsSecretRef`** — name a Secret (default
+  `holos-authenticator-backend-creds`, key `token`) holding a raw bearer token.
+  This is the right choice for an **external** API server whose impersonator
+  credential is provisioned out of band (the management cluster cannot mint a
+  token for a remote cluster's SA).
+
+> **This is the *outbound* impersonator credential, not the Rev 3 *inbound*
+> `oidc.jwks` validation keys.** `serviceAccountRef`/`credentialsSecretRef` say
+> *whom the authorizer authenticates as* to `spec.server.url`; the static-JWKS
+> `oidc.jwks` (above) says *which inbound remote-cluster SA token it validates*.
+> A KSA Backend commonly uses both. Don't conflate the two SA-related features.
+
+Whichever source supplies it, the impersonator identity **must** hold RBAC that
+grants the `impersonate` verb on whatever the CEL mapping emits.
+
+### The shipped default impersonator SA is impersonate-only and bounded
+
+The component ships the **`holos-authenticator-impersonator`** ServiceAccount
+(distinct from the manager's own `holos-authenticator` SA) bound to a
+deliberately narrow ClusterRole. The shipped default grants `impersonate` on
+**`groups` only**, scoped by `resourceNames` to the two namespace-independent SA
+virtual groups — **nothing** on `users` or `serviceaccounts`:
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -128,26 +173,36 @@ metadata:
   name: holos-authenticator-impersonator
 rules:
   - apiGroups: [""]
-    resources: ["users", "groups"]
+    resources: ["groups"]
     verbs: ["impersonate"]
+    resourceNames:
+      - "system:authenticated"
+      - "system:serviceaccounts"
 ```
 
-- **In-cluster API server:** bind that ClusterRole to a ServiceAccount and store
-  its token as the credential Secret.
-- **External API server:** the credential is provisioned out-of-band (a
-  kubeconfig/token for a principal that holds the impersonator ClusterRole on
-  that cluster) and stored as the Secret named by `credentialsSecretRef`.
+> **Bounded by design (ADR-23 Rev 4 ratifies this).** An **unbounded**
+> `impersonate` on `users`/`groups` is a cluster-wide privilege-escalation
+> credential (it can impersonate any user/group, including `system:masters`). The
+> parent issue's literal AC asked for `users`/`groups`/`serviceaccounts`; the
+> as-shipped default was narrowed to the SA virtual groups for security and
+> ratified in ADR-23 Revision 4. Add per-`Backend` impersonate scope (a specific
+> SA via the `serviceaccounts` resource, a per-namespace
+> `system:serviceaccounts:<ns>` group, or specific users) **per Backend** — see
+> the runbook's [*Impersonation
+> RBAC*](../../../docs/runbooks/holos-authenticator.md#impersonation-rbac-the-forwarded-credential)
+> and the KSA worked example — never by widening this default ClusterRole.
 
 ### Runtime Secret handling
 
-Per the **Runtime Secret Handling** guardrail, the impersonator credential's
-**material is never committed**. The component renders only the example
-`Backend` CR (which *names* `holos-authenticator-backend-creds` via
-`credentialsSecretRef`); the Secret itself is created at runtime in the
-`holos-authenticator` namespace, out of band. The example `Backend` likewise
-omits the `caBundle` fields so the committed manifest carries no per-cluster
-trust material; an operator injects the local-ca PEM out of band (mirroring the
-caBundle convention the project/application components use).
+Per the **Runtime Secret Handling** guardrail, a `credentialsSecretRef`
+credential's **material is never committed**. The `example` `Backend` *names*
+`holos-authenticator-backend-creds` via `credentialsSecretRef`; that Secret is
+created at runtime in the `holos-authenticator` namespace, out of band. (A
+`serviceAccountRef` Backend needs no Secret at all — the controller mints the
+token.) The example `Backend`s likewise omit the `caBundle` fields so the
+committed manifests carry no per-cluster trust material; an operator injects the
+local-ca PEM out of band (mirroring the caBundle convention the
+project/application components use).
 
 ## Tenant isolation (Backend is a platform-owned object)
 
