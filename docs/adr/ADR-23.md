@@ -14,6 +14,7 @@
 | 2        | 2026-06-23 | @jeffmccune | Flipped to `Implemented` — as-built summary and deviations (below) |
 | 3        | 2026-06-24 | @jeffmccune | KSA / static-JWKS extension — additive `spec.oidc.jwks` for offline validation (below) |
 | 4        | 2026-06-25 | @jeffmccune | `serviceAccountRef` credential source — additive TokenRequest-minted impersonator credential, default impersonate-only SA, impersonation-scope ratification (below) |
+| 5        | 2026-06-25 | @jeffmccune | Group-prefix extension — additive `spec.oidc.groupsPrefix` for the default groups-claim mapping (below) |
 
 ## As-built (Revision 2)
 
@@ -264,8 +265,9 @@ spec:
     jwks:           <[]byte, optional>     # static JWKS → offline validation (Rev 3)
     usernameClaim:  <string, optional>     # default `sub`
     groupsClaim:    <string, optional>     # default `groups`
+    groupsPrefix:   <string, optional>     # prefix the default mapping (Rev 5); excl. celExpression
   groupMapping:
-    celExpression:  <string, optional>     # default `claims["<groupsClaim>"]`
+    celExpression:  <string, optional>     # default `claims["<groupsClaim>"]`; excl. oidc.groupsPrefix
   # At most one credential source (mutually exclusive, CEL-enforced; neither set
   # → the default credentialsSecretRef Secret):
   credentialsSecretRef:                    # *SecretReference, optional
@@ -276,6 +278,53 @@ spec:
     audience:           <string, optional>   # empty → API server default audience
     expirationSeconds:  <int64,  default 3600, min 600>
 ```
+
+## Group-prefix extension (Revision 5)
+
+Revision 5 (HOL-1406..HOL-1408) adds an optional **`spec.oidc.groupsPrefix`** to
+the `Backend`, the equivalent of the apiserver `--oidc-groups-prefix=oidc:` flag.
+When set, the prefix is prepended to **every** group produced by the **default
+groups-claim mapping** before it is impersonated, so a `Backend` with
+`oidc.groupsClaim: groups` and `oidc.groupsPrefix: "oidc:"` impersonates
+`oidc:dev`, `oidc:ops`, … instead of `dev`, `ops`.
+
+- **Additive `spec.oidc.groupsPrefix` (no new CRD).** A single optional string
+  field on the existing `Backend` CR. There is no default — an omitted
+  `groupsPrefix` prepends nothing, so backends that do not set it are
+  byte-for-byte backward compatible. (An explicit empty string is rejected by
+  `MinLength=1`: omit the field to prepend nothing rather than carry an ambiguous
+  no-op.)
+- **Recommended `oidc:`, to isolate the IdP's group namespace.** Like the
+  apiserver flag, the recommended value is `oidc:`. Prefixing isolates the
+  external identity provider's group namespace so it **cannot impersonate
+  Kubernetes built-in `system:` groups** — a token asserting `system:masters`
+  becomes `oidc:system:masters`, which holds no privilege, rather than the real
+  cluster-admin group. Without a prefix the groups claim is impersonated
+  verbatim, so an IdP that can mint an arbitrary `groups` claim could assert a
+  `system:` group directly; the prefix is the recommended mitigation.
+- **Default-mapping only; mutually exclusive with `celExpression`.** The prefix
+  is honored only with the **default** group mapping (when
+  `spec.groupMapping.celExpression` is empty, where the authorizer reads the
+  groups claim directly). A custom `celExpression` returns the final group set
+  itself, so it must encode any prefix it wants — `claims["groups"].map(g,
+  "oidc:" + g)` is the explicit CEL form. The two are therefore **mutually
+  exclusive**, enforced by a CEL `XValidation` rule on `BackendSpec`
+  (`!(has(self.oidc.groupsPrefix) && has(self.groupMapping.celExpression))`); a
+  `Backend` setting both is rejected by the API server.
+- **Implemented inside the single CEL evaluation path.** The prefix is not a
+  second Go code path: when set, the default-mapping builder
+  (`authenticator.DefaultGroupExpression`) emits
+  `claims["<groupsClaim>"].map(g, "<prefix>" + g)`, with the prefix embedded as a
+  CEL string literal (via `%q`) so an operator-supplied value cannot inject CEL.
+  This preserves the missing-claim → no-groups semantics (a token with no groups
+  claim yields no groups, not an error) and type-checks to `list(string)`,
+  exactly as the unprefixed `claims["<groupsClaim>"]` default does.
+
+The operator procedure (the recommended `oidc:` value, the `system:`-group
+rationale, the mutual-exclusion rule, and an example) is in the
+[runbook's *OIDC token validation + CEL group
+mapping*](../runbooks/holos-authenticator.md#oidc-token-validation--cel-group-mapping)
+section.
 
 ## Context and Problem Statement
 
