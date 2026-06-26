@@ -7,20 +7,6 @@ metadata:
 rules:
 - apiGroups:
   - ""
-  resourceNames: []
-  resources:
-  - users
-  verbs:
-  - impersonate
-- apiGroups:
-  - ""
-  resourceNames: []
-  resources:
-  - serviceaccounts
-  verbs:
-  - impersonate
-- apiGroups:
-  - ""
   resourceNames:
   - system:authenticated
   - system:serviceaccounts
