@@ -821,6 +821,17 @@ group** and treats a comma-separated value as a **single literal group name**
 (`"dev,ops"`), so left as-is the user would be impersonated into a non-existent
 group and lose their real group memberships.
 
+> **Group values must not contain commas — the authorizer enforces this.** The
+> comma-join + split round-trip is only lossless if no single group value contains a
+> comma. A mapped group like `dev,system:masters` would otherwise be split into two
+> impersonated groups, smuggling `system:masters`. The authorizer therefore
+> **denies (HTTP 403, fail-closed) any request whose mapped groups include a
+> comma** (`internal/authenticator/server.go`, `firstGroupWithComma`), so the Lua
+> split below can never fan one group into many. The username is set with a single
+> overwrite header (not comma-joined) and needs no such guard. Do not weaken the
+> guard without replacing the comma encoding with one that is unambiguous for
+> comma-bearing group names.
+
 The comma-joined header therefore **must be paired with an Envoy Lua filter** that
 runs **after** ext_authz (so it sees the authorizer's injected header) and
 **before** the request egresses to the API server. The filter reads the
@@ -843,26 +854,34 @@ function envoy_on_request(handle)
 end
 ```
 
-Wired as an Istio `EnvoyFilter` on the waypoint that fronts the protected route
-(the same waypoint the `CUSTOM` `AuthorizationPolicy` requires — see below), it
-attaches to the HTTP filter chain immediately after the ext_authz filter:
+Wire it as an Istio `EnvoyFilter` on **the waypoint that fronts the protected
+route** — the *same* waypoint the `CUSTOM` `AuthorizationPolicy` attaches to, where
+the ext_authz filter actually runs. It must **not** target the authenticator's own
+pods (`app.kubernetes.io/name: holos-authenticator`): the authenticator is the
+ext_authz *service*, not the proxy on the request path, so a filter on it never
+sees the forwarded request. Target the waypoint with `targetRefs` to its
+`gateway.networking.k8s.io` `Gateway` (a waypoint is a Gateway), and insert the Lua
+filter immediately after ext_authz in that proxy's HTTP filter chain:
 
 ```yaml
 apiVersion: networking.istio.io/v1alpha3
 kind: EnvoyFilter
 metadata:
+  # Co-locate with the waypoint Gateway.
   name: holos-authenticator-split-groups
-  namespace: holos-authenticator
+  namespace: <waypoint-namespace>
 spec:
-  # Select the waypoint/workload that fronts the protected route, matching the
-  # CUSTOM AuthorizationPolicy's target.
-  workloadSelector:
-    labels:
-      app.kubernetes.io/name: holos-authenticator
+  # Target the WAYPOINT Gateway that fronts the protected route — the same proxy
+  # the CUSTOM AuthorizationPolicy targets — NOT the authenticator workload.
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: <protected-route-waypoint>
   configPatches:
     - applyTo: HTTP_FILTER
       match:
-        context: SIDECAR_INBOUND
+        # Omit `context` so the patch applies to the targeted waypoint proxy; the
+        # subFilter match below pins insertion to just after ext_authz.
         listener:
           filterChain:
             filter:

@@ -185,6 +185,19 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (*aut
 		return deniedResponse(typev3.StatusCode_Unauthorized, "invalid token", nil), nil
 	}
 
+	// 4b. Reject any mapped group containing a comma (failure-closed). Each group is
+	// returned as an APPEND_IF_EXISTS_OR_ADD Impersonate-Group option that Envoy
+	// comma-joins into a single header (see okResponse), which the paired Lua filter
+	// splits back on commas. A group value that itself contained a comma would be
+	// split into two impersonated groups — e.g. "dev,system:masters" would smuggle
+	// system:masters — so a comma in a group name is ambiguous and unsafe under this
+	// encoding and is denied rather than impersonated. The username is set with a
+	// single overwrite header (no comma-join), so it needs no such guard.
+	if group, ok := firstGroupWithComma(identity.Groups); ok {
+		s.log.V(1).Info("denying request: mapped group contains a comma", "host", host, "group", group)
+		return deniedResponse(typev3.StatusCode_Forbidden, "mapped group contains a comma", nil), nil
+	}
+
 	// 5. Resolve the backend's privileged impersonator credential from whichever
 	// source the backend declares: a minted ServiceAccount token (serviceAccountRef)
 	// or the credential Secret (credentialsSecretRef). A failure — a missing Secret,
@@ -219,6 +232,23 @@ func firstImpersonationHeader(headers map[string]string) (string, bool) {
 	for name := range headers {
 		if strings.HasPrefix(strings.ToLower(name), impersonatePrefix) {
 			return name, true
+		}
+	}
+	return "", false
+}
+
+// firstGroupWithComma returns the first group containing a comma and true, or
+// ("", false) if none do. A comma in a mapped group value is unsafe under the
+// comma-joined Impersonate-Group encoding (see okResponse): Envoy joins the
+// per-group append options into one comma-separated header and the paired Lua
+// filter splits it back on commas, so a group whose own value held a comma would
+// fan out into multiple impersonated groups (a privilege-escalation smuggling
+// vector). The Check path denies such a request fail-closed rather than emitting
+// it.
+func firstGroupWithComma(groups []string) (string, bool) {
+	for _, group := range groups {
+		if strings.Contains(group, ",") {
+			return group, true
 		}
 	}
 	return "", false

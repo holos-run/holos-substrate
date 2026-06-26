@@ -223,6 +223,28 @@ func TestCheckAllowNoGroups(t *testing.T) {
 	assertHeaderOptions(t, resp.GetOkResponse().GetHeaders(), want)
 }
 
+// TestCheckDeniesGroupWithComma asserts a request whose mapped groups include a
+// value containing a comma is denied fail-closed (HTTP 403). Groups are returned
+// as APPEND_IF_EXISTS_OR_ADD Impersonate-Group options that Envoy comma-joins into
+// one header, which the paired Lua filter splits back on commas; a group value
+// holding its own comma would fan out into multiple impersonated groups — e.g.
+// "dev,system:masters" smuggles system:masters — so it must be rejected, not
+// impersonated (HOL-1413).
+func TestCheckDeniesGroupWithComma(t *testing.T) {
+	const host = "api.example.com"
+	store := NewStore()
+	store.Set(testNamespace+"/backend", &Entry{
+		Host:                 host,
+		Authenticator:        newTestAuthenticator(t, map[string]any{"sub": "alice", "groups": []any{"dev,system:masters", "ops"}}, "sub"),
+		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
+	})
+	reader := secretReader(t, credentialSecret("creds", "imp"))
+	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, logr.Discard()))
+
+	resp := mustCheck(t, client, checkRequest(host, map[string]string{"authorization": "Bearer good"}))
+	assertDenied(t, resp, typev3.StatusCode_Forbidden)
+}
+
 // TestCheckInboundImpersonationHeaderDenies asserts that a request carrying any
 // client-supplied Impersonate-* header is denied fail-closed (HTTP 403), closing
 // the header-smuggling / confused-deputy hole (ADR-23): the authorizer injects

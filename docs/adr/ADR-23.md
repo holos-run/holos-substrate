@@ -352,15 +352,28 @@ applies them.
   the impersonated user lands in a non-existent group and loses their real group
   memberships — a correctness (and potential authorization) defect, not merely a
   cosmetic one.
-- **Pair the response with a Lua split filter.** The comma-joined header must be
-  unpacked back into one header per group by an Envoy **Lua HTTP filter** that runs
-  **after** ext_authz (so it sees the injected header) and **before** egress to the
-  API server: it reads `Impersonate-Group`, removes it, and re-adds one header per
-  comma-delimited element. The worked `EnvoyFilter` (the `INSERT_AFTER`
-  `envoy.filters.http.ext_authz` patch and the `inline_code` Lua) is in the
-  [runbook's *Splitting the comma-joined `Impersonate-Group`
+- **Pair the response with a Lua split filter on the waypoint.** The comma-joined
+  header must be unpacked back into one header per group by an Envoy **Lua HTTP
+  filter** that runs **after** ext_authz (so it sees the injected header) and
+  **before** egress to the API server: it reads `Impersonate-Group`, removes it, and
+  re-adds one header per comma-delimited element. The filter attaches to the **same
+  waypoint** the `CUSTOM` `AuthorizationPolicy` targets — where ext_authz actually
+  runs — **not** the authenticator's own pods (the authenticator is the ext_authz
+  *service*, not a proxy on the request path). The worked `EnvoyFilter` (`targetRefs`
+  to the waypoint `Gateway`, the `INSERT_AFTER` `envoy.filters.http.ext_authz` patch,
+  and the `inline_code` Lua) is in the [runbook's *Splitting the comma-joined
+  `Impersonate-Group`
   header*](../runbooks/holos-authenticator.md#splitting-the-comma-joined-impersonate-group-header)
   section.
+- **Comma-bearing group values are denied fail-closed.** The comma-join + split
+  round-trip is lossless only if no single group value contains a comma; otherwise a
+  mapped group like `dev,system:masters` would be split into two impersonated groups,
+  a privilege-escalation smuggling vector. The authorizer therefore **denies (HTTP
+  403, fail-closed) any request whose mapped groups include a comma** (the
+  `firstGroupWithComma` guard in `internal/authenticator/server.go`, with a unit
+  test), so the split filter can never fan one group into many. This is the one
+  behavioral change in Revision 6; the per-group append-option encoding itself is
+  unchanged.
 - **Not yet rendered — it belongs to the deferred waypoint topology.** Like the
   `CUSTOM` `AuthorizationPolicy`, the Lua `EnvoyFilter` only takes effect once a
   **waypoint** fronts the protected route and must target that same waypoint. The
@@ -368,8 +381,9 @@ applies them.
   (recorded in [`holos/docs/placeholders.md`](../../holos/docs/placeholders.md)),
   so Revision 6 documents the required filter as the companion to that topology
   rather than shipping it in the deploy tree today. The authorizer's response
-  encoding (per-group append options) is unchanged; only the documentation is
-  corrected and the paired filter recorded.
+  *encoding* (per-group append options) is unchanged; Revision 6's only behavioral
+  change is the fail-closed comma-bearing-group guard above, plus the corrected
+  documentation and the recorded paired filter.
 
 ## Context and Problem Statement
 
