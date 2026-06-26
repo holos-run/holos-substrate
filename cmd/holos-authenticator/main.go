@@ -64,13 +64,24 @@ import (
 // when a Backend selects that credential source instead of a Secret. TokenRequest
 // is a create on the serviceaccounts/token sub-resource; the marker is namespaced
 // (a Role, not a ClusterRole) so the authorizer can mint only in its own
-// namespace. It is minted WITHOUT a BoundObjectRef (matching `kubectl create
-// token`), so create on serviceaccounts/token is the only verb needed — no get on
-// serviceaccounts. The default impersonator ServiceAccount itself is shipped by
-// the deploy component in the next phase (HOL-1401).
+// namespace, and is further scoped with resourceNames to ONLY the shipped default
+// impersonator ServiceAccount (holos-authenticator-impersonator,
+// DefaultImpersonatorServiceAccountName). Without the resourceNames scope a
+// namespace-wide create on serviceaccounts/token would let any admitted Backend's
+// spec.serviceAccountRef.name select a token for ANY ServiceAccount in the
+// authorizer namespace — turning that field into a privilege selector were the
+// namespace ever to hold another privileged SA. RBAC resourceNames works for the
+// create verb here because the token sub-resource is created on a NAMED
+// ServiceAccount (like pods/exec), so a mint for any other name is denied
+// fail-closed. A Backend needing a different impersonator SA is a deliberate
+// platform decision that must widen this Role, not a tenant-selectable default.
+// The token is minted WITHOUT a BoundObjectRef (matching `kubectl create token`),
+// so create is the only verb needed — no get on serviceaccounts. The default
+// impersonator ServiceAccount itself is shipped by the deploy component in the next
+// phase (HOL-1401).
 //
 // +kubebuilder:rbac:groups="",namespace=holos-authenticator,resources=secrets,verbs=get
-// +kubebuilder:rbac:groups="",namespace=holos-authenticator,resources=serviceaccounts/token,verbs=create
+// +kubebuilder:rbac:groups="",namespace=holos-authenticator,resources=serviceaccounts/token,resourceNames=holos-authenticator-impersonator,verbs=create
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=authenticator.holos.run,resources=backends,verbs=get;list;watch
