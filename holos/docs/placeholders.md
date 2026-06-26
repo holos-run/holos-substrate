@@ -287,7 +287,14 @@ hardening concerns are deliberately deferred to later phases:
   `Impersonate-Group` header*](../../docs/runbooks/holos-authenticator.md#splitting-the-comma-joined-impersonate-group-header).
   Like the `CUSTOM` `AuthorizationPolicy` it only has an effect once a **waypoint**
   fronts the protected route and must target that same waypoint, so it ships with
-  the deferred waypoint topology above rather than the in-cluster wiring today.
+  the deferred waypoint topology above rather than the in-cluster wiring today. When
+  that topology is built, **verify the end-to-end behavior against the deployed
+  Envoy/Istio version** — that a multi-group token yields one `Impersonate-Group`
+  header **per group** at the API server — since whether Envoy materializes the
+  append options as a comma-joined header or duplicate entries is version/transport
+  dependent and is not provable by the unit tests (which cover only the ext_authz
+  response options). The Lua filter is written to handle both forms; the runtime
+  proof closes the gap.
 
 - **Tenant use of the extension provider must be enforced, not just documented.**
   The provider is registered mesh-wide, so a `CUSTOM` `AuthorizationPolicy`

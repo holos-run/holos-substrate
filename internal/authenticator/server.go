@@ -7,8 +7,10 @@
 //
 // The ext_authz Check (HOL-1388) routes each request to a Backend by Host,
 // validates the caller's OIDC bearer token, and on success returns an OK response
-// that sets Kubernetes impersonation headers (Impersonate-User, one
-// Impersonate-Group per mapped group), injects the backend's privileged
+// that sets Kubernetes impersonation headers (Impersonate-User, plus one
+// Impersonate-Group APPEND_IF_EXISTS_OR_ADD option per mapped group that Envoy
+// comma-joins into a single header — paired with a Lua split filter, see
+// okResponse), injects the backend's privileged
 // credential as the upstream Authorization, and removes the caller's original
 // token — so Envoy forwards the request straight to the API server. Any failure
 // (unknown host, missing/invalid token, credential read failure, internal error)
@@ -126,9 +128,12 @@ func NewCheckServer(store *Store, reader client.Reader, writer client.Client, na
 //  4. Resolve the backend's privileged impersonator credential (a minted
 //     ServiceAccount token or the credential Secret); resolution failure →
 //     Denied 403.
-//  5. Return OK setting Impersonate-User, one Impersonate-Group per mapped group,
-//     and the impersonator token as Authorization, removing the caller's original
-//     Authorization.
+//  5. Return OK setting Impersonate-User and one Impersonate-Group
+//     APPEND_IF_EXISTS_OR_ADD option per mapped group (Envoy comma-joins them into
+//     one header, paired with a Lua split filter — see okResponse), with the
+//     impersonator token as the upstream Authorization, removing the caller's
+//     original Authorization. Groups unsafe under that encoding (a comma or
+//     surrounding whitespace) are denied fail-closed before this step.
 //
 // Every failure path — including any internal error — returns a Denied response,
 // never OK, so the authorizer fails closed. The gRPC error return is always nil:

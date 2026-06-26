@@ -915,6 +915,27 @@ spec:
               end
 ```
 
+> **Robust to both Envoy representations.** Whether Envoy materializes repeated
+> `APPEND_IF_EXISTS_OR_ADD` options as a single comma-joined `Impersonate-Group`
+> header or as duplicate header entries can vary by Envoy version and HTTP
+> transport. The Lua filter is written to handle **both**: the Lua `Headers:get()`
+> returns all values for a given header **concatenated with commas**, so
+> `get("Impersonate-Group")` yields `dev,ops` regardless of which on-the-wire form
+> Envoy chose, and the `remove` + per-element `add` then re-emits clean,
+> one-per-group headers either way. The matching server-side guard
+> (`firstUnsafeGroup`) guarantees no individual group value contains a comma or
+> surrounding whitespace, so this split never fans one group into many or trims a
+> padded value into a privileged one.
+>
+> **Verify against the deployed Envoy before relying on it.** Because this filter
+> is exercised only at runtime on a real waypoint — there is no live Envoy in the
+> repo's test suite, and the unit tests cover only the ext_authz response options,
+> not Envoy's header mutation plus the Lua pass — **confirm the end-to-end behavior
+> against the actual Envoy/Istio version** when the waypoint topology is built:
+> assert that a multi-group token results in one `Impersonate-Group` header **per
+> group** reaching the API server. This runtime proof is part of the deferred
+> waypoint work below.
+>
 > **Not yet rendered by the component.** Like the `CUSTOM` `AuthorizationPolicy`,
 > this Lua `EnvoyFilter` only has an effect once a **waypoint** fronts the
 > protected route, and it must target that same waypoint. The full
