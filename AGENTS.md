@@ -225,6 +225,20 @@ components have been removed. Git history preserves them.
   impersonate the SA on the management cluster (`spec.server.url`) — the remote
   cluster is only the token issuer/JWKS source, one `Backend` per remote cluster
   keyed 1:1 by host; per-`kid` key-selection hardening is deferred to HOL-1396.
+  Rev 4 (HOL-1399..HOL-1402, parent HOL-1398) adds the **`serviceAccountRef`
+  TokenRequest credential source**: an additive, `credentialsSecretRef`-mutually-
+  exclusive `spec.serviceAccountRef` (default SA `holos-authenticator-impersonator`,
+  optional `audience`, `expirationSeconds` default `3600`) lets the controller
+  **mint/cache/rotate** the *outbound* impersonator token via TokenRequest
+  (rotation margin = smaller of 5m or 20% of lifetime; no `BoundObjectRef`) instead
+  of the operator committing a Secret — distinct from Rev 3's *inbound* `oidc.jwks`
+  validation. The component ships a default impersonate-only
+  `holos-authenticator-impersonator` SA whose ClusterRole, **as a ratified
+  deviation from the parent AC**, grants `impersonate` on `groups` only scoped by
+  `resourceNames` to the SA virtual groups `system:authenticated`/
+  `system:serviceaccounts` (not unbounded `users`/`groups`/`serviceaccounts`, a
+  cluster-wide escalation credential); per-identity/per-namespace impersonate scope
+  is operator-applied per-`Backend`.
   The controller (`holos-controller` namespace)
   and its Quay **and Keycloak** API groups have **shipped** (Quay
   HOL-1309..HOL-1313; Keycloak + `security.holos.run` HOL-1343..HOL-1348) —
@@ -357,9 +371,13 @@ components have been removed. Git history preserves them.
   overrides, the **KSA / static-JWKS** backends (ADR-23 Rev 3 — `spec.oidc.jwks`
   offline validation, the SA-group CEL expression, the 1:1 host↔Backend model for
   remote clusters, and end-to-end ESO `SecretStore`/`ExternalSecret`
-  verification), the **impersonation RBAC** the forwarded credential must hold
-  (`impersonate` on `users`/`groups`), provisioning the `credentialsSecretRef`
-  Secret at runtime (never committed), the Istio `extensionProvider` + `CUSTOM`
+  verification), the two mutually-exclusive credential sources (ADR-23 Rev 4 —
+  the controller-minted `serviceAccountRef` with the default impersonate-only
+  `holos-authenticator-impersonator` SA and TokenRequest mint/cache/rotation, and
+  the runtime `credentialsSecretRef` Secret), the **impersonation RBAC** the
+  forwarded credential must hold (the bounded `impersonate`-on-virtual-groups
+  default plus operator-applied per-`Backend` scope, never unbounded
+  `users`/`groups`), the Istio `extensionProvider` + `CUSTOM`
   `AuthorizationPolicy` wiring, the out-of-band apply ordering (CRD-before-CR;
   excluded from the bootstrap floor like `holos-controller`), and end-to-end
   verification. Companion to [ADR-23](docs/adr/ADR-23.md), the component README

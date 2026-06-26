@@ -11,9 +11,11 @@ user's real groups.
 
 This runbook is the operator's guide to the as-built service: the ext_authz
 model, the `authenticator.holos.run` `Backend` CR, OIDC validation + CEL group
-mapping, the impersonation RBAC the forwarded credential must hold, provisioning
-the runtime credential Secret, the Istio `extensionProvider` +
-`AuthorizationPolicy` wiring, and verification.
+mapping, the impersonation RBAC the forwarded credential must hold, the two
+mutually-exclusive credential sources — the controller-minted `serviceAccountRef`
+(the shipped impersonate-only `holos-authenticator-impersonator` SA, TokenRequest
+mint/cache/rotation) and the runtime `credentialsSecretRef` Secret — the Istio
+`extensionProvider` + `AuthorizationPolicy` wiring, and verification.
 
 - Component: [`holos/components/holos-authenticator/`](../../holos/components/holos-authenticator/README.md)
 - Design: [ADR-23](../adr/ADR-23.md)
@@ -43,8 +45,11 @@ On each `Check` the authorizer:
 3. **Extracts the bearer token.** A missing `Authorization: Bearer …` yields a
    401 with a `WWW-Authenticate: Bearer` challenge.
 4. **Validates the OIDC token** (below). An invalid token yields 401.
-5. **Resolves the impersonator credential** from the Secret named by the
-   Backend's `credentialsSecretRef`. An unavailable Secret yields 403.
+5. **Resolves the impersonator credential.** If the Backend sets
+   `serviceAccountRef`, the authorizer presents the cached/minted token of that
+   ServiceAccount (minted/rotated via TokenRequest, [below](#provisioning-the-credential-serviceaccountref-or-a-runtime-secret));
+   otherwise it reads the Secret named by `credentialsSecretRef`. An
+   unavailable credential (missing Secret, or a TokenRequest failure) yields 403.
 6. **Returns the OK response** setting `Impersonate-User` (the username claim),
    one `Impersonate-Group` per mapped group, and overwriting `Authorization`
    with the impersonator credential's `Bearer <token>`. Envoy forwards to the
@@ -88,8 +93,20 @@ own OIDC client and mapping.
 | `oidc.usernameClaim`         | no       | `sub`                                      | Token claim used as the impersonated username.                             |
 | `oidc.groupsClaim`           | no       | `groups`                                   | Token claim carrying groups (used by the default mapping).                 |
 | `groupMapping.celExpression` | no       | empty → default mapping                    | CEL expression over `claims` producing the Kubernetes group list.          |
-| `credentialsSecretRef.name`  | no       | `holos-authenticator-backend-creds`        | Name of the Secret holding the privileged impersonator credential (resolved in the authorizer's own namespace). |
+| `credentialsSecretRef.name`  | no       | `holos-authenticator-backend-creds`        | Name of the Secret holding the privileged impersonator credential (resolved in the authorizer's own namespace). Mutually exclusive with `serviceAccountRef`. |
 | `credentialsSecretRef.key`   | no       | `token`                                    | Secret key to read the raw bearer token from (the conventional `token` key when omitted). |
+| `serviceAccountRef.name`     | no       | `holos-authenticator-impersonator`         | Name of a ServiceAccount in the `holos-authenticator` namespace whose token the controller mints/rotates via TokenRequest as the impersonator credential. Mutually exclusive with `credentialsSecretRef`. See [*Provisioning the credential*](#provisioning-the-credential-serviceaccountref-or-a-runtime-secret). |
+| `serviceAccountRef.audience` | no       | API server default audience                | Audience the minted SA token is requested with (empty → the API server's default audience). |
+| `serviceAccountRef.expirationSeconds` | no | `3600` (min `600`)                      | Requested lifetime of the minted SA token; the controller rotates it before expiry. |
+
+> **Exactly one credential source.** `credentialsSecretRef` and
+> `serviceAccountRef` are **mutually exclusive** — a CRD-level CEL validation
+> (`!(has(self.credentialsSecretRef) && has(self.serviceAccountRef))`) rejects a
+> `Backend` that sets both. Set at most one; a `Backend` that sets neither
+> resolves the default `credentialsSecretRef` Secret. This is the **outbound**
+> impersonator credential the authorizer presents to `spec.server.url`, not the
+> Rev 3 `oidc.jwks` **inbound** validation key set — the two SA-related features
+> are independent.
 
 `Backend` reports the ADR-22 Gateway-API status contract: a
 `status.conditions[]` of `Accepted`/`Programmed`/`Ready`, a
@@ -380,10 +397,12 @@ radius bounded to the exact SA and SA virtual groups — never "all users" or "a
 groups". This mirrors the existing [*Impersonation
 RBAC*](#impersonation-rbac-the-forwarded-credential) shape; the KSA-specific
 points are impersonating the SA via the `serviceaccounts` resource (not `users`)
-and the SA-virtual-groups `resourceNames`. Provision the credential Secret at
-runtime as in [*Provisioning the credential Secret at
-runtime*](#provisioning-the-credential-secret-at-runtime), using a bound token
-for the management-cluster impersonator ServiceAccount.
+and the SA-virtual-groups `resourceNames`. Provision the management-cluster
+impersonator credential as in [*Provisioning the
+credential*](#provisioning-the-credential-serviceaccountref-or-a-runtime-secret)
+— reference the impersonator SA via `serviceAccountRef` (the controller mints and
+rotates its token), or store a bound token in a runtime Secret via
+`credentialsSecretRef`.
 
 ### 5. End-to-end verification (External Secrets Operator)
 
@@ -504,9 +523,20 @@ the remote cluster requires re-capturing `/openid/v1/jwks` into `spec.oidc.jwks`
 
 ## Impersonation RBAC (the forwarded credential)
 
-The credential named by `credentialsSecretRef` is the **impersonator identity**
-the upstream API server authenticates Envoy as. It **must** hold RBAC granting
-`impersonate` on `users` and `groups`:
+The impersonator credential — whether `serviceAccountRef` or
+`credentialsSecretRef` supplies it — is the **impersonator identity** the
+upstream API server authenticates Envoy as. It **must** hold RBAC granting the
+`impersonate` verb on whatever identity the CEL mapping emits.
+
+### The shipped default impersonator SA and its scoped ClusterRole
+
+The component ships a dedicated **`holos-authenticator-impersonator`**
+ServiceAccount (the `serviceAccountRef.name` default) in the
+`holos-authenticator` namespace — **distinct from the manager's own
+`holos-authenticator` SA** — bound to a deliberately **narrow** impersonate-only
+ClusterRole. The shipped default grants `impersonate` on **`groups` only**,
+scoped with `resourceNames` to exactly the two namespace-independent
+service-account **virtual groups**:
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -515,42 +545,91 @@ metadata:
   name: holos-authenticator-impersonator
 rules:
   - apiGroups: [""]
-    resources: ["users", "groups"]
+    resources: ["groups"]
     verbs: ["impersonate"]
+    resourceNames:
+      - "system:authenticated"
+      - "system:serviceaccounts"
 ```
 
-Bind it to the principal whose token is stored in the credential Secret. If a
-mapped group is a Kubernetes **system** group (e.g. anything under
-`system:`), grant `impersonate` on the relevant subresource as needed — but
-prefer mapping to non-`system:` groups so the blast radius of the impersonator
-credential stays bounded.
+> **The shipped default is impersonate-only and bounded by design (ADR-23 Rev
+> 4).** It grants **nothing** on `users` or `serviceaccounts`, and only the two
+> always-present SA virtual groups on `groups`. An **unbounded** `impersonate` on
+> `users`/`groups` (no `resourceNames`) is a cluster-wide privilege-escalation
+> credential — it can impersonate *any* user or group, including
+> `system:masters`. The parent issue's literal AC asked for `users`/`groups`/
+> `serviceaccounts`, but the as-shipped default was narrowed to the SA virtual
+> groups for security; **ADR-23 Revision 4 ratifies this scoping**. Grant any
+> additional per-identity / per-namespace impersonate scope **per `Backend`**,
+> never by widening this default ClusterRole.
 
-- **In-cluster API server:** create a ServiceAccount, bind the impersonator
-  ClusterRole to it, and store its token as the credential Secret.
-- **External API server:** provision the credential out-of-band (the **raw
-  bearer token** of a principal that holds the impersonator ClusterRole on that
-  remote cluster) and store it under the `token` key of the Secret named by
-  `credentialsSecretRef`. A kubeconfig blob is not parsed — store only the raw
-  token.
+### Adding per-Backend impersonate scope
 
-Compromise of this credential lets an attacker impersonate arbitrary
-users/groups on that backend's API server, so its handling, the ext_authz trust
-boundary, and the failure-closed inbound-header sanitization are all
-security-critical.
+A real `Backend` almost always impersonates **more** than the two default
+virtual groups — a specific user, a per-namespace `system:serviceaccounts:<ns>`
+group, or a specific ServiceAccount. Add those grants alongside the default,
+scoped to exactly what the Backend's CEL mapping emits. The worked example for a
+KSA Backend (the SA identity on the `serviceaccounts` resource, plus the
+per-namespace SA virtual group) is in [*Impersonation RBAC for the SA virtual
+groups*](#4-impersonation-rbac-for-the-sa-virtual-groups). For a human-OIDC
+Backend mapping to non-`system:` groups, grant `impersonate` on `users`
+(scoped by `resourceNames` to the expected usernames where practical) and on
+`groups` (scoped to the mapped group names). Prefer mapping to non-`system:`
+groups so the blast radius stays bounded.
 
-## Provisioning the credential Secret at runtime
+Compromise of this credential lets an attacker impersonate whatever the granted
+RBAC allows on that backend's API server, so keeping each grant scoped (never an
+unbounded `users`/`groups` impersonate), the ext_authz trust boundary, and the
+failure-closed inbound-header sanitization are all security-critical.
 
-Per the **Runtime Secret Handling** guardrail, the impersonator credential's
-**material is never committed**. The component renders only the example
-`Backend` CR (which *names* the Secret via `credentialsSecretRef`); the Secret
-itself is created at runtime in the `holos-authenticator` namespace, out of
-band.
+## Provisioning the credential: `serviceAccountRef` or a runtime Secret
 
-The authorizer reads the credential as the `token` key. For an in-cluster
-ServiceAccount whose ClusterRole grants impersonation:
+A `Backend` gets its outbound impersonator credential one of two ways. They are
+**mutually exclusive** (the CRD's CEL validation rejects setting both); pick the
+one that fits the upstream.
+
+### Option A — `serviceAccountRef` (controller mints the token, in-cluster)
+
+For an **in-cluster** management API server, reference a ServiceAccount and let
+the controller mint and rotate its token — **no manual `kubectl create token`,
+no Secret to create**:
+
+```yaml
+spec:
+  # ... host / server / oidc ...
+  serviceAccountRef: {}     # all defaults: name holos-authenticator-impersonator,
+                            # API-server default audience, expirationSeconds 3600
+```
+
+- `serviceAccountRef.name` defaults to the shipped
+  **`holos-authenticator-impersonator`** SA; set it to your own SA in the
+  `holos-authenticator` namespace to use a different (e.g. more broadly-scoped
+  per the section above) impersonator identity.
+- The authorizer mints the SA's bearer token by `create` on the
+  `serviceaccounts/token` subresource — the manager's namespaced `Role` grants
+  exactly that, scoped by `resourceNames` to `holos-authenticator-impersonator`
+  (widen the grant if you point `serviceAccountRef.name` at a different SA).
+- **Caching and rotation.** The minted token is cached keyed by **name +
+  audience + expirationSeconds** (Backends naming the same SA/audience/lifetime
+  share one cached token) and **rotated before expiry** with a margin of the
+  **smaller of 5 minutes or 20% of the token's lifetime**. Tokens are minted
+  **without** a `BoundObjectRef` (exactly like `kubectl create token`). The
+  default `expirationSeconds` is `3600` (minimum `600`).
+- The impersonator SA still needs the impersonation RBAC above (the shipped
+  `holos-authenticator-impersonator` SA already has the bounded default; add
+  per-`Backend` scope as needed).
+
+### Option B — `credentialsSecretRef` (runtime Secret)
+
+For an **external** API server (the management cluster cannot mint a token for a
+remote cluster's SA), or any case where the credential is an out-of-band token,
+use `credentialsSecretRef`. Per the **Runtime Secret Handling** guardrail the
+credential's **material is never committed**; the Secret is created at runtime in
+the `holos-authenticator` namespace, out of band. The authorizer reads the
+`token` key:
 
 ```bash
-# Mint a bound token for the impersonator ServiceAccount (in-cluster API server).
+# In-cluster: a bound token for an impersonator ServiceAccount.
 TOKEN=$(kubectl -n holos-authenticator create token holos-authenticator-impersonator)
 
 kubectl -n holos-authenticator create secret generic holos-authenticator-backend-creds \
@@ -561,6 +640,15 @@ For an external API server, store the out-of-band **raw bearer token** under the
 same `token` key (the authorizer sends it as `Authorization: Bearer <token>` and
 does not parse a kubeconfig). Write only the key(s) the authorizer reads — never
 carry an extra key.
+
+> **`serviceAccountRef` vs. the Rev 3 `oidc.jwks` (don't conflate the two
+> SA-related features).** `serviceAccountRef` is the **outbound** impersonator
+> credential — *whom the authorizer authenticates as* to `spec.server.url`. The
+> Rev 3 `oidc.jwks` / KSA path (below) is **inbound** — *which remote-cluster SA
+> token the authorizer accepts and validates*. A KSA Backend commonly uses
+> **both**: `oidc.jwks` to validate the inbound remote SA token, and
+> `serviceAccountRef` (or `credentialsSecretRef`) for the outbound
+> management-cluster impersonator credential.
 
 ## Istio extensionProvider + AuthorizationPolicy wiring
 

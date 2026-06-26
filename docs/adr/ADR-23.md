@@ -13,6 +13,7 @@
 | 1        | 2026-06-22 | @jeffmccune | Initial design                                                    |
 | 2        | 2026-06-23 | @jeffmccune | Flipped to `Implemented` — as-built summary and deviations (below) |
 | 3        | 2026-06-24 | @jeffmccune | KSA / static-JWKS extension — additive `spec.oidc.jwks` for offline validation (below) |
+| 4        | 2026-06-25 | @jeffmccune | `serviceAccountRef` credential source — additive TokenRequest-minted impersonator credential, default impersonate-only SA, impersonation-scope ratification (below) |
 
 ## As-built (Revision 2)
 
@@ -115,8 +116,9 @@ is the upstream the impersonated request lands on.)
   token's `kubernetes.io` claim with the CEL expression
   `["system:authenticated", "system:serviceaccounts", "system:serviceaccounts:" + claims["kubernetes.io"].namespace]`,
   so RBAC on the management cluster authorizes the impersonated request exactly as
-  the SA would be. The impersonator `credentialsSecretRef` identity must therefore
-  hold `impersonate` on the SA username and those SA virtual groups (runbook).
+  the SA would be. The impersonator identity (the `serviceAccountRef` SA — Rev 4 —
+  or a `credentialsSecretRef` token) must therefore hold `impersonate` on the SA
+  username and those SA virtual groups (runbook).
 - **Malformed JWKS → `InvalidSpec`.** A static JWKS is pure spec data with no
   external system involved, so a malformed/unparseable JWKS (or one with zero
   usable keys) is rejected at reconcile time as an **invalid spec**
@@ -141,6 +143,138 @@ verification) is in the [runbook's *KSA / static-JWKS
 backends*](../runbooks/holos-authenticator.md#ksa--static-jwks-backends) section;
 the component's static-JWKS mode is documented in its
 [README](../../holos/components/holos-authenticator/README.md).
+
+## `serviceAccountRef` credential source (Revision 4)
+
+Revision 4 (HOL-1399..HOL-1402, under parent HOL-1398) adds a second way to
+supply a `Backend`'s **outbound impersonator credential**: instead of an
+operator minting a token and committing it to a Secret, the `Backend` references
+a **management-cluster ServiceAccount** and the authorizer mints, caches, and
+rotates that SA's bearer token itself via the Kubernetes **TokenRequest** API.
+This is the credential the authorizer presents *to the upstream API server*
+(`spec.server.url`) to authorize the impersonated request — the **outbound**
+side. It is **distinct from** Revision 3's KSA / static-JWKS work, which is about
+validating an **inbound** remote-cluster SA token (`spec.oidc.jwks`); the two are
+independent SA-related features that the runbook and README keep explicitly
+separate.
+
+- **Additive `spec.serviceAccountRef` (no new CRD, mutually exclusive with
+  `credentialsSecretRef`).** The `Backend` CR gains an optional
+  `*ServiceAccountReference` field
+  (`api/authenticator/v1alpha1/{backend_types.go,common_types.go}`):
+  `serviceAccountRef.name` (defaults to **`holos-authenticator-impersonator`**,
+  `MinLength=1`), `serviceAccountRef.audience` (optional — empty means the API
+  server's default audience), and `serviceAccountRef.expirationSeconds`
+  (`*int64`, defaults to **3600**, `Minimum=600`). `credentialsSecretRef` becomes
+  an optional pointer (`*SecretReference`) alongside it. The two credential
+  sources are **mutually exclusive**, enforced by a CRD-level CEL `XValidation`
+  on the spec — `!(has(self.credentialsSecretRef) && has(self.serviceAccountRef))`
+  (*"credentialsSecretRef and serviceAccountRef are mutually exclusive; set at
+  most one"*) — and by runtime precedence (the Check path checks
+  `serviceAccountRef` first). A `Backend` that sets neither still resolves the
+  conventional default Secret on the `credentialsSecretRef` path; backends that
+  omit `serviceAccountRef` are fully backward-compatible.
+- **Runtime TokenRequest mint / cache / rotate (HOL-1400).** A `TokenManager`
+  (`internal/authenticator/token_manager.go`) mints SA tokens by `create` on the
+  `serviceaccounts/token` subresource (no `BoundObjectRef`, exactly like
+  `kubectl create token`), caches them keyed by **name + audience +
+  expirationSeconds** (so multiple Backends naming the same SA/audience/lifetime
+  share one cached token), and **rotates** each token before expiry with a margin
+  of the **smaller of 5m or 20% of the token's lifetime**. The Check data path
+  resolves the credential through `resolveCredential`
+  (`internal/authenticator/credentials.go`): `serviceAccountRef` set → mint/cache
+  via the `TokenManager`; otherwise → read the `credentialsSecretRef` Secret. The
+  reconciler normalizes `serviceAccountRef` defaults before storing the in-memory
+  `Entry`, so the Check path applies no further defaulting.
+- **Default impersonate-only ServiceAccount + scoped RBAC (HOL-1401).** The
+  `holos-authenticator` component now ships a dedicated
+  **`holos-authenticator-impersonator`** ServiceAccount (the
+  `serviceAccountRef.name` default) — **distinct from the manager's own
+  `holos-authenticator` SA** — plus an impersonate-only ClusterRole and
+  ClusterRoleBinding. The manager's namespaced `Role` gains `create` on
+  `serviceaccounts/token`, scoped by `resourceNames` to exactly
+  `holos-authenticator-impersonator` (matching the kubebuilder
+  `+kubebuilder:rbac:…resources=serviceaccounts/token,resourceNames=holos-authenticator-impersonator,verbs=create`
+  marker in `cmd/holos-authenticator/main.go` and the generated
+  `config/authenticator/rbac/role.yaml`).
+- **Deviation (ratified): the shipped impersonator ClusterRole is impersonate-on-
+  `groups`-only, scoped to SA virtual groups — not unbounded
+  `users`/`groups`/`serviceaccounts`.** Parent issue HOL-1398's AC #3 literally
+  asked for a ClusterRole granting `impersonate` on `users`, `groups`, **and**
+  `serviceaccounts`. As built, the shipped default
+  `holos-authenticator-impersonator` ClusterRole grants `impersonate` on **`groups`
+  only**, narrowed with `resourceNames` to the two namespace-independent SA
+  virtual groups **`system:authenticated`** and **`system:serviceaccounts`** —
+  and grants **nothing** on `users` or `serviceaccounts`:
+
+  ```yaml
+  rules:
+    - apiGroups: [""]
+      resources: ["groups"]
+      verbs: ["impersonate"]
+      resourceNames: ["system:authenticated", "system:serviceaccounts"]
+  ```
+
+  An **unbounded** `impersonate` on `users`/`groups`/`serviceaccounts` is a
+  cluster-wide privilege-escalation credential (it can impersonate *any* user or
+  *any* group, including `system:masters`) — Codex flagged exactly this on the
+  implementation PR, and the runbook's *Impersonation RBAC* guidance already
+  forbids it ("prefer mapping to non-`system:` groups so the blast radius … stays
+  bounded"). The shipped default therefore gives the impersonator only the
+  always-present SA virtual groups a KSA-token Backend needs, and **per-identity /
+  per-namespace impersonate scope** (a specific SA via the `serviceaccounts`
+  resource, or a per-namespace `system:serviceaccounts:<ns>` group) is
+  **operator-applied per `Backend`**, following the worked RBAC in the runbook's
+  *KSA / static-JWKS backends* section. **This Revision 4 ratifies the
+  impersonate-only / virtual-groups-scoped default as the intended security
+  posture**, so the deviation from AC #3's literal wording is a deliberate,
+  reviewed decision rather than an open `needs-human-review` item.
+- **Provisioning shifts from manual to controller-managed.** With
+  `serviceAccountRef`, the operator does **not** `kubectl create token` and create
+  a Secret (the `credentialsSecretRef` path); they reference the shipped
+  `holos-authenticator-impersonator` SA (or their own SA in the
+  `holos-authenticator` namespace) and the controller mints/rotates the token. The
+  `credentialsSecretRef` path remains fully supported — for an **external** API
+  server whose impersonator credential is an out-of-band raw bearer token, it is
+  still the right choice (the management cluster cannot mint a token for a remote
+  cluster's SA). The component renders one example of each path:
+  `backend-example` (`credentialsSecretRef`) and `backend-remote-cluster-a`
+  (`serviceAccountRef: {}`, all defaults).
+
+The operator procedure (referencing the default impersonator SA, the
+controller's `serviceaccounts/token` grant, the caching/rotation behavior, and
+adding per-`Backend` impersonate scope) is in the runbook's [*Provisioning the
+credential*](../runbooks/holos-authenticator.md#provisioning-the-credential-serviceaccountref-or-a-runtime-secret)
+and [*Impersonation RBAC*](../runbooks/holos-authenticator.md#impersonation-rbac-the-forwarded-credential)
+sections; the component resources are in its
+[README](../../holos/components/holos-authenticator/README.md).
+
+### Backend spec model (as built, Rev 4)
+
+```text
+spec:
+  host:        <string, required>          # request :authority/Host routing key
+  server:
+    url:       <string, required>          # upstream API server (in-cluster or external)
+    caBundle:  <[]byte, optional>          # recorded, not yet consumed (Rev 2 deviation)
+  oidc:
+    issuerURL:      <string, required>     # issuer base URL, or expected `iss` when jwks is set
+    clientID:       <string, required>     # token audience (`aud`)
+    caBundle:       <[]byte, optional>     # trust for issuer dial; unused when jwks is set
+    jwks:           <[]byte, optional>     # static JWKS → offline validation (Rev 3)
+    usernameClaim:  <string, optional>     # default `sub`
+    groupsClaim:    <string, optional>     # default `groups`
+  groupMapping:
+    celExpression:  <string, optional>     # default `claims["<groupsClaim>"]`
+  # Exactly one credential source (mutually exclusive, CEL-enforced):
+  credentialsSecretRef:                    # *SecretReference, optional
+    name:  <string, default holos-authenticator-backend-creds>
+    key:   <string, default token>
+  serviceAccountRef:                       # *ServiceAccountReference, optional (Rev 4)
+    name:               <string, default holos-authenticator-impersonator>
+    audience:           <string, optional>   # empty → API server default audience
+    expirationSeconds:  <int64,  default 3600, min 600>
+```
 
 ## Context and Problem Statement
 
