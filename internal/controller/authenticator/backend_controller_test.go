@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"testing"
 
 	jose "github.com/go-jose/go-jose/v4"
@@ -127,6 +128,62 @@ func TestReconcileReadyOnDiscovery(t *testing.T) {
 	}
 	if _, ok := store.Get("api-a.example.test"); !ok {
 		t.Errorf("store missing entry for host api-a.example.test")
+	}
+}
+
+// claimsVerifier is a TokenVerifier returning a fixed claim set, so a reconcile
+// test can drive the registered Store entry's Authenticator end-to-end and assert
+// the resolved groups (e.g. that spec.oidc.groupsPrefix is applied) without a live
+// issuer or a signed token.
+type claimsVerifier struct{ claims map[string]any }
+
+func (v claimsVerifier) Verify(context.Context, string) (*authenticator.VerifiedToken, error) {
+	return &authenticator.VerifiedToken{Claims: v.claims}, nil
+}
+
+// TestReconcileGroupsPrefixApplied asserts a Backend setting spec.oidc.groupsPrefix
+// (and no custom celExpression) becomes Ready and that its registered Store entry's
+// Authenticator prefixes every group from the default groups-claim mapping —
+// proving the inert API field shipped in the prior phase is now wired into the
+// runtime default mapping.
+func TestReconcileGroupsPrefixApplied(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	// A verifier returning a sub (the username claim) and a two-element groups
+	// claim, so Authenticate resolves an identity whose groups are the prefixed
+	// claim values.
+	discover := func(context.Context, string, string, []byte) (authenticator.TokenVerifier, error) {
+		return claimsVerifier{claims: map[string]any{
+			"sub":    "alice",
+			"groups": []any{"dev", "ops"},
+		}}, nil
+	}
+	r, store, _ := newReconciler(discover)
+
+	b := makeBackend(ns, "backend-prefix", "api-prefix.example.test")
+	b.Spec.OIDC.GroupsPrefix = "oidc:"
+	key := createBackend(ctx, t, b)
+
+	if _, err := reconcile(ctx, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	got := getBackend(ctx, t, key)
+	if status := condStatus(got, ConditionReady); status != metav1.ConditionTrue {
+		t.Fatalf("Ready = %q, want True", status)
+	}
+
+	entry, ok := store.Get("api-prefix.example.test")
+	if !ok {
+		t.Fatalf("store missing entry for host api-prefix.example.test")
+	}
+	id, err := entry.Authenticator.Authenticate(ctx, "raw-token")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if want := []string{"oidc:dev", "oidc:ops"}; !reflect.DeepEqual(id.Groups, want) {
+		t.Errorf("groups = %v, want %v (prefix not applied)", id.Groups, want)
 	}
 }
 

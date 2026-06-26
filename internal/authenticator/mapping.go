@@ -50,7 +50,8 @@ func newCELEnv() (*cel.Env, error) {
 // An empty expr is a programming error here: callers default the expression to
 // the groups-claim mapping (DefaultGroupExpression) before calling, so that the
 // "no/empty CEL" default behavior is itself a compiled CEL program and shares the
-// same evaluation path. Pass DefaultGroupExpression(groupsClaim) for the default.
+// same evaluation path. Pass DefaultGroupExpression(groupsClaim, groupsPrefix) for
+// the default.
 func NewGroupMapper(expr string) (*GroupMapper, error) {
 	if expr == "" {
 		return nil, fmt.Errorf("group-mapping CEL expression is empty; default it before compiling")
@@ -116,17 +117,35 @@ func (m *GroupMapper) Groups(claims map[string]any) ([]string, error) {
 
 // DefaultGroupExpression returns the CEL expression implementing the default
 // group mapping: read the named groups claim directly. With the conventional
-// groupsClaim of "groups" it is `claims.groups`. Routing the default through a
-// compiled expression (rather than a special-case Go branch) means the default
-// and custom paths share one evaluator and one set of semantics (missing-claim →
-// empty groups).
-func DefaultGroupExpression(groupsClaim string) string {
+// groupsClaim of "groups" and no prefix it is `claims["groups"]`. Routing the
+// default through a compiled expression (rather than a special-case Go branch)
+// means the default and custom paths share one evaluator and one set of semantics
+// (missing-claim → empty groups).
+//
+// When groupsPrefix is non-empty, the expression maps the prefix onto every group
+// read from the claim — e.g. (groups, "oidc:") yields
+// `claims["groups"].map(g, "oidc:" + g)` — so a Backend impersonates oidc:dev,
+// oidc:ops, … instead of dev, ops. This is the apiserver `--oidc-groups-prefix`
+// behavior, recommended to keep an external IdP from impersonating Kubernetes
+// system: groups. The prefix is embedded as a CEL string literal via %q, so an
+// operator-supplied value cannot inject CEL. An empty groupsPrefix returns the
+// unprefixed expression unchanged, so the no-prefix default is byte-for-byte
+// backward compatible.
+//
+// The .map(g, %q + g) form preserves the missing-claim → no-groups semantics: a
+// token whose groups claim is absent raises CEL's "no such key" error, which
+// GroupMapper.Groups maps to an empty group slice exactly as the unprefixed index
+// does, and it type-checks to list(string).
+func DefaultGroupExpression(groupsClaim, groupsPrefix string) string {
 	if groupsClaim == "" {
 		groupsClaim = "groups"
 	}
 	// Index syntax (claims["groups"]) rather than field syntax (claims.groups)
 	// so a claim name that is not a valid CEL identifier still works.
-	return fmt.Sprintf("%s[%q]", claimsVar, groupsClaim)
+	if groupsPrefix == "" {
+		return fmt.Sprintf("%s[%q]", claimsVar, groupsClaim)
+	}
+	return fmt.Sprintf("%s[%q].map(g, %q + g)", claimsVar, groupsClaim, groupsPrefix)
 }
 
 // isStringListType reports whether t is acceptable as a group-mapping result:

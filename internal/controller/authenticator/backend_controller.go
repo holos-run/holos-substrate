@@ -105,7 +105,7 @@ func (r *BackendReconciler) reconcileNormal(ctx context.Context, logger logr.Log
 	// any external system. Default an empty expression to the groups-claim mapping.
 	expr := backend.Spec.GroupMapping.CELExpression
 	if expr == "" {
-		expr = authenticator.DefaultGroupExpression(backend.Spec.OIDC.GroupsClaim)
+		expr = authenticator.DefaultGroupExpression(backend.Spec.OIDC.GroupsClaim, backend.Spec.OIDC.GroupsPrefix)
 	}
 	mapper, err := authenticator.NewGroupMapper(expr)
 	if err != nil {

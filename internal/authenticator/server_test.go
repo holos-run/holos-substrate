@@ -35,7 +35,7 @@ const testNamespace = "holos-authenticator"
 // default groups-claim mapping. usernameClaim selects the username claim.
 func newTestAuthenticator(t *testing.T, claims map[string]any, usernameClaim string) *Authenticator {
 	t.Helper()
-	mapper, err := NewGroupMapper(DefaultGroupExpression("groups"))
+	mapper, err := NewGroupMapper(DefaultGroupExpression("groups", ""))
 	if err != nil {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
@@ -46,7 +46,7 @@ func newTestAuthenticator(t *testing.T, claims map[string]any, usernameClaim str
 // modeling an invalid/expired/wrong-audience token.
 func newFailingAuthenticator(t *testing.T) *Authenticator {
 	t.Helper()
-	mapper, err := NewGroupMapper(DefaultGroupExpression("groups"))
+	mapper, err := NewGroupMapper(DefaultGroupExpression("groups", ""))
 	if err != nil {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
