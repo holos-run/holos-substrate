@@ -12,6 +12,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	authenticatorv1alpha1 "github.com/holos-run/holos-paas/api/authenticator/v1alpha1"
@@ -554,6 +556,43 @@ func TestBackendGroupsPrefixMutualExclusion(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestBackendGroupsPrefixRejectsExplicitEmpty asserts the CRD MinLength=1 rule
+// rejects a Backend that sets oidc.groupsPrefix to an explicit empty string. The
+// typed client drops "" via omitempty, so this uses an unstructured object to
+// send the literal empty value a raw JSON/YAML client would, proving the
+// validation guards the wire format rather than just the Go zero value.
+func TestBackendGroupsPrefixRejectsExplicitEmpty(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	u := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "authenticator.holos.run/v1alpha1",
+		"kind":       "Backend",
+		"metadata": map[string]any{
+			"name":      "gp-empty",
+			"namespace": ns,
+		},
+		"spec": map[string]any{
+			"host":   "api-gp-empty.example.test",
+			"server": map[string]any{"url": "https://api.example.test:6443"},
+			"oidc": map[string]any{
+				"issuerURL":    "https://issuer.example.test/realms/holos",
+				"clientID":     "holos-authenticator",
+				"groupsPrefix": "",
+			},
+		},
+	}}
+	u.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "authenticator.holos.run", Version: "v1alpha1", Kind: "Backend",
+	})
+
+	err := shared.k8sClient.Create(ctx, u)
+	if err == nil {
+		_ = shared.k8sClient.Delete(context.Background(), u)
+		t.Fatalf("Create accepted a Backend with an explicit empty oidc.groupsPrefix; want MinLength rejection")
 	}
 }
 
