@@ -586,12 +586,23 @@ userDefinedBuildPlan: {
 								// serviceAccountRef defaults to the
 								// holos-authenticator-impersonator ServiceAccount, the API
 								// server's default audience, and a 3600s expiration; the
-								// minted token is cached and rotated before expiry.  The SA's
-								// bound ClusterRole (holos-authenticator-impersonator above)
-								// holds impersonate on users/groups/serviceaccounts, so it can
-								// assume the SA username and the three virtual groups mapped
-								// above.  This is mutually exclusive with credentialsSecretRef
-								// (the `example` Backend above shows that Secret path).
+								// minted token is cached and rotated before expiry.  This is
+								// mutually exclusive with credentialsSecretRef (the `example`
+								// Backend above shows that Secret path).
+								//
+								// NOT ready out of the box: the bound ClusterRole
+								// (holos-authenticator-impersonator above) grants impersonate
+								// ONLY on the namespace-independent SA virtual groups
+								// (system:authenticated, system:serviceaccounts).  For this
+								// example to actually impersonate, the operator must additionally
+								// grant THIS SA impersonate on the served SA identity
+								// (a namespaced Role on the `serviceaccounts` resource, scoped to
+								// the exact SA name) and on the per-namespace
+								// `system:serviceaccounts:<ns>` group the CEL expression above
+								// emits — per the runbook's "Impersonation RBAC for the SA virtual
+								// groups" section.  Those per-Backend grants are deliberately NOT
+								// in the committed default, which would otherwise be a cluster-wide
+								// escalation credential.
 								serviceAccountRef: {}
 							}
 						}
