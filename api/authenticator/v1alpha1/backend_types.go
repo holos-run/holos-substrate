@@ -121,6 +121,8 @@ type GroupMapping struct {
 // tokens, evaluating the CEL mapping, and emitting impersonation headers — lands
 // in later phases (HOL-1387, HOL-1388). Setting a Backend has no runtime effect
 // until then. The fields are additive and backward-compatible.
+//
+// +kubebuilder:validation:XValidation:rule="!(has(self.credentialsSecretRef) && has(self.serviceAccountRef))",message="credentialsSecretRef and serviceAccountRef are mutually exclusive; set at most one"
 type BackendSpec struct {
 	// Host is the request :authority/Host header value this Backend matches. The
 	// authorizer routes an inbound request to this Backend when the request's
@@ -151,13 +153,36 @@ type BackendSpec struct {
 	// Kubernetes credential — the impersonator identity the authorizer
 	// authenticates to the upstream API server with. A Secret named
 	// holos-authenticator-backend-creds in the authorizer's own namespace is the
-	// suggested convention, and the field defaults to that name when omitted.
-	// This is the resource's only authentication dependency; its material is
-	// created at runtime and never committed (secret-handling guardrail).
+	// suggested convention; a nil ref (the field omitted) resolves a Secret of that
+	// default name. It is mutually exclusive with serviceAccountRef (enforced by a
+	// CEL validation rule on this spec). This is the resource's only authentication
+	// dependency when set; its material is created at runtime and never committed
+	// (secret-handling guardrail).
+	//
+	// It is a pointer (rather than a value) so the API server can distinguish an
+	// omitted credentialsSecretRef from an explicitly-set one — the CEL
+	// mutual-exclusion rule's has() check relies on that distinction. A nil pointer
+	// means "use the default Secret"; the field is intentionally not defaulted so a
+	// Backend setting serviceAccountRef instead leaves credentialsSecretRef nil.
 	//
 	// +optional
-	// +kubebuilder:default={name: "holos-authenticator-backend-creds"}
-	CredentialsSecretRef SecretReference `json:"credentialsSecretRef,omitempty"`
+	CredentialsSecretRef *SecretReference `json:"credentialsSecretRef,omitempty"`
+
+	// ServiceAccountRef names a ServiceAccount in the authorizer's own namespace
+	// the authorizer mints a short-lived token for (via the TokenRequest API) to
+	// obtain the backend's privileged impersonator credential, as an alternative to
+	// a long-lived credentialsSecretRef. It is mutually exclusive with
+	// credentialsSecretRef (enforced by a CEL validation rule on this spec). When
+	// omitted, the authorizer uses credentialsSecretRef. See ServiceAccountReference
+	// in common_types.go.
+	//
+	// Phase note (HOL-1399): this phase ships the field, defaults, and validation
+	// only; the controller still resolves the credential exclusively from
+	// credentialsSecretRef. The TokenRequest minting/caching/rotation that consumes
+	// serviceAccountRef lands in HOL-1400.
+	//
+	// +optional
+	ServiceAccountRef *ServiceAccountReference `json:"serviceAccountRef,omitempty"`
 }
 
 // Condition types surfaced on Backend status. The vocabulary follows the Gateway

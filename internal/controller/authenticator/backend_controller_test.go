@@ -460,3 +460,79 @@ func TestReconcileIsIdempotent(t *testing.T) {
 		t.Errorf("store has %d entries, want 1", store.Len())
 	}
 }
+
+// TestBackendCredentialRefMutualExclusion asserts the CRD CEL validation rule
+// (x-kubernetes-validations on BackendSpec) rejects a Backend that sets BOTH
+// credentialsSecretRef and serviceAccountRef, and accepts a Backend that sets
+// only one, or neither. The rejection is enforced by the API server at admission
+// time (HOL-1399), so the assertion is on the Create error, not the reconciler.
+func TestBackendCredentialRefMutualExclusion(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	secretRef := &authenticatorv1alpha1.SecretReference{Name: "custom-creds"}
+	saRef := &authenticatorv1alpha1.ServiceAccountReference{Name: "custom-impersonator"}
+
+	cases := []struct {
+		name       string
+		secretRef  *authenticatorv1alpha1.SecretReference
+		saRef      *authenticatorv1alpha1.ServiceAccountReference
+		wantReject bool
+	}{
+		{name: "both-rejected", secretRef: secretRef, saRef: saRef, wantReject: true},
+		{name: "only-credentialsSecretRef", secretRef: secretRef, wantReject: false},
+		{name: "only-serviceAccountRef", saRef: saRef, wantReject: false},
+		{name: "neither", wantReject: false},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := makeBackend(ns, fmt.Sprintf("mutex-%d", i), fmt.Sprintf("api-mutex-%d.example.test", i))
+			b.Spec.CredentialsSecretRef = tc.secretRef
+			b.Spec.ServiceAccountRef = tc.saRef
+
+			err := shared.k8sClient.Create(ctx, b)
+			if tc.wantReject {
+				if err == nil {
+					t.Fatalf("Create accepted a Backend setting both credentialsSecretRef and serviceAccountRef; want CEL rejection")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Create rejected a valid Backend (%s): %v", tc.name, err)
+			}
+			t.Cleanup(func() { _ = shared.k8sClient.Delete(context.Background(), b) })
+		})
+	}
+}
+
+// TestBackendServiceAccountRefDefaults asserts the CRD applies the
+// ServiceAccountReference defaults — name holos-authenticator-impersonator and
+// expirationSeconds 3600 — when a Backend sets serviceAccountRef with those
+// subfields omitted.
+func TestBackendServiceAccountRefDefaults(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	b := makeBackend(ns, "sa-defaults", "api-sa-defaults.example.test")
+	// An empty ServiceAccountReference: the CRD should default name and
+	// expirationSeconds.
+	b.Spec.ServiceAccountRef = &authenticatorv1alpha1.ServiceAccountReference{}
+	key := createBackend(ctx, t, b)
+	t.Cleanup(func() { _ = shared.k8sClient.Delete(context.Background(), b) })
+
+	got := getBackend(ctx, t, key)
+	saRef := got.Spec.ServiceAccountRef
+	if saRef == nil {
+		t.Fatalf("serviceAccountRef is nil after create")
+	}
+	if saRef.Name != authenticatorv1alpha1.DefaultImpersonatorServiceAccountName {
+		t.Errorf("serviceAccountRef.name = %q, want %q", saRef.Name, authenticatorv1alpha1.DefaultImpersonatorServiceAccountName)
+	}
+	if saRef.ExpirationSeconds == nil {
+		t.Fatalf("serviceAccountRef.expirationSeconds is nil, want defaulted 3600")
+	}
+	if *saRef.ExpirationSeconds != 3600 {
+		t.Errorf("serviceAccountRef.expirationSeconds = %d, want 3600", *saRef.ExpirationSeconds)
+	}
+}

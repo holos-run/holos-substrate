@@ -54,12 +54,19 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 				UsernameClaim: "sub",
 				GroupsClaim:   "groups",
 			},
-			GroupMapping: GroupMapping{CELExpression: "claims.groups"},
+			GroupMapping:         GroupMapping{CELExpression: "claims.groups"},
+			CredentialsSecretRef: &SecretReference{Name: "custom-creds", Key: "token"},
 		},
 	}
 	clone := backend.DeepCopy()
 	if clone == backend {
 		t.Fatal("DeepCopy returned the same pointer")
+	}
+	if clone.Spec.CredentialsSecretRef == backend.Spec.CredentialsSecretRef {
+		t.Error("DeepCopy did not clone the CredentialsSecretRef pointer")
+	}
+	if clone.Spec.CredentialsSecretRef.Name != "custom-creds" {
+		t.Errorf("cloned CredentialsSecretRef.Name = %q, want custom-creds", clone.Spec.CredentialsSecretRef.Name)
 	}
 	if &clone.Spec.Server.CABundle == &backend.Spec.Server.CABundle {
 		t.Error("DeepCopy did not clone the Server.CABundle slice")
@@ -92,5 +99,33 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 func TestDefaultCredentialsSecretName(t *testing.T) {
 	if DefaultCredentialsSecretName != "holos-authenticator-backend-creds" {
 		t.Errorf("DefaultCredentialsSecretName = %q, want holos-authenticator-backend-creds", DefaultCredentialsSecretName)
+	}
+}
+
+// TestDefaultImpersonatorServiceAccountName pins the documented default SA name so
+// the API doc comment, the kubebuilder default marker on
+// ServiceAccountReference.Name, and consumers stay in sync.
+func TestDefaultImpersonatorServiceAccountName(t *testing.T) {
+	if DefaultImpersonatorServiceAccountName != "holos-authenticator-impersonator" {
+		t.Errorf("DefaultImpersonatorServiceAccountName = %q, want holos-authenticator-impersonator", DefaultImpersonatorServiceAccountName)
+	}
+}
+
+// TestServiceAccountReferenceDeepCopy exercises the generated DeepCopy on a
+// ServiceAccountReference, asserting the *int64 ExpirationSeconds is cloned into
+// an independent backing value rather than shared.
+func TestServiceAccountReferenceDeepCopy(t *testing.T) {
+	exp := int64(1800)
+	ref := &ServiceAccountReference{Name: "impersonator", Audience: "api", ExpirationSeconds: &exp}
+	clone := ref.DeepCopy()
+	if clone == ref {
+		t.Fatal("DeepCopy returned the same pointer")
+	}
+	if clone.ExpirationSeconds == ref.ExpirationSeconds {
+		t.Error("DeepCopy did not clone the ExpirationSeconds pointer")
+	}
+	*clone.ExpirationSeconds = 600
+	if *ref.ExpirationSeconds != 1800 {
+		t.Error("mutating the clone's ExpirationSeconds changed the original (shared pointer)")
 	}
 }
