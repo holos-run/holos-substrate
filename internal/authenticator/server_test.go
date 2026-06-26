@@ -234,7 +234,10 @@ func TestCheckAllowNoGroups(t *testing.T) {
 // replacing any caller-supplied value.
 func TestAppendHeaderSetsDeprecatedAppendBool(t *testing.T) {
 	appended := appendHeader(headerImpersonateGroup, "dev")
-	if got := appended.GetAppend().GetValue(); got != true {
+	// GetAppend is deprecated upstream, but the deprecated append bool is exactly
+	// the field Envoy's ext_authz path reads (see appendHeader), so the test must
+	// assert it.
+	if got := appended.GetAppend().GetValue(); got != true { //nolint:staticcheck // SA1019: ext_authz reads the deprecated append bool (HOL-1414)
 		t.Errorf("appendHeader append bool = %v, want true (Envoy ext_authz reads the deprecated append bool, not append_action)", got)
 	}
 	if got, want := appended.GetAppendAction(), corev3.HeaderValueOption_APPEND_IF_EXISTS_OR_ADD; got != want {
@@ -242,7 +245,7 @@ func TestAppendHeaderSetsDeprecatedAppendBool(t *testing.T) {
 	}
 
 	overwritten := overwriteHeader(headerImpersonateUser, "alice")
-	if got := overwritten.GetAppend().GetValue(); got != false {
+	if got := overwritten.GetAppend().GetValue(); got != false { //nolint:staticcheck // SA1019: ext_authz reads the deprecated append bool (HOL-1414)
 		t.Errorf("overwriteHeader append bool = %v, want false (overwrite must not append)", got)
 	}
 	if got, want := overwritten.GetAppendAction(), corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD; got != want {
@@ -677,9 +680,11 @@ func assertHeaderOptions(t *testing.T, got, want []*corev3.HeaderValueOption) {
 			t.Errorf("header[%d] %q append action = %v, want %v", i,
 				gh.GetKey(), got[i].GetAppendAction(), want[i].GetAppendAction())
 		}
-		if got[i].GetAppend().GetValue() != want[i].GetAppend().GetValue() {
+		//nolint:staticcheck // SA1019: ext_authz reads the deprecated append bool (HOL-1414)
+		gotAppend, wantAppend := got[i].GetAppend().GetValue(), want[i].GetAppend().GetValue()
+		if gotAppend != wantAppend {
 			t.Errorf("header[%d] %q append bool = %v, want %v", i,
-				gh.GetKey(), got[i].GetAppend().GetValue(), want[i].GetAppend().GetValue())
+				gh.GetKey(), gotAppend, wantAppend)
 		}
 	}
 }
