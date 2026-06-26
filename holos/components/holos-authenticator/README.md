@@ -112,8 +112,12 @@ impersonator credential for the management cluster. The component renders
 `remote-cluster-a` as the worked KSA example; its `jwks` is a **redacted
 placeholder** an operator replaces with the remote cluster's real JWKS document
 (`kubectl get --raw /openid/v1/jwks`). The JWKS is non-secret public-key
-material and may live in the CR; the impersonator token in
-`credentialsSecretRef` is still created at runtime and never committed.
+material and may live in the CR. This **inbound** validation is independent of
+the **outbound** impersonator credential: the rendered `remote-cluster-a`
+example uses `serviceAccountRef: {}` (the controller mints/rotates the default
+impersonator SA token — no Secret), and an external management cluster would use
+`credentialsSecretRef` (a runtime Secret, never committed) instead. See
+*Credential sources* below.
 
 The full operator procedure — capturing the remote JWKS/issuer, the SA-group
 CEL expression, the SA-virtual-group impersonation RBAC, and end-to-end

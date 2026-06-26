@@ -99,7 +99,7 @@ own OIDC client and mapping.
 | `serviceAccountRef.audience` | no       | API server default audience                | Audience the minted SA token is requested with (empty → the API server's default audience). |
 | `serviceAccountRef.expirationSeconds` | no | `3600` (min `600`)                      | Requested lifetime of the minted SA token; the controller rotates it before expiry. |
 
-> **Exactly one credential source.** `credentialsSecretRef` and
+> **At most one credential source.** `credentialsSecretRef` and
 > `serviceAccountRef` are **mutually exclusive** — a CRD-level CEL validation
 > (`!(has(self.credentialsSecretRef) && has(self.serviceAccountRef))`) rejects a
 > `Backend` that sets both. Set at most one; a `Backend` that sets neither
@@ -332,7 +332,9 @@ evaluates under the authenticator's CEL environment; see the
 
 ### 4. Impersonation RBAC for the SA virtual groups
 
-The `credentialsSecretRef` identity must hold `impersonate` on the impersonated
+The impersonator identity (the `serviceAccountRef` SA — `holos-authenticator-impersonator`
+by default — or a `credentialsSecretRef` token for an external management cluster)
+must hold `impersonate` on the impersonated
 principal — both the SA **identity** and the SA **virtual groups** the CEL
 expression emits. **A subtlety:** when `Impersonate-User` has the form
 `system:serviceaccount:<ns>:<name>`, the Kubernetes API server authorizes the
@@ -367,8 +369,10 @@ roleRef:
   kind: Role
   name: holos-authenticator-ksa-impersonator
 subjects:
-  # The management-cluster ServiceAccount whose token is stored in
-  # remote-cluster-a-impersonator-creds.
+  # The management-cluster impersonator ServiceAccount the Backend's
+  # serviceAccountRef names (holos-authenticator-impersonator by default; the
+  # controller mints/rotates its token). For a credentialsSecretRef Backend,
+  # bind the principal whose token is stored in that Secret instead.
   - kind: ServiceAccount
     name: holos-authenticator-impersonator
     namespace: holos-authenticator

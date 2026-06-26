@@ -266,7 +266,8 @@ spec:
     groupsClaim:    <string, optional>     # default `groups`
   groupMapping:
     celExpression:  <string, optional>     # default `claims["<groupsClaim>"]`
-  # Exactly one credential source (mutually exclusive, CEL-enforced):
+  # At most one credential source (mutually exclusive, CEL-enforced; neither set
+  # → the default credentialsSecretRef Secret):
   credentialsSecretRef:                    # *SecretReference, optional
     name:  <string, default holos-authenticator-backend-creds>
     key:   <string, default token>
