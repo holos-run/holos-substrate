@@ -5,17 +5,37 @@ import (
 	"testing"
 )
 
-// TestDefaultGroupExpression checks the default expression construction for the
-// conventional and an empty groups claim.
+// TestDefaultGroupExpression checks the default expression construction across
+// the conventional and an empty groups claim, with and without a prefix.
 func TestDefaultGroupExpression(t *testing.T) {
-	if got, want := DefaultGroupExpression("groups"), `claims["groups"]`; got != want {
-		t.Errorf("DefaultGroupExpression(groups) = %q, want %q", got, want)
+	tests := []struct {
+		name        string
+		groupsClaim string
+		prefix      string
+		want        string
+	}{
+		{name: "conventional claim, no prefix", groupsClaim: "groups", prefix: "", want: `claims["groups"]`},
+		{name: "empty claim defaults to groups, no prefix", groupsClaim: "", prefix: "", want: `claims["groups"]`},
+		{name: "custom claim, no prefix", groupsClaim: "roles", prefix: "", want: `claims["roles"]`},
+		{name: "conventional claim with prefix", groupsClaim: "groups", prefix: "oidc:", want: `claims["groups"].map(g, "oidc:" + g)`},
+		{name: "empty claim defaults to groups, with prefix", groupsClaim: "", prefix: "oidc:", want: `claims["groups"].map(g, "oidc:" + g)`},
+		{name: "custom claim with prefix", groupsClaim: "roles", prefix: "oidc:", want: `claims["roles"].map(g, "oidc:" + g)`},
+		{
+			// A prefix containing a double quote is embedded as a CEL string
+			// literal via %q, so it is escaped rather than terminating the literal
+			// and injecting CEL.
+			name:        "prefix with quote is escaped, not injected",
+			groupsClaim: "groups",
+			prefix:      `a"b`,
+			want:        `claims["groups"].map(g, "a\"b" + g)`,
+		},
 	}
-	if got, want := DefaultGroupExpression(""), `claims["groups"]`; got != want {
-		t.Errorf("DefaultGroupExpression(\"\") = %q, want %q", got, want)
-	}
-	if got, want := DefaultGroupExpression("roles"), `claims["roles"]`; got != want {
-		t.Errorf("DefaultGroupExpression(roles) = %q, want %q", got, want)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := DefaultGroupExpression(tc.groupsClaim, tc.prefix); got != tc.want {
+				t.Errorf("DefaultGroupExpression(%q, %q) = %q, want %q", tc.groupsClaim, tc.prefix, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -30,21 +50,39 @@ func TestGroupMapperGroups(t *testing.T) {
 	}{
 		{
 			name:   "default groups claim present",
-			expr:   DefaultGroupExpression("groups"),
+			expr:   DefaultGroupExpression("groups", ""),
 			claims: map[string]any{"groups": []any{"dev", "ops"}},
 			want:   []string{"dev", "ops"},
 		},
 		{
 			name:   "default groups claim missing yields no groups",
-			expr:   DefaultGroupExpression("groups"),
+			expr:   DefaultGroupExpression("groups", ""),
 			claims: map[string]any{"sub": "alice"},
 			want:   nil,
 		},
 		{
 			name:   "custom groups claim name",
-			expr:   DefaultGroupExpression("roles"),
+			expr:   DefaultGroupExpression("roles", ""),
 			claims: map[string]any{"roles": []any{"admin"}},
 			want:   []string{"admin"},
+		},
+		{
+			name:   "default groups claim with prefix",
+			expr:   DefaultGroupExpression("groups", "oidc:"),
+			claims: map[string]any{"groups": []any{"dev", "ops"}},
+			want:   []string{"oidc:dev", "oidc:ops"},
+		},
+		{
+			name:   "prefixed default mapping over missing claim yields no groups",
+			expr:   DefaultGroupExpression("groups", "oidc:"),
+			claims: map[string]any{"sub": "alice"},
+			want:   nil,
+		},
+		{
+			name:   "custom groups claim name with prefix",
+			expr:   DefaultGroupExpression("roles", "oidc:"),
+			claims: map[string]any{"roles": []any{"admin"}},
+			want:   []string{"oidc:admin"},
 		},
 		{
 			name:   "custom expression prefixing groups",
@@ -138,7 +176,7 @@ func TestNewGroupMapperRejectsBadExpressions(t *testing.T) {
 // evaluation error rather than silently coerced. The default groups mapping over
 // a token whose groups claim is a bare string is the realistic case.
 func TestGroupMapperRejectsNonListAtRuntime(t *testing.T) {
-	m, err := NewGroupMapper(DefaultGroupExpression("groups"))
+	m, err := NewGroupMapper(DefaultGroupExpression("groups", ""))
 	if err != nil {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}

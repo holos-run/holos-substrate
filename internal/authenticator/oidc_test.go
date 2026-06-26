@@ -999,7 +999,7 @@ func (f *fakeVerifier) Verify(_ context.Context, _ string) (*VerifiedToken, erro
 // fake verifier and the default group mapping: username from sub, groups from the
 // groups claim.
 func TestAuthenticatorDefaultGroups(t *testing.T) {
-	mapper, err := NewGroupMapper(DefaultGroupExpression("groups"))
+	mapper, err := NewGroupMapper(DefaultGroupExpression("groups", ""))
 	if err != nil {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
@@ -1024,7 +1024,7 @@ func TestAuthenticatorDefaultGroups(t *testing.T) {
 // TestAuthenticatorCustomUsernameClaim asserts the username is read from the
 // configured claim, not hard-coded to sub.
 func TestAuthenticatorCustomUsernameClaim(t *testing.T) {
-	mapper, err := NewGroupMapper(DefaultGroupExpression("groups"))
+	mapper, err := NewGroupMapper(DefaultGroupExpression("groups", ""))
 	if err != nil {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
@@ -1046,7 +1046,7 @@ func TestAuthenticatorCustomUsernameClaim(t *testing.T) {
 // TestAuthenticatorMissingUsernameClaim asserts a token missing the username
 // claim is rejected (the proxy cannot impersonate without a username).
 func TestAuthenticatorMissingUsernameClaim(t *testing.T) {
-	mapper, err := NewGroupMapper(DefaultGroupExpression("groups"))
+	mapper, err := NewGroupMapper(DefaultGroupExpression("groups", ""))
 	if err != nil {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
@@ -1061,7 +1061,7 @@ func TestAuthenticatorMissingUsernameClaim(t *testing.T) {
 // TestAuthenticatorMissingGroupsClaimIsEmpty asserts a token with no groups claim
 // authenticates with an empty group set (not an error).
 func TestAuthenticatorMissingGroupsClaimIsEmpty(t *testing.T) {
-	mapper, err := NewGroupMapper(DefaultGroupExpression("groups"))
+	mapper, err := NewGroupMapper(DefaultGroupExpression("groups", ""))
 	if err != nil {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
@@ -1080,7 +1080,7 @@ func TestAuthenticatorMissingGroupsClaimIsEmpty(t *testing.T) {
 // TestAuthenticatorVerifyError asserts a verification failure propagates from
 // Authenticate rather than being swallowed.
 func TestAuthenticatorVerifyError(t *testing.T) {
-	mapper, err := NewGroupMapper(DefaultGroupExpression("groups"))
+	mapper, err := NewGroupMapper(DefaultGroupExpression("groups", ""))
 	if err != nil {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
