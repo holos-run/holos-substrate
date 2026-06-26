@@ -269,11 +269,19 @@ kubectl get --raw /openid/v1/jwks
 
 `spec.oidc.clientID` is the **audience** the remote `SecretStore`'s token request
 asks for (the `aud` the SA token is minted with), matched against the token's
-`aud`. The JWKS is non-secret public-key material and may live in the CR; per the
-**Runtime Secret Handling** guardrail the `credentialsSecretRef` impersonator
-token is created at runtime and **never** committed.
+`aud`. The JWKS is non-secret public-key material and may live in the CR. The
+**outbound** impersonator credential is separate from this inbound validation: for
+an in-cluster management API server the rendered example uses `serviceAccountRef`
+(the controller mints/rotates the token, no Secret); if you instead use
+`credentialsSecretRef`, that impersonator token is created at runtime and **never**
+committed per the **Runtime Secret Handling** guardrail.
 
 ### 2. Populate the Backend
+
+This mirrors the rendered `remote-cluster-a` example: `oidc.jwks` validates the
+**inbound** remote SA token offline, and `serviceAccountRef` supplies the
+**outbound** management-cluster impersonator credential (the controller mints and
+rotates the `holos-authenticator-impersonator` SA's token — no Secret to create):
 
 ```yaml
 apiVersion: authenticator.holos.run/v1alpha1
@@ -292,9 +300,14 @@ spec:
     url: "https://kubernetes.default.svc"       # the MANAGEMENT cluster's API server
   groupMapping:
     celExpression: '["system:authenticated", "system:serviceaccounts", "system:serviceaccounts:" + claims["kubernetes.io"].namespace]'
-  credentialsSecretRef:
-    name: "remote-cluster-a-impersonator-creds"
+  serviceAccountRef: {}                         # mint/rotate the default impersonator SA token
 ```
+
+> For an **external** management API server (the cluster cannot mint a token for a
+> remote SA), replace `serviceAccountRef: {}` with a `credentialsSecretRef` naming
+> a runtime Secret that holds the out-of-band impersonator token — the two are
+> mutually exclusive. The impersonation RBAC in step 4 is identical either way;
+> it applies to whichever impersonator identity the Backend uses.
 
 ### 3. The SA-group CEL expression
 
@@ -791,11 +804,15 @@ See [README.md](../../README.md) (*Container image* → *Multi-arch images* /
    for a discovery backend, or `spec.oidc.jwks` parses to at least one usable key
    for a static-JWKS backend (a malformed JWKS is rejected `Ready=False` with
    reason `InvalidSpec`) — and it has claimed its `host`. **The reconciler does
-   not read the credential Secret** —
-   the impersonator credential is resolved later, on the `Check` data path
-   (failing closed with 403 if absent), so `Ready=True` is **not** a signal that
-   the credential Secret exists. Provision the Secret (next section) regardless
-   of the Backend's readiness:
+   not resolve the impersonator credential** — neither reading a
+   `credentialsSecretRef` Secret nor minting a `serviceAccountRef` token. The
+   credential is resolved later, on the `Check` data path (failing closed with 403
+   if absent — a missing Secret, or a TokenRequest/RBAC failure for the SA path),
+   so `Ready=True` is **not** a signal that the credential is usable. Ensure the
+   credential is provisioned (the [credential section](#provisioning-the-credential-serviceaccountref-or-a-runtime-secret)
+   — for `serviceAccountRef` confirm the impersonator SA and its impersonation
+   RBAC exist; for `credentialsSecretRef` create the Secret) regardless of the
+   Backend's readiness:
 
    ```bash
    kubectl -n holos-authenticator get backends
@@ -831,10 +848,20 @@ See [README.md](../../README.md) (*Container image* → *Multi-arch images* /
   any `Backend.spec.host`, or the `Backend` is in a namespace other than
   `holos-authenticator` (tenant Backends are never cached). Check
   `kubectl -n holos-authenticator get backends` and the request's `:authority`.
-- **403 even with a valid token.** The impersonator credential Secret named by
-  `credentialsSecretRef` is missing in the `holos-authenticator` namespace, or
-  the principal it holds lacks `impersonate` on `users`/`groups`. Verify the
-  Secret and the impersonator ClusterRole binding.
+- **403 even with a valid token.** The impersonator credential could not be
+  resolved or lacks the needed `impersonate` RBAC. For a `credentialsSecretRef`
+  Backend, the named Secret is missing in the `holos-authenticator` namespace. For
+  a `serviceAccountRef` Backend, the referenced SA does not exist or the manager's
+  `Role` cannot `create` on its `serviceaccounts/token` (the shipped grant is
+  scoped by `resourceNames` to `holos-authenticator-impersonator` — widen it if you
+  point `serviceAccountRef.name` elsewhere). In either case the impersonator
+  identity may also lack `impersonate` on what the CEL mapping emits — the shipped
+  default ClusterRole grants only the SA virtual groups `system:authenticated`/
+  `system:serviceaccounts`, so impersonating a specific user, a per-namespace
+  `system:serviceaccounts:<ns>` group, or a specific SA (via the `serviceaccounts`
+  resource, not `users`) needs the per-`Backend` grants from the *Impersonation
+  RBAC* section. Verify the credential source, the manager `Role`, and the
+  impersonator ClusterRole/Role bindings.
 - **Request denied because it "carries impersonation headers."** This is the
   failure-closed sanitization (step 2): a client (or an upstream proxy) sent an
   `Impersonate-*` header. Ensure no proxy in front of the waypoint injects one;
