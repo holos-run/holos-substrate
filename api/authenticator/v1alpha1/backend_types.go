@@ -134,8 +134,13 @@ type GroupMapping struct {
 	// than defaulted to a static `claims.groups` string, so that configuring a
 	// non-default groupsClaim is honored without also having to override this
 	// expression. Set it only to transform the groups (e.g. prefix or filter).
+	// MinLength=1 rejects an explicit empty string, which is an ambiguous no-op
+	// (semantically equivalent to omitting the field for the default mapping) that
+	// would also make the spec.oidc.groupsPrefix mutual-exclusion has() check fire
+	// spuriously; omit the field to select the default mapping.
 	//
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	CELExpression string `json:"celExpression,omitempty"`
 }
 
