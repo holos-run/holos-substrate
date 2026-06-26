@@ -821,16 +821,20 @@ group** and treats a comma-separated value as a **single literal group name**
 (`"dev,ops"`), so left as-is the user would be impersonated into a non-existent
 group and lose their real group memberships.
 
-> **Group values must not contain commas — the authorizer enforces this.** The
-> comma-join + split round-trip is only lossless if no single group value contains a
-> comma. A mapped group like `dev,system:masters` would otherwise be split into two
-> impersonated groups, smuggling `system:masters`. The authorizer therefore
-> **denies (HTTP 403, fail-closed) any request whose mapped groups include a
-> comma** (`internal/authenticator/server.go`, `firstGroupWithComma`), so the Lua
-> split below can never fan one group into many. The username is set with a single
-> overwrite header (not comma-joined) and needs no such guard. Do not weaken the
-> guard without replacing the comma encoding with one that is unambiguous for
-> comma-bearing group names.
+> **Group values must contain no comma and no surrounding whitespace — the
+> authorizer enforces this.** The comma-join + split round-trip is only lossless if
+> no single group value contains a comma **or** has leading/trailing whitespace.
+> `dev,system:masters` would be split into two impersonated groups (smuggling
+> `system:masters`), and ` system:masters` would be **trimmed** by the split filter
+> into the bare `system:masters` — both privilege-escalation vectors. The authorizer
+> therefore **denies (HTTP 403, fail-closed) any request whose mapped groups include
+> a comma or surrounding whitespace** (`internal/authenticator/server.go`,
+> `firstUnsafeGroup`), so the Lua split below can never fan one group into many or
+> normalize a padded value into a privileged one. Whitespace *interior* to a value
+> is left intact (the filter only strips surrounding whitespace). The username is set
+> with a single overwrite header (not comma-joined, not split) and needs no such
+> guard. Do not weaken the guard or the filter's trim independently — they are a
+> matched pair; changing one without the other reopens the smuggling vector.
 
 The comma-joined header therefore **must be paired with an Envoy Lua filter** that
 runs **after** ext_authz (so it sees the authorizer's injected header) and

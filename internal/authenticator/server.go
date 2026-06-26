@@ -185,17 +185,20 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (*aut
 		return deniedResponse(typev3.StatusCode_Unauthorized, "invalid token", nil), nil
 	}
 
-	// 4b. Reject any mapped group containing a comma (failure-closed). Each group is
-	// returned as an APPEND_IF_EXISTS_OR_ADD Impersonate-Group option that Envoy
-	// comma-joins into a single header (see okResponse), which the paired Lua filter
-	// splits back on commas. A group value that itself contained a comma would be
-	// split into two impersonated groups — e.g. "dev,system:masters" would smuggle
-	// system:masters — so a comma in a group name is ambiguous and unsafe under this
-	// encoding and is denied rather than impersonated. The username is set with a
-	// single overwrite header (no comma-join), so it needs no such guard.
-	if group, ok := firstGroupWithComma(identity.Groups); ok {
-		s.log.V(1).Info("denying request: mapped group contains a comma", "host", host, "group", group)
-		return deniedResponse(typev3.StatusCode_Forbidden, "mapped group contains a comma", nil), nil
+	// 4b. Reject any mapped group that is unsafe under the comma-joined
+	// Impersonate-Group encoding (failure-closed). Each group is returned as an
+	// APPEND_IF_EXISTS_OR_ADD Impersonate-Group option that Envoy comma-joins into a
+	// single header (see okResponse), which the paired Lua filter splits back on
+	// commas and trims of surrounding whitespace. Two group shapes break that
+	// round-trip and could smuggle a different group:
+	//   - a comma in the value ("dev,system:masters") splits into two groups; and
+	//   - leading/trailing whitespace (" system:masters") is trimmed by the split
+	//     filter into the bare group.
+	// Both are denied rather than impersonated. The username is set with a single
+	// overwrite header (no comma-join, no split filter), so it needs no such guard.
+	if group, ok := firstUnsafeGroup(identity.Groups); ok {
+		s.log.V(1).Info("denying request: mapped group is unsafe for the Impersonate-Group encoding", "host", host, "group", group)
+		return deniedResponse(typev3.StatusCode_Forbidden, "mapped group contains a comma or surrounding whitespace", nil), nil
 	}
 
 	// 5. Resolve the backend's privileged impersonator credential from whichever
@@ -237,17 +240,20 @@ func firstImpersonationHeader(headers map[string]string) (string, bool) {
 	return "", false
 }
 
-// firstGroupWithComma returns the first group containing a comma and true, or
-// ("", false) if none do. A comma in a mapped group value is unsafe under the
-// comma-joined Impersonate-Group encoding (see okResponse): Envoy joins the
-// per-group append options into one comma-separated header and the paired Lua
-// filter splits it back on commas, so a group whose own value held a comma would
-// fan out into multiple impersonated groups (a privilege-escalation smuggling
-// vector). The Check path denies such a request fail-closed rather than emitting
-// it.
-func firstGroupWithComma(groups []string) (string, bool) {
+// firstUnsafeGroup returns the first group that is unsafe under the comma-joined
+// Impersonate-Group encoding and true, or ("", false) if all groups are safe. A
+// group is unsafe when it contains a comma or has leading/trailing whitespace,
+// because Envoy joins the per-group append options into one comma-separated header
+// (see okResponse) and the paired Lua filter splits it back on commas and trims
+// each element: a comma in a value would fan it into multiple impersonated groups,
+// and surrounding whitespace (" system:masters") would be trimmed into the bare
+// group — both privilege-escalation smuggling vectors. The Check path denies such
+// a request fail-closed rather than emitting it. (Whitespace interior to a value
+// is left intact; only the surrounding whitespace the split filter would strip is
+// rejected.)
+func firstUnsafeGroup(groups []string) (string, bool) {
 	for _, group := range groups {
-		if strings.Contains(group, ",") {
+		if strings.Contains(group, ",") || strings.TrimSpace(group) != group {
 			return group, true
 		}
 	}

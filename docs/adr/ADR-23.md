@@ -365,13 +365,17 @@ applies them.
   `Impersonate-Group`
   header*](../runbooks/holos-authenticator.md#splitting-the-comma-joined-impersonate-group-header)
   section.
-- **Comma-bearing group values are denied fail-closed.** The comma-join + split
-  round-trip is lossless only if no single group value contains a comma; otherwise a
-  mapped group like `dev,system:masters` would be split into two impersonated groups,
-  a privilege-escalation smuggling vector. The authorizer therefore **denies (HTTP
-  403, fail-closed) any request whose mapped groups include a comma** (the
-  `firstGroupWithComma` guard in `internal/authenticator/server.go`, with a unit
-  test), so the split filter can never fan one group into many. This is the one
+- **Unsafe group values are denied fail-closed.** The comma-join + split round-trip
+  is lossless only if no single group value contains a comma **or** has
+  leading/trailing whitespace. A mapped group like `dev,system:masters` would be
+  split into two impersonated groups, and ` system:masters` would be **trimmed** by
+  the split filter into the bare `system:masters` — both privilege-escalation
+  smuggling vectors. The authorizer therefore **denies (HTTP 403, fail-closed) any
+  request whose mapped groups include a comma or surrounding whitespace** (the
+  `firstUnsafeGroup` guard in `internal/authenticator/server.go`, with unit tests),
+  so the split filter can never fan one group into many or normalize a padded value
+  into a privileged one. The guard and the filter's whitespace trim are a matched
+  pair — changing one without the other reopens the vector. This is the one
   behavioral change in Revision 6; the per-group append-option encoding itself is
   unchanged.
 - **Not yet rendered — it belongs to the deferred waypoint topology.** Like the
