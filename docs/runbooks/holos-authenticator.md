@@ -881,8 +881,8 @@ any `Impersonate-*` header) itself. The authorizer **already** denies such reque
 server-side (step 2) — that, not this filter, is the smuggling defense — so this
 Lua **reject** filter is **optional** and **not required** for the security
 property. It runs **before** ext_authz and re-enforces the same guard at the proxy
-as defense in depth, stripping the inputs before any header mutation. It rejects the
-configured groups header (substitute the
+as defense in depth, rejecting the request (HTTP 403) before any header mutation. It
+refuses the configured groups header (substitute the
 value of `--impersonate-groups-header`; the default `x-impersonate-groups` is shown)
 **and** every Kubernetes impersonation header on the incoming request:
 

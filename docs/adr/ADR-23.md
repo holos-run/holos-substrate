@@ -432,15 +432,18 @@ a Keycloak group was ignored.
   not collide with the inbound-rejection guard for `Impersonate-*` and the API server
   never receives the comma-joined helper directly. This removes the dependency on
   Envoy's deprecated-`append` comma-join behavior entirely.
-- **Paired reject + split Lua filters.** The split filter (after ext_authz) reads the
-  configured groups header, removes it, and re-adds one `Impersonate-Group` per
-  comma-delimited element for the API server. A new **reject** filter (before ext_authz)
-  refuses any request carrying the configured groups header or any `Impersonate-*`
-  header — the same fail-closed guard the authorizer enforces server-side (now extended
-  to the configured groups header), at the proxy as defense in depth. Both worked
-  `EnvoyFilter`s are in the [runbook's *Splitting the comma-joined groups
+- **Split Lua filter (required) + reject Lua filter (optional defense in depth).**
+  The split filter (after ext_authz) reads the configured groups header, removes it,
+  and re-adds one `Impersonate-Group` per comma-delimited element for the API server.
+  An optional **reject** filter (before ext_authz) refuses any request carrying the
+  configured groups header or any `Impersonate-*` header — the same fail-closed guard
+  the authorizer enforces server-side (now extended to the configured groups header),
+  at the proxy as defense in depth. The worked split `EnvoyFilter` and the
+  optional-reject guidance are in the [runbook's *Splitting the comma-joined groups
   header*](../runbooks/holos-authenticator.md#splitting-the-comma-joined-groups-header)
-  section.
+  section. (**Revision 8** ratifies that only the split filter is required — smuggling
+  prevention is the authenticator's responsibility — and that it is ordered after
+  ext_authz with `filterClass: AUTHZ`.)
 - **Unchanged.** The fail-closed `firstUnsafeGroup` guard (a mapped group with a comma
   or surrounding whitespace is denied 403) carries over verbatim — the comma-join +
   split round-trip has the same losslessness requirement. The username is still a single
