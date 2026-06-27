@@ -16,6 +16,7 @@
 | 4        | 2026-06-25 | @jeffmccune | `serviceAccountRef` credential source — additive TokenRequest-minted impersonator credential, default impersonate-only SA, impersonation-scope ratification (below) |
 | 5        | 2026-06-25 | @jeffmccune | Group-prefix extension — additive `spec.oidc.groupsPrefix` for the default groups-claim mapping (below) |
 | 6        | 2026-06-26 | @jeffmccune | Group encoding correction — `Impersonate-Group` is emitted as `APPEND_IF_EXISTS_OR_ADD`, Envoy comma-joins it, and it must be paired with a Lua split filter (below) |
+| 7        | 2026-06-27 | @jeffmccune | Group encoding fix (HOL-1416) — groups emitted as a single comma-joined **overwrite/set** header (configurable, default `X-Impersonate-Groups`), not per-group append options Envoy silently drops; paired reject + split Lua filters (below) |
 
 ## As-built (Revision 2)
 
@@ -28,10 +29,12 @@ with the deviations noted below. `Status` is now `Implemented`.
   `Impersonate-*` headers (failure-closed — denies rather than scrubs), validates
   the OIDC token (issuer discovery + JWKS, `iss`/`aud`/`exp`), maps claims to
   groups via CEL (default `claims["<groupsClaim>"]`, i.e. `claims["groups"]`),
-  and returns `Impersonate-User`/`Impersonate-Group` plus the impersonator
-  credential, overwriting `Authorization` (the groups are emitted as
-  `APPEND_IF_EXISTS_OR_ADD` options that Envoy comma-joins into one
-  `Impersonate-Group` header, paired with a Lua split filter — Revision 6). The
+  and returns `Impersonate-User` plus a single comma-joined groups header and the
+  impersonator credential, overwriting `Authorization` (the groups are emitted as
+  one comma-joined **overwrite/set** header — `X-Impersonate-Groups` by default,
+  configurable — that a paired Lua split filter unpacks into one
+  `Impersonate-Group` per group, **not** per-group append options Envoy drops —
+  Revision 7, superseding Revision 6). The
   `authenticator.holos.run/v1alpha1`
   `Backend` CRD carries the ADR-22 status contract. The operator guide is
   [the runbook](../runbooks/holos-authenticator.md).
@@ -332,6 +335,17 @@ section.
 
 ## Group encoding: comma-joined `Impersonate-Group` + Lua split filter (Revision 6)
 
+> **Superseded by Revision 7 (HOL-1416).** This revision's encoding — per-group
+> `Impersonate-Group` `APPEND_IF_EXISTS_OR_ADD` options relying on Envoy to
+> comma-join them — is exactly what broke in production: Envoy's ext_authz path
+> applies an authorizer's append header only if the request *already* carries it,
+> and the inbound request never carries `Impersonate-Group`, so every group was
+> silently dropped. Revision 7 replaces the per-group append encoding with a single
+> comma-joined **overwrite/set** header under a distinct, configurable name
+> (default `X-Impersonate-Groups`). The fail-closed unsafe-group guard and the Lua
+> split filter survive into Revision 7; only the response encoding and the paired
+> filters change. The section below is retained for historical context.
+
 Revision 6 (HOL-1413) corrects how the multi-group `Impersonate-Group` encoding is
 described, and records the Envoy Lua filter it must be paired with. The original
 as-built note (Revision 2) claimed the authorizer's per-group
@@ -361,10 +375,9 @@ applies them.
   runs — **not** the authenticator's own pods (the authenticator is the ext_authz
   *service*, not a proxy on the request path). The worked `EnvoyFilter` (`targetRefs`
   to the waypoint `Gateway`, the `INSERT_AFTER` `envoy.filters.http.ext_authz` patch,
-  and the `inline_code` Lua) is in the [runbook's *Splitting the comma-joined
-  `Impersonate-Group`
-  header*](../runbooks/holos-authenticator.md#splitting-the-comma-joined-impersonate-group-header)
-  section.
+  and the `inline_code` Lua) is in the [runbook's *Splitting the comma-joined groups
+  header*](../runbooks/holos-authenticator.md#splitting-the-comma-joined-groups-header)
+  section (updated for Revision 7's encoding).
 - **Unsafe group values are denied fail-closed.** The comma-join + split round-trip
   is lossless only if no single group value contains a comma **or** has
   leading/trailing whitespace. A mapped group like `dev,system:masters` would be
@@ -388,6 +401,50 @@ applies them.
   *encoding* (per-group append options) is unchanged; Revision 6's only behavioral
   change is the fail-closed comma-bearing-group guard above, plus the corrected
   documentation and the recorded paired filter.
+
+## Group encoding fix: single overwrite/set groups header + reject/split Lua (Revision 7)
+
+Revision 7 (HOL-1416) fixes the **production failure** Revision 6's encoding caused.
+With the per-group `Impersonate-Group` append encoding deployed, requests reached the
+API server with the impersonated **user** but **zero** groups — every RBAC binding to
+a Keycloak group was ignored.
+
+- **Root cause: Envoy drops an authorizer's append header when the request lacks it.**
+  Envoy's ext_authz gRPC client classifies each authorizer-returned header by the
+  deprecated `append` bool: `append=false` → `headers_to_set` (applied with `setCopy`,
+  which adds the header unconditionally); `append=true` → `headers_to_append`, which
+  `ext_authz.cc` `onComplete` applies with `appendCopy` **only if the request already
+  carries that header** (`if (!header_to_modify.empty())`). The inbound request never
+  carries `Impersonate-Group` (clients are rejected from supplying one), so the
+  `append=true` group entries find nothing to append onto and are **discarded** before
+  the split Lua filter ever sees them. `Impersonate-User` survived only because it uses
+  `set`/`setCopy`. Revision 6's analysis traced only the *classification*
+  (`ext_authz_grpc_impl.cc`), missing the `onComplete` "only if it already exists"
+  guard one layer later.
+- **Fix: one comma-joined overwrite/set header under a distinct, configurable name.**
+  The authorizer now emits the mapped groups as a **single** `HeaderValueOption` whose
+  value is the groups pre-joined on commas (`oidc:dev,oidc:ops`), with the
+  **overwrite/set** action (`headers_to_set` → `setCopy`), so Envoy adds it even when
+  the request did not already carry it. The header is **not** `Impersonate-Group` but a
+  distinct, non-`Impersonate-*` name — **`X-Impersonate-Groups` by default**,
+  configurable per deployment via the `--impersonate-groups-header` flag — so it does
+  not collide with the inbound-rejection guard for `Impersonate-*` and the API server
+  never receives the comma-joined helper directly. This removes the dependency on
+  Envoy's deprecated-`append` comma-join behavior entirely.
+- **Paired reject + split Lua filters.** The split filter (after ext_authz) reads the
+  configured groups header, removes it, and re-adds one `Impersonate-Group` per
+  comma-delimited element for the API server. A new **reject** filter (before ext_authz)
+  refuses any request carrying the configured groups header or any `Impersonate-*`
+  header — the same fail-closed guard the authorizer enforces server-side (now extended
+  to the configured groups header), at the proxy as defense in depth. Both worked
+  `EnvoyFilter`s are in the [runbook's *Splitting the comma-joined groups
+  header*](../runbooks/holos-authenticator.md#splitting-the-comma-joined-groups-header)
+  section.
+- **Unchanged.** The fail-closed `firstUnsafeGroup` guard (a mapped group with a comma
+  or surrounding whitespace is denied 403) carries over verbatim — the comma-join +
+  split round-trip has the same losslessness requirement. The username is still a single
+  overwrite header. Like Revision 6's filter, the reject/split filters belong to the
+  deferred waypoint topology and are not yet rendered by the component.
 
 ## Context and Problem Statement
 
@@ -516,17 +573,18 @@ On each request Envoy forwards to the authorizer's `Check`, the authenticator
    claim directly to Kubernetes groups; a backend may override it (e.g. to derive
    groups from a different claim, prefix them, or filter them).
 5. **Returns Kubernetes impersonation headers.** On success it returns an
-   `OkResponse` injecting `Impersonate-User` and one `Impersonate-Group`
-   `APPEND_IF_EXISTS_OR_ADD` option per mapped group, plus the backend's own
+   `OkResponse` injecting `Impersonate-User` and a single comma-joined groups
+   header (the mapped groups as one CSV value under the configured groups header,
+   default `X-Impersonate-Groups`), plus the backend's own
    privileged credential (an `Authorization: Bearer <token>` for a ServiceAccount
    holding the `impersonate` verb), having first removed every inbound
    impersonation/`Authorization` header per step 2 so only the derived values reach
-   the upstream. Envoy **comma-joins** the repeated append options into a single
-   `Impersonate-Group: a,b` header (it does not emit one line per value); because
+   the upstream. The groups header uses the **overwrite/set** action (Envoy adds it
+   unconditionally), **not** per-group append options Envoy silently drops; because
    the API server requires one `Impersonate-Group` header per group and does not
    split a comma-separated value, this header **must be paired with an Envoy Lua
-   filter** that unpacks the comma list into one header per group before the request
-   reaches the upstream — see Revision 6 below and the
+   filter** that unpacks the comma list into one `Impersonate-Group` per group before
+   the request reaches the upstream — see Revision 7 below and the
    [runbook](../runbooks/holos-authenticator.md). Envoy then forwards the request
    to the upstream API server with those headers and **no other reverse proxy** in
    the path; the API server authorizes the request as the impersonated user with

@@ -7,16 +7,28 @@
 //
 // The ext_authz Check (HOL-1388) routes each request to a Backend by Host,
 // validates the caller's OIDC bearer token, and on success returns an OK response
-// that sets Kubernetes impersonation headers (Impersonate-User, plus one
-// Impersonate-Group APPEND_IF_EXISTS_OR_ADD option per mapped group that Envoy
-// comma-joins into a single header — paired with a Lua split filter, see
-// okResponse), injects the backend's privileged
+// that sets Kubernetes impersonation headers (Impersonate-User, plus a single
+// comma-joined groups header — by default X-Impersonate-Groups, configurable via
+// --impersonate-groups-header — paired with a Lua split filter, see okResponse),
+// injects the backend's privileged
 // credential as the upstream Authorization, and removes the caller's original
 // token — so Envoy forwards the request straight to the API server. Any failure
 // (unknown host, missing/invalid token, credential read failure, internal error)
 // returns a fail-closed Denied 401/403; the server never returns OK on error. The
 // GRPCServer manager.Runnable runs Check on the manager's lifecycle and
 // leader-election context.
+//
+// The groups header is deliberately NOT Impersonate-Group: Envoy's ext_authz
+// path classifies an authorizer-returned header carrying the deprecated
+// append=true bool into headers_to_append, which Envoy applies with appendCopy
+// ONLY IF the request already carries that header — and the inbound request never
+// carries Impersonate-Group (it is rejected fail-closed), so an appended
+// Impersonate-Group would be silently dropped before reaching the API server
+// (HOL-1416). Emitting the groups as a single overwrite (set / setCopy, which
+// adds the header unconditionally) into a distinct non-Impersonate-* header
+// sidesteps that drop entirely; the paired Lua split filter, running after
+// ext_authz, unpacks the comma list into one Impersonate-Group line per group for
+// the API server.
 package authenticator
 
 import (
@@ -32,7 +44,6 @@ import (
 	rpcstatus "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -46,8 +57,15 @@ const (
 	headerAuthorization = "Authorization"
 	// headerImpersonateUser sets the Kubernetes user the request is impersonated as.
 	headerImpersonateUser = "Impersonate-User"
-	// headerImpersonateGroup is repeated once per mapped Kubernetes group.
-	headerImpersonateGroup = "Impersonate-Group"
+	// defaultGroupsHeader is the default name of the single comma-joined groups
+	// header the authorizer writes the mapped Kubernetes groups into (one CSV
+	// value, e.g. "oidc:dev,oidc:ops"), with an overwrite/set action so Envoy adds
+	// it unconditionally rather than dropping it (HOL-1416). It is deliberately a
+	// non-Impersonate-* header so the inbound-rejection guard and the reject Lua
+	// filter can refuse a client-supplied copy without colliding with the real
+	// Impersonate-Group the split Lua filter ultimately emits. It is configurable
+	// per deployment via --impersonate-groups-header (CheckServer.groupsHeader).
+	defaultGroupsHeader = "x-impersonate-groups"
 	// headerWWWAuthenticate is returned on a missing-token 401 per RFC 7235.
 	headerWWWAuthenticate = "WWW-Authenticate"
 	// impersonatePrefix is the lowercase prefix every Kubernetes impersonation
@@ -98,23 +116,86 @@ type CheckServer struct {
 	// namespace).
 	namespace string
 
+	// groupsHeader is the name of the single comma-joined groups header the OK
+	// response writes the mapped groups into (HOL-1416), set from the
+	// --impersonate-groups-header flag. An empty value resolves to
+	// defaultGroupsHeader ("x-impersonate-groups") via groupsHeaderName, so a
+	// zero-value CheckServer behaves as the documented default.
+	groupsHeader string
+
 	log logr.Logger
 }
 
 // NewCheckServer returns a CheckServer that resolves backends from store, reads
 // impersonator credential Secrets from namespace via reader (the manager's
 // APIReader), mints ServiceAccount tokens via writer (the manager's writable
-// client, used for the TokenRequest create), and logs through log. store is the
-// same registry the BackendReconciler writes, so the Check path sees backends as
-// they become ready. writer may be nil for a Secret-only server (e.g. in tests);
-// a backend that resolves its credential from a ServiceAccount then denies
-// fail-closed.
-func NewCheckServer(store *Store, reader client.Reader, writer client.Client, namespace string, log logr.Logger) *CheckServer {
+// client, used for the TokenRequest create), writes the mapped groups into the
+// groupsHeader header (empty resolves to defaultGroupsHeader), and logs through
+// log. store is the same registry the BackendReconciler writes, so the Check path
+// sees backends as they become ready. writer may be nil for a Secret-only server
+// (e.g. in tests); a backend that resolves its credential from a ServiceAccount
+// then denies fail-closed.
+func NewCheckServer(store *Store, reader client.Reader, writer client.Client, namespace, groupsHeader string, log logr.Logger) *CheckServer {
 	var tm *TokenManager
 	if writer != nil {
 		tm = NewTokenManager(writer, namespace)
 	}
-	return &CheckServer{store: store, reader: reader, tokenManager: tm, namespace: namespace, log: log}
+	return &CheckServer{store: store, reader: reader, tokenManager: tm, namespace: namespace, groupsHeader: groupsHeader, log: log}
+}
+
+// groupsHeaderName returns the configured groups header name, defaulting to
+// defaultGroupsHeader ("x-impersonate-groups") when groupsHeader is empty so a
+// zero-value or test CheckServer behaves as the documented default.
+func (s *CheckServer) groupsHeaderName() string {
+	if s.groupsHeader == "" {
+		return defaultGroupsHeader
+	}
+	return s.groupsHeader
+}
+
+// ValidateGroupsHeader canonicalizes name to lowercase and validates it is usable
+// as the groups header the OK response writes (HOL-1416). The name MUST be a
+// non-empty, valid HTTP header field name (RFC 7230 token characters only) and MUST
+// be neither the Authorization header nor an Impersonate-* header: configuring
+// "Authorization" would treat the caller's required bearer token as a smuggled
+// groups header and deny every request, while "Impersonate-Group" (or any
+// Impersonate-* name) would collide with the Kubernetes impersonation header space
+// the reject/split Lua filters govern and could push the comma-joined value
+// straight at the API server. It returns the canonical lowercase name on success.
+// The caller (main) validates the --impersonate-groups-header flag with this before
+// constructing the CheckServer and exits on error.
+func ValidateGroupsHeader(name string) (string, error) {
+	if name == "" {
+		return "", fmt.Errorf("groups header name must not be empty")
+	}
+	for _, r := range name {
+		if !isHeaderTokenChar(r) {
+			return "", fmt.Errorf("groups header name %q contains an invalid character %q", name, r)
+		}
+	}
+	lower := strings.ToLower(name)
+	if lower == strings.ToLower(headerAuthorization) {
+		return "", fmt.Errorf("groups header name must not be the Authorization header")
+	}
+	if strings.HasPrefix(lower, impersonatePrefix) {
+		return "", fmt.Errorf("groups header name %q must not be an Impersonate-* header (it would collide with the Kubernetes impersonation headers the reject/split filters govern)", name)
+	}
+	return lower, nil
+}
+
+// isHeaderTokenChar reports whether r is a valid HTTP header field-name character
+// (RFC 7230 token: ALPHA / DIGIT / a fixed set of punctuation), so an operator
+// cannot configure a name with a space, colon, or other separator that would not be
+// a usable header.
+func isHeaderTokenChar(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		return true
+	case strings.ContainsRune("!#$%&'*+-.^_`|~", r):
+		return true
+	default:
+		return false
+	}
 }
 
 // Check implements envoy.service.auth.v3.Authorization. It executes the full
@@ -129,12 +210,13 @@ func NewCheckServer(store *Store, reader client.Reader, writer client.Client, na
 //  4. Resolve the backend's privileged impersonator credential (a minted
 //     ServiceAccount token or the credential Secret); resolution failure →
 //     Denied 403.
-//  5. Return OK setting Impersonate-User and one Impersonate-Group
-//     APPEND_IF_EXISTS_OR_ADD option per mapped group (Envoy comma-joins them into
-//     one header, paired with a Lua split filter — see okResponse), with the
-//     impersonator token as the upstream Authorization, removing the caller's
-//     original Authorization. Groups unsafe under that encoding (a comma or
-//     surrounding whitespace) are denied fail-closed before this step.
+//  5. Return OK setting Impersonate-User and a single comma-joined groups header
+//     (the configured groupsHeader, default X-Impersonate-Groups) via overwrite,
+//     paired with a Lua split filter that unpacks it into one Impersonate-Group
+//     line per group — see okResponse — with the impersonator token as the
+//     upstream Authorization, removing the caller's original Authorization. Groups
+//     unsafe under that comma-joined encoding (a comma or surrounding whitespace)
+//     are denied fail-closed before this step.
 //
 // Every failure path — including any internal error — returns a Denied response,
 // never OK, so the authorizer fails closed. The gRPC error return is always nil:
@@ -177,6 +259,21 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (resp
 		return deniedResponse(typev3.StatusCode_Forbidden, "inbound impersonation header not allowed", nil), nil
 	}
 
+	// 2b. Reject an inbound copy of the configured groups header too (HOL-1416).
+	// The groups header (default X-Impersonate-Groups) is NOT Impersonate-* prefixed,
+	// so the prefix guard above does not cover it; but the Lua split filter turns its
+	// comma list into Impersonate-Group lines for the API server, so a client-supplied
+	// value carrying it (e.g. X-Impersonate-Groups: system:masters) would be smuggled
+	// the same way an Impersonate-Group would. The OK path overwrites the header on a
+	// request that maps to at least one group, but a request mapping to zero groups
+	// emits no groups header at all — leaving a smuggled value intact — so deny
+	// fail-closed up front rather than relying on the overwrite. This mirrors the
+	// reject Lua filter (which also runs before ext_authz) as defense in depth.
+	if _, ok := http.GetHeaders()[strings.ToLower(s.groupsHeaderName())]; ok {
+		s.log.V(1).Info("denying request carrying inbound groups header", "host", host, "header", s.groupsHeaderName())
+		return deniedResponse(typev3.StatusCode_Forbidden, "inbound impersonation header not allowed", nil), nil
+	}
+
 	// 3. Extract the caller's bearer token. A missing token is a 401 with a
 	// WWW-Authenticate challenge so a compliant client knows to authenticate.
 	token, ok := bearerToken(http.GetHeaders())
@@ -198,10 +295,9 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (resp
 		return deniedResponse(typev3.StatusCode_Unauthorized, "invalid token", nil), nil
 	}
 
-	// 4b. Reject any mapped group that is unsafe under the comma-joined
-	// Impersonate-Group encoding (failure-closed). Each group is returned as an
-	// APPEND_IF_EXISTS_OR_ADD Impersonate-Group option that Envoy comma-joins into a
-	// single header (see okResponse), which the paired Lua filter splits back on
+	// 4b. Reject any mapped group that is unsafe under the comma-joined groups
+	// encoding (failure-closed). The groups are returned as a single comma-joined
+	// groups header (see okResponse), which the paired Lua filter splits back on
 	// commas and trims of surrounding whitespace. Two group shapes break that
 	// round-trip and could smuggle a different group:
 	//   - a comma in the value ("dev,system:masters") splits into two groups; and
@@ -233,7 +329,7 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (resp
 	// the upstream sees are the derived ones.
 	s.log.V(1).Info("allowing request",
 		"host", host, "user", identity.Username, "groups", len(identity.Groups))
-	return okResponse(identity, impersonatorToken), nil
+	return s.okResponse(identity, impersonatorToken), nil
 }
 
 // firstImpersonationHeader returns the name of the first inbound Kubernetes
@@ -254,9 +350,9 @@ func firstImpersonationHeader(headers map[string]string) (string, bool) {
 }
 
 // firstUnsafeGroup returns the first group that is unsafe under the comma-joined
-// Impersonate-Group encoding and true, or ("", false) if all groups are safe. A
+// groups encoding and true, or ("", false) if all groups are safe. A
 // group is unsafe when it contains a comma or has leading/trailing whitespace,
-// because Envoy joins the per-group append options into one comma-separated header
+// because the authorizer joins the mapped groups into one comma-separated header
 // (see okResponse) and the paired Lua filter splits it back on commas and trims
 // each element: a comma in a value would fan it into multiple impersonated groups,
 // and surrounding whitespace (" system:masters") would be trimmed into the bare
@@ -294,19 +390,23 @@ func bearerToken(headers map[string]string) (string, bool) {
 }
 
 // okResponse builds the allow CheckResponse carrying the Kubernetes impersonation
-// headers. Impersonate-User and Authorization use OVERWRITE_IF_EXISTS_OR_ADD so
-// they replace any caller-supplied value; each Impersonate-Group is an append
-// header (see appendHeader — it sets the deprecated append=true bool that Envoy's
-// ext_authz path actually reads, not just AppendAction) so the groups accumulate
-// rather than the last value overwriting the rest. Envoy comma-concatenates the
-// appended values into a single header line — Impersonate-Group: dev,ops — rather
-// than emitting one header line per value. The Kubernetes API server's
-// impersonation feature requires one Impersonate-Group header per group and does
-// NOT split a comma-separated value,
-// so this comma-joined header MUST be paired with an Envoy Lua filter that unpacks
+// headers. Impersonate-User, the groups header, and Authorization all use
+// OVERWRITE_IF_EXISTS_OR_ADD so they replace any caller-supplied value. The mapped
+// groups are emitted as ONE comma-joined value (e.g. "oidc:dev,oidc:ops") under
+// the configured groups header (s.groupsHeaderName, default X-Impersonate-Groups),
+// NOT as repeated Impersonate-Group append options (HOL-1416): Envoy's ext_authz
+// path puts an append=true header in headers_to_append, which it applies with
+// appendCopy only if the request ALREADY carries that header — and the inbound
+// request never carries Impersonate-Group (it is rejected fail-closed), so an
+// appended Impersonate-Group is silently dropped before it reaches the API server.
+// An overwrite (setCopy) adds the header unconditionally, and a distinct
+// non-Impersonate-* name keeps it clear of the inbound-rejection / reject-Lua guard
+// for Impersonate-*. The paired Lua split filter, running after ext_authz, unpacks
 // the comma list into one Impersonate-Group header per element before the request
-// reaches the API server. See docs/runbooks/holos-authenticator.md ("Splitting the
-// comma-joined Impersonate-Group header") and ADR-23.
+// reaches the API server (the API server requires one Impersonate-Group header per
+// group and does NOT split a comma-separated value). A request that maps to zero
+// groups emits no groups header at all. See docs/runbooks/holos-authenticator.md
+// ("Splitting the comma-joined groups header") and ADR-23.
 //
 // The caller's original Authorization is NOT listed in HeadersToRemove. Setting
 // Authorization with OVERWRITE_IF_EXISTS_OR_ADD already discards any
@@ -318,11 +418,11 @@ func bearerToken(headers map[string]string) (string, bool) {
 // path where removals are applied last — leaving the request unauthenticated to
 // the API server. The AC scopes HeadersToRemove to the "cannot be overwritten in
 // place" case, which does not apply here.
-func okResponse(identity *Identity, impersonatorToken string) *authv3.CheckResponse {
-	headers := make([]*corev3.HeaderValueOption, 0, len(identity.Groups)+2)
+func (s *CheckServer) okResponse(identity *Identity, impersonatorToken string) *authv3.CheckResponse {
+	headers := make([]*corev3.HeaderValueOption, 0, 3)
 	headers = append(headers, overwriteHeader(headerImpersonateUser, identity.Username))
-	for _, group := range identity.Groups {
-		headers = append(headers, appendHeader(headerImpersonateGroup, group))
+	if len(identity.Groups) > 0 {
+		headers = append(headers, overwriteHeader(s.groupsHeaderName(), strings.Join(identity.Groups, ",")))
 	}
 	headers = append(headers, overwriteHeader(headerAuthorization, "Bearer "+impersonatorToken))
 
@@ -363,8 +463,10 @@ func deniedResponse(code typev3.StatusCode, message string, headers []*corev3.He
 // It reports the decision branch (ok vs denied) and, for a denial, the HTTP status
 // the downstream client receives. Each header line carries its name, value, the
 // append_action enum, and the deprecated append bool — the field Envoy's ext_authz
-// path actually reads (see appendHeader, HOL-1414) — so a mismatch between the two
-// is visible in the logs. The whole function is skipped unless V(1) is enabled, so
+// path actually reads (HOL-1414) — so a mismatch between the two is visible in the
+// logs. Every header the authorizer emits now uses the overwrite/set action (the
+// append bool is false), the groups header included (HOL-1416). The whole function
+// is skipped unless V(1) is enabled, so
 // it costs nothing on the normal path; the Authorization value is redacted because
 // it carries the impersonator credential.
 func (s *CheckServer) logResponseHeaders(host string, resp *authv3.CheckResponse) {
@@ -421,36 +523,17 @@ func redactHeaderValue(name, value string) string {
 }
 
 // overwriteHeader builds a HeaderValueOption that sets name to value, replacing
-// any existing header of that name (or adding it when absent).
+// any existing header of that name (or adding it when absent). Every header the
+// authorizer returns now uses this overwrite/set action: the groups header is a
+// single comma-joined value the Lua split filter unpacks, so no append option is
+// emitted (HOL-1416). An overwrite header lands in Envoy's headers_to_set bucket,
+// applied with setCopy, which adds the header even when the request did not carry
+// it — unlike an append header, which Envoy drops on the ext_authz path when no
+// matching request header already exists.
 func overwriteHeader(name, value string) *corev3.HeaderValueOption {
 	return &corev3.HeaderValueOption{
 		Header:       &corev3.HeaderValue{Key: name, Value: value},
 		AppendAction: corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
-	}
-}
-
-// appendHeader builds a HeaderValueOption that makes repeated calls for the same
-// header name accumulate rather than overwrite, so Envoy comma-concatenates the
-// values into a single header line (Impersonate-Group: dev,ops) instead of letting
-// the last value win; a paired Lua filter splits that comma list back into one
-// Impersonate-Group header per group for the API server (see okResponse and the
-// runbook).
-//
-// It sets BOTH append fields, and the deprecated Append bool is load-bearing.
-// Envoy's ext_authz gRPC client (toAuthzResponseHeader) decides between append and
-// overwrite for an authorizer's OkHttpResponse headers by reading the deprecated
-// HeaderValueOption.append BoolValue and IGNORES the append_action enum entirely.
-// That bool defaults to false for the ext_authz response path, so a header carrying
-// only AppendAction: APPEND_IF_EXISTS_OR_ADD is treated as an overwrite — the last
-// group silently wins and multi-group impersonation breaks. Setting
-// Append: wrapperspb.Bool(true) is what actually selects the comma-join branch on
-// Envoy 1.29 (Istio 1.29.2); AppendAction is kept as the non-deprecated statement
-// of the same intent for forward compatibility. See HOL-1414.
-func appendHeader(name, value string) *corev3.HeaderValueOption {
-	return &corev3.HeaderValueOption{
-		Header:       &corev3.HeaderValue{Key: name, Value: value},
-		Append:       wrapperspb.Bool(true),
-		AppendAction: corev3.HeaderValueOption_APPEND_IF_EXISTS_OR_ADD,
 	}
 }
 
