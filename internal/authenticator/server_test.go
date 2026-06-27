@@ -267,6 +267,47 @@ func TestOkResponseGroupsHeaderDefaultName(t *testing.T) {
 	})
 }
 
+// TestValidateGroupsHeader asserts the --impersonate-groups-header validation
+// (HOL-1416): valid names are canonicalized to lowercase, and an empty name, a name
+// with non-token characters, the Authorization header, or any Impersonate-* header
+// is rejected — the misconfigurations that would break the authorizer's security
+// model.
+func TestValidateGroupsHeader(t *testing.T) {
+	valid := map[string]string{
+		"default":           "x-impersonate-groups",
+		"uppercase":         "X-Impersonate-Groups",
+		"mixed-case canon":  "X-Custom-Groups",
+		"token punctuation": "x-groups_v1.0",
+	}
+	for name, in := range valid {
+		t.Run("valid/"+name, func(t *testing.T) {
+			got, err := ValidateGroupsHeader(in)
+			if err != nil {
+				t.Fatalf("ValidateGroupsHeader(%q) returned error: %v", in, err)
+			}
+			if want := strings.ToLower(in); got != want {
+				t.Errorf("ValidateGroupsHeader(%q) = %q, want %q (canonical lowercase)", in, got, want)
+			}
+		})
+	}
+
+	invalid := map[string]string{
+		"empty":              "",
+		"space":              "x impersonate groups",
+		"colon":              "x:groups",
+		"authorization":      "Authorization",
+		"impersonate-group":  "Impersonate-Group",
+		"impersonate-prefix": "Impersonate-Extra-scopes",
+	}
+	for name, in := range invalid {
+		t.Run("invalid/"+name, func(t *testing.T) {
+			if got, err := ValidateGroupsHeader(in); err == nil {
+				t.Errorf("ValidateGroupsHeader(%q) = %q, nil; want an error", in, got)
+			}
+		})
+	}
+}
+
 // TestCheckDeniesUnsafeGroup asserts a request whose mapped groups include a value
 // that is unsafe under the comma-joined groups encoding is denied fail-closed (HTTP
 // 403). Groups are returned as a single comma-joined groups header which the paired

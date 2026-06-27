@@ -153,6 +153,51 @@ func (s *CheckServer) groupsHeaderName() string {
 	return s.groupsHeader
 }
 
+// ValidateGroupsHeader canonicalizes name to lowercase and validates it is usable
+// as the groups header the OK response writes (HOL-1416). The name MUST be a
+// non-empty, valid HTTP header field name (RFC 7230 token characters only) and MUST
+// be neither the Authorization header nor an Impersonate-* header: configuring
+// "Authorization" would treat the caller's required bearer token as a smuggled
+// groups header and deny every request, while "Impersonate-Group" (or any
+// Impersonate-* name) would collide with the Kubernetes impersonation header space
+// the reject/split Lua filters govern and could push the comma-joined value
+// straight at the API server. It returns the canonical lowercase name on success.
+// The caller (main) validates the --impersonate-groups-header flag with this before
+// constructing the CheckServer and exits on error.
+func ValidateGroupsHeader(name string) (string, error) {
+	if name == "" {
+		return "", fmt.Errorf("groups header name must not be empty")
+	}
+	for _, r := range name {
+		if !isHeaderTokenChar(r) {
+			return "", fmt.Errorf("groups header name %q contains an invalid character %q", name, r)
+		}
+	}
+	lower := strings.ToLower(name)
+	if lower == strings.ToLower(headerAuthorization) {
+		return "", fmt.Errorf("groups header name must not be the Authorization header")
+	}
+	if strings.HasPrefix(lower, impersonatePrefix) {
+		return "", fmt.Errorf("groups header name %q must not be an Impersonate-* header (it would collide with the Kubernetes impersonation headers the reject/split filters govern)", name)
+	}
+	return lower, nil
+}
+
+// isHeaderTokenChar reports whether r is a valid HTTP header field-name character
+// (RFC 7230 token: ALPHA / DIGIT / a fixed set of punctuation), so an operator
+// cannot configure a name with a space, colon, or other separator that would not be
+// a usable header.
+func isHeaderTokenChar(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		return true
+	case strings.ContainsRune("!#$%&'*+-.^_`|~", r):
+		return true
+	default:
+		return false
+	}
+}
+
 // Check implements envoy.service.auth.v3.Authorization. It executes the full
 // authorization flow:
 //

@@ -153,6 +153,19 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
+	// Validate and canonicalize the groups header name before wiring it in. An
+	// invalid name (empty, non-token chars, the Authorization header, or any
+	// Impersonate-* header) would break the authorizer's security model — e.g.
+	// "Authorization" would treat the caller's required bearer token as a smuggled
+	// groups header and deny every request — so fail fast at startup rather than
+	// silently misbehaving (HOL-1416). The returned value is the canonical lowercase
+	// header name the CheckServer and the paired Lua filters must agree on.
+	groupsHeader, err := authenticator.ValidateGroupsHeader(groupsHeader)
+	if err != nil {
+		setupLog.Error(err, "invalid --impersonate-groups-header")
+		os.Exit(1)
+	}
+
 	metricsOptions := metricsserver.Options{
 		BindAddress: metricsAddr,
 	}

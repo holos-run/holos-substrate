@@ -1184,20 +1184,23 @@ See [README.md](../../README.md) (*Container image* → *Multi-arch images* /
   `istio-system`, and `istio-gateways` namespaces. A waypoint/caller in any other
   namespace is rejected before the authorizer runs — add its namespace to that
   policy's `from.source.namespaces`.
-- **Impersonation works to the authorizer but the API server rejects it (or
-  comma-joins the groups), and you need to see exactly which headers were
+- **Impersonation works to the authorizer but the API server rejects it (or the
+  groups go missing), and you need to see exactly which headers were
   returned.** Raise the manager's log verbosity to `V(1)` — pass
   `--zap-log-level=1` (or higher) to the `holos-authenticator` binary. On every
   `Check` the authorizer then logs, at one line per header, every header it returns
   to Envoy: the decision branch (`ok`/`denied`, plus the HTTP status on a denial),
   and each header's `name`, `value`, `appendAction`, and the deprecated `append`
-  bool (the field Envoy's ext_authz path actually reads — see the *comma-joined
-  `Impersonate-Group`* note and [HOL-1414](https://linear.app/holos-run/issue/HOL-1414)).
-  This is the fast way to tell whether the authorizer emitted the headers correctly
-  (e.g. `append=true` on each `Impersonate-Group`) or whether Envoy mishandled them
-  downstream. The `Authorization` value is redacted to a byte-length marker — the
-  impersonator credential is never logged. Lower verbosity back to the default once
-  done, since the per-header lines are high-volume.
+  bool. As of HOL-1416 every header the authorizer emits uses the **overwrite/set**
+  action with `append` **false** — including the single comma-joined groups header
+  (default `x-impersonate-groups`); a logged `append=true` (the dropped-by-Envoy
+  encoding HOL-1414/Revision 6 used) would be a regression. This is the fast way to
+  tell whether the authorizer emitted the headers correctly (one
+  `x-impersonate-groups` header carrying the CSV of mapped groups, overwrite/set) or
+  whether the paired Lua split filter or Envoy mishandled them downstream. The
+  `Authorization` value is redacted to a byte-length marker — the impersonator
+  credential is never logged. Lower verbosity back to the default once done, since
+  the per-header lines are high-volume.
 
 ## References
 
