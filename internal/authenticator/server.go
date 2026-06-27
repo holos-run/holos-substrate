@@ -140,9 +140,16 @@ func NewCheckServer(store *Store, reader client.Reader, writer client.Client, na
 // never OK, so the authorizer fails closed. The gRPC error return is always nil:
 // the allow/deny decision is carried in the CheckResponse, not the RPC status,
 // which is the ext_authz contract Envoy expects.
-func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (*authv3.CheckResponse, error) {
+func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (resp *authv3.CheckResponse, err error) {
 	http := req.GetAttributes().GetRequest().GetHttp()
 	host := http.GetHost()
+
+	// Log every header the authorizer returns to Envoy at a single exit point,
+	// whichever branch produced the response (HOL-1415). The deferred call sees the
+	// named resp return, so it covers the OK path and all fail-closed denials
+	// without threading logging through each return. It is a no-op unless V(1) debug
+	// logging is enabled, so it adds no cost on the normal path.
+	defer func() { s.logResponseHeaders(host, resp) }()
 
 	// 1. Route by Host to a ready backend. An unknown host is a 403 (the request
 	// reached us but matches no configured backend) — distinct from an
@@ -347,6 +354,70 @@ func deniedResponse(code typev3.StatusCode, message string, headers []*corev3.He
 			},
 		},
 	}
+}
+
+// logResponseHeaders logs, at V(1) debug verbosity, every header the authorizer
+// returns to Envoy for this request — one log line per HeaderValueOption — so an
+// operator troubleshooting whether Envoy mishandles the impersonation headers can
+// confirm exactly which headers were emitted and how each is applied (HOL-1415).
+// It reports the decision branch (ok vs denied) and, for a denial, the HTTP status
+// the downstream client receives. Each header line carries its name, value, the
+// append_action enum, and the deprecated append bool — the field Envoy's ext_authz
+// path actually reads (see appendHeader, HOL-1414) — so a mismatch between the two
+// is visible in the logs. The whole function is skipped unless V(1) is enabled, so
+// it costs nothing on the normal path; the Authorization value is redacted because
+// it carries the impersonator credential.
+func (s *CheckServer) logResponseHeaders(host string, resp *authv3.CheckResponse) {
+	log := s.log.V(1)
+	if !log.Enabled() || resp == nil {
+		return
+	}
+
+	var (
+		decision string
+		status   string
+		headers  []*corev3.HeaderValueOption
+	)
+	switch http := resp.GetHttpResponse().(type) {
+	case *authv3.CheckResponse_OkResponse:
+		decision = "ok"
+		headers = http.OkResponse.GetHeaders()
+	case *authv3.CheckResponse_DeniedResponse:
+		decision = "denied"
+		status = http.DeniedResponse.GetStatus().GetCode().String()
+		headers = http.DeniedResponse.GetHeaders()
+	default:
+		decision = "unknown"
+	}
+
+	log.Info("returning response headers to caller",
+		"host", host, "decision", decision, "status", status, "headerCount", len(headers))
+	for i, h := range headers {
+		hv := h.GetHeader()
+		log.Info("response header",
+			"host", host,
+			"decision", decision,
+			"index", i,
+			"name", hv.GetKey(),
+			"value", redactHeaderValue(hv.GetKey(), hv.GetValue()),
+			"appendAction", h.GetAppendAction().String(),
+			//nolint:staticcheck // SA1019: ext_authz reads the deprecated append bool (HOL-1414); log it to debug header handling
+			"append", h.GetAppend().GetValue(),
+		)
+	}
+}
+
+// redactHeaderValue returns a log-safe rendering of a response header value. The
+// Authorization header carries the backend's impersonator bearer token — a
+// credential that must never reach the logs — so its value is replaced with a
+// marker preserving only the byte length, enough to confirm the header was set
+// without exposing the secret. Every other response header value (Impersonate-User,
+// Impersonate-Group, WWW-Authenticate) is returned verbatim for troubleshooting.
+func redactHeaderValue(name, value string) string {
+	if strings.EqualFold(name, headerAuthorization) {
+		return fmt.Sprintf("<redacted %d-byte credential>", len(value))
+	}
+	return value
 }
 
 // overwriteHeader builds a HeaderValueOption that sets name to value, replacing

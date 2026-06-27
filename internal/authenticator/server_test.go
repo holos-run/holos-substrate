@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -695,6 +697,202 @@ func formatOptions(opts []*corev3.HeaderValueOption) string {
 		parts = append(parts, fmt.Sprintf("%s=%q(%v)", o.GetHeader().GetKey(), o.GetHeader().GetValue(), o.GetAppendAction()))
 	}
 	return fmt.Sprintf("%v", parts)
+}
+
+// TestRedactHeaderValue asserts the Authorization value (the impersonator
+// credential) is replaced with a length-only marker while every other header value
+// is returned verbatim, and that the Authorization match is case-insensitive (Envoy
+// lowercases header keys on the wire).
+func TestRedactHeaderValue(t *testing.T) {
+	cases := []struct {
+		name, header, value, want string
+	}{
+		{"authorization redacted", headerAuthorization, "Bearer secret-token", "<redacted 19-byte credential>"},
+		{"authorization case-insensitive", "authorization", "Bearer s", "<redacted 8-byte credential>"},
+		{"impersonate user verbatim", headerImpersonateUser, "alice", "alice"},
+		{"impersonate group verbatim", headerImpersonateGroup, "dev", "dev"},
+		{"www-authenticate verbatim", headerWWWAuthenticate, wwwAuthenticateBearer, wwwAuthenticateBearer},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := redactHeaderValue(tc.header, tc.value); got != tc.want {
+				t.Errorf("redactHeaderValue(%q, %q) = %q, want %q", tc.header, tc.value, got, tc.want)
+			}
+		})
+	}
+	// The redaction must never leak the credential itself.
+	if got := redactHeaderValue(headerAuthorization, "Bearer super-secret"); strings.Contains(got, "super-secret") {
+		t.Errorf("redacted Authorization value %q leaks the credential", got)
+	}
+}
+
+// TestLogResponseHeadersLogsEachOkHeader asserts the debug hook emits one summary
+// line plus one line per header an OK response carries, with each header's name,
+// append action, and the deprecated append bool, and with the Authorization token
+// redacted (HOL-1415).
+func TestLogResponseHeadersLogsEachOkHeader(t *testing.T) {
+	sink := newCaptureSink(true)
+	s := &CheckServer{log: logr.New(sink)}
+
+	identity := &Identity{Username: "alice", Groups: []string{"dev", "ops"}}
+	s.logResponseHeaders("api.example.com", okResponse(identity, "impersonator-token"))
+
+	summary := sink.find(t, "returning response headers to caller")
+	if got, want := summary.kv["decision"], "ok"; got != want {
+		t.Errorf("summary decision = %v, want %v", got, want)
+	}
+	if got, want := summary.kv["headerCount"], 4; got != want {
+		t.Errorf("summary headerCount = %v, want %v", got, want)
+	}
+
+	headerLines := sink.findAll("response header")
+	if got, want := len(headerLines), 4; got != want {
+		t.Fatalf("response header line count = %d, want %d", got, want)
+	}
+
+	// Impersonate-User overwrite (append bool false), two Impersonate-Group appends
+	// (append bool true), Authorization overwrite with the token redacted.
+	wantLines := []struct {
+		name, value  string
+		appendBool   bool
+		appendAction string
+	}{
+		{headerImpersonateUser, "alice", false, corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD.String()},
+		{headerImpersonateGroup, "dev", true, corev3.HeaderValueOption_APPEND_IF_EXISTS_OR_ADD.String()},
+		{headerImpersonateGroup, "ops", true, corev3.HeaderValueOption_APPEND_IF_EXISTS_OR_ADD.String()},
+		{headerAuthorization, "<redacted 25-byte credential>", false, corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD.String()},
+	}
+	for i, want := range wantLines {
+		line := headerLines[i]
+		if got := line.kv["name"]; got != want.name {
+			t.Errorf("header[%d] name = %v, want %v", i, got, want.name)
+		}
+		if got := line.kv["value"]; got != want.value {
+			t.Errorf("header[%d] value = %v, want %v", i, got, want.value)
+		}
+		if got := line.kv["append"]; got != want.appendBool {
+			t.Errorf("header[%d] append bool = %v, want %v", i, got, want.appendBool)
+		}
+		if got := line.kv["appendAction"]; got != want.appendAction {
+			t.Errorf("header[%d] appendAction = %v, want %v", i, got, want.appendAction)
+		}
+	}
+
+	// The bearer token must never appear in any logged value.
+	for _, line := range headerLines {
+		if v, ok := line.kv["value"].(string); ok && strings.Contains(v, "impersonator-token") {
+			t.Errorf("logged header value %q leaks the impersonator token", v)
+		}
+	}
+}
+
+// TestLogResponseHeadersDeniedReportsStatus asserts a denied response logs the
+// denied decision, the HTTP status the client receives, and any challenge header it
+// carries (HOL-1415).
+func TestLogResponseHeadersDeniedReportsStatus(t *testing.T) {
+	sink := newCaptureSink(true)
+	s := &CheckServer{log: logr.New(sink)}
+
+	resp := deniedResponse(
+		typev3.StatusCode_Unauthorized,
+		"missing bearer token",
+		[]*corev3.HeaderValueOption{overwriteHeader(headerWWWAuthenticate, wwwAuthenticateBearer)},
+	)
+	s.logResponseHeaders("api.example.com", resp)
+
+	summary := sink.find(t, "returning response headers to caller")
+	if got, want := summary.kv["decision"], "denied"; got != want {
+		t.Errorf("summary decision = %v, want %v", got, want)
+	}
+	if got, want := summary.kv["status"], typev3.StatusCode_Unauthorized.String(); got != want {
+		t.Errorf("summary status = %v, want %v", got, want)
+	}
+
+	line := sink.find(t, "response header")
+	if got, want := line.kv["name"], headerWWWAuthenticate; got != want {
+		t.Errorf("header name = %v, want %v", got, want)
+	}
+}
+
+// TestLogResponseHeadersDisabledNoOp asserts the hook emits nothing when V(1) debug
+// logging is disabled, so it costs nothing on the normal path.
+func TestLogResponseHeadersDisabledNoOp(t *testing.T) {
+	sink := newCaptureSink(false)
+	s := &CheckServer{log: logr.New(sink)}
+
+	s.logResponseHeaders("api.example.com", okResponse(&Identity{Username: "alice"}, "tok"))
+
+	if got := len(sink.snapshot()); got != 0 {
+		t.Errorf("logged %d entries with debug disabled, want 0", got)
+	}
+}
+
+// captureEntry is one captured log line: its message and the key/value pairs
+// flattened into a map for assertion.
+type captureEntry struct {
+	msg string
+	kv  map[string]any
+}
+
+// captureSink is a logr.LogSink that records Info entries for assertion. enabled
+// controls whether V(1) lines are emitted, modeling the debug-verbosity gate.
+type captureSink struct {
+	mu      sync.Mutex
+	enabled bool
+	entries []captureEntry
+}
+
+func newCaptureSink(enabled bool) *captureSink { return &captureSink{enabled: enabled} }
+
+func (s *captureSink) Init(logr.RuntimeInfo) {}
+
+func (s *captureSink) Enabled(int) bool { return s.enabled }
+
+func (s *captureSink) Info(_ int, msg string, kv ...any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m := make(map[string]any, len(kv)/2)
+	for i := 0; i+1 < len(kv); i += 2 {
+		key, _ := kv[i].(string)
+		m[key] = kv[i+1]
+	}
+	s.entries = append(s.entries, captureEntry{msg: msg, kv: m})
+}
+
+func (s *captureSink) Error(error, string, ...any) {}
+
+func (s *captureSink) WithValues(...any) logr.LogSink { return s }
+
+func (s *captureSink) WithName(string) logr.LogSink { return s }
+
+func (s *captureSink) snapshot() []captureEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]captureEntry(nil), s.entries...)
+}
+
+// find returns the first captured entry whose message equals msg, failing the test
+// if none was recorded.
+func (s *captureSink) find(t *testing.T, msg string) captureEntry {
+	t.Helper()
+	for _, e := range s.snapshot() {
+		if e.msg == msg {
+			return e
+		}
+	}
+	t.Fatalf("no log entry with message %q", msg)
+	return captureEntry{}
+}
+
+// findAll returns every captured entry whose message equals msg, in order.
+func (s *captureSink) findAll(msg string) []captureEntry {
+	var out []captureEntry
+	for _, e := range s.snapshot() {
+		if e.msg == msg {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // dialReady creates a client for addr and actively waits for the connection to
