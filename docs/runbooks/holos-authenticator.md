@@ -881,12 +881,17 @@ function envoy_on_request(handle)
     return
   end
   -- Every Kubernetes impersonation header: the impersonate- prefix (12 chars)
-  -- covers Impersonate-User / -Group / -Uid / -Extra-* in one test.
+  -- covers Impersonate-User / -Group / -Uid / -Extra-* in one test. Envoy's Lua
+  -- header iteration must run to completion — do not break or call handle:respond()
+  -- inside the loop — so record a flag and respond after the loop finishes.
+  local denied = false
   for key, _ in pairs(headers) do
     if string.sub(string.lower(key), 1, 12) == "impersonate-" then
-      handle:respond({[":status"] = "403"}, "client-supplied impersonation header not allowed")
-      return
+      denied = true
     end
+  end
+  if denied then
+    handle:respond({[":status"] = "403"}, "client-supplied impersonation header not allowed")
   end
 end
 ```
@@ -975,11 +980,16 @@ spec:
                   handle:respond({[":status"] = "403"}, "client-supplied impersonation header not allowed")
                   return
                 end
+                -- Envoy's Lua header iteration must run to completion: do not break
+                -- or call handle:respond() inside the loop. Record a flag, respond after.
+                local denied = false
                 for key, _ in pairs(headers) do
                   if string.sub(string.lower(key), 1, 12) == "impersonate-" then
-                    handle:respond({[":status"] = "403"}, "client-supplied impersonation header not allowed")
-                    return
+                    denied = true
                   end
+                end
+                if denied then
+                  handle:respond({[":status"] = "403"}, "client-supplied impersonation header not allowed")
                 end
               end
     # 2. Split filter — insert AFTER ext_authz so the authorizer's injected
