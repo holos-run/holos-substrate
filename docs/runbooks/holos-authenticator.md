@@ -46,8 +46,12 @@ On each `Check` the authorizer:
    system:masters` — or `X-Impersonate-Groups: system:masters`, which the split Lua
    filter would turn into one — would otherwise be impersonated at that privilege.
    This is the confused-deputy guard; it has explicit spoofed-header unit tests
-   (`internal/authenticator/server_test.go`). The reject Lua filter (below) enforces
-   the same guard at the proxy, before ext_authz, as defense in depth.
+   (`internal/authenticator/server_test.go`). **Preventing header smuggling is the
+   authenticator's responsibility, enforced server-side on every `Check`, so no
+   Envoy `EnvoyFilter` is required to strip client-supplied impersonation headers.**
+   The optional reject Lua filter (below) re-enforces the same guard at the proxy,
+   before ext_authz, as defense in depth — it hardens, but is **not required for**,
+   the security property.
 3. **Extracts the bearer token.** A missing `Authorization: Bearer …` yields a
    401 with a `WWW-Authenticate: Bearer` challenge.
 4. **Validates the OIDC token** (below). An invalid token yields 401.
@@ -841,9 +845,17 @@ This is **not** the value the API server ultimately needs: the Kubernetes API
 server's impersonation feature expects **one `Impersonate-Group` header per
 group** and treats a comma-separated value as a **single literal group name**
 (`"oidc:dev,oidc:ops"`), so left as-is the user would be impersonated into a
-non-existent group and lose their real group memberships. Two paired Lua filters on
-the waypoint complete the round-trip: a **reject** filter before ext_authz, and a
-**split** filter after it.
+non-existent group and lose their real group memberships. A **split** Lua filter
+that runs **after** ext_authz completes the round-trip, and it is the **only**
+filter required on the request path. An optional **reject** filter before ext_authz
+adds defense in depth but is **not** required: preventing header smuggling is the
+authenticator's own responsibility (it denies any request carrying impersonation
+headers server-side, step 2), so the proxy needs no filter for that purpose. The
+split filter is a header-*shape* adaptation (CSV → one header per group), not a
+security control. Where each filter must sit **relative to the ext_authz callout**,
+and the version-stable `filterClass: AUTHZ` way to express it, are covered in
+[*Filter ordering relative to the ext_authz chain*](#filter-ordering-relative-to-the-ext_authz-chain-filterclass-authz)
+below.
 
 > **Group values must contain no comma and no surrounding whitespace — the
 > authorizer enforces this.** The comma-join + split round-trip is only lossless if
@@ -860,14 +872,16 @@ the waypoint complete the round-trip: a **reject** filter before ext_authz, and 
 > guard. Do not weaken the guard or the filter's trim independently — they are a
 > matched pair; changing one without the other reopens the smuggling vector.
 
-### Rejecting inbound impersonation headers (before ext_authz)
+### Rejecting inbound impersonation headers (optional, before ext_authz)
 
 Because the split filter turns the groups header into `Impersonate-Group` lines the
 API server trusts, a client must never be able to **supply** the groups header (or
-any `Impersonate-*` header) itself. The authorizer already denies such requests
-server-side (step 2), but a Lua **reject** filter that runs **before** ext_authz
-enforces the same guard at the proxy as defense in depth, and strips the inputs
-before any header mutation. It rejects the configured groups header (substitute the
+any `Impersonate-*` header) itself. The authorizer **already** denies such requests
+server-side (step 2) — that, not this filter, is the smuggling defense — so this
+Lua **reject** filter is **optional** and **not required** for the security
+property. It runs **before** ext_authz and re-enforces the same guard at the proxy
+as defense in depth, stripping the inputs before any header mutation. It rejects the
+configured groups header (substitute the
 value of `--impersonate-groups-header`; the default `x-impersonate-groups` is shown)
 **and** every Kubernetes impersonation header on the incoming request:
 
@@ -1055,6 +1069,124 @@ spec:
 > and [`holos/docs/placeholders.md`](../../holos/docs/placeholders.md)), so the
 > filter above is documented here as the required companion to that topology
 > rather than shipped in the deploy tree today.
+
+### Filter ordering relative to the ext_authz chain (`filterClass: AUTHZ`)
+
+What makes the split filter work is **where it sits relative to the CUSTOM
+ext_authz callout**, not how it is named. The split filter must run **after**
+ext_authz (so the authorizer's injected `x-impersonate-groups` header is present);
+the optional reject filter must run **before** it (so a client-supplied header is
+refused before any mutation). There are two ways to express that ordering:
+
+- **`filterClass: AUTHZ` (preferred).** Istio injects the CUSTOM ext_authz filter
+  into the **AUTHZ** filter group of the gateway/waypoint HTTP connection manager.
+  An `EnvoyFilter` that adds the Lua filter with `filterClass: AUTHZ` lands **after**
+  Istio's authz filters — including CUSTOM ext_authz — so it sees the injected
+  header, **without** naming the generated ext_authz filter. Prefer this: the
+  generated filter name is **not a stable contract** across Istio/Envoy versions,
+  whereas the AUTHZ filter class is.
+- **`INSERT_AFTER` matched on the ext_authz subFilter name** (the waypoint example
+  above). This pins insertion to just after `envoy.filters.http.ext_authz`. It
+  works, but couples the patch to the generated filter name — re-verify it after an
+  Istio upgrade.
+
+A reject filter (optional defense in depth) **cannot** use `filterClass: AUTHZ`: an
+AUTHZ-class filter's `envoy_on_request` runs **only when ext_authz allows** the
+request — a denied request short-circuits the chain and never reaches it — and the
+reject filter must act on the inbound request *before* the callout. Place it with
+`filterClass: AUTHN`, or `INSERT_BEFORE` the ext_authz subFilter. But recall the
+reject filter is not required at all: smuggling prevention is the authenticator's
+responsibility, so the minimal wiring is a **single AUTHZ-class split filter**.
+
+#### Gateway (ingress) example
+
+The split filter applies to an **ingress gateway** as well as an ambient waypoint.
+On a gateway the `EnvoyFilter`, its `workloadSelector`, and the CUSTOM
+`AuthorizationPolicy` all target the gateway workload and live in the gateway's
+namespace; `filterClass: AUTHZ` orders the split filter after the callout on the
+gateway's serving-port listener:
+
+```yaml
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: holos-authenticator-split-groups
+  namespace: istio-gateways          # the gateway's namespace
+spec:
+  workloadSelector:
+    labels:
+      istio: ingressgateway          # must match the gateway pod's labels
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          portNumber: 8443           # the gateway's serving port, not 15006
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+      patch:
+        operation: ADD
+        filterClass: AUTHZ           # after Istio's authz, incl. CUSTOM ext_authz
+        value:
+          name: holos-authenticator.split-groups
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+            inlineCode: |
+              function envoy_on_request(handle)
+                local joined = handle:headers():get("x-impersonate-groups")
+                if joined == nil or joined == "" then
+                  return
+                end
+                handle:headers():remove("x-impersonate-groups")
+                for group in string.gmatch(joined, "([^,]+)") do
+                  local g = group:gsub("^%s*(.-)%s*$", "%1")
+                  if g ~= "" then
+                    handle:headers():add("Impersonate-Group", g)
+                  end
+                end
+              end
+```
+
+Notes on the gateway YAML:
+
+- `workloadSelector.labels` must match the gateway deployment's pod labels.
+  `istio: ingressgateway` is the classic injected ingress gateway; a Gateway
+  API / Helm gateway may use different labels — check with
+  `kubectl get pod -n <ns> --show-labels`.
+- Set `listener.portNumber` to the gateway's actual serving port (e.g. 8080/8443),
+  **not** the sidecar inbound `15006` — a gateway has no `15006` listener. Matching
+  the HCM via `filterChain.filter.name` keeps the patch off non-HTTP listeners.
+- The matching CUSTOM `AuthorizationPolicy` must also select this gateway workload
+  in the gateway's namespace (or the mesh root namespace), or the ext_authz filter
+  is not present on this listener at all.
+
+#### The provider must forward the groups header upstream
+
+The split filter only sees `x-impersonate-groups` if ext_authz actually added it to
+the upstream request:
+
+- **`envoyExtAuthzGrpc` provider (what this platform uses).** Headers returned in
+  the OK `Check` response are added to the upstream request automatically — no
+  allowlist required. This is one reason the gRPC provider is the right fit.
+- **`envoyExtAuthzHttp` provider.** The groups header must be listed in
+  `headersToUpstreamOnAllow` in the provider definition, or it is dropped before the
+  Lua filter runs — the most common cause of a no-op split filter.
+
+#### Verifying filter order
+
+Confirm the split filter sits **after** ext_authz in the chain. A gateway has no
+inbound `15006` listener; inspect its serving-port listener instead:
+
+```bash
+istioctl proxy-config listener <gateway-pod> -n <gateway-ns> --port 8443 -o json
+```
+
+In that listener's HCM `httpFilters`, verify `holos-authenticator.split-groups`
+appears **after** the ext_authz filter. If it runs before the callout, the injected
+header is not yet present and the filter is a no-op — that ordering is the thing to
+investigate. Then confirm the backend (API server audit log or a debug echo
+endpoint) receives one `Impersonate-Group` header **per** CSV value.
 
 ## Apply ordering
 
