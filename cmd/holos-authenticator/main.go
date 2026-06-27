@@ -114,6 +114,7 @@ func main() {
 	var metricsAddr string
 	var probeAddr string
 	var grpcAddr string
+	var groupsHeader string
 	var enableLeaderElection bool
 	var secureMetrics bool
 
@@ -126,6 +127,15 @@ func main() {
 		"The address the health and readiness probe endpoint binds to.")
 	flag.StringVar(&grpcAddr, "grpc-bind-address", ":9000",
 		"The address the Envoy ext_authz gRPC server binds to.")
+	// The authorizer writes the mapped Kubernetes groups into a single comma-joined
+	// header that a paired Lua split filter unpacks into one Impersonate-Group line
+	// per group (HOL-1416). It is deliberately NOT Impersonate-Group: an
+	// authorizer-returned append header is dropped by Envoy's ext_authz path when the
+	// request does not already carry it, whereas an overwrite into a distinct header
+	// is added unconditionally. The default x-impersonate-groups is overridable per
+	// deployment to avoid collisions or match a site convention.
+	flag.StringVar(&groupsHeader, "impersonate-groups-header", "x-impersonate-groups",
+		"The single comma-joined header the authorizer writes mapped groups into for the paired Lua split filter to unpack into Impersonate-Group headers.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. Ensures only one active manager.")
 	flag.BoolVar(&secureMetrics, "metrics-secure", false,
@@ -234,6 +244,7 @@ func main() {
 			mgr.GetAPIReader(),
 			mgr.GetClient(),
 			authorizerNamespace,
+			groupsHeader,
 			ctrl.Log.WithName("ext-authz"),
 		),
 		Log: ctrl.Log.WithName("grpc-server"),
@@ -252,7 +263,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLog.Info("starting manager", "version", version, "grpc-bind-address", grpcAddr)
+	setupLog.Info("starting manager", "version", version, "grpc-bind-address", grpcAddr, "impersonate-groups-header", groupsHeader)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)

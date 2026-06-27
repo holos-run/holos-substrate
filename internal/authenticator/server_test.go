@@ -156,9 +156,10 @@ func checkRequest(host string, headers map[string]string) *authv3.CheckRequest {
 
 // TestCheckAllowSetsImpersonationHeaders is the happy path: a known host, a valid
 // token, and a resolvable credential. It asserts the OK response sets
-// Impersonate-User (overwrite), one Impersonate-Group per mapped group (append),
-// and the impersonator token as Authorization (overwrite, which replaces the
-// caller's token in place — so HeadersToRemove is empty).
+// Impersonate-User (overwrite), a single comma-joined groups header (overwrite,
+// default x-impersonate-groups — HOL-1416), and the impersonator token as
+// Authorization (overwrite, which replaces the caller's token in place — so
+// HeadersToRemove is empty).
 func TestCheckAllowSetsImpersonationHeaders(t *testing.T) {
 	const host = "api.example.com"
 	store := NewStore()
@@ -168,7 +169,7 @@ func TestCheckAllowSetsImpersonationHeaders(t *testing.T) {
 		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
 	})
 	reader := secretReader(t, credentialSecret("creds", "impersonator-token"))
-	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, logr.Discard()))
+	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.Discard()))
 
 	resp := mustCheck(t, client, checkRequest(host, map[string]string{
 		"authorization": "Bearer caller-token",
@@ -182,12 +183,12 @@ func TestCheckAllowSetsImpersonationHeaders(t *testing.T) {
 		t.Fatalf("expected an OkResponse, got %T", resp.GetHttpResponse())
 	}
 
-	// Exact header-option set: Impersonate-User overwrite, two Impersonate-Group
-	// appends in order, Authorization overwrite with the impersonator token.
+	// Exact header-option set: Impersonate-User overwrite, the comma-joined groups
+	// header (overwrite, default name), Authorization overwrite with the impersonator
+	// token.
 	want := []*corev3.HeaderValueOption{
 		overwriteHeader(headerImpersonateUser, "alice"),
-		appendHeader(headerImpersonateGroup, "dev"),
-		appendHeader(headerImpersonateGroup, "ops"),
+		overwriteHeader(defaultGroupsHeader, "dev,ops"),
 		overwriteHeader(headerAuthorization, "Bearer impersonator-token"),
 	}
 	assertHeaderOptions(t, ok.GetHeaders(), want)
@@ -212,7 +213,7 @@ func TestCheckAllowNoGroups(t *testing.T) {
 		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
 	})
 	reader := secretReader(t, credentialSecret("creds", "imp"))
-	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, logr.Discard()))
+	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.Discard()))
 
 	resp := mustCheck(t, client, checkRequest(host, map[string]string{"authorization": "Bearer t"}))
 	if got, want := codes.Code(resp.GetStatus().GetCode()), codes.OK; got != want {
@@ -225,42 +226,52 @@ func TestCheckAllowNoGroups(t *testing.T) {
 	assertHeaderOptions(t, resp.GetOkResponse().GetHeaders(), want)
 }
 
-// TestAppendHeaderSetsDeprecatedAppendBool pins the HOL-1414 fix: each
-// Impersonate-Group append header MUST set the deprecated append=true bool, not
-// only AppendAction. Envoy 1.29's ext_authz gRPC client (Istio 1.29.2) decides
-// append-vs-overwrite for an authorizer's response headers by reading the
-// deprecated HeaderValueOption.append BoolValue and ignores append_action; that
-// bool defaults to false on the ext_authz path, so without append=true the groups
-// overwrite each other and multi-group impersonation silently breaks. The overwrite
-// helper must leave the bool unset so Impersonate-User / Authorization keep
-// replacing any caller-supplied value.
-func TestAppendHeaderSetsDeprecatedAppendBool(t *testing.T) {
-	appended := appendHeader(headerImpersonateGroup, "dev")
-	// GetAppend is deprecated upstream, but the deprecated append bool is exactly
-	// the field Envoy's ext_authz path reads (see appendHeader), so the test must
-	// assert it.
-	if got := appended.GetAppend().GetValue(); got != true { //nolint:staticcheck // SA1019: ext_authz reads the deprecated append bool (HOL-1414)
-		t.Errorf("appendHeader append bool = %v, want true (Envoy ext_authz reads the deprecated append bool, not append_action)", got)
-	}
-	if got, want := appended.GetAppendAction(), corev3.HeaderValueOption_APPEND_IF_EXISTS_OR_ADD; got != want {
-		t.Errorf("appendHeader append action = %v, want %v", got, want)
-	}
+// TestOkResponseGroupsHeaderIsCommaJoinedOverwrite pins the HOL-1416 fix: the
+// mapped groups are emitted as a SINGLE comma-joined value under the configured
+// groups header, with the OVERWRITE (set) action and no append bool — never as
+// repeated Impersonate-Group append options. An append header is dropped by Envoy's
+// ext_authz path when the request does not already carry it (the inbound request
+// never carries Impersonate-Group), so a set into a distinct header is what
+// survives to the paired Lua split filter.
+func TestOkResponseGroupsHeaderIsCommaJoinedOverwrite(t *testing.T) {
+	s := &CheckServer{groupsHeader: "x-custom-groups", log: logr.Discard()}
+	resp := s.okResponse(&Identity{Username: "alice", Groups: []string{"dev", "ops"}}, "tok")
 
-	overwritten := overwriteHeader(headerImpersonateUser, "alice")
-	if got := overwritten.GetAppend().GetValue(); got != false { //nolint:staticcheck // SA1019: ext_authz reads the deprecated append bool (HOL-1414)
-		t.Errorf("overwriteHeader append bool = %v, want false (overwrite must not append)", got)
+	assertHeaderOptions(t, resp.GetOkResponse().GetHeaders(), []*corev3.HeaderValueOption{
+		overwriteHeader(headerImpersonateUser, "alice"),
+		overwriteHeader("x-custom-groups", "dev,ops"),
+		overwriteHeader(headerAuthorization, "Bearer tok"),
+	})
+
+	// The groups header must use the overwrite/set action with no append bool, so
+	// Envoy adds it unconditionally (setCopy) rather than dropping it (the append
+	// path applies only when the header already exists).
+	groups := resp.GetOkResponse().GetHeaders()[1]
+	if got, want := groups.GetAppendAction(), corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD; got != want {
+		t.Errorf("groups header append action = %v, want %v", got, want)
 	}
-	if got, want := overwritten.GetAppendAction(), corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD; got != want {
-		t.Errorf("overwriteHeader append action = %v, want %v", got, want)
+	if got := groups.GetAppend().GetValue(); got != false { //nolint:staticcheck // SA1019: ext_authz reads the deprecated append bool (HOL-1416)
+		t.Errorf("groups header append bool = %v, want false (set, not append)", got)
 	}
 }
 
+// TestOkResponseGroupsHeaderDefaultName asserts a CheckServer with no configured
+// groups header falls back to the default x-impersonate-groups name (AC #2).
+func TestOkResponseGroupsHeaderDefaultName(t *testing.T) {
+	s := &CheckServer{log: logr.Discard()}
+	resp := s.okResponse(&Identity{Username: "alice", Groups: []string{"dev"}}, "tok")
+	assertHeaderOptions(t, resp.GetOkResponse().GetHeaders(), []*corev3.HeaderValueOption{
+		overwriteHeader(headerImpersonateUser, "alice"),
+		overwriteHeader("x-impersonate-groups", "dev"),
+		overwriteHeader(headerAuthorization, "Bearer tok"),
+	})
+}
+
 // TestCheckDeniesUnsafeGroup asserts a request whose mapped groups include a value
-// that is unsafe under the comma-joined Impersonate-Group encoding is denied
-// fail-closed (HTTP 403). Groups are returned as APPEND_IF_EXISTS_OR_ADD
-// Impersonate-Group options that Envoy comma-joins into one header, which the
-// paired Lua filter splits back on commas and trims of surrounding whitespace; a
-// value holding its own comma ("dev,system:masters") would fan out into multiple
+// that is unsafe under the comma-joined groups encoding is denied fail-closed (HTTP
+// 403). Groups are returned as a single comma-joined groups header which the paired
+// Lua filter splits back on commas and trims of surrounding whitespace; a value
+// holding its own comma ("dev,system:masters") would fan out into multiple
 // impersonated groups, and surrounding whitespace (" system:masters") would be
 // trimmed into the bare group — both must be rejected, not impersonated (HOL-1413).
 func TestCheckDeniesUnsafeGroup(t *testing.T) {
@@ -281,7 +292,7 @@ func TestCheckDeniesUnsafeGroup(t *testing.T) {
 				CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
 			})
 			reader := secretReader(t, credentialSecret("creds", "imp"))
-			client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, logr.Discard()))
+			client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.Discard()))
 
 			resp := mustCheck(t, client, checkRequest(host, map[string]string{"authorization": "Bearer good"}))
 			assertDenied(t, resp, typev3.StatusCode_Forbidden)
@@ -305,7 +316,7 @@ func TestCheckInboundImpersonationHeaderDenies(t *testing.T) {
 		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
 	})
 	reader := secretReader(t, credentialSecret("creds", "imp"))
-	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, logr.Discard()))
+	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.Discard()))
 
 	// Envoy lowercases header keys in the ext_authz Headers map.
 	smuggled := []string{
@@ -325,9 +336,45 @@ func TestCheckInboundImpersonationHeaderDenies(t *testing.T) {
 	}
 }
 
+// TestCheckInboundGroupsHeaderDenies asserts that a request carrying a
+// client-supplied copy of the configured groups header (default
+// x-impersonate-groups, and a custom name) is denied fail-closed (HTTP 403),
+// closing the smuggling vector the Lua reject filter also guards (HOL-1416): the
+// split Lua turns that header's comma list into Impersonate-Group lines, so a
+// client value (e.g. x-impersonate-groups: system:masters) must never survive — and
+// a request mapping to zero groups emits no groups header to overwrite it.
+func TestCheckInboundGroupsHeaderDenies(t *testing.T) {
+	const host = "api.example.com"
+	cases := map[string]struct {
+		groupsHeader string
+		inbound      string
+	}{
+		"default header": {groupsHeader: "", inbound: "x-impersonate-groups"},
+		"custom header":  {groupsHeader: "x-custom-groups", inbound: "x-custom-groups"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			store := NewStore()
+			store.Set(testNamespace+"/backend", &Entry{
+				Host:                 host,
+				Authenticator:        newTestAuthenticator(t, map[string]any{"sub": "alice"}, "sub"),
+				CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
+			})
+			reader := secretReader(t, credentialSecret("creds", "imp"))
+			client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, tc.groupsHeader, logr.Discard()))
+
+			resp := mustCheck(t, client, checkRequest(host, map[string]string{
+				"authorization": "Bearer good",
+				tc.inbound:      "system:masters",
+			}))
+			assertDenied(t, resp, typev3.StatusCode_Forbidden)
+		})
+	}
+}
+
 // TestCheckUnknownHostDenies asserts an unconfigured host is denied with HTTP 403.
 func TestCheckUnknownHostDenies(t *testing.T) {
-	client := serveCheck(t, NewCheckServer(NewStore(), secretReader(t), nil, testNamespace, logr.Discard()))
+	client := serveCheck(t, NewCheckServer(NewStore(), secretReader(t), nil, testNamespace, "", logr.Discard()))
 
 	resp := mustCheck(t, client, checkRequest("unknown.example.com", map[string]string{
 		"authorization": "Bearer t",
@@ -344,7 +391,7 @@ func TestCheckMissingTokenDenies(t *testing.T) {
 		Host:          host,
 		Authenticator: newTestAuthenticator(t, map[string]any{"sub": "alice"}, "sub"),
 	})
-	client := serveCheck(t, NewCheckServer(store, secretReader(t), nil, testNamespace, logr.Discard()))
+	client := serveCheck(t, NewCheckServer(store, secretReader(t), nil, testNamespace, "", logr.Discard()))
 
 	// No Authorization header at all.
 	resp := mustCheck(t, client, checkRequest(host, map[string]string{}))
@@ -363,7 +410,7 @@ func TestCheckNonBearerTokenDenies(t *testing.T) {
 		Host:          host,
 		Authenticator: newTestAuthenticator(t, map[string]any{"sub": "alice"}, "sub"),
 	})
-	client := serveCheck(t, NewCheckServer(store, secretReader(t), nil, testNamespace, logr.Discard()))
+	client := serveCheck(t, NewCheckServer(store, secretReader(t), nil, testNamespace, "", logr.Discard()))
 
 	resp := mustCheck(t, client, checkRequest(host, map[string]string{
 		"authorization": "Basic dXNlcjpwYXNz",
@@ -382,7 +429,7 @@ func TestCheckInvalidTokenDenies(t *testing.T) {
 		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
 	})
 	reader := secretReader(t, credentialSecret("creds", "imp"))
-	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, logr.Discard()))
+	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.Discard()))
 
 	resp := mustCheck(t, client, checkRequest(host, map[string]string{"authorization": "Bearer bad"}))
 	assertDenied(t, resp, typev3.StatusCode_Unauthorized)
@@ -400,7 +447,7 @@ func TestCheckCredentialReadFailureDenies(t *testing.T) {
 		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "absent"},
 	})
 	// Reader has no Secret named "absent".
-	client := serveCheck(t, NewCheckServer(store, secretReader(t), nil, testNamespace, logr.Discard()))
+	client := serveCheck(t, NewCheckServer(store, secretReader(t), nil, testNamespace, "", logr.Discard()))
 
 	resp := mustCheck(t, client, checkRequest(host, map[string]string{"authorization": "Bearer good"}))
 	assertDenied(t, resp, typev3.StatusCode_Forbidden)
@@ -421,19 +468,19 @@ func TestCheckMultipleBackendsRouteByHost(t *testing.T) {
 		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds-b"},
 	})
 	reader := secretReader(t, credentialSecret("creds-a", "tok-a"), credentialSecret("creds-b", "tok-b"))
-	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, logr.Discard()))
+	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.Discard()))
 
 	respA := mustCheck(t, client, checkRequest("a.example.com", map[string]string{"authorization": "Bearer x"}))
 	assertHeaderOptions(t, respA.GetOkResponse().GetHeaders(), []*corev3.HeaderValueOption{
 		overwriteHeader(headerImpersonateUser, "alice"),
-		appendHeader(headerImpersonateGroup, "team-a"),
+		overwriteHeader(defaultGroupsHeader, "team-a"),
 		overwriteHeader(headerAuthorization, "Bearer tok-a"),
 	})
 
 	respB := mustCheck(t, client, checkRequest("b.example.com", map[string]string{"authorization": "Bearer y"}))
 	assertHeaderOptions(t, respB.GetOkResponse().GetHeaders(), []*corev3.HeaderValueOption{
 		overwriteHeader(headerImpersonateUser, "bob"),
-		appendHeader(headerImpersonateGroup, "team-b"),
+		overwriteHeader(defaultGroupsHeader, "team-b"),
 		overwriteHeader(headerAuthorization, "Bearer tok-b"),
 	})
 }
@@ -452,7 +499,7 @@ func TestCheckCustomTokenKey(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "creds", Namespace: testNamespace},
 		Data:       map[string][]byte{"sa-token": []byte("custom-key-token")},
 	}
-	client := serveCheck(t, NewCheckServer(store, secretReader(t, secret), nil, testNamespace, logr.Discard()))
+	client := serveCheck(t, NewCheckServer(store, secretReader(t, secret), nil, testNamespace, "", logr.Discard()))
 
 	resp := mustCheck(t, client, checkRequest(host, map[string]string{"authorization": "Bearer x"}))
 	assertHeaderOptions(t, resp.GetOkResponse().GetHeaders(), []*corev3.HeaderValueOption{
@@ -491,7 +538,7 @@ func TestCheckServiceAccountSourceMintsToken(t *testing.T) {
 	}
 	assertHeaderOptions(t, resp.GetOkResponse().GetHeaders(), []*corev3.HeaderValueOption{
 		overwriteHeader(headerImpersonateUser, "alice"),
-		appendHeader(headerImpersonateGroup, "dev"),
+		overwriteHeader(defaultGroupsHeader, "dev"),
 		overwriteHeader(headerAuthorization, "Bearer minted-sa-token"),
 	})
 }
@@ -564,7 +611,7 @@ func TestCheckServiceAccountNoTokenManagerDenies(t *testing.T) {
 		ServiceAccountRef: &authenticatorv1alpha1.ServiceAccountReference{Name: "impersonator", ExpirationSeconds: ptrInt64(3600)},
 	})
 	// nil writer ⇒ no TokenManager.
-	client := serveCheck(t, NewCheckServer(store, secretReader(t), nil, testNamespace, logr.Discard()))
+	client := serveCheck(t, NewCheckServer(store, secretReader(t), nil, testNamespace, "", logr.Discard()))
 
 	resp := mustCheck(t, client, checkRequest(host, map[string]string{"authorization": "Bearer caller"}))
 	assertDenied(t, resp, typev3.StatusCode_Forbidden)
@@ -591,7 +638,7 @@ func TestGRPCServerStartStop(t *testing.T) {
 
 	g := &GRPCServer{
 		Listener: lis,
-		Check:    NewCheckServer(NewStore(), secretReader(t), nil, testNamespace, logr.Discard()),
+		Check:    NewCheckServer(NewStore(), secretReader(t), nil, testNamespace, "", logr.Discard()),
 		Log:      logr.Discard(),
 	}
 
@@ -665,7 +712,8 @@ func assertDenied(t *testing.T, resp *authv3.CheckResponse, httpStatus typev3.St
 // assertHeaderOptions asserts got matches want exactly, in order, comparing each
 // option's header name, value, append action, and the deprecated append bool. The
 // append bool is what Envoy's ext_authz path actually reads to choose append vs.
-// overwrite (see appendHeader), so it is part of the contract, not incidental.
+// overwrite, so it is part of the contract, not incidental — every header the
+// authorizer now emits uses the overwrite/set action with the bool unset (HOL-1416).
 func assertHeaderOptions(t *testing.T, got, want []*corev3.HeaderValueOption) {
 	t.Helper()
 	if len(got) != len(want) {
@@ -710,7 +758,7 @@ func TestRedactHeaderValue(t *testing.T) {
 		{"authorization redacted", headerAuthorization, "Bearer secret-token", "<redacted 19-byte credential>"},
 		{"authorization case-insensitive", "authorization", "Bearer s", "<redacted 8-byte credential>"},
 		{"impersonate user verbatim", headerImpersonateUser, "alice", "alice"},
-		{"impersonate group verbatim", headerImpersonateGroup, "dev", "dev"},
+		{"groups header verbatim", defaultGroupsHeader, "dev,ops", "dev,ops"},
 		{"www-authenticate verbatim", headerWWWAuthenticate, wwwAuthenticateBearer, wwwAuthenticateBearer},
 	}
 	for _, tc := range cases {
@@ -735,31 +783,30 @@ func TestLogResponseHeadersLogsEachOkHeader(t *testing.T) {
 	s := &CheckServer{log: logr.New(sink)}
 
 	identity := &Identity{Username: "alice", Groups: []string{"dev", "ops"}}
-	s.logResponseHeaders("api.example.com", okResponse(identity, "impersonator-token"))
+	s.logResponseHeaders("api.example.com", s.okResponse(identity, "impersonator-token"))
 
 	summary := sink.find(t, "returning response headers to caller")
 	if got, want := summary.kv["decision"], "ok"; got != want {
 		t.Errorf("summary decision = %v, want %v", got, want)
 	}
-	if got, want := summary.kv["headerCount"], 4; got != want {
+	if got, want := summary.kv["headerCount"], 3; got != want {
 		t.Errorf("summary headerCount = %v, want %v", got, want)
 	}
 
 	headerLines := sink.findAll("response header")
-	if got, want := len(headerLines), 4; got != want {
+	if got, want := len(headerLines), 3; got != want {
 		t.Fatalf("response header line count = %d, want %d", got, want)
 	}
 
-	// Impersonate-User overwrite (append bool false), two Impersonate-Group appends
-	// (append bool true), Authorization overwrite with the token redacted.
+	// Impersonate-User overwrite, the single comma-joined groups header (overwrite,
+	// append bool false — HOL-1416), Authorization overwrite with the token redacted.
 	wantLines := []struct {
 		name, value  string
 		appendBool   bool
 		appendAction string
 	}{
 		{headerImpersonateUser, "alice", false, corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD.String()},
-		{headerImpersonateGroup, "dev", true, corev3.HeaderValueOption_APPEND_IF_EXISTS_OR_ADD.String()},
-		{headerImpersonateGroup, "ops", true, corev3.HeaderValueOption_APPEND_IF_EXISTS_OR_ADD.String()},
+		{defaultGroupsHeader, "dev,ops", false, corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD.String()},
 		{headerAuthorization, "<redacted 25-byte credential>", false, corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD.String()},
 	}
 	for i, want := range wantLines {
@@ -820,7 +867,7 @@ func TestLogResponseHeadersDisabledNoOp(t *testing.T) {
 	sink := newCaptureSink(false)
 	s := &CheckServer{log: logr.New(sink)}
 
-	s.logResponseHeaders("api.example.com", okResponse(&Identity{Username: "alice"}, "tok"))
+	s.logResponseHeaders("api.example.com", s.okResponse(&Identity{Username: "alice"}, "tok"))
 
 	if got := len(sink.snapshot()); got != 0 {
 		t.Errorf("logged %d entries with debug disabled, want 0", got)

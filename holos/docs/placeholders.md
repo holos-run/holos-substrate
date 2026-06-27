@@ -275,26 +275,30 @@ hardening concerns are deliberately deferred to later phases:
   in-cluster API server and the example policy selects the authenticator's own
   pods; the full waypoint / `ServiceEntry` egress topology is not yet built.
 
-- **Lua filter to split the comma-joined `Impersonate-Group` header (ADR-23
-  Rev 6, HOL-1413).** The authorizer emits one `Impersonate-Group`
-  `APPEND_IF_EXISTS_OR_ADD` option per mapped group; Envoy comma-joins repeated
-  append options for the same header into a single `Impersonate-Group: a,b` line,
-  which the Kubernetes API server treats as one literal group name rather than
-  splitting. The required companion is an Envoy **Lua HTTP filter** (an
-  `EnvoyFilter` patching `INSERT_AFTER` `envoy.filters.http.ext_authz`) that
-  unpacks the comma list into one header per group before egress — the worked
-  `EnvoyFilter`/Lua is in the [runbook's *Splitting the comma-joined
-  `Impersonate-Group` header*](../../docs/runbooks/holos-authenticator.md#splitting-the-comma-joined-impersonate-group-header).
-  Like the `CUSTOM` `AuthorizationPolicy` it only has an effect once a **waypoint**
-  fronts the protected route and must target that same waypoint, so it ships with
+- **Lua filters to reject inbound impersonation headers and split the comma-joined
+  groups header (ADR-23 Rev 7, HOL-1416; supersedes Rev 6/HOL-1413).** The
+  authorizer emits the mapped groups as a **single comma-joined overwrite/set
+  header** under a configurable name (default `X-Impersonate-Groups`,
+  `--impersonate-groups-header`) — not per-group `Impersonate-Group` append options,
+  which Envoy's ext_authz path silently drops when the request does not already
+  carry the header. The required companions are two Envoy **Lua HTTP filters**: a
+  **reject** filter (`INSERT_BEFORE` `envoy.filters.http.ext_authz`) refusing any
+  client-supplied groups or `Impersonate-*` header, and a **split** filter
+  (`INSERT_AFTER` ext_authz) that unpacks the comma list into one `Impersonate-Group`
+  per group before egress — the worked `EnvoyFilter`/Lua is in the [runbook's
+  *Splitting the comma-joined groups
+  header*](../../docs/runbooks/holos-authenticator.md#splitting-the-comma-joined-groups-header).
+  Like the `CUSTOM` `AuthorizationPolicy` they only have an effect once a **waypoint**
+  fronts the protected route and must target that same waypoint, so they ship with
   the deferred waypoint topology above rather than the in-cluster wiring today. When
   that topology is built, **verify the end-to-end behavior against the deployed
   Envoy/Istio version** — that a multi-group token yields one `Impersonate-Group`
-  header **per group** at the API server — since whether Envoy materializes the
-  append options as a comma-joined header or duplicate entries is version/transport
-  dependent and is not provable by the unit tests (which cover only the ext_authz
-  response options). The Lua filter is written to handle both forms; the runtime
-  proof closes the gap.
+  header **per group** at the API server, and that a client-supplied
+  `X-Impersonate-Groups` is rejected — since whether Envoy materializes the groups
+  header as a comma-joined value or duplicate entries is version/transport dependent
+  and is not provable by the unit tests (which cover only the ext_authz response
+  options). The split filter is written to handle both forms; the runtime proof
+  closes the gap.
 
 - **Tenant use of the extension provider must be enforced, not just documented.**
   The provider is registered mesh-wide, so a `CUSTOM` `AuthorizationPolicy`

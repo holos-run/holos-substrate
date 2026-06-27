@@ -15,8 +15,9 @@ mapping, the impersonation RBAC the forwarded credential must hold, the two
 mutually-exclusive credential sources — the controller-minted `serviceAccountRef`
 (the shipped impersonate-only `holos-authenticator-impersonator` SA, TokenRequest
 mint/cache/rotation) and the runtime `credentialsSecretRef` Secret — the Istio
-`extensionProvider` + `AuthorizationPolicy` wiring, the paired Lua filter that
-splits the comma-joined `Impersonate-Group` header into one header per group, and
+`extensionProvider` + `AuthorizationPolicy` wiring, the paired Lua filters that
+reject inbound impersonation/`X-Impersonate-Groups` headers and split the
+comma-joined groups header into one `Impersonate-Group` per group, and
 verification.
 
 - Component: [`holos/components/holos-authenticator/`](../../holos/components/holos-authenticator/README.md)
@@ -38,12 +39,15 @@ On each `Check` the authorizer:
    the host-keyed `Backend` registry (`spec.host`). An unknown host is denied
    (HTTP 403).
 2. **Sanitizes inbound impersonation headers (failure-closed).** If the inbound
-   request carries any `Impersonate-*` header, the request is **denied** — not
+   request carries any `Impersonate-*` header **or a copy of the configured groups
+   header** (default `X-Impersonate-Groups`), the request is **denied** — not
    silently scrubbed. Because the authorizer injects a privileged impersonation
    credential downstream, a client that smuggled `Impersonate-Group:
-   system:masters` would otherwise be impersonated at that privilege. This is
-   the confused-deputy guard; it has explicit spoofed-header unit tests
-   (`internal/authenticator/server_test.go`).
+   system:masters` — or `X-Impersonate-Groups: system:masters`, which the split Lua
+   filter would turn into one — would otherwise be impersonated at that privilege.
+   This is the confused-deputy guard; it has explicit spoofed-header unit tests
+   (`internal/authenticator/server_test.go`). The reject Lua filter (below) enforces
+   the same guard at the proxy, before ext_authz, as defense in depth.
 3. **Extracts the bearer token.** A missing `Authorization: Bearer …` yields a
    401 with a `WWW-Authenticate: Bearer` challenge.
 4. **Validates the OIDC token** (below). An invalid token yields 401.
@@ -52,16 +56,22 @@ On each `Check` the authorizer:
    ServiceAccount (minted/rotated via TokenRequest, [below](#provisioning-the-credential-serviceaccountref-or-a-runtime-secret));
    otherwise it reads the Secret named by `credentialsSecretRef`. An
    unavailable credential (missing Secret, or a TokenRequest failure) yields 403.
-6. **Returns the OK response** setting `Impersonate-User` (the username claim),
-   one `Impersonate-Group` append option per mapped group, and overwriting
-   `Authorization` with the impersonator credential's `Bearer <token>`. Each
-   group option sets the deprecated `append: true` bool (the field Envoy's
-   ext_authz path actually reads — HOL-1414) alongside `APPEND_IF_EXISTS_OR_ADD`;
-   **Envoy comma-joins repeated append options for the same header into a single
-   `Impersonate-Group: a,b` line**, which the API server does **not** split — so
-   this must be paired with a Lua filter that unpacks the comma list into one
-   header per group (see [*Splitting the comma-joined `Impersonate-Group`
-   header*](#splitting-the-comma-joined-impersonate-group-header) below). Envoy
+6. **Returns the OK response** setting `Impersonate-User` (the username claim), a
+   **single comma-joined groups header** carrying the mapped groups as one CSV
+   value (`oidc:dev,oidc:ops`), and overwriting `Authorization` with the
+   impersonator credential's `Bearer <token>`. The groups header name defaults to
+   `X-Impersonate-Groups` and is configurable with the `--impersonate-groups-header`
+   flag (HOL-1416). Every header uses the **overwrite/set** action (not append):
+   an authorizer-returned **append** header is dropped by Envoy's ext_authz path
+   unless the request *already* carries that header — and the inbound request never
+   carries `Impersonate-Group` (it is rejected, step 2) — so an appended
+   `Impersonate-Group` would be silently discarded before reaching the API server.
+   A **set** into a distinct, non-`Impersonate-*` header is added unconditionally
+   (`setCopy`) and survives. The header is **not** what the API server consumes:
+   the API server requires **one `Impersonate-Group` header per group** and does
+   not split a comma list, so this must be paired with a Lua filter that unpacks
+   the CSV into one `Impersonate-Group` per group (see [*Splitting the comma-joined
+   groups header*](#splitting-the-comma-joined-groups-header) below). Envoy
    then forwards to the upstream API server, which authorizes the request as the
    impersonated user.
 
@@ -804,31 +814,36 @@ spec:
 > egress topology for an **external** API-server target is deferred — see
 > [`holos/docs/placeholders.md`](../../holos/docs/placeholders.md).
 
-## Splitting the comma-joined `Impersonate-Group` header
+## Splitting the comma-joined groups header
 
-The authorizer returns one `Impersonate-Group` **append option** per mapped group.
-Each option sets **both** the deprecated `append: true` bool **and**
-`appendAction: APPEND_IF_EXISTS_OR_ADD`, and the bool is the load-bearing one:
-Envoy's ext_authz gRPC client (Istio 1.29.2 / Envoy 1.29) decides append-vs-overwrite
-for an authorizer's response headers by reading the deprecated
-`HeaderValueOption.append` `BoolValue` and **ignores** `append_action` entirely. That
-bool defaults to `false` on the ext_authz path, so an option carrying only
-`appendAction` is treated as an **overwrite** — the last group silently wins and the
-Lua split filter below has nothing to split (it is a documented no-op). With
-`append: true` set (HOL-1414), Envoy **comma-concatenates** the values of the
-same-named options into a single header line —
+The authorizer returns the mapped groups as a **single comma-joined value** under
+the configured groups header (default `X-Impersonate-Groups`, set with the
+`--impersonate-groups-header` flag), e.g.
 
 ```text
-Impersonate-Group: dev,ops
+X-Impersonate-Groups: oidc:dev,oidc:ops
 ```
 
-— rather than letting the last value overwrite the rest. This is **not** the value
-the API server ultimately needs: the API server expects one `Impersonate-Group` line
-per value, not a comma list. The Kubernetes API
+with the **overwrite/set** action (HOL-1416). It deliberately does **not** emit
+per-group `Impersonate-Group` **append** options: Envoy's ext_authz path classifies
+an authorizer-returned `append: true` header into the `headers_to_append` bucket,
+which it applies with `appendCopy` **only if the request already carries that
+header** — and the inbound request never carries `Impersonate-Group` (it is rejected
+fail-closed), so an appended `Impersonate-Group` is **silently dropped** before it
+reaches the split filter or the API server (the original symptom: `Impersonate-User`
+present, every group missing). A **set** header (`headers_to_set` → `setCopy`) is
+added unconditionally, even when the request does not already carry it, so the
+comma-joined groups header survives; routing it through a **distinct,
+non-`Impersonate-*` name** also keeps it clear of the inbound-rejection guard that
+denies `Impersonate-*`.
+
+This is **not** the value the API server ultimately needs: the Kubernetes API
 server's impersonation feature expects **one `Impersonate-Group` header per
 group** and treats a comma-separated value as a **single literal group name**
-(`"dev,ops"`), so left as-is the user would be impersonated into a non-existent
-group and lose their real group memberships.
+(`"oidc:dev,oidc:ops"`), so left as-is the user would be impersonated into a
+non-existent group and lose their real group memberships. Two paired Lua filters on
+the waypoint complete the round-trip: a **reject** filter before ext_authz, and a
+**split** filter after it.
 
 > **Group values must contain no comma and no surrounding whitespace — the
 > authorizer enforces this.** The comma-join + split round-trip is only lossless if
@@ -845,20 +860,62 @@ group and lose their real group memberships.
 > guard. Do not weaken the guard or the filter's trim independently — they are a
 > matched pair; changing one without the other reopens the smuggling vector.
 
-The comma-joined header therefore **must be paired with an Envoy Lua filter** that
-runs **after** ext_authz (so it sees the authorizer's injected header) and
-**before** the request egresses to the API server. The filter reads the
-comma-joined `Impersonate-Group`, removes it, and re-adds one header per element:
+### Rejecting inbound impersonation headers (before ext_authz)
+
+Because the split filter turns the groups header into `Impersonate-Group` lines the
+API server trusts, a client must never be able to **supply** the groups header (or
+any `Impersonate-*` header) itself. The authorizer already denies such requests
+server-side (step 2), but a Lua **reject** filter that runs **before** ext_authz
+enforces the same guard at the proxy as defense in depth, and strips the inputs
+before any header mutation. It rejects the configured groups header (substitute the
+value of `--impersonate-groups-header`; the default `x-impersonate-groups` is shown)
+**and** every Kubernetes impersonation header on the incoming request:
 
 ```lua
 function envoy_on_request(handle)
-  local joined = handle:headers():get("Impersonate-Group")
+  local headers = handle:headers()
+  -- The configured groups header (default x-impersonate-groups). Header names are
+  -- matched case-insensitively; Envoy presents request header keys in lowercase.
+  if headers:get("x-impersonate-groups") ~= nil then
+    handle:respond({[":status"] = "403"}, "client-supplied impersonation header not allowed")
+    return
+  end
+  -- Every Kubernetes impersonation header: the impersonate- prefix (12 chars)
+  -- covers Impersonate-User / -Group / -Uid / -Extra-* in one test.
+  for key, _ in pairs(headers) do
+    if string.sub(string.lower(key), 1, 12) == "impersonate-" then
+      handle:respond({[":status"] = "403"}, "client-supplied impersonation header not allowed")
+      return
+    end
+  end
+end
+```
+
+> The `impersonate-` prefix check covers `Impersonate-User`, `Impersonate-Group`,
+> `Impersonate-Uid`, and any `Impersonate-Extra-*` header in one test. If you
+> configure a non-default groups header,
+> reject **that** name here instead of (or in addition to) `x-impersonate-groups` —
+> the reject and split filters must name the same header.
+
+### Splitting the groups header into one `Impersonate-Group` per group (after ext_authz)
+
+The **split** filter runs **after** ext_authz (so it sees the authorizer's injected
+groups header) and **before** the request egresses to the API server. It reads the
+comma-joined groups header, removes it, and re-adds one `Impersonate-Group` header
+per element:
+
+```lua
+function envoy_on_request(handle)
+  -- Must match the authorizer's --impersonate-groups-header (default
+  -- x-impersonate-groups). The reject filter above guarantees the only copy of this
+  -- header on the request is the one the authorizer set.
+  local joined = handle:headers():get("x-impersonate-groups")
   if joined == nil or joined == "" then
     return
   end
-  handle:headers():remove("Impersonate-Group")
+  handle:headers():remove("x-impersonate-groups")
   for group in string.gmatch(joined, "([^,]+)") do
-    -- trim surrounding whitespace, then add one header per group
+    -- trim surrounding whitespace, then add one Impersonate-Group header per group
     local g = group:gsub("^%s*(.-)%s*$", "%1")
     if g ~= "" then
       handle:headers():add("Impersonate-Group", g)
@@ -867,14 +924,18 @@ function envoy_on_request(handle)
 end
 ```
 
-Wire it as an Istio `EnvoyFilter` on **the waypoint that fronts the protected
-route** — the *same* waypoint the `CUSTOM` `AuthorizationPolicy` attaches to, where
-the ext_authz filter actually runs. It must **not** target the authenticator's own
-pods (`app.kubernetes.io/name: holos-authenticator`): the authenticator is the
-ext_authz *service*, not the proxy on the request path, so a filter on it never
-sees the forwarded request. Target the waypoint with `targetRefs` to its
-`gateway.networking.k8s.io` `Gateway` (a waypoint is a Gateway), and insert the Lua
-filter immediately after ext_authz in that proxy's HTTP filter chain:
+The split filter **removes** the `x-impersonate-groups` header after unpacking it,
+so the API server never sees the comma-joined helper header — only the per-group
+`Impersonate-Group` lines it expects.
+
+Wire both filters as Istio `EnvoyFilter`s on **the waypoint that fronts the
+protected route** — the *same* waypoint the `CUSTOM` `AuthorizationPolicy` attaches
+to, where the ext_authz filter actually runs. They must **not** target the
+authenticator's own pods (`app.kubernetes.io/name: holos-authenticator`): the
+authenticator is the ext_authz *service*, not the proxy on the request path, so a
+filter on it never sees the forwarded request. Target the waypoint with `targetRefs`
+to its `gateway.networking.k8s.io` `Gateway` (a waypoint is a Gateway). The reject
+filter inserts **before** ext_authz and the split filter **after** it:
 
 ```yaml
 apiVersion: networking.istio.io/v1alpha3
@@ -891,6 +952,38 @@ spec:
       kind: Gateway
       name: <protected-route-waypoint>
   configPatches:
+    # 1. Reject filter — insert BEFORE ext_authz so a client-supplied groups or
+    #    Impersonate-* header is refused before any header mutation.
+    - applyTo: HTTP_FILTER
+      match:
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+              subFilter:
+                name: envoy.filters.http.ext_authz
+      patch:
+        operation: INSERT_BEFORE
+        value:
+          name: envoy.filters.http.lua.reject-impersonation
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+            inline_code: |
+              function envoy_on_request(handle)
+                local headers = handle:headers()
+                if headers:get("x-impersonate-groups") ~= nil then
+                  handle:respond({[":status"] = "403"}, "client-supplied impersonation header not allowed")
+                  return
+                end
+                for key, _ in pairs(headers) do
+                  if string.sub(string.lower(key), 1, 12) == "impersonate-" then
+                    handle:respond({[":status"] = "403"}, "client-supplied impersonation header not allowed")
+                    return
+                  end
+                end
+              end
+    # 2. Split filter — insert AFTER ext_authz so the authorizer's injected
+    #    x-impersonate-groups header is present.
     - applyTo: HTTP_FILTER
       match:
         # Omit `context` so the patch applies to the targeted waypoint proxy; the
@@ -900,21 +993,21 @@ spec:
             filter:
               name: envoy.filters.network.http_connection_manager
               subFilter:
-                # Insert AFTER ext_authz so the injected Impersonate-Group is present.
+                # Insert AFTER ext_authz so the injected x-impersonate-groups is present.
                 name: envoy.filters.http.ext_authz
       patch:
         operation: INSERT_AFTER
         value:
-          name: envoy.filters.http.lua
+          name: envoy.filters.http.lua.split-groups
           typed_config:
             "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
             inline_code: |
               function envoy_on_request(handle)
-                local joined = handle:headers():get("Impersonate-Group")
+                local joined = handle:headers():get("x-impersonate-groups")
                 if joined == nil or joined == "" then
                   return
                 end
-                handle:headers():remove("Impersonate-Group")
+                handle:headers():remove("x-impersonate-groups")
                 for group in string.gmatch(joined, "([^,]+)") do
                   local g = group:gsub("^%s*(.-)%s*$", "%1")
                   if g ~= "" then
@@ -924,26 +1017,25 @@ spec:
               end
 ```
 
-> **Robust to both Envoy representations.** Whether Envoy materializes repeated
-> `APPEND_IF_EXISTS_OR_ADD` options as a single comma-joined `Impersonate-Group`
-> header or as duplicate header entries can vary by Envoy version and HTTP
-> transport. The Lua filter is written to handle **both**: the Lua `Headers:get()`
-> returns all values for a given header **concatenated with commas**, so
-> `get("Impersonate-Group")` yields `dev,ops` regardless of which on-the-wire form
-> Envoy chose, and the `remove` + per-element `add` then re-emits clean,
-> one-per-group headers either way. The matching server-side guard
-> (`firstUnsafeGroup`) guarantees no individual group value contains a comma or
-> surrounding whitespace, so this split never fans one group into many or trims a
-> padded value into a privileged one.
+> **Robust to both Envoy representations.** Whether Envoy materializes the groups
+> header as a single comma-joined value or as duplicate header entries can vary by
+> Envoy version and HTTP transport. The split filter handles **both**: the Lua
+> `Headers:get()` returns all values for a given header **concatenated with commas**,
+> so `get("x-impersonate-groups")` yields `oidc:dev,oidc:ops` regardless of which
+> on-the-wire form Envoy chose, and the `remove` + per-element `add` then re-emits
+> clean, one-per-group `Impersonate-Group` headers either way. The matching
+> server-side guard (`firstUnsafeGroup`) guarantees no individual group value
+> contains a comma or surrounding whitespace, so this split never fans one group into
+> many or trims a padded value into a privileged one.
 >
-> **Verify against the deployed Envoy before relying on it.** Because this filter
-> is exercised only at runtime on a real waypoint — there is no live Envoy in the
+> **Verify against the deployed Envoy before relying on it.** Because these filters
+> are exercised only at runtime on a real waypoint — there is no live Envoy in the
 > repo's test suite, and the unit tests cover only the ext_authz response options,
 > not Envoy's header mutation plus the Lua pass — **confirm the end-to-end behavior
 > against the actual Envoy/Istio version** when the waypoint topology is built:
 > assert that a multi-group token results in one `Impersonate-Group` header **per
-> group** reaching the API server. This runtime proof is part of the deferred
-> waypoint work below.
+> group** reaching the API server, and that a client-supplied `X-Impersonate-Groups`
+> is rejected. This runtime proof is part of the deferred waypoint work below.
 >
 > **Not yet rendered by the component.** Like the `CUSTOM` `AuthorizationPolicy`,
 > this Lua `EnvoyFilter` only has an effect once a **waypoint** fronts the
