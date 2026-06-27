@@ -18,10 +18,13 @@ privileged credential, so Envoy forwards the request straight to the API server.
 > options — Envoy's ext_authz path drops an appended header when the request does
 > not already carry it, which silently lost every group (HOL-1416). The header must
 > be paired with an Envoy Lua **split** filter that unpacks the comma list into one
-> `Impersonate-Group` per group (and a **reject** filter that refuses a
-> client-supplied copy) — see the runbook's [*Splitting the comma-joined groups
+> `Impersonate-Group` per group, ordered after ext_authz with the version-stable
+> `filterClass: AUTHZ` (an optional **reject** filter that refuses a client-supplied
+> copy adds defense in depth but is **not** required — smuggling prevention is the
+> authenticator's own responsibility, ADR-23 Revision 8) — see the runbook's
+> [*Splitting the comma-joined groups
 > header*](../../../docs/runbooks/holos-authenticator.md#splitting-the-comma-joined-groups-header)
-> and [ADR-23](../../../docs/adr/ADR-23.md) Revision 7. Like the `CUSTOM`
+> and [ADR-23](../../../docs/adr/ADR-23.md) Revisions 7–8. Like the `CUSTOM`
 > `AuthorizationPolicy`, the filters belong to the deferred waypoint topology and
 > are not yet rendered by this component.
 

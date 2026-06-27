@@ -17,6 +17,7 @@
 | 5        | 2026-06-25 | @jeffmccune | Group-prefix extension — additive `spec.oidc.groupsPrefix` for the default groups-claim mapping (below) |
 | 6        | 2026-06-26 | @jeffmccune | Group encoding correction — `Impersonate-Group` is emitted as `APPEND_IF_EXISTS_OR_ADD`, Envoy comma-joins it, and it must be paired with a Lua split filter (below) |
 | 7        | 2026-06-27 | @jeffmccune | Group encoding fix (HOL-1416) — groups emitted as a single comma-joined **overwrite/set** header (configurable, default `X-Impersonate-Groups`), not per-group append options Envoy silently drops; paired reject + split Lua filters (below) |
+| 8        | 2026-06-27 | @jeffmccune | Smuggling-prevention ownership + Lua filter ordering (HOL-1417) — smuggling prevention is the authenticator's responsibility (no `EnvoyFilter` required; the reject filter is optional defense in depth); the split filter is ordered after ext_authz with the version-stable `filterClass: AUTHZ`, on a gateway as on a waypoint (below) |
 
 ## As-built (Revision 2)
 
@@ -431,20 +432,74 @@ a Keycloak group was ignored.
   not collide with the inbound-rejection guard for `Impersonate-*` and the API server
   never receives the comma-joined helper directly. This removes the dependency on
   Envoy's deprecated-`append` comma-join behavior entirely.
-- **Paired reject + split Lua filters.** The split filter (after ext_authz) reads the
-  configured groups header, removes it, and re-adds one `Impersonate-Group` per
-  comma-delimited element for the API server. A new **reject** filter (before ext_authz)
-  refuses any request carrying the configured groups header or any `Impersonate-*`
-  header — the same fail-closed guard the authorizer enforces server-side (now extended
-  to the configured groups header), at the proxy as defense in depth. Both worked
-  `EnvoyFilter`s are in the [runbook's *Splitting the comma-joined groups
+- **Split Lua filter (required) + reject Lua filter (optional defense in depth).**
+  The split filter (after ext_authz) reads the configured groups header, removes it,
+  and re-adds one `Impersonate-Group` per comma-delimited element for the API server.
+  An optional **reject** filter (before ext_authz) refuses any request carrying the
+  configured groups header or any `Impersonate-*` header — the same fail-closed guard
+  the authorizer enforces server-side (now extended to the configured groups header),
+  at the proxy as defense in depth. The worked split `EnvoyFilter` and the
+  optional-reject guidance are in the [runbook's *Splitting the comma-joined groups
   header*](../runbooks/holos-authenticator.md#splitting-the-comma-joined-groups-header)
-  section.
+  section. (**Revision 8** ratifies that only the split filter is required — smuggling
+  prevention is the authenticator's responsibility — and that it is ordered after
+  ext_authz with `filterClass: AUTHZ`.)
 - **Unchanged.** The fail-closed `firstUnsafeGroup` guard (a mapped group with a comma
   or surrounding whitespace is denied 403) carries over verbatim — the comma-join +
   split round-trip has the same losslessness requirement. The username is still a single
   overwrite header. Like Revision 6's filter, the reject/split filters belong to the
   deferred waypoint topology and are not yet rendered by the component.
+
+## Smuggling prevention is the authenticator's responsibility; Lua filter ordering (Revision 8)
+
+Revision 8 (HOL-1417) records two clarifications about the boundary between the
+authenticator and the Envoy proxy on the request path, prompted by HOL-1416's
+group-dropping investigation. Neither changes the shipped code; both document the
+as-built contract so an operator does not reach for an `EnvoyFilter` to do work the
+authorizer already does, or couple a filter to an unstable Envoy filter name.
+
+- **Preventing header smuggling is the authenticator's responsibility — no
+  `EnvoyFilter` is required for it.** The authorizer denies, fail-closed on every
+  `Check`, any request carrying an `Impersonate-*` header or a copy of the
+  configured groups header (default `X-Impersonate-Groups`), and denies any request
+  whose mapped groups contain a comma or surrounding whitespace (`firstUnsafeGroup`,
+  `internal/authenticator/server.go`). Those server-side guards — with spoofed-header
+  unit tests (`internal/authenticator/server_test.go`) — are the smuggling defense:
+  a client cannot inject a privileged group under the backend's impersonation
+  credential. The **reject** Lua filter the runbook documents (before ext_authz) is
+  therefore **optional defense in depth**, not a requirement. The only Lua filter
+  actually required on the request path is the **split** filter that unpacks the
+  comma-joined groups header into one `Impersonate-Group` per group — a header-*shape*
+  adaptation the Kubernetes API server's one-header-per-group impersonation contract
+  forces, not a security control.
+- **Filter ordering relative to ext_authz: prefer `filterClass: AUTHZ`.** The split
+  filter must run **after** the CUSTOM ext_authz callout so it sees the authorizer's
+  injected groups header. Istio injects the CUSTOM ext_authz filter into the
+  **AUTHZ** filter group of the HTTP connection manager, so an `EnvoyFilter` adding
+  the Lua filter with `filterClass: AUTHZ` lands after it — **without** naming the
+  generated ext_authz filter, whose name is not a stable contract across Istio/Envoy
+  versions. This is preferred over an `INSERT_AFTER` patch matched on the
+  `envoy.filters.http.ext_authz` subFilter name. The same approach applies on an
+  **ingress gateway**, not only an ambient waypoint: the `EnvoyFilter`, its
+  `workloadSelector`/`targetRefs`, and the CUSTOM `AuthorizationPolicy` all target
+  the gateway workload in the gateway's namespace, and `filterClass: AUTHZ` orders
+  the split filter after the callout on the gateway's serving-port listener (not the
+  sidecar `15006`, which a gateway lacks). Two corollaries the runbook now records:
+  the `envoyExtAuthzGrpc` provider this platform uses forwards an OK response's
+  headers upstream automatically (an HTTP `envoyExtAuthzHttp` provider would instead
+  need the groups header listed in `headersToUpstreamOnAllow`, or it is dropped
+  before the Lua filter runs), and an AUTHZ-class filter's `envoy_on_request` runs
+  **only on allow** (a denied request short-circuits and never reaches it) — so a
+  reject filter, which must act on the inbound request *before* the callout,
+  necessarily sits before ext_authz (`AUTHN` class / `INSERT_BEFORE`), not in the
+  AUTHZ class.
+
+The operator procedure (the `filterClass: AUTHZ` gateway example, the optional
+reject filter, the provider header-forwarding constraint, and verifying filter
+order with `istioctl proxy-config listener`) is in the runbook's [*Filter ordering
+relative to the ext_authz
+chain*](../runbooks/holos-authenticator.md#filter-ordering-relative-to-the-ext_authz-chain-filterclass-authz)
+subsection.
 
 ## Context and Problem Statement
 
