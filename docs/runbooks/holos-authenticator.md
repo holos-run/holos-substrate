@@ -15,10 +15,11 @@ mapping, the impersonation RBAC the forwarded credential must hold, the two
 mutually-exclusive credential sources — the controller-minted `serviceAccountRef`
 (the shipped impersonate-only `holos-authenticator-impersonator` SA, TokenRequest
 mint/cache/rotation) and the runtime `credentialsSecretRef` Secret — the Istio
-`extensionProvider` + `AuthorizationPolicy` wiring, the paired Lua filters that
-reject inbound impersonation/`X-Impersonate-Groups` headers and split the
-comma-joined groups header into one `Impersonate-Group` per group, and
-verification.
+`extensionProvider` + `AuthorizationPolicy` wiring, the **required** split Lua
+filter that unpacks the comma-joined groups header into one `Impersonate-Group`
+per group (ordered after ext_authz with `filterClass: AUTHZ`) plus the **optional**
+reject Lua filter that rejects inbound impersonation/`X-Impersonate-Groups` headers
+as defense in depth, and verification.
 
 - Component: [`holos/components/holos-authenticator/`](../../holos/components/holos-authenticator/README.md)
 - Design: [ADR-23](../adr/ADR-23.md)
@@ -926,8 +927,9 @@ per element:
 ```lua
 function envoy_on_request(handle)
   -- Must match the authorizer's --impersonate-groups-header (default
-  -- x-impersonate-groups). The reject filter above guarantees the only copy of this
-  -- header on the request is the one the authorizer set.
+  -- x-impersonate-groups). The authorizer rejects any client-supplied copy
+  -- server-side, so the only copy on the request is the one the authorizer set
+  -- (the optional reject filter re-enforces this at the proxy).
   local joined = handle:headers():get("x-impersonate-groups")
   if joined == nil or joined == "" then
     return
@@ -947,14 +949,16 @@ The split filter **removes** the `x-impersonate-groups` header after unpacking i
 so the API server never sees the comma-joined helper header — only the per-group
 `Impersonate-Group` lines it expects.
 
-Wire both filters as Istio `EnvoyFilter`s on **the waypoint that fronts the
-protected route** — the *same* waypoint the `CUSTOM` `AuthorizationPolicy` attaches
-to, where the ext_authz filter actually runs. They must **not** target the
+Wire the **required** split filter as an Istio `EnvoyFilter` on **the waypoint that
+fronts the protected route** — the *same* waypoint the `CUSTOM` `AuthorizationPolicy`
+attaches to, where the ext_authz filter actually runs. It must **not** target the
 authenticator's own pods (`app.kubernetes.io/name: holos-authenticator`): the
 authenticator is the ext_authz *service*, not the proxy on the request path, so a
 filter on it never sees the forwarded request. Target the waypoint with `targetRefs`
-to its `gateway.networking.k8s.io` `Gateway` (a waypoint is a Gateway). The reject
-filter inserts **before** ext_authz and the split filter **after** it:
+to its `gateway.networking.k8s.io` `Gateway` (a waypoint is a Gateway), and order the
+filter **after** ext_authz with `filterClass: AUTHZ` — preferred over matching the
+unstable generated ext_authz filter name (see [*Filter ordering relative to the
+ext_authz chain*](#filter-ordering-relative-to-the-ext_authz-chain-filterclass-authz)):
 
 ```yaml
 apiVersion: networking.istio.io/v1alpha3
@@ -971,61 +975,25 @@ spec:
       kind: Gateway
       name: <protected-route-waypoint>
   configPatches:
-    # 1. Reject filter — insert BEFORE ext_authz so a client-supplied groups or
-    #    Impersonate-* header is refused before any header mutation.
+    # Split filter — filterClass: AUTHZ places it AFTER Istio's authz filters,
+    # including CUSTOM ext_authz, so the authorizer's injected x-impersonate-groups
+    # header is present (no need to name the generated, version-unstable ext_authz
+    # filter). `context` is omitted: targetRefs already scopes the patch to the
+    # waypoint proxy.
     - applyTo: HTTP_FILTER
       match:
         listener:
           filterChain:
             filter:
               name: envoy.filters.network.http_connection_manager
-              subFilter:
-                name: envoy.filters.http.ext_authz
       patch:
-        operation: INSERT_BEFORE
+        operation: ADD
+        filterClass: AUTHZ
         value:
-          name: envoy.filters.http.lua.reject-impersonation
+          name: holos-authenticator.split-groups
           typed_config:
             "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
-            inline_code: |
-              function envoy_on_request(handle)
-                local headers = handle:headers()
-                if headers:get("x-impersonate-groups") ~= nil then
-                  handle:respond({[":status"] = "403"}, "client-supplied impersonation header not allowed")
-                  return
-                end
-                -- Envoy's Lua header iteration must run to completion: do not break
-                -- or call handle:respond() inside the loop. Record a flag, respond after.
-                local denied = false
-                for key, _ in pairs(headers) do
-                  if string.sub(string.lower(key), 1, 12) == "impersonate-" then
-                    denied = true
-                  end
-                end
-                if denied then
-                  handle:respond({[":status"] = "403"}, "client-supplied impersonation header not allowed")
-                end
-              end
-    # 2. Split filter — insert AFTER ext_authz so the authorizer's injected
-    #    x-impersonate-groups header is present.
-    - applyTo: HTTP_FILTER
-      match:
-        # Omit `context` so the patch applies to the targeted waypoint proxy; the
-        # subFilter match below pins insertion to just after ext_authz.
-        listener:
-          filterChain:
-            filter:
-              name: envoy.filters.network.http_connection_manager
-              subFilter:
-                # Insert AFTER ext_authz so the injected x-impersonate-groups is present.
-                name: envoy.filters.http.ext_authz
-      patch:
-        operation: INSERT_AFTER
-        value:
-          name: envoy.filters.http.lua.split-groups
-          typed_config:
-            "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
-            inline_code: |
+            inlineCode: |
               function envoy_on_request(handle)
                 local joined = handle:headers():get("x-impersonate-groups")
                 if joined == nil or joined == "" then
@@ -1040,6 +1008,16 @@ spec:
                 end
               end
 ```
+
+> **Adding the optional reject filter.** To layer in the defense-in-depth reject
+> filter (above), append a **second** `configPatch` to this same `EnvoyFilter` that
+> `INSERT_BEFORE`s the `envoy.filters.http.ext_authz` subFilter with the reject Lua.
+> A reject filter **cannot** use `filterClass: AUTHZ`: an AUTHZ-class filter runs
+> only when ext_authz *allows* the request, but the reject filter must act on the
+> inbound request *before* the callout (see [*Filter ordering relative to the
+> ext_authz chain*](#filter-ordering-relative-to-the-ext_authz-chain-filterclass-authz)).
+> It is optional — smuggling prevention is the authorizer's responsibility, so the
+> split filter alone is the minimal required wiring.
 
 > **Robust to both Envoy representations.** Whether Envoy materializes the groups
 > header as a single comma-joined value or as duplicate header entries can vary by
@@ -1067,8 +1045,8 @@ spec:
 > waypoint / `ServiceEntry` egress topology is deferred (see
 > [*Istio extensionProvider + AuthorizationPolicy wiring*](#istio-extensionprovider--authorizationpolicy-wiring)
 > and [`holos/docs/placeholders.md`](../../holos/docs/placeholders.md)), so the
-> filter above is documented here as the required companion to that topology
-> rather than shipped in the deploy tree today.
+> split filter above (and the optional reject filter) are documented here as the
+> companion to that topology rather than shipped in the deploy tree today.
 
 ### Filter ordering relative to the ext_authz chain (`filterClass: AUTHZ`)
 
@@ -1085,10 +1063,11 @@ refused before any mutation). There are two ways to express that ordering:
   header, **without** naming the generated ext_authz filter. Prefer this: the
   generated filter name is **not a stable contract** across Istio/Envoy versions,
   whereas the AUTHZ filter class is.
-- **`INSERT_AFTER` matched on the ext_authz subFilter name** (the waypoint example
-  above). This pins insertion to just after `envoy.filters.http.ext_authz`. It
-  works, but couples the patch to the generated filter name — re-verify it after an
-  Istio upgrade.
+- **`INSERT_AFTER` matched on the ext_authz subFilter name.** A patch with
+  `operation: INSERT_AFTER` and a `subFilter.name: envoy.filters.http.ext_authz`
+  match pins insertion to just after the ext_authz filter (and `INSERT_BEFORE` for
+  a reject filter). It works, but couples the patch to the generated filter name —
+  re-verify it after an Istio upgrade. Prefer `filterClass: AUTHZ` above.
 
 A reject filter (optional defense in depth) **cannot** use `filterClass: AUTHZ`: an
 AUTHZ-class filter's `envoy_on_request` runs **only when ext_authz allows** the
@@ -1339,7 +1318,7 @@ See [README.md](../../README.md) (*Container image* → *Multi-arch images* /
   encoding HOL-1414/Revision 6 used) would be a regression. This is the fast way to
   tell whether the authorizer emitted the headers correctly (one
   `x-impersonate-groups` header carrying the CSV of mapped groups, overwrite/set) or
-  whether the paired Lua split filter or Envoy mishandled them downstream. The
+  whether the Lua split filter or Envoy mishandled them downstream. The
   `Authorization` value is redacted to a byte-length marker — the impersonator
   credential is never logged. Lower verbosity back to the default once done, since
   the per-header lines are high-volume.
