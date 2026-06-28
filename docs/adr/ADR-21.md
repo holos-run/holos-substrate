@@ -541,7 +541,7 @@ manifests provision the identity half of its primitive-role model
 > of the referent namespace grants access, a tenant cannot widen its own** — this
 > grant is **created by the `KeycloakInstance` namespace's platform owner, not
 > rendered by the Project component**. An ungranted reference is rejected by the
-> Keycloak CR's reconciler (`Ready=False`, reason `RefNotPermitted`), never silently
+> Keycloak CR's reconciler (`Ready=False`, reason `ReferenceNotGranted`), never silently
 > honored. This holos-owned grant and the Gateway-API grant (item 7) coexist and
 > never substitute for each other — a holos CR-to-CR reference is **never** authorized
 > by Gateway API's grant, which governs only its fixed route/backend kinds

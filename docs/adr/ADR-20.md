@@ -1090,7 +1090,7 @@ sections are now **historical**; this section records the contract as built.
   names **verbatim** — exactly as declared in the spec. Nothing is added,
   stripped, or required, and **no client ID or role name is reserved or refused**
   by the controller on policy grounds.
-- A `KeycloakClient` may declare **any** `spec.clientID`, including
+- A `KeycloakClient` may declare **any** `spec.clientId`, including
   previously-reserved IDs (`argocd`, `kargo`, `realm-management`,
   `https://quay.holos.internal`, the Keycloak built-in clients, the esso broker
   client). A `KeycloakGroup` may declare **any** `spec.path`, including
@@ -1116,7 +1116,7 @@ mechanics — so they move to Kubernetes **admission control**, evaluated at
 - A **`ValidatingAdmissionPolicy`** (built-in, CEL-based, no extra deployment)
   for the rules that are expressible as CEL over the incoming object — e.g.
   "a `KeycloakGroup.spec.path` in a tenant namespace must start with
-  `projects/<that-namespace>/`", or "a tenant `KeycloakClient.spec.clientID`
+  `projects/<that-namespace>/`", or "a tenant `KeycloakClient.spec.clientId`
   may not be one of {`argocd`, `kargo`, `https://quay.holos.internal`, …}".
 - A **`ValidatingAdmissionWebhook` backed by dedicated policy CRs** for rules
   that need state the admission request alone does not carry (cross-object
@@ -1302,8 +1302,12 @@ that work.
   credential — analogous to the load-bearing Quay superuser token
   ([ADR-19](ADR-19.md)). The recommendation is a **scoped** `realm-management`
   service-account client (not blanket realm-admin), created at runtime and never
-  committed, with the reserved-name + claim model bounding its blast radius the way
-  ADR-19's claim model bounds `FEATURE_SUPERUSERS_FULL_ACCESS`.
+  committed. *(As of Revision 7 (HOL-1421) the controller no longer enforces
+  reserved names — only the per-CR **claim/adoption** model bounds the
+  credential's blast radius, the way ADR-19's claim model bounds
+  `FEATURE_SUPERUSERS_FULL_ACCESS`; reserved-name / disjointness enforcement, if
+  desired, is now downstream admission-control work — see *Transparent contract,
+  migration, and admission-control policy (Rev 7)*.)*
 - **Email-based auto-link is only as safe as the upstream IdP.** `Trust Email` +
   first-broker-login auto-link bypasses Keycloak's own email verification, so the
   pre-provision-by-email flow is safe **only** when the federated IdP verifies email
@@ -1322,9 +1326,16 @@ that work.
   *Keycloak Configuration as Code* guard rail in AGENTS.md and
   [keycloak-clients.md](../../holos/docs/keycloak-clients.md) are updated to match
   in phases 3/5).
-- **The ownership boundary [ADR-18](ADR-18.md) deferred now has a concrete,
-  enforced answer.** Reserved platform names (keyed on the real realm identifiers,
-  kept in sync with the realm config) plus a per-CR claim model make
+- **The ownership boundary [ADR-18](ADR-18.md) deferred.** *(Revision 7 update:
+  this was originally answered with **reserved platform names plus a per-CR claim
+  model**. HOL-1421 **removed the reserved-name half from the controller** — the
+  retained per-CR claim/adoption model keeps the controller from seizing an
+  unadopted foreign object, but **reserved names / project-prefix / tenant↔platform
+  disjointness are no longer enforced by the controller**; that enforcement, if a
+  cluster wants it, is now downstream **admission-control** work — see *Transparent
+  contract, migration, and admission-control policy (Rev 7)*. The original text
+  follows as historical.)* Reserved platform names (keyed on the real realm
+  identifiers, kept in sync with the realm config) plus a per-CR claim model make
   disjoint ownership safe despite the global-realm / namespaced-CRD tension —
   config-cli's no-delete posture alone would not. Keeping the reserved set in sync
   is itself an implementation guard rail.
