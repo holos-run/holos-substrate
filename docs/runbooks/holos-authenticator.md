@@ -373,6 +373,15 @@ spec:
     name: "holos-authenticator-backend-creds"
 ```
 
+A token with `preferred_username: alice`, `sub: 1a2b`, and
+`email: alice@example.com` is then impersonated as the Kubernetes user
+`oidc:alice` with `Impersonate-Uid: 1a2b` and `Impersonate-Extra-email:
+alice@example.com`. Because this Backend emits the UID and an extra, its
+impersonator credential additionally needs `impersonate` on the
+`authentication.k8s.io` `uids` and `userextras/email` resources — see
+[*Impersonation RBAC (the forwarded
+credential)*](#impersonation-rbac-the-forwarded-credential).
+
 With this `Backend` a token whose `sub` is `alice` and whose `groups` claim is
 `["dev", "ops"]` is impersonated as the Kubernetes user `oidc:alice` with the
 groups `oidc:dev` and `oidc:ops` — `usernamePrefix` and `groupsPrefix` set as a
@@ -753,6 +762,29 @@ Backend mapping to non-`system:` groups, grant `impersonate` on `users`
 (scoped by `resourceNames` to the expected usernames where practical) and on
 `groups` (scoped to the mapped group names). Prefer mapping to non-`system:`
 groups so the blast radius stays bounded.
+
+> **A Backend with `oidc.uidClaim` or `oidc.extra[]` needs `uids` /
+> `userextras/<key>` grants too.** The API server authorizes `Impersonate-Uid`
+> against the **`uids`** resource and `Impersonate-Extra-<key>` against the
+> **`userextras/<key>`** subresource, **both in the `authentication.k8s.io` API
+> group** — separately from `users`/`groups`. Without these grants a request the
+> authorizer **allows** (it emitted the headers) is then **rejected 403 by the API
+> server**. Add one rule per emitted UID/extra dimension, scoped with
+> `resourceNames` where practical (the `uids` resource generally cannot be usefully
+> name-scoped since the UID is per-principal). Append to the impersonator's role:
+>
+> ```yaml
+> rules:
+>   # Impersonate-Uid (oidc.uidClaim)
+>   - apiGroups: ["authentication.k8s.io"]
+>     resources: ["uids"]
+>     verbs: ["impersonate"]
+>   # Impersonate-Extra-<key> — one subresource per extra key (oidc.extra[].key)
+>   - apiGroups: ["authentication.k8s.io"]
+>     resources: ["userextras/email"]
+>     verbs: ["impersonate"]
+>     resourceNames: ["alice@example.com"]   # scope to expected values where practical
+> ```
 
 Compromise of this credential lets an attacker impersonate whatever the granted
 RBAC allows on that backend's API server, so keeping each grant scoped (never an
