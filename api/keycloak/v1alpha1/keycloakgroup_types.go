@@ -12,15 +12,13 @@ import (
 // client defines).
 //
 // The target client is named by EXACTLY ONE of ClientRef (a same-namespace
-// KeycloakClient CR) or ClientID (a Keycloak clientId directly). ClientID exists
-// for the ADR-20 "Quay use case": a project role group confers a project-prefixed
-// client role (e.g. my-project-owner) on the platform-reserved Quay client
-// (https://quay.holos.internal) — for which a tenant KeycloakClient CR may not
-// exist (the reserved-name guard forbids one) — so the role surfaces in Quay's
-// groups claim via the platform's already-deployed quay-client-roles mapper. Only
-// project-prefixed client roles may be conferred on a reserved client; the
-// platform's own reserved client-role names are still refused (the claim-value
-// boundary in ADR-20 "Ownership / disjointness").
+// KeycloakClient CR) or ClientID (a Keycloak clientId directly). The reconciler is
+// transparent (HOL-1421): a reference may name ANY client and confer ANY role name
+// — the controller reserves and refuses nothing on org-policy grounds. ClientID is
+// the path for conferring a role on a client that has no same-namespace
+// KeycloakClient CR (e.g. a platform client such as the in-cluster Quay client
+// https://quay.holos.internal), so the role surfaces in that client's token via its
+// per-client client-role mapper (ADR-20).
 //
 // +kubebuilder:validation:XValidation:rule="has(self.clientRef) != has(self.clientId)",message="exactly one of clientRef or clientId must be set"
 type ClientRoleReference struct {
@@ -39,9 +37,10 @@ type ClientRoleReference struct {
 
 	// ClientID names the target Keycloak clientId directly (e.g.
 	// https://quay.holos.internal), bypassing same-namespace KeycloakClient CR
-	// resolution. It is the mechanism for conferring a project-prefixed role on a
-	// platform-reserved client (the ADR-20 "Quay use case") where no tenant
-	// KeycloakClient CR exists or may exist. Mutually exclusive with ClientRef.
+	// resolution. It is the mechanism for conferring a role on a client that has no
+	// same-namespace KeycloakClient CR (such as a platform client). It may name any
+	// client and confer any role name — the controller reserves nothing (HOL-1421).
+	// Mutually exclusive with ClientRef.
 	//
 	// +optional
 	// +kubebuilder:validation:MinLength=1
@@ -180,9 +179,11 @@ type KeycloakGroupStatus struct {
 	GroupID string `json:"groupID,omitempty"`
 
 	// ManagedClientRoles records the client roles this CR has conferred on the
-	// group, each as "<clientId>/<role>", so a role dropped from spec.clientRoles
-	// is unassigned from the Keycloak group on the next reconcile rather than left
-	// active (the conferral is reconciled to the desired set, not add-only).
+	// group, each an opaque controller-owned key encoding a (clientId, role) pair, so
+	// a role dropped from spec.clientRoles is unassigned from the Keycloak group on
+	// the next reconcile rather than left active (the conferral is reconciled to the
+	// desired set, not add-only). The encoding is an internal detail and not a stable
+	// API; do not parse these entries.
 	//
 	// +optional
 	// +listType=atomic
