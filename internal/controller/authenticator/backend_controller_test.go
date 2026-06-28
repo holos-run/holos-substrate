@@ -187,6 +187,52 @@ func TestReconcileGroupsPrefixApplied(t *testing.T) {
 	}
 }
 
+// TestReconcileUsernamePrefixApplied asserts a Backend setting spec.oidc.usernamePrefix
+// becomes Ready and that its registered Store entry's Authenticator prepends the
+// prefix to the username read from the username claim — proving the API field is
+// wired into the runtime username resolution, independently of the groups prefix.
+func TestReconcileUsernamePrefixApplied(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	discover := func(context.Context, string, string, []byte) (authenticator.TokenVerifier, error) {
+		return claimsVerifier{claims: map[string]any{
+			"sub":    "alice",
+			"groups": []any{"dev", "ops"},
+		}}, nil
+	}
+	r, store, _ := newReconciler(discover)
+
+	b := makeBackend(ns, "backend-user-prefix", "api-user-prefix.example.test")
+	b.Spec.OIDC.UsernamePrefix = "oidc:"
+	key := createBackend(ctx, t, b)
+
+	if _, err := reconcile(ctx, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	got := getBackend(ctx, t, key)
+	if status := condStatus(got, ConditionReady); status != metav1.ConditionTrue {
+		t.Fatalf("Ready = %q, want True", status)
+	}
+
+	entry, ok := store.Get("api-user-prefix.example.test")
+	if !ok {
+		t.Fatalf("store missing entry for host api-user-prefix.example.test")
+	}
+	id, err := entry.Authenticator.Authenticate(ctx, "raw-token")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if id.Username != "oidc:alice" {
+		t.Errorf("username = %q, want oidc:alice (prefix not applied)", id.Username)
+	}
+	// The username prefix must not leak into the groups (no groupsPrefix set).
+	if want := []string{"dev", "ops"}; !reflect.DeepEqual(id.Groups, want) {
+		t.Errorf("groups = %v, want %v (username prefix must not affect groups)", id.Groups, want)
+	}
+}
+
 // TestReconcileInvalidCELRejects asserts a malformed group-mapping CEL expression
 // rejects the spec (Accepted/Programmed/Ready=False, reason InvalidSpec), does not
 // requeue with an error, and leaves nothing in the store.
@@ -650,6 +696,62 @@ func TestBackendGroupsPrefixRejectsExplicitEmpty(t *testing.T) {
 	if err == nil {
 		_ = shared.k8sClient.Delete(context.Background(), u)
 		t.Fatalf("Create accepted a Backend with an explicit empty oidc.groupsPrefix; want MinLength rejection")
+	}
+}
+
+// TestBackendUsernamePrefixRejectsExplicitEmpty asserts the CRD MinLength=1 rule
+// rejects a Backend that sets oidc.usernamePrefix to an explicit empty string,
+// mirroring the groupsPrefix rule — omit the field to prepend nothing rather than
+// carry an ambiguous no-op. The typed client drops "" via omitempty, so this uses
+// an unstructured object to send the literal empty value a raw JSON/YAML client
+// would.
+func TestBackendUsernamePrefixRejectsExplicitEmpty(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	u := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "authenticator.holos.run/v1alpha1",
+		"kind":       "Backend",
+		"metadata": map[string]any{
+			"name":      "up-empty",
+			"namespace": ns,
+		},
+		"spec": map[string]any{
+			"host":   "api-up-empty.example.test",
+			"server": map[string]any{"url": "https://api.example.test:6443"},
+			"oidc": map[string]any{
+				"issuerURL":      "https://issuer.example.test/realms/holos",
+				"clientID":       "holos-authenticator",
+				"usernamePrefix": "",
+			},
+		},
+	}}
+	u.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "authenticator.holos.run", Version: "v1alpha1", Kind: "Backend",
+	})
+
+	err := shared.k8sClient.Create(ctx, u)
+	if err == nil {
+		_ = shared.k8sClient.Delete(context.Background(), u)
+		t.Fatalf("Create accepted a Backend with an explicit empty oidc.usernamePrefix; want MinLength rejection")
+	}
+}
+
+// TestBackendUsernamePrefixRoundTrips asserts the CRD admits a Backend setting
+// oidc.usernamePrefix (it has no mutual-exclusion constraint — the username is a
+// direct claim read, not a CEL mapping) and that the value round-trips through the
+// API server.
+func TestBackendUsernamePrefixRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	b := makeBackend(ns, "up-roundtrip", "api-up-roundtrip.example.test")
+	b.Spec.OIDC.UsernamePrefix = "oidc:"
+	key := createBackend(ctx, t, b)
+
+	got := getBackend(ctx, t, key)
+	if got.Spec.OIDC.UsernamePrefix != "oidc:" {
+		t.Errorf("oidc.usernamePrefix = %q, want oidc: after round-trip", got.Spec.OIDC.UsernamePrefix)
 	}
 }
 

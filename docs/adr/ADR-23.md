@@ -17,6 +17,7 @@
 | 5        | 2026-06-25 | @jeffmccune | Group-prefix extension — additive `spec.oidc.groupsPrefix` for the default groups-claim mapping (below) |
 | 6        | 2026-06-26 | @jeffmccune | Group encoding correction — `Impersonate-Group` is emitted as `APPEND_IF_EXISTS_OR_ADD`, Envoy comma-joins it, and it must be paired with a Lua split filter (below) |
 | 7        | 2026-06-27 | @jeffmccune | Group encoding fix (HOL-1416) — groups emitted as a single comma-joined **overwrite/set** header (configurable, default `X-Impersonate-Groups`), not per-group append options Envoy silently drops; paired reject + split Lua filters (below) |
+| 8        | 2026-06-27 | @jeffmccune | Username-prefix extension (HOL-1418) — additive `spec.oidc.usernamePrefix` for the impersonated username, the apiserver `--oidc-username-prefix=oidc:` equivalent, paired by convention with `groupsPrefix` (below) |
 | 8        | 2026-06-27 | @jeffmccune | Smuggling-prevention ownership + Lua filter ordering (HOL-1417) — smuggling prevention is the authenticator's responsibility (no `EnvoyFilter` required; the reject filter is optional defense in depth); the split filter is ordered after ext_authz with the version-stable `filterClass: AUTHZ`, on a gateway as on a waypoint (below) |
 
 ## As-built (Revision 2)
@@ -272,6 +273,7 @@ spec:
     caBundle:       <[]byte, optional>     # trust for issuer dial; unused when jwks is set
     jwks:           <[]byte, optional>     # static JWKS → offline validation (Rev 3)
     usernameClaim:  <string, optional>     # default `sub`
+    usernamePrefix: <string, optional>     # prefix the impersonated username (Rev 8); recommended `oidc:`
     groupsClaim:    <string, optional>     # default `groups`
     groupsPrefix:   <string, optional>     # prefix the default mapping (Rev 5); excl. celExpression
   groupMapping:
@@ -331,6 +333,54 @@ groups-claim mapping** before it is impersonated, so a `Backend` with
 The operator procedure (the recommended `oidc:` value, the `system:`-group
 rationale, the mutual-exclusion rule, and an example) is in the
 [runbook's *OIDC token validation + CEL group
+mapping*](../runbooks/holos-authenticator.md#oidc-token-validation--cel-group-mapping)
+section.
+
+## Username-prefix extension (Revision 8)
+
+Revision 8 (HOL-1418) adds an optional **`spec.oidc.usernamePrefix`** to the
+`Backend`, the equivalent of the apiserver `--oidc-username-prefix=oidc:` flag and
+the username-side companion to `spec.oidc.groupsPrefix` (Revision 5). When set,
+the prefix is prepended to the username read from the username claim (the claim
+named by `oidc.usernameClaim`) before it is impersonated, so a `Backend` with
+`oidc.usernameClaim: sub` and `oidc.usernamePrefix: "oidc:"` impersonates the
+Kubernetes user `oidc:alice` instead of `alice`.
+
+- **Additive `spec.oidc.usernamePrefix` (no new CRD).** A single optional string
+  field on the existing `Backend` CR. There is no default — an omitted
+  `usernamePrefix` prepends nothing, so backends that do not set it are
+  byte-for-byte backward compatible. (An explicit empty string is rejected by
+  `MinLength=1`: omit the field to prepend nothing rather than carry an ambiguous
+  no-op, exactly as `groupsPrefix` does.)
+- **Recommended `oidc:`, to isolate the IdP's username namespace.** Like the
+  apiserver flag, the recommended value is `oidc:`. Prefixing isolates the
+  external identity provider's username namespace so a token **cannot impersonate
+  Kubernetes built-in `system:` users** — a token whose username claim is
+  `system:admin` becomes `oidc:system:admin`, which holds no privilege, rather
+  than the real in-cluster identity. Without a prefix the username claim is
+  impersonated verbatim, so an IdP that can mint an arbitrary username claim could
+  assert a `system:` user directly; the prefix is the recommended mitigation.
+- **Configured as a pair with `groupsPrefix`, independent in implementation.**
+  The maintainer intention — matching the upstream apiserver guidance, where
+  `--oidc-username-prefix` and `--oidc-groups-prefix` are intended to be set
+  together — is that operators configure `usernamePrefix` and `groupsPrefix` **as
+  a pair**, both conventionally `oidc:`. The convention is documentation, not a
+  hard-coded default: the implementation keeps the two fields **independent** —
+  each is its own optional string with no coupling and no enforcement — so a
+  `Backend` may set one without the other. There is deliberately **no**
+  kubebuilder default of `oidc:` on either field, which keeps them symmetric (a
+  hard default on only one would silently prefix one identity dimension but not
+  the other) and backward compatible.
+- **Always applied; no `celExpression` exclusion.** Unlike `groupsPrefix`, which
+  is honored only with the default groups-claim mapping and is mutually exclusive
+  with `spec.groupMapping.celExpression` (groups flow through the single CEL
+  evaluation path), the username is a **direct claim read** with no CEL mapping.
+  The prefix is therefore applied unconditionally in the `Authenticator` after the
+  username claim is read, and there is no analogous mutual-exclusion rule.
+
+The operator procedure (the recommended `oidc:` value, the `system:`-user
+rationale, and the pairing convention) is in the [runbook's *OIDC token
+validation + CEL group
 mapping*](../runbooks/holos-authenticator.md#oidc-token-validation--cel-group-mapping)
 section.
 

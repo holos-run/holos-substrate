@@ -83,6 +83,29 @@ type OIDCConfig struct {
 	// +kubebuilder:validation:MinLength=1
 	UsernameClaim string `json:"usernameClaim,omitempty"`
 
+	// UsernamePrefix is prepended to the username read from the username claim (the
+	// claim named by UsernameClaim) before it is impersonated as the Kubernetes
+	// user. The recommended value is "oidc:" — like the apiserver
+	// --oidc-username-prefix=oidc: flag, prefixing isolates the external identity
+	// provider's username namespace so a token cannot impersonate Kubernetes
+	// built-in system: users (e.g. a token whose username claim is "system:admin"
+	// becomes "oidc:system:admin"). UsernamePrefix and GroupsPrefix are intended to
+	// be configured **as a pair**, both conventionally "oidc:", matching the
+	// upstream apiserver guidance that --oidc-username-prefix and
+	// --oidc-groups-prefix are set together; the implementation nonetheless keeps
+	// them independent — each is its own optional field with no coupling, so a
+	// Backend may set one without the other. Unlike GroupsPrefix (which flows
+	// through the groups CEL mapping and is therefore mutually exclusive with
+	// spec.groupMapping.celExpression), the username is a direct claim read with no
+	// CEL mapping, so UsernamePrefix is always applied and has no such exclusion.
+	// There is no default: an omitted UsernamePrefix prepends nothing, preserving
+	// the existing behavior. MinLength=1 rejects an explicit empty string, which
+	// would otherwise be an ambiguous no-op; omit the field to prepend nothing.
+	//
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	UsernamePrefix string `json:"usernamePrefix,omitempty"`
+
 	// GroupsClaim is the token claim the authorizer reads the user's groups from.
 	// It is the source of truth for which claim carries the groups (the default
 	// group mapping reads it directly when spec.groupMapping.celExpression is

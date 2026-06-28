@@ -186,7 +186,7 @@ func (r *BackendReconciler) reconcileNormal(ctx context.Context, logger logr.Log
 	saRef := normalizeServiceAccountRef(backend.Spec.ServiceAccountRef)
 	entry := &authenticator.Entry{
 		Host:                 backend.Spec.Host,
-		Authenticator:        authenticator.NewAuthenticator(verifier, mapper, backend.Spec.OIDC.UsernameClaim),
+		Authenticator:        authenticator.NewAuthenticator(verifier, mapper, backend.Spec.OIDC.UsernameClaim, backend.Spec.OIDC.UsernamePrefix),
 		UsernameClaim:        backend.Spec.OIDC.UsernameClaim,
 		ServerURL:            backend.Spec.Server.URL,
 		ServerCABundle:       backend.Spec.Server.CABundle,
