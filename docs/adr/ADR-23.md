@@ -17,8 +17,8 @@
 | 5        | 2026-06-25 | @jeffmccune | Group-prefix extension — additive `spec.oidc.groupsPrefix` for the default groups-claim mapping (below) |
 | 6        | 2026-06-26 | @jeffmccune | Group encoding correction — `Impersonate-Group` is emitted as `APPEND_IF_EXISTS_OR_ADD`, Envoy comma-joins it, and it must be paired with a Lua split filter (below) |
 | 7        | 2026-06-27 | @jeffmccune | Group encoding fix (HOL-1416) — groups emitted as a single comma-joined **overwrite/set** header (configurable, default `X-Impersonate-Groups`), not per-group append options Envoy silently drops; paired reject + split Lua filters (below) |
-| 8        | 2026-06-27 | @jeffmccune | Username-prefix extension (HOL-1418) — additive `spec.oidc.usernamePrefix` for the impersonated username, the apiserver `--oidc-username-prefix=oidc:` equivalent, paired by convention with `groupsPrefix` (below) |
 | 8        | 2026-06-27 | @jeffmccune | Smuggling-prevention ownership + Lua filter ordering (HOL-1417) — smuggling prevention is the authenticator's responsibility (no `EnvoyFilter` required; the reject filter is optional defense in depth); the split filter is ordered after ext_authz with the version-stable `filterClass: AUTHZ`, on a gateway as on a waypoint (below) |
+| 9        | 2026-06-27 | @jeffmccune | Username-prefix extension (HOL-1418) — additive `spec.oidc.usernamePrefix` for the impersonated username, the apiserver `--oidc-username-prefix=oidc:` equivalent, paired by convention with `groupsPrefix` (below) |
 
 ## As-built (Revision 2)
 
@@ -273,7 +273,7 @@ spec:
     caBundle:       <[]byte, optional>     # trust for issuer dial; unused when jwks is set
     jwks:           <[]byte, optional>     # static JWKS → offline validation (Rev 3)
     usernameClaim:  <string, optional>     # default `sub`
-    usernamePrefix: <string, optional>     # prefix the impersonated username (Rev 8); recommended `oidc:`
+    usernamePrefix: <string, optional>     # prefix the impersonated username (Rev 9); recommended `oidc:`
     groupsClaim:    <string, optional>     # default `groups`
     groupsPrefix:   <string, optional>     # prefix the default mapping (Rev 5); excl. celExpression
   groupMapping:
@@ -336,9 +336,9 @@ rationale, the mutual-exclusion rule, and an example) is in the
 mapping*](../runbooks/holos-authenticator.md#oidc-token-validation--cel-group-mapping)
 section.
 
-## Username-prefix extension (Revision 8)
+## Username-prefix extension (Revision 9)
 
-Revision 8 (HOL-1418) adds an optional **`spec.oidc.usernamePrefix`** to the
+Revision 9 (HOL-1418) adds an optional **`spec.oidc.usernamePrefix`** to the
 `Backend`, the equivalent of the apiserver `--oidc-username-prefix=oidc:` flag and
 the username-side companion to `spec.oidc.groupsPrefix` (Revision 5). When set,
 the prefix is prepended to the username read from the username claim (the claim
