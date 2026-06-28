@@ -408,14 +408,19 @@ two — the **UID** (`Impersonate-Uid`) and **extra fields**
   `{key, valueClaim}` entries, each emitting the value of `valueClaim` as an
   `Impersonate-Extra-<key>` header. It is a CRD **`listType=map` keyed by `key`**,
   so the API server rejects duplicate keys at admission; each `key` must also be a
-  valid HTTP header field-name token (the reconciler validates it and rejects the
-  spec `Accepted=False` otherwise, mirroring the `--impersonate-groups-header`
-  guard), since it is emitted verbatim as the header suffix. An entry whose claim is
-  **absent** from a given token is **skipped** (the extra is optional context, like
-  a missing groups claim); an entry whose claim is **present but not a string**
-  **denies fail-closed** (a misconfiguration pointing at a list/object/number
-  claim). Each extra is **single-valued** in this phase; multi-valued extras are a
-  deferred follow-up.
+  **canonical** extra key — a lowercase HTTP header field-name token with no `%`
+  (the reconciler validates it and rejects the spec `Accepted=False` otherwise,
+  mirroring the `--impersonate-groups-header` guard). It is emitted verbatim as the
+  header suffix, and the API server derives the extra-map key from that suffix by
+  **lowercasing and percent-unescaping** it; requiring the key be already canonical
+  keeps the case-sensitive `listMapKey` uniqueness aligned with the API server's
+  lowercased keys and stops a `%` from decoding into a different key. An entry whose
+  claim is **absent** (or null) on a given token is **skipped** (the extra is
+  optional context, like a missing groups claim); a **present string** is emitted
+  verbatim (including an empty value); an entry whose claim is **present but not a
+  string** **denies fail-closed** (a misconfiguration pointing at a
+  list/object/number claim). Each extra is **single-valued** in this phase;
+  multi-valued extras are a deferred follow-up.
 - **Single-valued → direct overwrite headers, no Lua split.** Both `Impersonate-Uid`
   and each `Impersonate-Extra-<key>` are single values, so they are emitted directly
   under their `Impersonate-*` names with the **overwrite/set** action — exactly like

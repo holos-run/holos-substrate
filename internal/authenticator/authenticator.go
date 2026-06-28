@@ -152,12 +152,15 @@ func stringClaim(claims map[string]any, claim string) (string, error) {
 }
 
 // optionalStringClaim reads claim from claims as a string for an optional mapping
-// (an impersonation extra). Unlike stringClaim it does not treat an absent claim
-// as an error: a token missing the claim — or carrying it as nil or the empty
-// string — returns ("", false, nil) so the caller skips the entry, mirroring the
-// "missing groups claim → no groups" behavior. A present non-string value (a list,
-// object, number, or bool) is an error so a misconfigured mapping pointing at a
-// non-string claim fails closed rather than emitting a malformed extra value.
+// (an impersonation extra). It distinguishes a claim that is absent from one that is
+// present: a token missing the claim — or carrying it as JSON null — returns
+// ("", false, nil) so the caller skips the entry (mirroring the "missing groups
+// claim → no groups" behavior), while a claim present as a string is returned with
+// ok=true and emitted verbatim, including an empty string. The absent-vs-present
+// distinction is the whole contract, so a present empty value is NOT silently
+// dropped — it is emitted as an empty extra value. A present non-string value (a
+// list, object, number, or bool) is an error so a misconfigured mapping pointing at
+// a non-string claim fails closed rather than emitting a malformed extra value.
 func optionalStringClaim(claims map[string]any, claim string) (string, bool, error) {
 	raw, ok := claims[claim]
 	if !ok || raw == nil {
@@ -166,9 +169,6 @@ func optionalStringClaim(claims map[string]any, claim string) (string, bool, err
 	s, ok := raw.(string)
 	if !ok {
 		return "", false, fmt.Errorf("token claim %q is not a string (got %T)", claim, raw)
-	}
-	if s == "" {
-		return "", false, nil
 	}
 	return s, true, nil
 }

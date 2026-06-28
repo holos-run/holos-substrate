@@ -120,8 +120,8 @@ own OIDC client and mapping.
 | `oidc.groupsClaim`           | no       | `groups`                                   | Token claim carrying groups (used by the default mapping).                 |
 | `oidc.groupsPrefix`          | no       | empty → no prefix                          | Prefix prepended to every group from the default mapping (the apiserver `--oidc-groups-prefix` equivalent; recommended `oidc:`). Honored only with the default mapping and **mutually exclusive** with `groupMapping.celExpression`. See [*OIDC token validation + CEL group mapping*](#oidc-token-validation--cel-group-mapping). |
 | `oidc.uidClaim`              | no       | empty → no UID                             | Token claim emitted as `Impersonate-Uid` (recommended `sub`, a stable identifier for audit). When set, the claim must be a non-empty string on every token or the request is denied. See [*OIDC token validation + CEL group mapping*](#oidc-token-validation--cel-group-mapping). |
-| `oidc.extra[].key`           | yes (per entry) | —                                   | Extra key, emitted as the `Impersonate-Extra-<key>` header suffix. Must be a valid HTTP header token; unique within a Backend (`listType=map`). |
-| `oidc.extra[].valueClaim`    | yes (per entry) | —                                   | Token claim read for the extra value. Absent → entry skipped; present-but-non-string → request denied. Single-valued in this phase. |
+| `oidc.extra[].key`           | yes (per entry) | —                                   | Extra key, emitted as the `Impersonate-Extra-<key>` header suffix. Must be a **canonical** (lowercase, no `%`) HTTP header token so it round-trips through the API server's lowercase + percent-unescape; unique within a Backend (`listType=map`). |
+| `oidc.extra[].valueClaim`    | yes (per entry) | —                                   | Token claim read for the extra value. Absent (or null) → entry skipped; present string → emitted (incl. empty); present-but-non-string → request denied. Single-valued in this phase. |
 | `groupMapping.celExpression` | no       | empty → default mapping                    | CEL expression over `claims` producing the Kubernetes group list. Mutually exclusive with `oidc.groupsPrefix`. |
 | `credentialsSecretRef.name`  | no       | `holos-authenticator-backend-creds`        | Name of the Secret holding the privileged impersonator credential (resolved in the authorizer's own namespace). Mutually exclusive with `serviceAccountRef`. |
 | `credentialsSecretRef.key`   | no       | `token`                                    | Secret key to read the raw bearer token from (the conventional `token` key when omitted). |
@@ -292,11 +292,14 @@ dimensions:
   entries; each emits the value of `valueClaim` as the `Impersonate-Extra-<key>`
   header so downstream authorizers and audit tooling can key off it (e.g. carry
   `email` or a tenant id). Keys are **unique** (the API server rejects duplicates)
-  and must be valid HTTP header tokens (the reconciler rejects a `Backend` with a
-  bad key, `Accepted=False`). An entry whose claim is **absent** on a token is
-  **skipped** (optional context); an entry whose claim is **present but not a
-  string** **denies (HTTP 401)** — a misconfiguration pointing at a list/object
-  claim. Each extra is single-valued in this phase.
+  and must be **canonical** — lowercase HTTP header tokens with no `%` (the
+  reconciler rejects a `Backend` with a bad key, `Accepted=False`) — so the emitted
+  header round-trips through the API server's lowercase + percent-unescape to the
+  same extra key. An entry whose claim is **absent** on a token is **skipped**
+  (optional context); a **present string** is emitted verbatim (including an empty
+  value); an entry whose claim is **present but not a string** **denies (HTTP 401)**
+  — a misconfiguration pointing at a list/object claim. Each extra is single-valued
+  in this phase.
 
 Both are single values, so the authorizer sets `Impersonate-Uid` and each
 `Impersonate-Extra-<key>` directly with the overwrite action, exactly like

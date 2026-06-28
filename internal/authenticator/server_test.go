@@ -356,12 +356,15 @@ func TestOkResponseOmitsUIDAndExtraWhenUnset(t *testing.T) {
 	})
 }
 
-// TestValidateExtraKey asserts the extra-key validation the reconciler uses: a valid
-// HTTP header token passes (returned verbatim — not lowercased, unlike the groups
-// header), and an empty key or one with non-token characters (space, slash, colon)
-// is rejected so the authorizer never emits a malformed Impersonate-Extra-* header.
+// TestValidateExtraKey asserts the extra-key validation the reconciler uses: a
+// canonical (lowercase, no '%') HTTP header token passes, and an empty key, an
+// uppercase key, a key containing '%', or one with non-token characters (space,
+// slash, colon) is rejected — so the emitted Impersonate-Extra-<key> header
+// round-trips to the same extra key after the API server lowercases and
+// percent-unescapes the suffix (and the case-sensitive listMapKey uniqueness stays
+// aligned with the API server's lowercased keys).
 func TestValidateExtraKey(t *testing.T) {
-	valid := []string{"email", "Email", "example.com-email", "tenant_id", "scopes.v1"}
+	valid := []string{"email", "example.com-email", "tenant_id", "scopes.v1"}
 	for _, in := range valid {
 		t.Run("valid/"+in, func(t *testing.T) {
 			if err := ValidateExtraKey(in); err != nil {
@@ -370,10 +373,12 @@ func TestValidateExtraKey(t *testing.T) {
 		})
 	}
 	invalid := map[string]string{
-		"empty": "",
-		"space": "ex ample",
-		"slash": "example.com/email",
-		"colon": "ex:ample",
+		"empty":     "",
+		"uppercase": "Email",       // API server lowercases — would not round-trip
+		"percent":   "tenant%2fid", // API server percent-unescapes — would decode to a different key
+		"space":     "ex ample",
+		"slash":     "example.com/email",
+		"colon":     "ex:ample",
 	}
 	for name, in := range invalid {
 		t.Run("invalid/"+name, func(t *testing.T) {

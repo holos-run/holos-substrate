@@ -196,24 +196,47 @@ func ValidateGroupsHeader(name string) (string, error) {
 }
 
 // ValidateExtraKey reports whether key is usable as the suffix of an
-// Impersonate-Extra-<key> impersonation header: it must be a non-empty, valid HTTP
-// header field-name token (RFC 7230 token characters only) so the authorizer emits
-// a well-formed header. The BackendReconciler validates every spec.oidc.extra[].key
-// with this and rejects the Backend (Accepted=False) on failure, mirroring how
-// ValidateGroupsHeader guards the --impersonate-groups-header flag. Unlike that
-// helper the key is NOT lowercased: the Impersonate-Extra-<key> name is emitted
-// verbatim, and the Kubernetes API server lowercases the extra key it derives from
-// the header name itself.
+// Impersonate-Extra-<key> impersonation header. The authorizer emits the key
+// verbatim, but the Kubernetes API server derives the extra-map key from the header
+// name by **lowercasing and percent-unescaping** it, so the key must be canonical —
+// already lowercase and free of '%' — for the emitted header to round-trip to the
+// extra key the operator wrote. Specifically it must be a non-empty string of HTTP
+// header field-name token characters (RFC 7230) restricted to lowercase: ASCII
+// lowercase letters, digits, and the token punctuation `!#$&'*+-.^_`+"`"+`|~`
+// (the RFC 7230 set minus '%'). This keeps the CRD's case-sensitive listMapKey
+// uniqueness aligned with the API server's lowercased keys (so `Email` and `email`
+// cannot both be admitted to collide) and prevents a '%' from percent-decoding into
+// a different key (e.g. `tenant%2fid` → `tenant/id`). The BackendReconciler
+// validates every spec.oidc.extra[].key with this and rejects the Backend
+// (Accepted=False) on failure, mirroring how ValidateGroupsHeader guards the
+// --impersonate-groups-header flag.
 func ValidateExtraKey(key string) error {
 	if key == "" {
 		return fmt.Errorf("extra key must not be empty")
 	}
 	for _, r := range key {
-		if !isHeaderTokenChar(r) {
-			return fmt.Errorf("extra key %q contains an invalid character %q", key, r)
+		if !isExtraKeyChar(r) {
+			return fmt.Errorf("extra key %q contains an invalid character %q (keys must be lowercase HTTP header tokens without %%)", key, r)
 		}
 	}
 	return nil
+}
+
+// isExtraKeyChar reports whether r is a valid character in a canonical extra key:
+// an HTTP header field-name token character (RFC 7230) restricted to lowercase and
+// excluding '%'. Uppercase letters are rejected because the API server lowercases
+// the key (so an uppercase key would never round-trip to itself), and '%' is
+// rejected because the API server percent-unescapes the key (so a '%' would decode
+// into a different key). See ValidateExtraKey.
+func isExtraKeyChar(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		return true
+	case strings.ContainsRune("!#$&'*+-.^_`|~", r): // RFC 7230 token punctuation minus '%'
+		return true
+	default:
+		return false
+	}
 }
 
 // isHeaderTokenChar reports whether r is a valid HTTP header field-name character

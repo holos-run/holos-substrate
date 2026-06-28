@@ -1263,13 +1263,16 @@ func TestAuthenticatorExtraMappings(t *testing.T) {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
 
-	// Two mappings; one claim present, one absent. The present one is mapped, the
-	// absent one is skipped (no entry, no error).
+	// Three mappings: one claim present with a value, one absent, one present but an
+	// empty string. The valued one is mapped, the absent one is skipped (no entry, no
+	// error), and the present-empty one is emitted verbatim (absent vs present is the
+	// contract — a present empty value is not silently dropped).
 	extra := []authenticatorv1alpha1.ExtraMapping{
 		{Key: "email", ValueClaim: "email"},
 		{Key: "tenant", ValueClaim: "tenant_id"},
+		{Key: "note", ValueClaim: "note"},
 	}
-	claims := map[string]any{"sub": "alice", "email": "alice@example.com"}
+	claims := map[string]any{"sub": "alice", "email": "alice@example.com", "note": ""}
 	auth := NewAuthenticator(&fakeVerifier{claims: claims}, mapper, "sub", "", "", extra)
 	id, err := auth.Authenticate(context.Background(), "raw-token")
 	if err != nil {
@@ -1280,6 +1283,9 @@ func TestAuthenticatorExtraMappings(t *testing.T) {
 	}
 	if _, ok := id.Extra["tenant"]; ok {
 		t.Errorf("extra[tenant] present, want skipped (claim absent)")
+	}
+	if v, ok := id.Extra["note"]; !ok || v != "" {
+		t.Errorf("extra[note] = (%q, %v), want (\"\", true) — a present empty claim is emitted, not skipped", v, ok)
 	}
 
 	// No extra configured: Identity.Extra is nil.
