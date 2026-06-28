@@ -35,6 +35,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sort"
 	"strings"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -57,6 +58,17 @@ const (
 	headerAuthorization = "Authorization"
 	// headerImpersonateUser sets the Kubernetes user the request is impersonated as.
 	headerImpersonateUser = "Impersonate-User"
+	// headerImpersonateUID sets the Kubernetes user UID the request is impersonated
+	// as (Impersonate-Uid). Like Impersonate-User it is a single value, so it is set
+	// directly under its Impersonate-* name with the overwrite/set action — no
+	// comma-join + Lua split helper is needed (that exists only for the multi-valued
+	// groups header the ext_authz append path would otherwise drop, HOL-1416).
+	headerImpersonateUID = "Impersonate-Uid"
+	// headerImpersonateExtraPrefix is the prefix of a Kubernetes impersonation extra
+	// header; the per-entry extra key is appended verbatim to form
+	// Impersonate-Extra-<key>. Each extra is single-valued in this phase, so each is
+	// emitted as one overwrite/set header (no append, no split).
+	headerImpersonateExtraPrefix = "Impersonate-Extra-"
 	// defaultGroupsHeader is the default name of the single comma-joined groups
 	// header the authorizer writes the mapped Kubernetes groups into (one CSV
 	// value, e.g. "oidc:dev,oidc:ops"), with an overwrite/set action so Envoy adds
@@ -181,6 +193,27 @@ func ValidateGroupsHeader(name string) (string, error) {
 		return "", fmt.Errorf("groups header name %q must not be an Impersonate-* header (it would collide with the Kubernetes impersonation headers the reject/split filters govern)", name)
 	}
 	return lower, nil
+}
+
+// ValidateExtraKey reports whether key is usable as the suffix of an
+// Impersonate-Extra-<key> impersonation header: it must be a non-empty, valid HTTP
+// header field-name token (RFC 7230 token characters only) so the authorizer emits
+// a well-formed header. The BackendReconciler validates every spec.oidc.extra[].key
+// with this and rejects the Backend (Accepted=False) on failure, mirroring how
+// ValidateGroupsHeader guards the --impersonate-groups-header flag. Unlike that
+// helper the key is NOT lowercased: the Impersonate-Extra-<key> name is emitted
+// verbatim, and the Kubernetes API server lowercases the extra key it derives from
+// the header name itself.
+func ValidateExtraKey(key string) error {
+	if key == "" {
+		return fmt.Errorf("extra key must not be empty")
+	}
+	for _, r := range key {
+		if !isHeaderTokenChar(r) {
+			return fmt.Errorf("extra key %q contains an invalid character %q", key, r)
+		}
+	}
+	return nil
 }
 
 // isHeaderTokenChar reports whether r is a valid HTTP header field-name character
@@ -391,7 +424,14 @@ func bearerToken(headers map[string]string) (string, bool) {
 
 // okResponse builds the allow CheckResponse carrying the Kubernetes impersonation
 // headers. Impersonate-User, the groups header, and Authorization all use
-// OVERWRITE_IF_EXISTS_OR_ADD so they replace any caller-supplied value. The mapped
+// OVERWRITE_IF_EXISTS_OR_ADD so they replace any caller-supplied value. When the
+// backend configures a UID claim (spec.oidc.uidClaim) the resolved UID is set as
+// Impersonate-Uid, and each configured extra mapping (spec.oidc.extra) whose claim
+// was present is set as an Impersonate-Extra-<key> header — both single-valued and
+// emitted with the same overwrite/set action directly under their Impersonate-*
+// names. Unlike the multi-valued groups header they need no comma-join + Lua split:
+// a single overwrite header is added unconditionally by Envoy (setCopy), so the
+// ext_authz append-drop that motivated the groups helper (HOL-1416) does not apply. The mapped
 // groups are emitted as ONE comma-joined value (e.g. "oidc:dev,oidc:ops") under
 // the configured groups header (s.groupsHeaderName, default X-Impersonate-Groups),
 // NOT as repeated Impersonate-Group append options (HOL-1416): Envoy's ext_authz
@@ -419,10 +459,23 @@ func bearerToken(headers map[string]string) (string, bool) {
 // the API server. The AC scopes HeadersToRemove to the "cannot be overwritten in
 // place" case, which does not apply here.
 func (s *CheckServer) okResponse(identity *Identity, impersonatorToken string) *authv3.CheckResponse {
-	headers := make([]*corev3.HeaderValueOption, 0, 3)
+	headers := make([]*corev3.HeaderValueOption, 0, 4+len(identity.Extra))
 	headers = append(headers, overwriteHeader(headerImpersonateUser, identity.Username))
+	// UID is single-valued, so it is set directly as Impersonate-Uid with the
+	// overwrite action — Envoy adds it unconditionally (setCopy), exactly like
+	// Impersonate-User. No comma-join + Lua split is needed (that exists only for
+	// the multi-valued groups header).
+	if identity.UID != "" {
+		headers = append(headers, overwriteHeader(headerImpersonateUID, identity.UID))
+	}
 	if len(identity.Groups) > 0 {
 		headers = append(headers, overwriteHeader(s.groupsHeaderName(), strings.Join(identity.Groups, ",")))
+	}
+	// Each extra is single-valued and set directly as Impersonate-Extra-<key> with
+	// the overwrite action. Keys are emitted in lexical order so the response (and
+	// the debug log) is deterministic regardless of Go map iteration order.
+	for _, key := range sortedExtraKeys(identity.Extra) {
+		headers = append(headers, overwriteHeader(headerImpersonateExtraPrefix+key, identity.Extra[key]))
 	}
 	headers = append(headers, overwriteHeader(headerAuthorization, "Bearer "+impersonatorToken))
 
@@ -535,6 +588,22 @@ func overwriteHeader(name, value string) *corev3.HeaderValueOption {
 		Header:       &corev3.HeaderValue{Key: name, Value: value},
 		AppendAction: corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
 	}
+}
+
+// sortedExtraKeys returns the keys of extra in lexical order, or nil when extra is
+// empty. Sorting makes the emitted Impersonate-Extra-<key> headers (and the V(1)
+// debug log of the response headers) deterministic regardless of Go's randomized
+// map iteration order, so tests can assert an exact header-option slice.
+func sortedExtraKeys(extra map[string]string) []string {
+	if len(extra) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(extra))
+	for k := range extra {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // GRPCServer is a controller-runtime manager.Runnable that serves the

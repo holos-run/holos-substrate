@@ -119,6 +119,9 @@ own OIDC client and mapping.
 | `oidc.usernamePrefix`        | no       | empty → no prefix                          | Prefix prepended to the impersonated username (the apiserver `--oidc-username-prefix` equivalent; recommended `oidc:`). Always applied (the username is a direct claim read, not a CEL mapping). Intended to be set **as a pair** with `oidc.groupsPrefix` (both `oidc:` by convention), independent in the implementation. See [*OIDC token validation + CEL group mapping*](#oidc-token-validation--cel-group-mapping). |
 | `oidc.groupsClaim`           | no       | `groups`                                   | Token claim carrying groups (used by the default mapping).                 |
 | `oidc.groupsPrefix`          | no       | empty → no prefix                          | Prefix prepended to every group from the default mapping (the apiserver `--oidc-groups-prefix` equivalent; recommended `oidc:`). Honored only with the default mapping and **mutually exclusive** with `groupMapping.celExpression`. See [*OIDC token validation + CEL group mapping*](#oidc-token-validation--cel-group-mapping). |
+| `oidc.uidClaim`              | no       | empty → no UID                             | Token claim emitted as `Impersonate-Uid` (recommended `sub`, a stable identifier for audit). When set, the claim must be a non-empty string on every token or the request is denied. See [*OIDC token validation + CEL group mapping*](#oidc-token-validation--cel-group-mapping). |
+| `oidc.extra[].key`           | yes (per entry) | —                                   | Extra key, emitted as the `Impersonate-Extra-<key>` header suffix. Must be a valid HTTP header token; unique within a Backend (`listType=map`). |
+| `oidc.extra[].valueClaim`    | yes (per entry) | —                                   | Token claim read for the extra value. Absent → entry skipped; present-but-non-string → request denied. Single-valued in this phase. |
 | `groupMapping.celExpression` | no       | empty → default mapping                    | CEL expression over `claims` producing the Kubernetes group list. Mutually exclusive with `oidc.groupsPrefix`. |
 | `credentialsSecretRef.name`  | no       | `holos-authenticator-backend-creds`        | Name of the Secret holding the privileged impersonator credential (resolved in the authorizer's own namespace). Mutually exclusive with `serviceAccountRef`. |
 | `credentialsSecretRef.key`   | no       | `token`                                    | Secret key to read the raw bearer token from (the conventional `token` key when omitted). |
@@ -217,8 +220,10 @@ the in-cluster wiring is what ships today.
 **Validation.** The authorizer verifies the JWT signature, then checks `iss`
 (= `oidc.issuerURL`), `aud` (= `oidc.clientID`), and `exp`/`nbf`. A token that
 fails any check is denied (401). The username is taken from `oidc.usernameClaim`
-(default `sub`). Signature verification has two modes depending on whether
-`oidc.jwks` is set:
+(default `sub`); the optional `oidc.uidClaim` and `oidc.extra[]` add the
+`Impersonate-Uid` and `Impersonate-Extra-<key>` dimensions (see *UID
+(`oidc.uidClaim`) and extra fields* below). Signature verification has two modes
+depending on whether `oidc.jwks` is set:
 
 - **Discovery (default, `oidc.jwks` empty).** The authorizer performs issuer
   discovery against `oidc.issuerURL` and verifies the signature against the
@@ -272,6 +277,32 @@ username is a direct claim read, not a CEL mapping) and has **no** mutual-exclus
 with `groupMapping.celExpression`. Omit the field to prepend nothing; there is no
 default and an explicit empty string is rejected.
 
+**UID (`oidc.uidClaim`) and extra fields (`oidc.extra[]`).** Beyond the username
+and groups, a backend can populate the other two Kubernetes impersonation
+dimensions:
+
+- **`oidc.uidClaim` → `Impersonate-Uid`.** Set it to the claim carrying a stable,
+  non-reassignable identifier — **`sub` is the recommended value** — so audit logs
+  and any UID-based policy track the original principal even if the human-friendly
+  username (e.g. `email`) is later renamed or recycled. There is no default; omit
+  the field to emit no UID. When set, the claim **must** be present and a non-empty
+  string on every token, or the request is **denied (HTTP 401)** — a stable UID the
+  operator asked for is never silently dropped.
+- **`oidc.extra[]` → `Impersonate-Extra-<key>`.** A list of `{key, valueClaim}`
+  entries; each emits the value of `valueClaim` as the `Impersonate-Extra-<key>`
+  header so downstream authorizers and audit tooling can key off it (e.g. carry
+  `email` or a tenant id). Keys are **unique** (the API server rejects duplicates)
+  and must be valid HTTP header tokens (the reconciler rejects a `Backend` with a
+  bad key, `Accepted=False`). An entry whose claim is **absent** on a token is
+  **skipped** (optional context); an entry whose claim is **present but not a
+  string** **denies (HTTP 401)** — a misconfiguration pointing at a list/object
+  claim. Each extra is single-valued in this phase.
+
+Both are single values, so the authorizer sets `Impersonate-Uid` and each
+`Impersonate-Extra-<key>` directly with the overwrite action, exactly like
+`Impersonate-User` — **no comma-join + Lua split** (that is only for the
+multi-valued groups header). No additional `EnvoyFilter` or flag is needed.
+
 A backend may instead override the expression to derive groups from a different
 claim, prefix them, or filter them. Examples (the syntax Kubernetes already uses
 for admission/CRD validation):
@@ -303,6 +334,36 @@ spec:
     clientID: "holos-authenticator"
     usernamePrefix: "oidc:"
     groupsPrefix: "oidc:"
+  server:
+    url: "https://kubernetes.default.svc"
+  credentialsSecretRef:
+    name: "holos-authenticator-backend-creds"
+```
+
+### Example: stable UID from `sub` and an `email` extra field
+
+The motivating case (HOL-1419): humans sign in via Keycloak with their employee
+id as the username, but audit and policy key off the stable `sub` as the UID and
+carry `email` as an extra field.
+
+```yaml
+apiVersion: authenticator.holos.run/v1alpha1
+kind: Backend
+metadata:
+  name: kubectl-humans
+  namespace: holos-authenticator
+spec:
+  host: "api.holos.internal"
+  oidc:
+    issuerURL: "https://keycloak.holos.internal/realms/holos"
+    clientID: "holos-authenticator"
+    usernameClaim: "preferred_username"
+    usernamePrefix: "oidc:"
+    groupsPrefix: "oidc:"
+    uidClaim: "sub"            # -> Impersonate-Uid
+    extra:                     # -> Impersonate-Extra-<key>
+      - key: "email"
+        valueClaim: "email"
   server:
     url: "https://kubernetes.default.svc"
   credentialsSecretRef:
