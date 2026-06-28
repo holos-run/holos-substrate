@@ -189,40 +189,48 @@ func TestGroupReconcileAdoptAndConflict(t *testing.T) {
 	})
 }
 
-func TestGroupReservedName(t *testing.T) {
+// TestGroupPreviouslyReservedPathsNowReconcile asserts the transparent contract
+// (HOL-1421): group paths the controller used to refuse on org-policy grounds
+// (the platform-* prefix, the bare "platform"/"authenticated" names, and the
+// Keycloak built-in role groups) are now provisioned verbatim — the group is
+// created at exactly the declared spec.path and the resource reports Ready/Created,
+// with no reserved-name rejection.
+func TestGroupPreviouslyReservedPathsNowReconcile(t *testing.T) {
 	if shared == nil {
 		t.Skip("envtest not provisioned")
 	}
 	ctx := context.Background()
-	const ns = "kc-group-reserved"
+	const ns = "kc-group-formerly-reserved"
 	makeNamespace(t, ctx, ns)
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	group := &keycloakv1alpha1.KeycloakGroup{
-		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "reserved"},
-		Spec: keycloakv1alpha1.KeycloakGroupSpec{
-			Path:        "platform-owner",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
-		},
-	}
-	if err := shared.k8sClient.Create(ctx, group); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	fake := newFakeKeycloakClient()
-	r, _ := newGroupReconciler(fake, ns)
-	key := client.ObjectKeyFromObject(group)
-	_, _ = reconcileGroup(ctx, r, key) // finalizer
-	if _, err := reconcileGroup(ctx, r, key); err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
-	got := getGroup(t, ctx, key)
-	status, reason, _ := conditionStatus(got.Status.Conditions, ConditionReady)
-	if status != metav1.ConditionFalse || reason != ReasonReserved {
-		t.Errorf("Ready = (%v, %v), want (False, %s)", status, reason, ReasonReserved)
-	}
-	if fake.callsContain("Get:/platform-owner") {
-		t.Errorf("reserved guard must reject before any Keycloak call")
+	for i, path := range []string{"platform-owner", "platform", "authenticated", "realm_roles", "default-roles-holos"} {
+		group := &keycloakv1alpha1.KeycloakGroup{
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "formerly-reserved-" + strconv.Itoa(i)},
+			Spec: keycloakv1alpha1.KeycloakGroupSpec{
+				Path:        path,
+				InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			},
+		}
+		if err := shared.k8sClient.Create(ctx, group); err != nil {
+			t.Fatalf("create %q: %v", path, err)
+		}
+		fake := newFakeKeycloakClient()
+		r, _ := newGroupReconciler(fake, ns)
+		key := client.ObjectKeyFromObject(group)
+		_, _ = reconcileGroup(ctx, r, key) // finalizer
+		if _, err := reconcileGroup(ctx, r, key); err != nil {
+			t.Fatalf("reconcile %q: %v", path, err)
+		}
+		got := getGroup(t, ctx, key)
+		status, reason, ok := conditionStatus(got.Status.Conditions, ConditionReady)
+		if !ok || status != metav1.ConditionTrue || reason != ReasonCreated {
+			t.Errorf("path %q: Ready = (%v, %v, %v), want (True, %s)", path, status, reason, ok, ReasonCreated)
+		}
+		if !fake.groupExists(path) {
+			t.Errorf("formerly-reserved path %q must now be created verbatim in Keycloak; calls = %v", path, fake.calls)
+		}
 	}
 }
 
@@ -449,7 +457,7 @@ func TestGroupClientRolePrune(t *testing.T) {
 	if !fake.roleAssigned(gid, "client-uuid", "rp-owner") {
 		t.Errorf("rp-owner should remain assigned")
 	}
-	if mcr := getGroup(t, ctx, key).Status.ManagedClientRoles; len(mcr) != 1 || mcr[0] != "https://app.holos.internal/rp-owner" {
+	if mcr := getGroup(t, ctx, key).Status.ManagedClientRoles; len(mcr) != 1 || mcr[0] != managedRoleKey("https://app.holos.internal", "rp-owner") {
 		t.Errorf("status.managedClientRoles = %v, want only the owner role", mcr)
 	}
 }
@@ -853,7 +861,7 @@ func TestGroupClientRolePartialFailureTracked(t *testing.T) {
 	got := getGroup(t, ctx, key)
 	found := false
 	for _, m := range got.Status.ManagedClientRoles {
-		if m == "https://app.holos.internal/pf-a" {
+		if m == managedRoleKey("https://app.holos.internal", "pf-a") {
 			found = true
 		}
 	}
@@ -1008,37 +1016,39 @@ func TestGroupInstanceNotReady(t *testing.T) {
 	}
 }
 
-// TestGroupConfersRoleOnNamedReservedClient covers the ADR-20 "Quay use case"
-// (HOL-1350): a role group confers a project-prefixed client role on the
-// platform-reserved Quay client by naming its clientId directly (spec.clientRoles
-// with clientId, not clientRef). No same-namespace KeycloakClient CR exists for
-// the reserved client, so the group reconciler resolves the clientId straight
-// through, ensures the role exists, and assigns it — the join that folds
-// my-project-owner into Quay's groups claim via the platform's quay-client-roles
-// mapper.
-func TestGroupConfersRoleOnNamedReservedClient(t *testing.T) {
+// TestGroupConfersArbitraryRoleByClientID is the transparency/round-trip test
+// required by HOL-1421: a KeycloakGroup with an arbitrary spec.path plus a
+// clientRoles[] entry naming a client by clientId with an arbitrary role name
+// produces a Keycloak group at exactly that path with exactly that role conferred —
+// identical names, no prefix added/stripped, no allowlist, no project==namespace
+// check, no reserved-role refusal. It supersedes the former Quay-only direct-path
+// test (HOL-1350) now that the direct clientId path is fully general.
+func TestGroupConfersArbitraryRoleByClientID(t *testing.T) {
 	if shared == nil {
 		t.Skip("envtest not provisioned (KUBEBUILDER_ASSETS unset); run via make controller-test")
 	}
 	ctx := context.Background()
-	// The namespace MUST equal the path's project (the project↔namespace ownership
-	// boundary the direct-path guard enforces; namespace == project per the
-	// my-project convention).
-	const ns = "my-project"
+	// A namespace that deliberately does NOT equal the path's project segment, and a
+	// clientId/role that the removed guards would have refused (a built-in client,
+	// an arbitrary role name unrelated to the path). Transparency means none of that
+	// matters.
+	const ns = "kc-group-transparent"
 	makeNamespace(t, ctx, ns)
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	const quayClientID = "https://quay.holos.internal"
+	const (
+		path     = "projects/other-project/roles/owner"
+		clientID = "realm-management"
+		roleName = "arbitrary-role-name"
+	)
 	group := &keycloakv1alpha1.KeycloakGroup{
-		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "owner"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "transparent"},
 		Spec: keycloakv1alpha1.KeycloakGroupSpec{
-			Path:        "projects/my-project/roles/owner",
+			Path:        path,
 			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
-			// Name the reserved Quay clientId DIRECTLY — there is no KeycloakClient CR
-			// for it (the reserved-name guard forbids one).
 			ClientRoles: []keycloakv1alpha1.ClientRoleReference{
-				{ClientID: quayClientID, Role: "my-project-owner"},
+				{ClientID: clientID, Role: roleName},
 			},
 		},
 	}
@@ -1047,12 +1057,9 @@ func TestGroupConfersRoleOnNamedReservedClient(t *testing.T) {
 	}
 
 	fake := newFakeKeycloakClient()
-	// The Quay client exists (config-cli owns it), but the project role does NOT —
-	// the group reconciler must create it before assigning, since no KeycloakClient
-	// CR creates roles on the reserved client. Deliberately do NOT seed the role, so
-	// this exercises the create-then-get path (the fake's CreateClientRoleIfNotExists
-	// makes GetClientRole resolve afterward).
-	fake.seedClient(quayClientID, "quay-uuid")
+	// The named client exists, but the role does NOT — the direct clientId path
+	// creates it before assigning (no KeycloakClient CR is responsible for it).
+	fake.seedClient(clientID, "target-uuid")
 	r, recorder := newGroupReconciler(fake, ns)
 
 	key := client.ObjectKeyFromObject(group)
@@ -1068,214 +1075,144 @@ func TestGroupConfersRoleOnNamedReservedClient(t *testing.T) {
 	if !ok || status != metav1.ConditionTrue || reason != ReasonCreated {
 		t.Errorf("Ready = (%v, %v, %v), want (True, %s)", status, reason, ok, ReasonCreated)
 	}
-	// The role group is the only group created here, so it is grp-1.
-	if !fake.roleAssigned("grp-1", "quay-uuid", "my-project-owner") {
-		t.Errorf("project role was not conferred on the reserved Quay client; calls = %v", fake.calls)
+	// Round-trip: the group exists at EXACTLY the declared path (no rewriting).
+	if !fake.groupExists(path) {
+		t.Errorf("group was not created at the verbatim path %q; calls = %v", path, fake.calls)
 	}
-	// The reconciler must have ensured the role exists on the reserved client.
-	if !fake.callsContain("CreateClientRole:quay-uuid/my-project-owner") {
-		t.Errorf("reconciler did not ensure the role on the reserved client; calls = %v", fake.calls)
+	// The role group is the only group created here, so it is grp-1. The EXACT role
+	// name was created on and assigned to the named client (no prefix, no rewrite).
+	if !fake.callsContain("CreateClientRole:target-uuid/" + roleName) {
+		t.Errorf("reconciler did not ensure the verbatim role %q on client %q; calls = %v", roleName, clientID, fake.calls)
 	}
-	// status.managedClientRoles records it keyed by clientId/role for pruning.
-	want := quayClientID + "/my-project-owner"
-	if mcr := got.Status.ManagedClientRoles; len(mcr) != 1 || mcr[0] != want {
-		t.Errorf("status.managedClientRoles = %v, want [%q]", mcr, want)
+	if !fake.roleAssigned("grp-1", "target-uuid", roleName) {
+		t.Errorf("verbatim role %q was not conferred on client %q; calls = %v", roleName, clientID, fake.calls)
+	}
+	// status.managedClientRoles records it keyed by the verbatim clientId/role
+	// (NUL-separated so an arbitrary role name round-trips unambiguously). Decoding
+	// the recorded entry must recover the verbatim clientId and role.
+	mcr := got.Status.ManagedClientRoles
+	if len(mcr) != 1 {
+		t.Fatalf("status.managedClientRoles = %v, want exactly one entry", mcr)
+	}
+	gotClientID, gotRole, ok := splitManagedRole(mcr[0])
+	if !ok || gotClientID != clientID || gotRole != roleName {
+		t.Errorf("decoded managedClientRoles[0] = (%q, %q, %v), want (%q, %q, true)", gotClientID, gotRole, ok, clientID, roleName)
 	}
 	assertEvent(t, recorder, ReasonCreated)
 }
 
-// TestGroupReservedRoleOnReservedClientRejected covers the ADR-20 claim-value
-// boundary (HOL-1350): conferring the role is permitted on a reserved client ONLY
-// for project-prefixed names — a group naming a platform-reserved client role
-// (platform-admin/project-admin) on the reserved Quay client is refused before any
-// Keycloak write, so the controller never overwrites a platform role binding while
-// the client object stays config-cli's.
-func TestGroupReservedRoleOnReservedClientRejected(t *testing.T) {
-	if shared == nil {
-		t.Skip("envtest not provisioned")
-	}
-	ctx := context.Background()
-	const ns = "kc-group-reservedrole"
-	makeNamespace(t, ctx, ns)
-	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
-	readyInstance(t, ctx, ns, "kc")
-
-	const quayClientID = "https://quay.holos.internal"
-	group := &keycloakv1alpha1.KeycloakGroup{
-		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "reservedrole"},
-		Spec: keycloakv1alpha1.KeycloakGroupSpec{
-			Path:        "projects/my-project/roles/owner",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
-			ClientRoles: []keycloakv1alpha1.ClientRoleReference{
-				{ClientID: quayClientID, Role: "platform-admin"},
-			},
-		},
-	}
-	if err := shared.k8sClient.Create(ctx, group); err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-
-	fake := newFakeKeycloakClient()
-	fake.seedClient(quayClientID, "quay-uuid")
-	r, _ := newGroupReconciler(fake, ns)
-	key := client.ObjectKeyFromObject(group)
-	_, _ = reconcileGroup(ctx, r, key) // finalizer
-	if _, err := reconcileGroup(ctx, r, key); err == nil {
-		t.Fatalf("expected the reserved-role guard to fail the reconcile")
-	}
-	got := getGroup(t, ctx, key)
-	status, reason, _ := conditionStatus(got.Status.Conditions, ConditionReady)
-	if status != metav1.ConditionFalse || reason != ReasonKeycloakError {
-		t.Errorf("Ready = (%v, %v), want (False, %s)", status, reason, ReasonKeycloakError)
-	}
-	// The guard must reject BEFORE any role create/assign on the reserved client.
-	if fake.callsContain("CreateClientRole:quay-uuid/platform-admin") ||
-		fake.roleAssigned("grp-1", "quay-uuid", "platform-admin") {
-		t.Errorf("reserved-role guard must reject before any Keycloak write; calls = %v", fake.calls)
-	}
-}
-
-// TestGroupDirectClientRoleGuards covers the bounds on the direct clientId path
-// (HOL-1350 review round 1, the privilege-escalation guard): a KeycloakGroup that
-// names a clientId directly may target ONLY the allowlisted Quay client, and only
-// with its own project-prefixed role name. Naming any other client (e.g.
-// realm-management) or another project's role is refused before any Keycloak write.
-func TestGroupDirectClientRoleGuards(t *testing.T) {
-	if shared == nil {
-		t.Skip("envtest not provisioned")
-	}
-	ctx := context.Background()
-
-	// Each case runs in a namespace equal to its path's project (the project↔
-	// namespace ownership boundary), except the dedicated mismatch case. The
-	// namespace is created per-case so the guard under test — not an unrelated
-	// namespace-mismatch — is what rejects.
+// TestManagedRoleKeyRoundTrip is a pure unit test (no envtest) of the
+// status.managedClientRoles encoding (HOL-1421 review round 1): the transparent
+// reconciler allows arbitrary role names, so the encoding must round-trip a role or
+// clientId containing slashes unambiguously, and must still decode the legacy
+// "<clientId>/<role>" form written before the fix. A mis-decode resolves the wrong
+// role on prune/release and leaks a stale Keycloak role mapping.
+func TestManagedRoleKeyRoundTrip(t *testing.T) {
 	cases := []struct {
-		name      string
-		namespace string
-		path      string
-		clientID  string
-		role      string
+		name     string
+		clientID string
+		role     string
 	}{
-		{"non-allowlisted client", "my-project", "projects/my-project/roles/owner", "realm-management", "my-project-realm-admin"},
-		{"another reserved client", "my-project", "projects/my-project/roles/owner", "argocd", "my-project-owner"},
-		{"cross-project role on quay", "my-project", "projects/my-project/roles/owner", "https://quay.holos.internal", "other-project-owner"},
-		// Prefix collision: project "my" (path projects/my/roles/owner, namespace
-		// "my") must NOT be able to confer "my-project-owner", which belongs to
-		// project "my-project". The exact <project>-<leaf> match (not a prefix)
-		// rejects it.
-		{"prefix-collision cross-project", "my", "projects/my/roles/owner", "https://quay.holos.internal", "my-project-owner"},
-		// A non-role (custodian) group must not confer a claim value on the reserved
-		// client even with a name that matches its own path's leaf.
-		{"non-role custodian path", "my-project", "projects/my-project/custodians/owner", "https://quay.holos.internal", "my-project-owner"},
-		// Project↔namespace mismatch: a CR in namespace "intruder" naming a path for
-		// project "my-project" is refused even with a correct <project>-<leaf> role,
-		// because the path project must equal the CR namespace.
-		{"project-namespace mismatch", "intruder", "projects/my-project/roles/owner", "https://quay.holos.internal", "my-project-owner"},
+		{"plain", "https://app.holos.internal", "owner"},
+		{"slash in role", "https://app.holos.internal", "team/owner"},
+		{"slash in role and url client", "https://quay.holos.internal", "a/b/c"},
+		{"bare client id", "realm-management", "manage/users"},
 	}
-	for i, tc := range cases {
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			makeNamespace(t, ctx, tc.namespace)
-			createIgnoreExists(t, ctx, newCredentialSecret(tc.namespace, keycloakv1alpha1.DefaultCredentialsSecretName))
-			readyInstance(t, ctx, tc.namespace, "kc")
-			group := &keycloakv1alpha1.KeycloakGroup{
-				ObjectMeta: metav1.ObjectMeta{Namespace: tc.namespace, Name: "directguard-" + strconv.Itoa(i)},
-				Spec: keycloakv1alpha1.KeycloakGroupSpec{
-					Path:        tc.path,
-					InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
-					ClientRoles: []keycloakv1alpha1.ClientRoleReference{
-						{ClientID: tc.clientID, Role: tc.role},
-					},
-				},
-			}
-			if err := shared.k8sClient.Create(ctx, group); err != nil {
-				t.Fatalf("create group: %v", err)
-			}
-			fake := newFakeKeycloakClient()
-			// Seed every candidate client so the guard — not a missing-client error —
-			// is what rejects.
-			fake.seedClient(tc.clientID, "target-uuid")
-			r, _ := newGroupReconciler(fake, tc.namespace)
-			key := client.ObjectKeyFromObject(group)
-			_, _ = reconcileGroup(ctx, r, key) // finalizer
-			if _, err := reconcileGroup(ctx, r, key); err == nil {
-				t.Fatalf("expected the direct-client guard to fail the reconcile")
-			}
-			got := getGroup(t, ctx, key)
-			status, reason, _ := conditionStatus(got.Status.Conditions, ConditionReady)
-			if status != metav1.ConditionFalse || reason != ReasonKeycloakError {
-				t.Errorf("Ready = (%v, %v), want (False, %s)", status, reason, ReasonKeycloakError)
-			}
-			// The guard must reject before any role create/assign.
-			if fake.callsContain("CreateClientRole:target-uuid/"+tc.role) ||
-				fake.roleAssigned("grp-1", "target-uuid", tc.role) {
-				t.Errorf("direct-client guard must reject before any Keycloak write; calls = %v", fake.calls)
+			key := managedRoleKey(tc.clientID, tc.role)
+			gotClient, gotRole, ok := splitManagedRole(key)
+			if !ok || gotClient != tc.clientID || gotRole != tc.role {
+				t.Errorf("round-trip = (%q, %q, %v), want (%q, %q, true)", gotClient, gotRole, ok, tc.clientID, tc.role)
 			}
 		})
 	}
+
+	// Legacy "<clientId>/<role>" entries (slash-free role names, as the removed
+	// guard required) must still decode via the LastIndex fallback.
+	gotClient, gotRole, ok := splitManagedRole("https://quay.holos.internal/my-project-owner")
+	if !ok || gotClient != "https://quay.holos.internal" || gotRole != "my-project-owner" {
+		t.Errorf("legacy decode = (%q, %q, %v), want (https://quay.holos.internal, my-project-owner, true)", gotClient, gotRole, ok)
+	}
+
+	// Malformed keys are rejected.
+	for _, bad := range []string{"", "noseparator", "\x00role", "client\x00"} {
+		if _, _, ok := splitManagedRole(bad); ok {
+			t.Errorf("splitManagedRole(%q) = ok, want false", bad)
+		}
+	}
 }
 
-// TestGroupClientRefToReservedClientRejected covers the clientRef escalation path
-// (HOL-1350 review round 3 gate check): a tenant must not be able to confer a role
-// on a platform/built-in client (e.g. realm-management → realm-admin) by crafting
-// a same-namespace KeycloakClient CR whose spec.clientId is that reserved client
-// and referencing it via clientRef. The guard keys on the RESOLVED clientId, so a
-// clientRef resolving to a reserved client is refused before any Keycloak write —
-// reserved clients are reachable only via the bounded direct clientId path.
-func TestGroupClientRefToReservedClientRejected(t *testing.T) {
+// TestGroupLegacyManagedRoleNotPrunedOnUpgrade is the round-2 regression test
+// (HOL-1421): an in-cluster CR whose status.managedClientRoles was written by an
+// older controller in the legacy "<clientId>/<role>" encoding must NOT have a
+// still-desired role revoked after upgrade. The reconciler canonicalizes the legacy
+// entry to the NUL encoding before the prune comparison, so the desired role matches
+// and is left assigned; status is rewritten in canonical form.
+func TestGroupLegacyManagedRoleNotPrunedOnUpgrade(t *testing.T) {
 	if shared == nil {
 		t.Skip("envtest not provisioned")
 	}
 	ctx := context.Background()
-	const ns = "kc-group-refescalation"
+	const ns = "kc-group-legacy-upgrade"
 	makeNamespace(t, ctx, ns)
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	// A tenant-crafted KeycloakClient CR whose clientId is the privileged built-in
-	// realm-management client. (The KeycloakClient reconciler's own reserved-name
-	// guard would reject reconciling THIS CR, but the group reconciler must not
-	// trust the CR's spec.clientId to reach the real client regardless.)
 	createIgnoreExists(t, ctx, &keycloakv1alpha1.KeycloakClient{
-		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "evil"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "consumer"},
 		Spec: keycloakv1alpha1.KeycloakClientSpec{
-			ClientID:    "realm-management",
+			ClientID:    "https://app.holos.internal",
 			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
 			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
 		},
 	})
 
 	group := &keycloakv1alpha1.KeycloakGroup{
-		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "refescalation"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "legacy"},
 		Spec: keycloakv1alpha1.KeycloakGroupSpec{
-			Path:        "projects/" + ns + "/roles/owner",
+			Path:        "projects/lg/roles/owner",
 			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
 			ClientRoles: []keycloakv1alpha1.ClientRoleReference{
-				{ClientRef: "evil", Role: "realm-admin"},
+				{ClientRef: "consumer", Role: "lg-owner"},
 			},
 		},
 	}
 	if err := shared.k8sClient.Create(ctx, group); err != nil {
-		t.Fatalf("create group: %v", err)
+		t.Fatalf("create: %v", err)
 	}
 
 	fake := newFakeKeycloakClient()
-	// The real privileged client and its role exist in Keycloak.
-	fake.seedClient("realm-management", "rm-uuid")
-	fake.seedClientRole("rm-uuid", "realm-admin", "ra-uuid")
+	fake.seedClient("https://app.holos.internal", "client-uuid")
+	fake.seedClientRole("client-uuid", "lg-owner", "role-owner")
 	r, _ := newGroupReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(group)
-	_, _ = reconcileGroup(ctx, r, key) // finalizer
-	if _, err := reconcileGroup(ctx, r, key); err == nil {
-		t.Fatalf("expected the reserved-client clientRef guard to fail the reconcile")
+	_, _ = reconcileGroup(ctx, r, key) // finalizer + provision (claims ownership)
+	if _, err := reconcileGroup(ctx, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
 	}
+	gid := getGroup(t, ctx, key).Status.GroupID
+	if !fake.roleAssigned(gid, "client-uuid", "lg-owner") {
+		t.Fatalf("lg-owner should be assigned initially; calls = %v", fake.calls)
+	}
+
+	// Simulate a pre-upgrade controller's status: overwrite managedClientRoles with
+	// the legacy "<clientId>/<role>" encoding for the still-desired role.
 	got := getGroup(t, ctx, key)
-	status, reason, _ := conditionStatus(got.Status.Conditions, ConditionReady)
-	if status != metav1.ConditionFalse || reason != ReasonKeycloakError {
-		t.Errorf("Ready = (%v, %v), want (False, %s)", status, reason, ReasonKeycloakError)
+	got.Status.ManagedClientRoles = []string{"https://app.holos.internal/lg-owner"}
+	if err := shared.k8sClient.Status().Update(ctx, got); err != nil {
+		t.Fatalf("seed legacy status: %v", err)
 	}
-	// The guard must reject before assigning the privileged role.
-	if fake.roleAssigned("grp-1", "rm-uuid", "realm-admin") {
-		t.Errorf("reserved-client clientRef guard must reject before any Keycloak write; calls = %v", fake.calls)
+
+	// Reconcile again with the spec UNCHANGED. The legacy entry must canonicalize and
+	// match the desired role, so the role is not revoked.
+	if _, err := reconcileGroup(ctx, r, key); err != nil {
+		t.Fatalf("reconcile after legacy seed: %v", err)
+	}
+	if !fake.roleAssigned(gid, "client-uuid", "lg-owner") {
+		t.Errorf("still-desired lg-owner must NOT be revoked on upgrade; calls = %v", fake.calls)
+	}
+	if mcr := getGroup(t, ctx, key).Status.ManagedClientRoles; len(mcr) != 1 || mcr[0] != managedRoleKey("https://app.holos.internal", "lg-owner") {
+		t.Errorf("status.managedClientRoles = %v, want canonical [%q]", mcr, managedRoleKey("https://app.holos.internal", "lg-owner"))
 	}
 }

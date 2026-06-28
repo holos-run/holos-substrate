@@ -37,20 +37,6 @@ const groupFinalizer = "group.keycloak.holos.run/finalizer"
 // scope permission) on it (ADR-20, "Custodian delegation — FGAP v2 group scope").
 const adminPermissionsClientID = "admin-permissions"
 
-// reservedGroupPrefixes and reservedGroupNames are the platform-reserved Keycloak
-// group identities the controller refuses to manage (ADR-20). A KeycloakGroup
-// whose path's leaf or any segment hits one of these is rejected with
-// Ready=False, reason Reserved, rather than provisioned — so a namespaced tenant
-// CR cannot claim or clobber a platform group (e.g. platform-owner) or a
-// Keycloak built-in role group.
-var (
-	reservedGroupPrefixes = []string{"platform-", "platform/"}
-	reservedGroupNames    = map[string]bool{
-		"authenticated": true,
-		"platform":      true,
-	}
-)
-
 // GroupClient is the seam the KeycloakGroup reconciler drives Keycloak through.
 // It is the subset of internal/keycloak.Client's group, client-role, and FGAP v2
 // operations the reconciler needs, named as an interface so tests inject a fake
@@ -79,9 +65,8 @@ type GroupClient interface {
 	GetClientRole(ctx context.Context, clientUUID, roleName string) (*keycloak.ClientRole, error)
 	// CreateClientRoleIfNotExists creates a client role on the client, treating an
 	// already-existing role as success (idempotent). The group reconciler ensures
-	// the conferred role exists before assigning it — required for the Quay use
-	// case, where the project-prefixed role on the platform-reserved Quay client is
-	// not created by any KeycloakClient CR (none exists for the reserved client).
+	// the conferred role exists before assigning it on the direct clientId path,
+	// where no KeycloakClient CR is responsible for creating the role.
 	CreateClientRoleIfNotExists(ctx context.Context, clientUUID string, role keycloak.ClientRole) error
 	// AssignClientRoleToGroup grants the client role to the group; re-assigning an
 	// already-held role is idempotent on Keycloak's side.
@@ -156,12 +141,14 @@ type GroupReconciler struct {
 }
 
 // Reconcile drives a KeycloakGroup toward its desired state. Loop shape: fetch CR
-// → ensure finalizer → on delete run Keycloak delete then remove finalizer → else
-// reserved-name guard → resolve instance (+ReferenceGrant) → resolve credential →
+// → ensure finalizer → on delete run Keycloak delete then remove finalizer →
+// resolve instance (+ReferenceGrant) → resolve credential →
 // ensure/adopt the nested group (claim model) → confer client roles → configure
-// custodian delegation → mark Ready. Recoverable errors map to a False condition
-// with an actionable reason and a Warning event, and return an error so the
-// request requeues with backoff.
+// custodian delegation → mark Ready. The reconciler is transparent: it manages
+// exactly the group path, client IDs, and role names declared in the spec,
+// reserving and refusing nothing on org-policy grounds (HOL-1421). Recoverable
+// errors map to a False condition with an actionable reason and a Warning event,
+// and return an error so the request requeues with backoff.
 func (r *GroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, retErr error) {
 	logger := log.FromContext(ctx)
 	defer func() { recordReconcile(kindGroup, retErr) }()
@@ -185,15 +172,11 @@ func (r *GroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	return r.reconcileNormal(ctx, logger, group)
 }
 
-// reconcileNormal performs the reserved-name guard, resolves the instance and
-// credential, then creates or adopts the Keycloak group and reconciles its roles
-// and custodians.
+// reconcileNormal resolves the instance and credential, then creates or adopts
+// the Keycloak group and reconciles its roles and custodians. It provisions the
+// group at exactly the declared spec.path, reserving and refusing no paths
+// (HOL-1421).
 func (r *GroupReconciler) reconcileNormal(ctx context.Context, logger logr.Logger, group *keycloakv1alpha1.KeycloakGroup) (ctrl.Result, error) {
-	// Reserved-name guard (ADR-20): never manage a platform-reserved group.
-	if reserved, why := isReservedGroupPath(group.Spec.Path); reserved {
-		return r.reject(ctx, group, ReasonReserved, why)
-	}
-
 	instance, result, err := r.resolveInstance(ctx, group)
 	if instance == nil || err != nil {
 		return result, err
@@ -404,21 +387,22 @@ func (s *stringSet) sorted() []string {
 }
 
 // conferClientRoles reconciles the group's client-role assignments to the desired
-// set declared in spec.clientRoles: it assigns every declared (clientRef, role)
-// and unassigns any role this CR previously managed (recorded in
+// set declared in spec.clientRoles: it assigns every declared (client, role) and
+// unassigns any role this CR previously managed (recorded in
 // status.managedClientRoles) that is no longer desired — so a role removed from
 // the spec is actively revoked rather than left active (the add-only gap). Each
 // declared entry resolves its target clientId (a same-namespace KeycloakClient CR
-// via clientRef, or a named clientId directly via clientId — the Quay use case),
-// finds the OIDC client, gets the named client role, and assigns it (the join that
-// makes a member of the group hold the client role the client's role mapper emits
-// into the groups claim, ADR-20). A project-prefixed role may be conferred on a
-// platform-reserved client, but the platform's own reserved client-role names on
-// it are refused (the claim-value boundary). status.managedClientRoles is
-// rewritten to the new desired set so the next reconcile knows what it owns.
+// via clientRef, or a named clientId directly via clientId), finds the OIDC
+// client, gets the named client role, and assigns it (the join that makes a member
+// of the group hold the client role the client's role mapper emits into the groups
+// claim, ADR-20). The conferral is transparent: a clientRoles[] entry may name any
+// client by clientId and confer any role name — no client or role is reserved or
+// refused on org-policy grounds (HOL-1421). status.managedClientRoles is rewritten
+// to the new desired set so the next reconcile knows what it owns.
 func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient, group *keycloakv1alpha1.KeycloakGroup, groupID string) error {
-	// Resolve the desired roles, keyed "<clientId>/<role>", to the OIDC client UUID
-	// and the role representation needed to assign or remove them.
+	// Resolve the desired roles, keyed by managedRoleKey (the NUL-separated
+	// "<clientId>\x00<role>" encoding), to the OIDC client UUID and the role
+	// representation needed to assign or remove them.
 	type roleTarget struct {
 		clientUUID string
 		role       keycloak.ClientRole
@@ -430,31 +414,12 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 		if err != nil {
 			return err
 		}
-		// Privilege-escalation guard, keyed on the RESOLVED clientId regardless of
-		// which field named it (clientId or clientRef) — so a tenant cannot bypass the
-		// direct-path bounds by crafting a same-namespace KeycloakClient CR whose
-		// spec.clientId is a platform/built-in client (e.g. realm-management) and
-		// conferring a privileged role like realm-admin through clientRef:
-		//   - a reserved platform/built-in client (reservedClientIDs) may be reached
-		//     ONLY via the tightly-bounded direct clientId path (validateDirectClientRole:
-		//     Quay-only allowlist, project==namespace, exact <project>-<leaf> role). A
-		//     clientRef resolving to a reserved client is refused outright — tenants
-		//     confer roles only on a project client they own, never on a platform one.
-		//   - any non-reserved client reached via the direct clientId path is still
-		//     refused by validateDirectClientRole's allowlist (only the Quay client is
-		//     a permitted direct target), so the direct path cannot reach an arbitrary
-		//     client either.
-		// A non-reserved client reached via clientRef is the ordinary project-client
-		// case, bounded by the same-namespace CR claim model.
+		// The direct clientId path names a client that may have no KeycloakClient CR
+		// of its own (e.g. a platform client), so this reconciler ensures the conferred
+		// role exists below. The clientRef path defers role creation to the referenced
+		// KeycloakClient's own reconciler (get-only resolution). Either path may name
+		// any client and confer any role name — conferral is transparent (HOL-1421).
 		directTarget := ref.ClientID != ""
-		switch {
-		case directTarget:
-			if err := validateDirectClientRole(group.Namespace, group.Spec.Path, clientID, ref.Role); err != nil {
-				return err
-			}
-		case reservedClientIDs[clientID]:
-			return fmt.Errorf("client %q (resolved from clientRef %q) is platform-reserved and may not be targeted by a KeycloakGroup clientRef; a reserved client's client roles are conferred only via the bounded direct clientId path", clientID, ref.ClientRef)
-		}
 		oidc, err := kc.FindClientByClientID(ctx, clientID)
 		recordKeycloakAPI(opFindClientByClientID, err)
 		if err != nil {
@@ -463,13 +428,13 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 		if oidc == nil {
 			return fmt.Errorf("no Keycloak client %q (from %s) exists", clientID, clientRefDescription(ref))
 		}
-		// Ensure the conferred role exists ONLY on the direct path. For a named
-		// reserved client (the Quay use case) no KeycloakClient CR exists to create
-		// the role, so the group reconciler creates it (idempotent). For a clientRef
-		// target the referenced KeycloakClient's own reconciler owns its role
-		// vocabulary (spec.clientRoles); the group must NOT silently expand it, so the
-		// role is resolved get-only and a missing role is a hard error the operator
-		// fixes by declaring it on the KeycloakClient.
+		// Ensure the conferred role exists ONLY on the direct path. A client named
+		// directly by clientId may have no KeycloakClient CR to create the role, so
+		// the group reconciler creates it (idempotent). For a clientRef target the
+		// referenced KeycloakClient's own reconciler owns its role vocabulary
+		// (spec.clientRoles); the group must NOT silently expand it, so the role is
+		// resolved get-only and a missing role is a hard error the operator fixes by
+		// declaring it on the KeycloakClient.
 		if directTarget {
 			createRoleErr := kc.CreateClientRoleIfNotExists(ctx, oidc.ID, keycloak.ClientRole{Name: ref.Role})
 			recordKeycloakAPI(opCreateClientRole, createRoleErr)
@@ -482,7 +447,7 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 		if err != nil {
 			return fmt.Errorf("getting client role %q on Keycloak client %q: %w", ref.Role, clientID, err)
 		}
-		key := clientID + "/" + ref.Role
+		key := managedRoleKey(clientID, ref.Role)
 		desired[key] = roleTarget{clientUUID: oidc.ID, role: *role}
 		desiredKeys = append(desiredKeys, key)
 	}
@@ -494,7 +459,13 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 	// an early-return on failure leaves status reflecting exactly the roles currently
 	// bound, so a subsequent adopted-release prune (which trusts this set) does not
 	// miss an already-assigned role (the partial-failure leak).
-	managed := newStringSet(group.Status.ManagedClientRoles)
+	// Canonicalize the recorded entries to the current NUL encoding before any
+	// comparison against the (NUL-encoded) desired keys. A legacy "<clientId>/<role>"
+	// entry must collapse onto the same key managedRoleKey produces for a still-desired
+	// role; otherwise the legacy key would miss desired[prev] in the prune loop below
+	// and revoke a role the spec still declares (the upgrade-path leak). A malformed
+	// entry that does not decode is dropped here rather than carried forward.
+	managed := newStringSet(canonicalManagedRoles(group.Status.ManagedClientRoles))
 	defer func() { group.Status.ManagedClientRoles = managed.sorted() }()
 
 	// Assign every desired role (idempotent on Keycloak's side).
@@ -508,8 +479,10 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 		managed.add(key)
 	}
 
-	// Prune roles this CR previously managed but that are no longer desired. Each
-	// stale entry is "<clientId>/<role>"; resolve the client and remove the role.
+	// Prune roles this CR previously managed but that are no longer desired. Entries
+	// are canonical NUL-encoded keys (see canonicalManagedRoles above), so a
+	// still-desired role matches desired[prev] and is skipped; resolve the client and
+	// remove the role only for entries the spec no longer declares.
 	for _, prev := range managed.sorted() {
 		if _, ok := desired[prev]; ok {
 			continue
@@ -549,79 +522,60 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 	return nil
 }
 
-// splitManagedRole splits a "<clientId>/<role>" managed-role key back into its
-// clientId and role. clientIds are URLs containing slashes, so it splits on the
-// LAST slash (the role name carries none). It reports false for a malformed key.
+// managedRoleSep separates the clientId and role in a status.managedClientRoles
+// entry. It is a NUL byte, which cannot appear in a Keycloak OIDC clientId or
+// client-role name, so the encoding round-trips unambiguously even when the role
+// name (now fully general per HOL-1421) or the clientId (a URL) contains slashes.
+// The earlier "<clientId>/<role>" encoding split on the LAST slash, which mis-split
+// a role name containing a slash — resolving the wrong role on prune/release and
+// leaving a stale Keycloak role mapping. splitManagedRole still accepts that legacy
+// form for entries written before this fix (which, under the now-removed
+// <project>-<leaf> exact-match guard, could only have had slash-free role names, so
+// LastIndex was unambiguous for them).
+const managedRoleSep = "\x00"
+
+// managedRoleKey encodes a (clientId, role) pair into a status.managedClientRoles
+// entry using the unambiguous NUL separator.
+func managedRoleKey(clientID, role string) string {
+	return clientID + managedRoleSep + role
+}
+
+// canonicalManagedRoles re-encodes recorded status.managedClientRoles entries to
+// the current NUL encoding, so a legacy "<clientId>/<role>" entry collapses onto
+// the exact key managedRoleKey produces for the same pair. Without this, after an
+// upgrade a legacy entry for a still-desired role would not match the NUL-encoded
+// desired key in the prune loop and the role would be revoked despite remaining in
+// the spec. An entry that does not decode is dropped (it could not be acted on
+// anyway). The result is de-duplicated by the caller's stringSet.
+func canonicalManagedRoles(entries []string) []string {
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		clientID, role, ok := splitManagedRole(e)
+		if !ok {
+			continue
+		}
+		out = append(out, managedRoleKey(clientID, role))
+	}
+	return out
+}
+
+// splitManagedRole splits a managed-role key back into its clientId and role. It
+// prefers the unambiguous NUL-separated encoding managedRoleKey writes; for a
+// legacy "<clientId>/<role>" entry (no NUL) it falls back to splitting on the LAST
+// slash, which is unambiguous for the slash-free role names the legacy guard
+// permitted. It reports false for a malformed key.
 func splitManagedRole(key string) (clientID, role string, ok bool) {
+	if idx := strings.IndexByte(key, 0); idx >= 0 {
+		if idx == 0 || idx == len(key)-1 {
+			return "", "", false
+		}
+		return key[:idx], key[idx+1:], true
+	}
 	idx := strings.LastIndex(key, "/")
 	if idx <= 0 || idx == len(key)-1 {
 		return "", "", false
 	}
 	return key[:idx], key[idx+1:], true
-}
-
-// validateDirectClientRole bounds the direct clientId path (clientRoles[].clientId)
-// so it cannot be used to escalate privilege (ADR-20 "Claim value via a client
-// role", "Ownership / disjointness"). It enforces three constraints, refused
-// before any Keycloak write:
-//  1. the target clientId is on the directClientRoleTargets allowlist (only the
-//     platform Quay client) — naming any other client directly (e.g.
-//     realm-management, argocd) is rejected, so the path cannot reach a privileged
-//     client;
-//  2. the role name is not one of the platform's own reserved client-role names
-//     (platform-admin/project-admin), so a platform role binding is never
-//     overwritten;
-//  3. the path's `<project>` segment equals the CR's own namespace. This is the
-//     authoritative ownership binding: a project's CRs live in a namespace named
-//     after the project (the my-project convention; namespace == project), and
-//     Kubernetes RBAC governs who may create a KeycloakGroup in a given namespace
-//     (and a ReferenceGrant governs cross-namespace use of the central instance).
-//     So a tenant in namespace `my-project` cannot declare
-//     `projects/other-project/roles/owner` to confer `other-project-owner` — the
-//     path's project would have to be `my-project`. Without this, the guard would
-//     prove only string consistency, not project ownership.
-//  4. the role name is EXACTLY this role group's own name `<project>-<leaf>`,
-//     parsed from a `projects/<project>/roles/<leaf>` path. The match is exact
-//     (not a prefix) so a prefix collision cannot confer another project's role —
-//     e.g. project `my` (path projects/my/roles/owner) cannot confer
-//     `my-project-owner` (which belongs to project `my-project`), and a non-role
-//     path (projects/<project>/custodians/<leaf>) is refused outright since only a
-//     roles/* group confers a claim value.
-func validateDirectClientRole(namespace, groupPath, clientID, role string) error {
-	if !directClientRoleTargets[clientID] {
-		return fmt.Errorf("clientId %q may not be named directly by a KeycloakGroup clientRoles entry; only the platform Quay client is a permitted direct target (use a same-namespace KeycloakClient and clientRef for other clients)", clientID)
-	}
-	if reservedClientRoleNames[role] {
-		return fmt.Errorf("client role %q on reserved client %q is platform-reserved and cannot be conferred by a KeycloakGroup", role, clientID)
-	}
-	project, leaf, ok := projectRoleFromGroupPath(groupPath)
-	if !ok {
-		return fmt.Errorf("cannot confer a role on reserved client %q from group path %q: only a projects/<project>/roles/<leaf> group may confer a project role on a reserved client", clientID, groupPath)
-	}
-	if project != namespace {
-		return fmt.Errorf("cannot confer a role on reserved client %q: group path project %q must equal the resource namespace %q (the project↔namespace ownership boundary), so a tenant cannot confer another project's role", clientID, project, namespace)
-	}
-	if want := project + "-" + leaf; role != want {
-		return fmt.Errorf("client role %q on reserved client %q must be exactly this role group's name %q (project %q + role %q) so a group cannot confer another project's role", role, clientID, want, project, leaf)
-	}
-	return nil
-}
-
-// projectRoleFromGroupPath parses a role-group path of the exact form
-// projects/<project>/roles/<leaf> (any leading/trailing slashes tolerated),
-// returning <project>, <leaf>, and ok=true. Any other shape — a different depth, a
-// non-"projects" root, a non-"roles" tier (e.g. custodians), or an empty segment —
-// returns ok=false, so the caller refuses the direct path rather than enforcing a
-// loose prefix.
-func projectRoleFromGroupPath(path string) (project, leaf string, ok bool) {
-	segs := strings.Split(strings.Trim(path, "/"), "/")
-	if len(segs) != 4 || segs[0] != "projects" || segs[2] != "roles" {
-		return "", "", false
-	}
-	if segs[1] == "" || segs[3] == "" {
-		return "", "", false
-	}
-	return segs[1], segs[3], true
 }
 
 // clientRefDescription renders a human-readable description of which field named
@@ -914,9 +868,8 @@ func (r *GroupReconciler) reconcileDelete(ctx context.Context, logger logr.Logge
 	// Drop the finalizer immediately whenever there is no Keycloak-side cleanup to
 	// do, rather than resolving a Ready instance + credential (which would fail
 	// forever and strand the CR undeletable). Nothing needs cleanup when:
-	//   - the CR never created or adopted a group (rejected for a reserved name,
-	//     blocked on a missing/not-ready instance, a denied ReferenceGrant, or a
-	//     missing credential), OR
+	//   - the CR never created or adopted a group (blocked on a missing/not-ready
+	//     instance, a denied ReferenceGrant, or a missing credential), OR
 	//   - the CR adopted a group but added no side effects (no managed roles or
 	//     custodians) — release is a no-op since an adopted group is never deleted.
 	// A created group always needs its delete (and any custodian prune), so it is
@@ -1172,27 +1125,6 @@ func instanceReady(instance *keycloakv1alpha1.KeycloakInstance) bool {
 	return false
 }
 
-// isReservedGroupPath reports whether a group path targets a platform-reserved
-// Keycloak identity the controller refuses to manage (ADR-20). Any segment of the
-// path matching a reserved name or carrying a reserved prefix triggers the guard.
-func isReservedGroupPath(path string) (bool, string) {
-	for _, seg := range strings.Split(strings.Trim(path, "/"), "/") {
-		if seg == "" {
-			continue
-		}
-		lower := strings.ToLower(seg)
-		if reservedGroupNames[lower] {
-			return true, fmt.Sprintf("group path segment %q is platform-reserved and cannot be managed by a KeycloakGroup", seg)
-		}
-		for _, prefix := range reservedGroupPrefixes {
-			if strings.HasPrefix(lower, prefix) {
-				return true, fmt.Sprintf("group path segment %q uses the platform-reserved prefix %q and cannot be managed by a KeycloakGroup", seg, prefix)
-			}
-		}
-	}
-	return false, ""
-}
-
 // succeed stamps Ready/Programmed/Accepted true, emits a Normal event, and writes
 // status only when something actually changed — a condition flipped,
 // observedGeneration advanced, or extraChanged is set. extraChanged is load-bearing
@@ -1208,24 +1140,6 @@ func (r *GroupReconciler) succeed(ctx context.Context, logger logr.Logger, group
 	}
 	r.Recorder.Event(group, corev1.EventTypeNormal, reason, message)
 	logger.Info("reconciled KeycloakGroup", "path", group.Spec.Path, "reason", reason)
-	if err := r.updateStatus(ctx, group); err != nil {
-		return ctrl.Result{}, err
-	}
-	return ctrl.Result{}, nil
-}
-
-// reject records a terminal-rejection condition (Accepted/Programmed/Ready all
-// False) for a spec the controller refuses to act on (a reserved name or a denied
-// cross-namespace reference) and emits a Warning, writing status only on a change.
-// It returns a zero result with no error: the spec must change to recover, so a
-// requeue would only spin.
-func (r *GroupReconciler) reject(ctx context.Context, group *keycloakv1alpha1.KeycloakGroup, reason, message string) (ctrl.Result, error) {
-	changed := markRejected(&group.Status.Conditions, reason, message, group.Generation)
-	changed = changed || group.Status.ObservedGeneration != group.Generation
-	if !changed {
-		return ctrl.Result{}, nil
-	}
-	r.Recorder.Event(group, corev1.EventTypeWarning, reason, message)
 	if err := r.updateStatus(ctx, group); err != nil {
 		return ctrl.Result{}, err
 	}

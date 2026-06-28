@@ -42,64 +42,6 @@ const clientRoleMapperName = "client-roles"
 // my-project-{owner,editor,viewer} in the groups claim on login (ADR-20).
 const groupsClaimName = "groups"
 
-// reservedClientIDs are the platform-reserved Keycloak clientIds a tenant
-// KeycloakClient refuses to MANAGE as a client object (ADR-20). They are the
-// platform OIDC clients owned by the keycloak-config-cli realm config (argocd,
-// kargo) and the in-cluster Quay client (https://quay.holos.internal); a
-// namespaced tenant CR must not create or reconfigure the client object itself.
-//
-// The guard applies to the CLIENT OBJECT only. Per ADR-20 "Claim value via a
-// client role", a KeycloakGroup MAY still confer a controller-claimed,
-// project-prefixed client ROLE (e.g. my-project-owner) on a reserved client
-// without seizing the client object — that is the join the Quay use case rests on
-// (the role surfaces in Quay's groups claim via the already-deployed
-// quay-client-roles mapper). Only the platform's own reserved client-role NAMES
-// stay off-limits (reservedClientRoleNames below).
-var reservedClientIDs = map[string]bool{
-	// Platform OIDC clients owned by keycloak-config-cli.
-	"argocd":                      true,
-	"kargo":                       true,
-	"https://quay.holos.internal": true,
-	// Keycloak built-in clients. realm-management hosts the realm-admin /
-	// manage-* roles, so it is the prime privilege-escalation target and must never
-	// be claimed by a tenant CR. account/account-console/broker/
-	// security-admin-console are the realm's built-in clients; reserving them keeps
-	// a tenant from defining or conferring roles on Keycloak's own clients. These
-	// names are realm-stable across Keycloak versions.
-	"realm-management":       true,
-	"account":                true,
-	"account-console":        true,
-	"broker":                 true,
-	"security-admin-console": true,
-}
-
-// reservedClientRoleNames are the platform's own client-role names on a reserved
-// client that a tenant CR must never claim (ADR-20 "Ownership / disjointness vs
-// keycloak-config-cli": the quay client's platform-admin/project-admin). A
-// KeycloakGroup conferring a role on a reserved client is restricted to
-// project-prefixed names — a reserved name here is refused so the controller never
-// overwrites a platform role binding. Project-prefixed names (my-project-owner)
-// are NOT in this set and remain assignable, which is what makes the claim-value
-// mechanism safe.
-var reservedClientRoleNames = map[string]bool{
-	"platform-admin": true,
-	"project-admin":  true,
-}
-
-// directClientRoleTargets are the clientIds a KeycloakGroup may name DIRECTLY (via
-// clientRoles[].clientId, bypassing same-namespace KeycloakClient CR resolution).
-// It is a tight allowlist: only the platform Quay client — the ADR-20 "Quay use
-// case" consumer whose token the controller must fold project roles into, and for
-// which no tenant KeycloakClient CR exists or may exist. Naming any other clientId
-// directly (e.g. realm-management, argocd, kargo, or an arbitrary client) is
-// refused, so the direct path cannot reach a privileged client like
-// realm-management to mint realm-admin. A non-reserved consumer client must use a
-// same-namespace KeycloakClient CR via clientRef instead, which the claim model
-// already bounds.
-var directClientRoleTargets = map[string]bool{
-	"https://quay.holos.internal": true,
-}
-
 // ClientClient is the seam the KeycloakClient reconciler drives Keycloak through.
 // It is the subset of internal/keycloak.Client's client, client-role,
 // protocol-mapper, and client-secret operations the reconciler needs, named as an
@@ -174,10 +116,11 @@ type ClientReconciler struct {
 }
 
 // Reconcile drives a KeycloakClient toward its desired state: fetch CR → ensure
-// finalizer → on delete run Keycloak cleanup then remove finalizer → else
-// reserved-name guard → resolve instance (+ReferenceGrant) → resolve credential
-// → ensure/update the client → ensure client roles + mapper → deliver the
-// confidential secret → mark Ready.
+// finalizer → on delete run Keycloak cleanup then remove finalizer → resolve
+// instance (+ReferenceGrant) → resolve credential → ensure/update the client →
+// ensure client roles + mapper → deliver the confidential secret → mark Ready.
+// The reconciler is transparent: it manages exactly the clientId declared in the
+// spec, reserving and refusing no client IDs on org-policy grounds (HOL-1421).
 func (r *ClientReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, retErr error) {
 	logger := log.FromContext(ctx)
 	defer func() { recordReconcile(kindClient, retErr) }()
@@ -201,16 +144,11 @@ func (r *ClientReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 	return r.reconcileNormal(ctx, logger, kclient)
 }
 
-// reconcileNormal performs the reserved-name guard, resolves the instance and
-// credential, then applies the claim model (create / adopt / conflict) before
-// converging the client's roles, mapper, and confidential secret delivery.
+// reconcileNormal resolves the instance and credential, then applies the claim
+// model (create / adopt / conflict) before converging the client's roles, mapper,
+// and confidential secret delivery. It reconciles exactly the declared clientId,
+// reserving and refusing no client IDs (HOL-1421).
 func (r *ClientReconciler) reconcileNormal(ctx context.Context, logger logr.Logger, kclient *keycloakv1alpha1.KeycloakClient) (ctrl.Result, error) {
-	// Reserved-name guard (ADR-20): never manage a platform-reserved client.
-	if reservedClientIDs[kclient.Spec.ClientID] {
-		return r.reject(ctx, kclient, ReasonReserved,
-			fmt.Sprintf("clientId %q is platform-reserved and cannot be managed by a KeycloakClient", kclient.Spec.ClientID))
-	}
-
 	instance, result, err := r.resolveInstance(ctx, kclient)
 	if instance == nil || err != nil {
 		return result, err
@@ -647,23 +585,6 @@ func (r *ClientReconciler) succeed(ctx context.Context, logger logr.Logger, kcli
 	}
 	r.Recorder.Event(kclient, corev1.EventTypeNormal, reason, message)
 	logger.Info("reconciled KeycloakClient", "clientId", kclient.Spec.ClientID, "reason", reason)
-	if err := r.updateStatus(ctx, kclient); err != nil {
-		return ctrl.Result{}, err
-	}
-	return ctrl.Result{}, nil
-}
-
-// reject records a terminal-rejection condition for a spec the controller refuses
-// to act on (a reserved clientId or a denied cross-namespace reference) and emits
-// a Warning, writing status only on a change. It returns a zero result with no
-// error: the spec must change to recover.
-func (r *ClientReconciler) reject(ctx context.Context, kclient *keycloakv1alpha1.KeycloakClient, reason, message string) (ctrl.Result, error) {
-	changed := markRejected(&kclient.Status.Conditions, reason, message, kclient.Generation)
-	changed = changed || kclient.Status.ObservedGeneration != kclient.Generation
-	if !changed {
-		return ctrl.Result{}, nil
-	}
-	r.Recorder.Event(kclient, corev1.EventTypeWarning, reason, message)
 	if err := r.updateStatus(ctx, kclient); err != nil {
 		return ctrl.Result{}, err
 	}

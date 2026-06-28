@@ -355,27 +355,33 @@ func TestClientReconcileSecretCollisionMissingKeyFails(t *testing.T) {
 	}
 }
 
-func TestClientReconcileReservedNameRejected(t *testing.T) {
+// TestClientReconcilePreviouslyReservedIDsNowReconcile asserts the transparent
+// contract (HOL-1421): clientIds the controller used to refuse on org-policy
+// grounds (the platform argocd/kargo/quay clients and Keycloak built-ins like
+// realm-management) are now reconciled verbatim — the client is created in Keycloak
+// at exactly the declared clientId and the resource reports Ready/Created, with no
+// reserved-name rejection.
+func TestClientReconcilePreviouslyReservedIDsNowReconcile(t *testing.T) {
 	if shared == nil {
 		t.Skip("envtest not provisioned")
 	}
 	ctx := context.Background()
-	const ns = "kc-client-reserved"
+	const ns = "kc-client-formerly-reserved"
 	makeNamespace(t, ctx, ns)
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	for _, reserved := range []string{"argocd", "kargo", "https://quay.holos.internal"} {
+	for _, formerlyReserved := range []string{"argocd", "kargo", "https://quay.holos.internal", "realm-management"} {
 		kclient := &keycloakv1alpha1.KeycloakClient{
-			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "reserved-" + sanitize(reserved)},
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "formerly-" + sanitize(formerlyReserved)},
 			Spec: keycloakv1alpha1.KeycloakClientSpec{
-				ClientID:    reserved,
+				ClientID:    formerlyReserved,
 				Type:        keycloakv1alpha1.KeycloakClientTypePublic,
 				InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
 			},
 		}
 		if err := shared.k8sClient.Create(ctx, kclient); err != nil {
-			t.Fatalf("create client %q: %v", reserved, err)
+			t.Fatalf("create client %q: %v", formerlyReserved, err)
 		}
 		fake := newFakeKeycloakClient()
 		r, _ := newClientReconciler(fake, ns)
@@ -383,12 +389,12 @@ func TestClientReconcileReservedNameRejected(t *testing.T) {
 		reconcileClientToSteady(t, ctx, r, key)
 
 		got := getKClient(t, ctx, key)
-		status, reason, _ := conditionStatus(got.Status.Conditions, ConditionReady)
-		if status != metav1.ConditionFalse || reason != ReasonReserved {
-			t.Errorf("clientId %q: Ready = (%v, %v), want (False, %s)", reserved, status, reason, ReasonReserved)
+		status, reason, ok := conditionStatus(got.Status.Conditions, ConditionReady)
+		if !ok || status != metav1.ConditionTrue || reason != ReasonCreated {
+			t.Errorf("clientId %q: Ready = (%v, %v, %v), want (True, %s)", formerlyReserved, status, reason, ok, ReasonCreated)
 		}
-		if fake.clientExists(reserved) {
-			t.Errorf("reserved clientId %q must not be created in Keycloak", reserved)
+		if !fake.clientExists(formerlyReserved) {
+			t.Errorf("formerly-reserved clientId %q must now be created verbatim in Keycloak; calls = %v", formerlyReserved, fake.calls)
 		}
 	}
 }
