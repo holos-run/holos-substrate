@@ -1086,7 +1086,7 @@ sections are now **historical**; this section records the contract as built.
 
 **The transparent contract.**
 
-- The reconciler writes the group `path`, the client `clientID`, and client-role
+- The reconciler writes the group `path`, the client `clientId`, and client-role
   names **verbatim** — exactly as declared in the spec. Nothing is added,
   stripped, or required, and **no client ID or role name is reserved or refused**
   by the controller on policy grounds.
