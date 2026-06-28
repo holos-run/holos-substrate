@@ -16,6 +16,7 @@
 | 4        | 2026-06-21 | @jeffmccune | **Close the "Quay use case" gap (HOL-1350).** Reconcile the implemented `clientRoles` model with this ADR's proposed `clientRoleBindings`/`emitProjectRolesInGroupsClaim` design: `ClientRoleReference` now names its target client by **exactly one of** `clientRef` (a same-namespace `KeycloakClient` CR, the "project's own service" path) **or `clientId`** (a Keycloak clientId directly — the new field, CEL-enforced mutual exclusion). A `KeycloakGroup` confers a **project-prefixed** client role (`my-project-<role>`) on the **platform-reserved Quay client** (`https://quay.holos.internal`) by naming its `clientId` directly — no tenant `KeycloakClient` CR exists for it (the reserved-name guard still forbids one). The group reconciler **ensures the project-prefixed role exists** on the named client (idempotent create, on the direct path only — a `clientRef` target stays get-only so a group never expands a project client's role vocabulary), and a **direct-path guard** in `conferClientRoles` bounds the raw-`clientId` capability so it cannot escalate privilege: the target must be on a tight **allowlist of permitted reserved consumer clients** (only the Quay client — so the path cannot reach `realm-management`/`argocd`/`kargo` or an arbitrary client); the path must be a `projects/<project>/roles/<leaf>` role group whose **`<project>` equals the CR's namespace** (the project↔namespace ownership boundary — RBAC governs who creates a CR in a namespace, so a tenant cannot declare another project's path); the role must be **exactly** this role group's own name `<project>-<leaf>` (an exact match, not a prefix, so a prefix collision like project `my` conferring `my-project-owner` is rejected); and the platform's own reserved client-role names (`platform-admin`/`project-admin`) are refused. The guard keys on the **resolved** clientId regardless of which field named it: the Keycloak built-in clients (`realm-management`, `account`, `account-console`, `broker`, `security-admin-console`) are added to the reserved set, and a `clientRef` resolving to **any** reserved client is refused outright — so a tenant cannot craft a same-namespace `KeycloakClient` whose `spec.clientId` is `realm-management` and confer `realm-admin` through `clientRef` (a reserved client's roles are conferable only via the bounded direct path, which allowlists only the Quay client). The `quay` **client object** stays config-cli's. `KeycloakClient.spec.clientRoles` is CEL-constrained to forbid `clientId` (a client defines roles on itself), so the shared `ClientRoleReference` type never admits a silently-ignored target there. The role then surfaces in Quay's `groups` claim via the already-deployed `quay-client-roles` mapper, so [ADR-19](ADR-19.md) `syncedTeams[].oidcGroup` membership populates with **no Quay-side or new-mapper change**. The `KeycloakClient` reserved-name guard (client-object create/reconfigure) is unchanged. The `my-project` role groups now confer the role on **both** the Quay client (`clientId`) and the project client (`clientRef`). `KeycloakClientRole`/`KeycloakRealmRole` remain unimplemented. `Status`/`Updates: ADR-3` unchanged |
 | 5        | 2026-06-21 | @jeffmccune | **Record the `esso` enterprise-SSO realm + `holos` OIDC brokering topology (HOL-1366/HOL-1367).** Add the *Two-realm topology: the `esso` enterprise-SSO realm + the `holos` OIDC broker* design section: a **second Keycloak realm `esso`** on the **single** Keycloak instance at `https://auth.holos.internal` (reachable at `https://auth.holos.internal/realms/esso`; the existing `auth.holos.internal` HTTPRoute already covers all realms — no new route) models an **authentication-only** upstream Enterprise SSO IdP, and the `holos` realm **brokers** logins from it via an **OIDC identity provider** (broker **alias `esso`**, `trustEmail: true`, `firstBrokerLoginFlowAlias: "first broker login"`). The broker's confidential **esso client** is named `https://auth.holos.internal/realms/holos` with redirect URI `https://auth.holos.internal/realms/holos/broker/esso/endpoint`. **Authorization stays entirely in the `holos` realm's groups/roles** ([ADR-3](ADR-3.md)) — `esso` authenticates, `holos` authorizes. Introducing the `esso` IdP (and correcting the `holos` realm's first-broker-login flow declaration) is what **completes and fixes** the HOL-1348 auto-link flow that currently fails the keycloak-config Job (`Cannot find stored execution by authenticator 'idp-auto-link'…`) because no IdP is present. **AC #5 provisioning constraint:** the `esso` realm and the `holos` IdP are provisioned by **keycloak-config-cli Jobs + bootstrap Jobs only**, with **no dependency on the `holos-controller` API groups** (`keycloak.holos.run`/`quay.holos.run`), to avoid a fresh-cluster provisioning race. **Ownership shift:** the `holos` realm's `identityProviders[]` move under the **holos realm-config keycloak-config-cli Job** (so the IdP `clientSecret` can be injected at runtime via `$(env:…)`), while the `KeycloakRealmImport` CR keeps owning `enabled`. Update the *reserved names* set to add the `esso` realm, the `esso` IdP broker alias, and the `https://auth.holos.internal/realms/holos` esso client ID, and note the broker alias changed from the placeholder `holos` to `esso`. This revision is a **design record only — no CUE/Go behavior changes**; phases 2–4 (HOL-1368..HOL-1370) implement it. `Status: Partially Implemented`/`Updates: ADR-3` unchanged |
 | 6        | 2026-06-21 | @jeffmccune | **Reconcile the `esso` IdP section with the as-built first-broker-login flow (HOL-1371, the cleanup phase).** Revision 5 (a design record) wrote `firstBrokerLoginFlowAlias: "first broker login"` — Keycloak's built-in flow. The as-built (HOL-1369) instead points at a **custom** (`builtIn: false`) flow, alias **`first broker login auto-link`** (subflow `User creation or linking auto-link`), because keycloak-config-cli **refuses to add executions to a built-in flow** — the built-in `User creation or linking` subflow lacks `idp-auto-link`, so importing it throws `Cannot find stored execution by authenticator 'idp-auto-link'`. The *`firstBrokerLoginFlowAlias`* bullet and the design-consequences item now describe the custom flow and why it is required. **Documentation-only consistency correction — no CUE/Go behavior change** (the behavior shipped in HOL-1369); `Status: Partially Implemented`/`Updates: ADR-3` unchanged. New operator runbook `docs/runbooks/esso-keycloak-idp.md` and the `holos/docs/keycloak-clients.md` *esso realm* section document the as-built topology |
+| 7        | 2026-06-28 | @jeffmccune | **Make the controller transparent — remove the project-prefix / reserved-name / claim-value-rewriting / disjointness model from the reconcilers (HOL-1420/HOL-1421).** The `keycloak.holos.run` reconcilers now reconcile **exactly** the group `path`, client `clientId`, and client-role names declared in the spec — **adding, stripping, requiring, and refusing nothing on organizational-policy grounds**. HOL-1421 removed from the Go reconcilers (PR #207): the reserved client-ID set (`argocd`/`kargo`/`https://quay.holos.internal`/the Keycloak built-ins/the esso broker client), the reserved group prefixes/names (`platform-*`/`authenticated`/`realm_roles`/…), the reserved client-role names (`platform-admin`/`project-admin`), the `validateDirectClientRole` direct-`clientId` guard (the Quay-only allowlist, the `<project>`-equals-namespace project↔namespace check, the `<project>-<leaf>` exact-match rule, the reserved-role refusal), `projectRoleFromGroupPath`, the `clientRef`-resolves-to-reserved refusal, and the `ReasonReserved` condition. A `KeycloakClient` may now declare **any** `clientId` (previously-reserved IDs included); a `KeycloakGroup` may declare **any** `spec.path`; a `KeycloakGroup.spec.clientRoles[]` entry may name **any** client by `clientId` and confer **any** role name — the reconciler resolves the client, ensures the role exists (idempotent create), and confers it. Previously-refused specs now enter the **normal claim/adoption flow** (a write when the controller creates/owns the object, a `Conflict` when an unadopted foreign object already holds the name) rather than being rejected on `Reserved` grounds. **What is preserved** (reconciliation/structural invariants, not org policy): the claim/adoption/ownership-conflict model (`spec.adopt`, `status.created`/`status.adopted`, the finalizer + Keycloak-UUID tracking, `ReasonConflict`/`ReasonReleased`) and all `+kubebuilder:validation:XValidation` markers (immutability, the `clientRef` XOR `clientId`, confidential-requires-`secretRef`, a `KeycloakClient`'s own `clientRoles` may not set `clientId`). The CRDs were diff-clean (the policy lived in Go, not CRD CEL). The superseded design sections below — *Claim value via a client role* (the project-prefix/exact-match rewriting), the reserved-names set in *Ownership / disjointness*, and the reserved-role discussion in *KeycloakClientRole and KeycloakRealmRole* — are marked **historical/removed**, and a new *Transparent contract, migration, and admission-control policy (Rev 7)* section records the new contract, the migration note, and the admission-control pointer. **The recommended home for configuration policy** (naming conventions, reserved prefixes, tenant/platform disjointness) is now Kubernetes **admission control** — a `ValidatingAdmissionPolicy` with CEL and/or a `ValidatingAdmissionWebhook` backed by dedicated policy CRs — authored as a **separate downstream effort** (out of scope for this revision, which documents the contract and points at the mechanism). This is a documentation revision recording HOL-1421's behavior change; `Status: Partially Implemented`/`Updates: ADR-3` unchanged |
 
 ## Context and Problem Statement
 
@@ -336,7 +337,8 @@ in a **platform namespace** — a **cross-namespace reference**. Per the guard r
 `from` the project namespace's `keycloak.holos.run` Kinds and `to` the
 `KeycloakInstance`. A `KeycloakClient`/`Group`/`User` whose `instanceRef` crosses
 a namespace boundary with **no matching grant** is **rejected** by its reconciler
-(`Ready=False`, reason `RefNotPermitted`), never silently honored — the same
+(`Ready=False`, reason `ReferenceNotGranted` — the as-built reason name; this ADR's
+earlier revisions wrote the placeholder `RefNotPermitted`), never silently honored — the same
 default-deny posture ADR-22 fixes. This ADR **cites** that grant and does **not**
 redefine it; ADR-22 owns the grant's shape. (A same-namespace `instanceRef` — e.g.
 a platform-owned CR in the `keycloak` namespace — needs no grant.)
@@ -477,6 +479,20 @@ groups and **delegate** the custodian approval rather than assuming an external
 identity system does.
 
 ### Claim value via a client role — the resolved mechanism (AC #5)
+
+> **Superseded in part by Revision 7 (HOL-1421).** The *mechanism* below — a
+> client role on the consumer client, surfaced by the per-client
+> `oidc-usermodel-client-role-mapper` — is unchanged and still how a role
+> value reaches a token. What Revision 7 **removed** is the controller's
+> *enforcement* of the project-prefix / exact-`<project>-<leaf>`-match /
+> reserved-role rewriting around it: the reconciler no longer requires a
+> project-prefixed role name, no longer ensures only `<project>-<leaf>` on the
+> Quay client via the bounded direct-path guard, and reserves no role name. It
+> confers exactly the role named in `spec.clientRoles[]` on exactly the named
+> client. The Project component still emits the conventional `<project>-<role>`
+> names, so the worked example holds; the controller simply no longer *imposes*
+> it. See *Transparent contract, migration, and admission-control policy
+> (Rev 7)* below.
 
 The use case requires that membership in `projects/<project>/roles/owner` surface
 in the shared `groups` claim as the **flat value** `my-project-owner` (likewise
@@ -635,6 +651,23 @@ A `KeycloakClientRole` is a single client role scoped to one client; a
 mapping (a Keycloak composite role) that lets a broad organizational role compose
 down onto a service. These are unchanged in intent from Revision 1, now bound to a
 `KeycloakInstance` and made concrete.
+
+> **Note (Revision 7, HOL-1421):** The "disjoint by construction" framing below
+> relied on the now-removed project-prefix reservation. The controller no longer
+> reserves or rewrites role names. Be precise about what the retained claim model
+> covers: the per-CR **claim/`Conflict`** model protects a CR's **own claimed
+> Keycloak object** — the group at a `KeycloakGroup.spec.path`, a client, a user.
+> It does **not** put a per-role claim boundary around a **directly-referenced**
+> client's roles: when a `KeycloakGroup.spec.clientRoles[]` entry names a client by
+> `clientId`, the controller **idempotently** ensures that role exists
+> (`CreateClientRoleIfNotExists`) and confers it — two CRs naming the same role on
+> the same client both succeed (last write wins on the assignment), they do **not**
+> arbitrate via `Conflict`. So "two CRs claiming the same role are resolved by
+> `Conflict`" holds only for a role defined **on a CR's own claimed client**, not
+> for a role created on a foreign client via the direct `clientId` path. (This is
+> why the worked example relies on convention — the Project component emitting
+> distinct `<name>-<role>` names — not on a controller guarantee.) `KeycloakClientRole`
+> / `KeycloakRealmRole` remain unimplemented regardless.
 
 **Single owner of the primitive-role client roles.** To avoid two Kinds claiming
 the same client role, ownership is **disjoint by construction**: the
@@ -886,6 +919,19 @@ shift; this ADR records the decision so they have a single source of truth.
 
 ### Ownership / disjointness vs `keycloak-config-cli` (AC #6)
 
+> **Superseded in part by Revision 7 (HOL-1421).** The **reserved-platform-names**
+> enforcement and the **project-prefix** disjointness mechanism described in this
+> section have been **removed from the controller** — it no longer reserves any
+> client ID, group path, role name, realm, or broker alias, and no longer rejects
+> a CR on `Reserved` grounds (`ReasonReserved` is gone). The **claim/adoption
+> ownership model** (the durable per-CR marker, `Conflict`/`Released`) is
+> **retained** — that is reconciliation correctness, not org policy. Tenant/platform
+> disjointness, reserved prefixes, and naming conventions are now the job of
+> **admission control** (see *Transparent contract, migration, and admission-control
+> policy (Rev 7)* below); the *Reserved platform names* bullet and its
+> identifier list below are **historical** — they describe the as-removed Go
+> behavior and are kept only as the starting inventory for an admission policy.
+
 These CRDs are reconciled by the **existing `holos-controller` binary** as a
 **separate API group alongside `quay.holos.run`** — additive to, and **disjoint
 from**, the existing `keycloak-config-cli` Job that owns the platform's own realm.
@@ -1029,12 +1075,110 @@ mandated for all `holos.run` CRs ([ADR-22](ADR-22.md) guard rail; the
 - at least one **printer column surfacing `Ready`**.
 
 The condition **types** and **reasons** (`Created`, `Adopted`, `Conflict`,
-`Reserved`, `RefNotPermitted`, `CredentialsNotFound`, `KeycloakError`, …) are
+`ReferenceNotGranted`, `CredentialsNotFound`, `KeycloakError`, …) are
 defined **once** in a shared constants file in the Keycloak controller package
 (the analog of `internal/controller/quay/conditions.go`) and shared by every
-reconciler, never re-derived per Kind. A denied cross-namespace `instanceRef`
-(missing `ReferenceGrant`) surfaces as `Ready=False` reason `RefNotPermitted`,
+reconciler, never re-derived per Kind. (The `Reserved` reason listed in earlier
+revisions was **removed in Revision 7 (HOL-1421)** along with the reserved-name
+policy; see *Transparent contract, migration, and admission-control policy
+(Rev 7)*.) A denied cross-namespace `instanceRef`
+(missing `ReferenceGrant`) surfaces as `Ready=False` reason `ReferenceNotGranted`,
 which is the observability ADR-22's grant model depends on.
+
+### Transparent contract, migration, and admission-control policy (Rev 7)
+
+**Revision 7 (HOL-1420/HOL-1421) makes the `keycloak.holos.run` reconcilers
+transparent.** The model in *Claim value via a client role* and *Ownership /
+disjointness* above — project-prefixed role rewriting, the reserved-name sets,
+the `validateDirectClientRole` direct-`clientId` guard, and the project↔namespace
+disjointness check — was **enforcement of organizational policy in Go**. Those
+sections are now **historical**; this section records the contract as built.
+
+**The transparent contract.**
+
+- The reconciler writes the group `path`, the client `clientId`, and client-role
+  names **verbatim** — exactly as declared in the spec. Nothing is added,
+  stripped, or required, and **no client ID or role name is reserved or refused**
+  by the controller on policy grounds.
+- A `KeycloakClient` may declare **any** `spec.clientId`, including
+  previously-reserved IDs (`argocd`, `kargo`, `realm-management`,
+  `https://quay.holos.internal`, the Keycloak built-in clients, the esso broker
+  client). A `KeycloakGroup` may declare **any** `spec.path`, including
+  previously-reserved paths/prefixes (`platform-*`, `authenticated`,
+  `realm_roles`, `default-roles-holos`).
+- A `KeycloakGroup.spec.clientRoles[]` entry may name **any** client by
+  `clientId` and confer **any** role name — there is no Quay-only allowlist, no
+  `<project>-<leaf>` exact-match rule, no reserved-role-name refusal, and no
+  `project == namespace` check. The reconciler resolves the client, ensures the
+  named role exists (idempotent create), and confers it.
+- **What is preserved** is *reconciliation correctness*, not policy: the
+  claim/adoption/ownership-conflict model (`spec.adopt`, `status.created`/
+  `status.adopted`, the finalizer + Keycloak-UUID tracking, `ReasonConflict`,
+  adopted-release `ReasonReleased`) and all the structural CEL validation markers
+  (immutability, `clientRef` XOR `clientId`, confidential-requires-`secretRef`, a
+  `KeycloakClient`'s own `clientRoles` may not set `clientId`).
+
+**Where configuration policy lives now.** Naming conventions, reserved prefixes,
+and tenant/platform disjointness are **organizational policy**, not reconciler
+mechanics — so they move to Kubernetes **admission control**, evaluated at
+`CREATE`/`UPDATE` admission before an object is ever persisted:
+
+- A **`ValidatingAdmissionPolicy`** (built-in, CEL-based, no extra deployment)
+  for the rules that are expressible as CEL over the incoming object — e.g.
+  "a `KeycloakGroup.spec.path` in a tenant namespace must start with
+  `projects/<that-namespace>/`", or "a tenant `KeycloakClient.spec.clientId`
+  may not be one of {`argocd`, `kargo`, `https://quay.holos.internal`, …}".
+- A **`ValidatingAdmissionWebhook` backed by dedicated policy CRs** for rules
+  that need state the admission request alone does not carry (cross-object
+  disjointness, a centrally-managed reserved-name registry, per-tenant
+  allow/deny lists).
+
+**Defining the concrete policies is a separate, downstream effort** — this
+revision documents the contract and points at the mechanism; it does **not**
+author any `ValidatingAdmissionPolicy`, webhook, or policy CR. The reserved-name
+inventory in *Ownership / disjointness* above is the natural starting point for
+that work.
+
+**Migration note (existing clusters that relied on the Rev 1–6 behavior).**
+
+- **No CRD/schema change and no data migration.** The removed policy lived in the
+  Go reconcilers, not in CRD CEL, so existing CRDs and existing objects are
+  unaffected; the controller simply stops rejecting specs it used to refuse.
+- **Previously-refused specs now enter the normal claim/adoption flow.** Any
+  `KeycloakClient` / `KeycloakGroup` that was being held `Ready=False` with reason
+  `Reserved` (a reserved client ID, a reserved group path/prefix, a
+  non-allowlisted direct `clientId`, a non-`<project>-<leaf>` role, or a
+  `clientRef` resolving to a reserved client) is, after upgrading to the
+  transparent controller, **no longer rejected**. Distinguish the two sides of
+  what then happens:
+  - **The CR's own claimed object** (the group at `spec.path`, the client, the
+    user) goes through the retained **claim/adoption** model: the controller
+    writes the spec verbatim when it creates or already owns the object, and
+    surfaces **`Conflict`** (not a write, not a seizure) when an **unadopted,
+    foreign** object already holds that name unless `spec.adopt` is set.
+  - **A directly-referenced client's role** named via a
+    `KeycloakGroup.spec.clientRoles[]` `clientId` entry is **not** behind that
+    per-role claim boundary: once the group is owned/reconciled, the controller
+    **idempotently** ensures the named role on the referenced client and assigns
+    it — so a formerly-refused direct-`clientId` grant (e.g. a `<role>` on
+    `https://quay.holos.internal`) will now create/confer that role on a client
+    it does not own. This is the side effect operators most need to anticipate.
+
+  The net change is that a name is no longer **refused outright** on policy
+  grounds — so a write that was previously a no-op rejection can now reach
+  Keycloak. Operators with such objects should
+  review them **before upgrading**, since a name that used to be a guaranteed
+  rejection may now resolve to a real Keycloak write or an adoption conflict.
+- **Re-establish policy via admission control if you want it.** Nothing in the
+  controller now prevents a tenant CR from naming a platform client/role or
+  another project's path. If your cluster depended on the controller for that
+  protection, **install an admission policy** (per the pointer above) to restore
+  it; until then, RBAC on who may create `keycloak.holos.run` CRs in which
+  namespace is the only remaining boundary.
+- **The Project/Application components are unchanged.** They already emit only the
+  conventional `<name>-<role>` / bare-leaf names against the conventional clients,
+  so their rendered output and runtime behavior are identical before and after —
+  the change only widens what a hand-authored CR is *permitted* to do.
 
 ## Decision
 
@@ -1056,7 +1200,8 @@ which is the observability ADR-22's grant model depends on.
    **cross-namespace** `instanceRef` is authorized by a `security.holos.run`
    `ReferenceGrant` in the instance's (referent) namespace
    ([ADR-22](ADR-22.md), cited not redefined); an ungranted cross-namespace
-   reference is rejected (`Ready=False`, `RefNotPermitted`), never silently honored.
+   reference is rejected (`Ready=False`, `ReferenceNotGranted` — the as-built reason
+   name; earlier revisions wrote `RefNotPermitted`), never silently honored.
 4. **`KeycloakGroup` manages a shallow nested group tree**
    `projects/<project>/roles/{owner,editor,viewer}` and
    `projects/<project>/custodians/{owner,editor,viewer}` (native subgroups are
@@ -1103,6 +1248,12 @@ which is the observability ADR-22's grant model depends on.
    (`syncedTeams`) remain **data referenced by name** — the two groups meet only at
    the claim-name string, preserving [ADR-19](ADR-19.md)'s boundary in reverse.
 8. **Disjoint ownership from the platform realm config is enforced**, not assumed:
+   *(**Revision 7 (HOL-1421) update:** the reserved-name half of this enforcement
+   was **removed from the controller** — it is now transparent. The durable
+   per-CR ownership/claim model is retained; reserved names / prefixes /
+   disjointness move to admission control, a downstream effort. See *Transparent
+   contract, migration, and admission-control policy (Rev 7)*. The original text
+   below is historical.)*
    `keycloak-config-cli` keeps owning the platform's own realm objects (clients,
    roles, the `authenticated` group, the superusers) — and, **as of Rev 5
    (Decision #10)**, the `holos` realm's `identityProviders[]` too — while the
@@ -1171,8 +1322,12 @@ which is the observability ADR-22's grant model depends on.
   credential — analogous to the load-bearing Quay superuser token
   ([ADR-19](ADR-19.md)). The recommendation is a **scoped** `realm-management`
   service-account client (not blanket realm-admin), created at runtime and never
-  committed, with the reserved-name + claim model bounding its blast radius the way
-  ADR-19's claim model bounds `FEATURE_SUPERUSERS_FULL_ACCESS`.
+  committed. *(As of Revision 7 (HOL-1421) the controller no longer enforces
+  reserved names — only the per-CR **claim/adoption** model bounds the
+  credential's blast radius, the way ADR-19's claim model bounds
+  `FEATURE_SUPERUSERS_FULL_ACCESS`; reserved-name / disjointness enforcement, if
+  desired, is now downstream admission-control work — see *Transparent contract,
+  migration, and admission-control policy (Rev 7)*.)*
 - **Email-based auto-link is only as safe as the upstream IdP.** `Trust Email` +
   first-broker-login auto-link bypasses Keycloak's own email verification, so the
   pre-provision-by-email flow is safe **only** when the federated IdP verifies email
@@ -1191,9 +1346,16 @@ which is the observability ADR-22's grant model depends on.
   *Keycloak Configuration as Code* guard rail in AGENTS.md and
   [keycloak-clients.md](../../holos/docs/keycloak-clients.md) are updated to match
   in phases 3/5).
-- **The ownership boundary [ADR-18](ADR-18.md) deferred now has a concrete,
-  enforced answer.** Reserved platform names (keyed on the real realm identifiers,
-  kept in sync with the realm config) plus a per-CR claim model make
+- **The ownership boundary [ADR-18](ADR-18.md) deferred.** *(Revision 7 update:
+  this was originally answered with **reserved platform names plus a per-CR claim
+  model**. HOL-1421 **removed the reserved-name half from the controller** — the
+  retained per-CR claim/adoption model keeps the controller from seizing an
+  unadopted foreign object, but **reserved names / project-prefix / tenant↔platform
+  disjointness are no longer enforced by the controller**; that enforcement, if a
+  cluster wants it, is now downstream **admission-control** work — see *Transparent
+  contract, migration, and admission-control policy (Rev 7)*. The original text
+  follows as historical.)* Reserved platform names (keyed on the real realm
+  identifiers, kept in sync with the realm config) plus a per-CR claim model make
   disjoint ownership safe despite the global-realm / namespaced-CRD tension —
   config-cli's no-delete posture alone would not. Keeping the reserved set in sync
   is itself an implementation guard rail.
