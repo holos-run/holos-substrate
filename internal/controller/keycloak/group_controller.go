@@ -400,8 +400,9 @@ func (s *stringSet) sorted() []string {
 // refused on org-policy grounds (HOL-1421). status.managedClientRoles is rewritten
 // to the new desired set so the next reconcile knows what it owns.
 func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient, group *keycloakv1alpha1.KeycloakGroup, groupID string) error {
-	// Resolve the desired roles, keyed "<clientId>/<role>", to the OIDC client UUID
-	// and the role representation needed to assign or remove them.
+	// Resolve the desired roles, keyed by managedRoleKey (the NUL-separated
+	// "<clientId>\x00<role>" encoding), to the OIDC client UUID and the role
+	// representation needed to assign or remove them.
 	type roleTarget struct {
 		clientUUID string
 		role       keycloak.ClientRole
@@ -458,7 +459,13 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 	// an early-return on failure leaves status reflecting exactly the roles currently
 	// bound, so a subsequent adopted-release prune (which trusts this set) does not
 	// miss an already-assigned role (the partial-failure leak).
-	managed := newStringSet(group.Status.ManagedClientRoles)
+	// Canonicalize the recorded entries to the current NUL encoding before any
+	// comparison against the (NUL-encoded) desired keys. A legacy "<clientId>/<role>"
+	// entry must collapse onto the same key managedRoleKey produces for a still-desired
+	// role; otherwise the legacy key would miss desired[prev] in the prune loop below
+	// and revoke a role the spec still declares (the upgrade-path leak). A malformed
+	// entry that does not decode is dropped here rather than carried forward.
+	managed := newStringSet(canonicalManagedRoles(group.Status.ManagedClientRoles))
 	defer func() { group.Status.ManagedClientRoles = managed.sorted() }()
 
 	// Assign every desired role (idempotent on Keycloak's side).
@@ -472,9 +479,10 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 		managed.add(key)
 	}
 
-	// Prune roles this CR previously managed but that are no longer desired. Each
-	// stale entry encodes "<clientId>\x00<role>" (or a legacy "<clientId>/<role>");
-	// resolve the client and remove the role.
+	// Prune roles this CR previously managed but that are no longer desired. Entries
+	// are canonical NUL-encoded keys (see canonicalManagedRoles above), so a
+	// still-desired role matches desired[prev] and is skipped; resolve the client and
+	// remove the role only for entries the spec no longer declares.
 	for _, prev := range managed.sorted() {
 		if _, ok := desired[prev]; ok {
 			continue
@@ -530,6 +538,25 @@ const managedRoleSep = "\x00"
 // entry using the unambiguous NUL separator.
 func managedRoleKey(clientID, role string) string {
 	return clientID + managedRoleSep + role
+}
+
+// canonicalManagedRoles re-encodes recorded status.managedClientRoles entries to
+// the current NUL encoding, so a legacy "<clientId>/<role>" entry collapses onto
+// the exact key managedRoleKey produces for the same pair. Without this, after an
+// upgrade a legacy entry for a still-desired role would not match the NUL-encoded
+// desired key in the prune loop and the role would be revoked despite remaining in
+// the spec. An entry that does not decode is dropped (it could not be acted on
+// anyway). The result is de-duplicated by the caller's stringSet.
+func canonicalManagedRoles(entries []string) []string {
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		clientID, role, ok := splitManagedRole(e)
+		if !ok {
+			continue
+		}
+		out = append(out, managedRoleKey(clientID, role))
+	}
+	return out
 }
 
 // splitManagedRole splits a managed-role key back into its clientId and role. It

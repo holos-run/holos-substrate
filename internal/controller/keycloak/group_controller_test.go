@@ -1142,3 +1142,77 @@ func TestManagedRoleKeyRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestGroupLegacyManagedRoleNotPrunedOnUpgrade is the round-2 regression test
+// (HOL-1421): an in-cluster CR whose status.managedClientRoles was written by an
+// older controller in the legacy "<clientId>/<role>" encoding must NOT have a
+// still-desired role revoked after upgrade. The reconciler canonicalizes the legacy
+// entry to the NUL encoding before the prune comparison, so the desired role matches
+// and is left assigned; status is rewritten in canonical form.
+func TestGroupLegacyManagedRoleNotPrunedOnUpgrade(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-group-legacy-upgrade"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	createIgnoreExists(t, ctx, &keycloakv1alpha1.KeycloakClient{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "consumer"},
+		Spec: keycloakv1alpha1.KeycloakClientSpec{
+			ClientID:    "https://app.holos.internal",
+			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+		},
+	})
+
+	group := &keycloakv1alpha1.KeycloakGroup{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "legacy"},
+		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Path:        "projects/lg/roles/owner",
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			ClientRoles: []keycloakv1alpha1.ClientRoleReference{
+				{ClientRef: "consumer", Role: "lg-owner"},
+			},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, group); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	fake := newFakeKeycloakClient()
+	fake.seedClient("https://app.holos.internal", "client-uuid")
+	fake.seedClientRole("client-uuid", "lg-owner", "role-owner")
+	r, _ := newGroupReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(group)
+	_, _ = reconcileGroup(ctx, r, key) // finalizer + provision (claims ownership)
+	if _, err := reconcileGroup(ctx, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	gid := getGroup(t, ctx, key).Status.GroupID
+	if !fake.roleAssigned(gid, "client-uuid", "lg-owner") {
+		t.Fatalf("lg-owner should be assigned initially; calls = %v", fake.calls)
+	}
+
+	// Simulate a pre-upgrade controller's status: overwrite managedClientRoles with
+	// the legacy "<clientId>/<role>" encoding for the still-desired role.
+	got := getGroup(t, ctx, key)
+	got.Status.ManagedClientRoles = []string{"https://app.holos.internal/lg-owner"}
+	if err := shared.k8sClient.Status().Update(ctx, got); err != nil {
+		t.Fatalf("seed legacy status: %v", err)
+	}
+
+	// Reconcile again with the spec UNCHANGED. The legacy entry must canonicalize and
+	// match the desired role, so the role is not revoked.
+	if _, err := reconcileGroup(ctx, r, key); err != nil {
+		t.Fatalf("reconcile after legacy seed: %v", err)
+	}
+	if !fake.roleAssigned(gid, "client-uuid", "lg-owner") {
+		t.Errorf("still-desired lg-owner must NOT be revoked on upgrade; calls = %v", fake.calls)
+	}
+	if mcr := getGroup(t, ctx, key).Status.ManagedClientRoles; len(mcr) != 1 || mcr[0] != managedRoleKey("https://app.holos.internal", "lg-owner") {
+		t.Errorf("status.managedClientRoles = %v, want canonical [%q]", mcr, managedRoleKey("https://app.holos.internal", "lg-owner"))
+	}
+}
