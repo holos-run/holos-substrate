@@ -98,8 +98,8 @@ use. The manual
 [`.github/workflows/images.yaml`](.github/workflows/images.yaml) **Images**
 workflow (HOL-1334) publishes the multi-arch images from CI — `workflow_dispatch`
 only (never on push/PR/tag), with each image a **discrete job** (an `image`
-input selects `both`/`holos-paas`/`holos-controller`/`holos-authenticator`, where
-`both` builds all three and any single value builds only that one) sharing the
+input selects `all`/`holos-paas`/`holos-controller`/`holos-authenticator`, where
+`all` builds all three and any single value builds only that one) sharing the
 reusable
 [`build-image.yaml`](.github/workflows/build-image.yaml) workflow, gated behind a
 `publish-images` GitHub Environment, taking `ref`/`tag` inputs and pushing to

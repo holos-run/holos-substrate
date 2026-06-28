@@ -11,7 +11,7 @@ name: Images
 # Discrete per-image jobs. Each image is built by its own job that calls the
 # reusable build-image.yaml workflow. The `image` input selects which to run, so
 # you can publish holos-paas, holos-controller, or holos-authenticator
-# individually, or all of them with `both` — building one never forces another.
+# individually, or all of them with `all` — building one never forces another.
 # The shared build/publish/validation logic lives once in build-image.yaml.
 #
 # Security model (enforced in build-image.yaml, which is resolved from this same
@@ -44,10 +44,10 @@ on:
           Which image(s) to build and publish. Each image is a discrete job;
           select one to avoid building the other.
         required: true
-        default: both
+        default: all
         type: choice
         options:
-          - both
+          - all
           - holos-paas
           - holos-controller
           - holos-authenticator
@@ -89,7 +89,7 @@ permissions:
 
 jobs:
   holos-paas:
-    if: ${{ inputs.image == 'holos-paas' || inputs.image == 'both' }}
+    if: ${{ inputs.image == 'holos-paas' || inputs.image == 'all' }}
     uses: ./.github/workflows/build-image.yaml
     permissions:
       contents: read
@@ -104,7 +104,7 @@ jobs:
       registry: ${{ inputs.registry }}
 
   holos-controller:
-    if: ${{ inputs.image == 'holos-controller' || inputs.image == 'both' }}
+    if: ${{ inputs.image == 'holos-controller' || inputs.image == 'all' }}
     uses: ./.github/workflows/build-image.yaml
     permissions:
       contents: read
@@ -119,7 +119,7 @@ jobs:
       registry: ${{ inputs.registry }}
 
   holos-authenticator:
-    if: ${{ inputs.image == 'holos-authenticator' || inputs.image == 'both' }}
+    if: ${{ inputs.image == 'holos-authenticator' || inputs.image == 'all' }}
     uses: ./.github/workflows/build-image.yaml
     permissions:
       contents: read
