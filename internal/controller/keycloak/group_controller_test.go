@@ -457,7 +457,7 @@ func TestGroupClientRolePrune(t *testing.T) {
 	if !fake.roleAssigned(gid, "client-uuid", "rp-owner") {
 		t.Errorf("rp-owner should remain assigned")
 	}
-	if mcr := getGroup(t, ctx, key).Status.ManagedClientRoles; len(mcr) != 1 || mcr[0] != "https://app.holos.internal/rp-owner" {
+	if mcr := getGroup(t, ctx, key).Status.ManagedClientRoles; len(mcr) != 1 || mcr[0] != managedRoleKey("https://app.holos.internal", "rp-owner") {
 		t.Errorf("status.managedClientRoles = %v, want only the owner role", mcr)
 	}
 }
@@ -861,7 +861,7 @@ func TestGroupClientRolePartialFailureTracked(t *testing.T) {
 	got := getGroup(t, ctx, key)
 	found := false
 	for _, m := range got.Status.ManagedClientRoles {
-		if m == "https://app.holos.internal/pf-a" {
+		if m == managedRoleKey("https://app.holos.internal", "pf-a") {
 			found = true
 		}
 	}
@@ -1087,10 +1087,58 @@ func TestGroupConfersArbitraryRoleByClientID(t *testing.T) {
 	if !fake.roleAssigned("grp-1", "target-uuid", roleName) {
 		t.Errorf("verbatim role %q was not conferred on client %q; calls = %v", roleName, clientID, fake.calls)
 	}
-	// status.managedClientRoles records it keyed by the verbatim clientId/role.
-	want := clientID + "/" + roleName
-	if mcr := got.Status.ManagedClientRoles; len(mcr) != 1 || mcr[0] != want {
-		t.Errorf("status.managedClientRoles = %v, want [%q]", mcr, want)
+	// status.managedClientRoles records it keyed by the verbatim clientId/role
+	// (NUL-separated so an arbitrary role name round-trips unambiguously). Decoding
+	// the recorded entry must recover the verbatim clientId and role.
+	mcr := got.Status.ManagedClientRoles
+	if len(mcr) != 1 {
+		t.Fatalf("status.managedClientRoles = %v, want exactly one entry", mcr)
+	}
+	gotClientID, gotRole, ok := splitManagedRole(mcr[0])
+	if !ok || gotClientID != clientID || gotRole != roleName {
+		t.Errorf("decoded managedClientRoles[0] = (%q, %q, %v), want (%q, %q, true)", gotClientID, gotRole, ok, clientID, roleName)
 	}
 	assertEvent(t, recorder, ReasonCreated)
+}
+
+// TestManagedRoleKeyRoundTrip is a pure unit test (no envtest) of the
+// status.managedClientRoles encoding (HOL-1421 review round 1): the transparent
+// reconciler allows arbitrary role names, so the encoding must round-trip a role or
+// clientId containing slashes unambiguously, and must still decode the legacy
+// "<clientId>/<role>" form written before the fix. A mis-decode resolves the wrong
+// role on prune/release and leaks a stale Keycloak role mapping.
+func TestManagedRoleKeyRoundTrip(t *testing.T) {
+	cases := []struct {
+		name     string
+		clientID string
+		role     string
+	}{
+		{"plain", "https://app.holos.internal", "owner"},
+		{"slash in role", "https://app.holos.internal", "team/owner"},
+		{"slash in role and url client", "https://quay.holos.internal", "a/b/c"},
+		{"bare client id", "realm-management", "manage/users"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			key := managedRoleKey(tc.clientID, tc.role)
+			gotClient, gotRole, ok := splitManagedRole(key)
+			if !ok || gotClient != tc.clientID || gotRole != tc.role {
+				t.Errorf("round-trip = (%q, %q, %v), want (%q, %q, true)", gotClient, gotRole, ok, tc.clientID, tc.role)
+			}
+		})
+	}
+
+	// Legacy "<clientId>/<role>" entries (slash-free role names, as the removed
+	// guard required) must still decode via the LastIndex fallback.
+	gotClient, gotRole, ok := splitManagedRole("https://quay.holos.internal/my-project-owner")
+	if !ok || gotClient != "https://quay.holos.internal" || gotRole != "my-project-owner" {
+		t.Errorf("legacy decode = (%q, %q, %v), want (https://quay.holos.internal, my-project-owner, true)", gotClient, gotRole, ok)
+	}
+
+	// Malformed keys are rejected.
+	for _, bad := range []string{"", "noseparator", "\x00role", "client\x00"} {
+		if _, _, ok := splitManagedRole(bad); ok {
+			t.Errorf("splitManagedRole(%q) = ok, want false", bad)
+		}
+	}
 }

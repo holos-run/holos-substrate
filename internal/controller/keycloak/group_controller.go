@@ -446,7 +446,7 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 		if err != nil {
 			return fmt.Errorf("getting client role %q on Keycloak client %q: %w", ref.Role, clientID, err)
 		}
-		key := clientID + "/" + ref.Role
+		key := managedRoleKey(clientID, ref.Role)
 		desired[key] = roleTarget{clientUUID: oidc.ID, role: *role}
 		desiredKeys = append(desiredKeys, key)
 	}
@@ -473,7 +473,8 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 	}
 
 	// Prune roles this CR previously managed but that are no longer desired. Each
-	// stale entry is "<clientId>/<role>"; resolve the client and remove the role.
+	// stale entry encodes "<clientId>\x00<role>" (or a legacy "<clientId>/<role>");
+	// resolve the client and remove the role.
 	for _, prev := range managed.sorted() {
 		if _, ok := desired[prev]; ok {
 			continue
@@ -513,10 +514,36 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 	return nil
 }
 
-// splitManagedRole splits a "<clientId>/<role>" managed-role key back into its
-// clientId and role. clientIds are URLs containing slashes, so it splits on the
-// LAST slash (the role name carries none). It reports false for a malformed key.
+// managedRoleSep separates the clientId and role in a status.managedClientRoles
+// entry. It is a NUL byte, which cannot appear in a Keycloak OIDC clientId or
+// client-role name, so the encoding round-trips unambiguously even when the role
+// name (now fully general per HOL-1421) or the clientId (a URL) contains slashes.
+// The earlier "<clientId>/<role>" encoding split on the LAST slash, which mis-split
+// a role name containing a slash — resolving the wrong role on prune/release and
+// leaving a stale Keycloak role mapping. splitManagedRole still accepts that legacy
+// form for entries written before this fix (which, under the now-removed
+// <project>-<leaf> exact-match guard, could only have had slash-free role names, so
+// LastIndex was unambiguous for them).
+const managedRoleSep = "\x00"
+
+// managedRoleKey encodes a (clientId, role) pair into a status.managedClientRoles
+// entry using the unambiguous NUL separator.
+func managedRoleKey(clientID, role string) string {
+	return clientID + managedRoleSep + role
+}
+
+// splitManagedRole splits a managed-role key back into its clientId and role. It
+// prefers the unambiguous NUL-separated encoding managedRoleKey writes; for a
+// legacy "<clientId>/<role>" entry (no NUL) it falls back to splitting on the LAST
+// slash, which is unambiguous for the slash-free role names the legacy guard
+// permitted. It reports false for a malformed key.
 func splitManagedRole(key string) (clientID, role string, ok bool) {
+	if idx := strings.IndexByte(key, 0); idx >= 0 {
+		if idx == 0 || idx == len(key)-1 {
+			return "", "", false
+		}
+		return key[:idx], key[idx+1:], true
+	}
 	idx := strings.LastIndex(key, "/")
 	if idx <= 0 || idx == len(key)-1 {
 		return "", "", false
