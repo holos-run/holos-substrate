@@ -41,7 +41,7 @@ func newTestAuthenticator(t *testing.T, claims map[string]any, usernameClaim str
 	if err != nil {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
-	return NewAuthenticator(&fakeVerifier{claims: claims}, mapper, usernameClaim)
+	return NewAuthenticator(&fakeVerifier{claims: claims}, mapper, usernameClaim, "")
 }
 
 // newFailingAuthenticator builds an Authenticator whose verifier always fails,
@@ -52,7 +52,7 @@ func newFailingAuthenticator(t *testing.T) *Authenticator {
 	if err != nil {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
-	return NewAuthenticator(&fakeVerifier{err: fmt.Errorf("token expired")}, mapper, "sub")
+	return NewAuthenticator(&fakeVerifier{err: fmt.Errorf("token expired")}, mapper, "sub", "")
 }
 
 // secretReader returns a non-caching client.Reader backed by the given objects,

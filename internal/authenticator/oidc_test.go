@@ -1007,7 +1007,7 @@ func TestAuthenticatorDefaultGroups(t *testing.T) {
 		"sub":    "alice",
 		"groups": []any{"dev", "ops"},
 	}}
-	auth := NewAuthenticator(verifier, mapper, "sub")
+	auth := NewAuthenticator(verifier, mapper, "sub", "")
 
 	id, err := auth.Authenticate(context.Background(), "raw-token")
 	if err != nil {
@@ -1032,7 +1032,7 @@ func TestAuthenticatorCustomUsernameClaim(t *testing.T) {
 		"email":  "alice@example.com",
 		"groups": []any{"dev"},
 	}}
-	auth := NewAuthenticator(verifier, mapper, "email")
+	auth := NewAuthenticator(verifier, mapper, "email", "")
 
 	id, err := auth.Authenticate(context.Background(), "raw-token")
 	if err != nil {
@@ -1040,6 +1040,109 @@ func TestAuthenticatorCustomUsernameClaim(t *testing.T) {
 	}
 	if id.Username != "alice@example.com" {
 		t.Errorf("username = %q, want alice@example.com", id.Username)
+	}
+}
+
+// TestAuthenticatorUsernamePrefix asserts the configured username prefix is
+// prepended to the username read from the username claim — the equivalent of the
+// apiserver --oidc-username-prefix=oidc: flag. It is applied independently of the
+// groups prefix and regardless of which username claim is configured.
+func TestAuthenticatorUsernamePrefix(t *testing.T) {
+	tests := []struct {
+		name          string
+		usernameClaim string
+		prefix        string
+		claims        map[string]any
+		want          string
+	}{
+		{
+			name:          "no prefix prepends nothing",
+			usernameClaim: "sub",
+			prefix:        "",
+			claims:        map[string]any{"sub": "alice"},
+			want:          "alice",
+		},
+		{
+			name:          "oidc prefix is prepended",
+			usernameClaim: "sub",
+			prefix:        "oidc:",
+			claims:        map[string]any{"sub": "alice"},
+			want:          "oidc:alice",
+		},
+		{
+			name:          "prefix applies to a custom username claim",
+			usernameClaim: "email",
+			prefix:        "oidc:",
+			claims:        map[string]any{"email": "alice@example.com"},
+			want:          "oidc:alice@example.com",
+		},
+		{
+			name:          "prefix isolates a built-in system: username",
+			usernameClaim: "sub",
+			prefix:        "oidc:",
+			claims:        map[string]any{"sub": "system:admin"},
+			want:          "oidc:system:admin",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mapper, err := NewGroupMapper(DefaultGroupExpression("groups", ""))
+			if err != nil {
+				t.Fatalf("NewGroupMapper: %v", err)
+			}
+			auth := NewAuthenticator(&fakeVerifier{claims: tc.claims}, mapper, tc.usernameClaim, tc.prefix)
+
+			id, err := auth.Authenticate(context.Background(), "raw-token")
+			if err != nil {
+				t.Fatalf("Authenticate: %v", err)
+			}
+			if id.Username != tc.want {
+				t.Errorf("username = %q, want %q", id.Username, tc.want)
+			}
+		})
+	}
+}
+
+// TestAuthenticatorUsernameAndGroupsPrefixIndependent asserts the username prefix
+// and the groups prefix are independent: each is applied on its own path, so a
+// Backend may set one without the other.
+func TestAuthenticatorUsernameAndGroupsPrefixIndependent(t *testing.T) {
+	// Username prefixed, groups unprefixed.
+	mapper, err := NewGroupMapper(DefaultGroupExpression("groups", ""))
+	if err != nil {
+		t.Fatalf("NewGroupMapper: %v", err)
+	}
+	verifier := &fakeVerifier{claims: map[string]any{
+		"sub":    "alice",
+		"groups": []any{"dev", "ops"},
+	}}
+	auth := NewAuthenticator(verifier, mapper, "sub", "oidc:")
+	id, err := auth.Authenticate(context.Background(), "raw-token")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if id.Username != "oidc:alice" {
+		t.Errorf("username = %q, want oidc:alice", id.Username)
+	}
+	if want := []string{"dev", "ops"}; !equalStringSlice(id.Groups, want) {
+		t.Errorf("groups = %v, want %v (groups must not inherit the username prefix)", id.Groups, want)
+	}
+
+	// Groups prefixed, username unprefixed.
+	prefixedMapper, err := NewGroupMapper(DefaultGroupExpression("groups", "oidc:"))
+	if err != nil {
+		t.Fatalf("NewGroupMapper: %v", err)
+	}
+	auth = NewAuthenticator(verifier, prefixedMapper, "sub", "")
+	id, err = auth.Authenticate(context.Background(), "raw-token")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if id.Username != "alice" {
+		t.Errorf("username = %q, want alice (username must not inherit the groups prefix)", id.Username)
+	}
+	if want := []string{"oidc:dev", "oidc:ops"}; !equalStringSlice(id.Groups, want) {
+		t.Errorf("groups = %v, want %v", id.Groups, want)
 	}
 }
 
@@ -1051,7 +1154,7 @@ func TestAuthenticatorMissingUsernameClaim(t *testing.T) {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
 	verifier := &fakeVerifier{claims: map[string]any{"groups": []any{"dev"}}}
-	auth := NewAuthenticator(verifier, mapper, "sub")
+	auth := NewAuthenticator(verifier, mapper, "sub", "")
 
 	if _, err := auth.Authenticate(context.Background(), "raw-token"); err == nil {
 		t.Fatalf("Authenticate with missing username claim = nil error, want rejection")
@@ -1066,7 +1169,7 @@ func TestAuthenticatorMissingGroupsClaimIsEmpty(t *testing.T) {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
 	verifier := &fakeVerifier{claims: map[string]any{"sub": "alice"}}
-	auth := NewAuthenticator(verifier, mapper, "sub")
+	auth := NewAuthenticator(verifier, mapper, "sub", "")
 
 	id, err := auth.Authenticate(context.Background(), "raw-token")
 	if err != nil {
@@ -1085,7 +1188,7 @@ func TestAuthenticatorVerifyError(t *testing.T) {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
 	verifier := &fakeVerifier{err: context.DeadlineExceeded}
-	auth := NewAuthenticator(verifier, mapper, "sub")
+	auth := NewAuthenticator(verifier, mapper, "sub", "")
 
 	if _, err := auth.Authenticate(context.Background(), "raw-token"); err == nil {
 		t.Fatalf("Authenticate with a verifier error = nil error, want propagation")

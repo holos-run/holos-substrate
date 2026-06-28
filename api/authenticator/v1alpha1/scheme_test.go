@@ -47,13 +47,14 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 				CABundle: []byte("-----BEGIN CERTIFICATE-----\nserver\n-----END CERTIFICATE-----\n"),
 			},
 			OIDC: OIDCConfig{
-				IssuerURL:     "https://keycloak.holos.internal/realms/holos",
-				ClientID:      "holos-authenticator",
-				CABundle:      []byte("-----BEGIN CERTIFICATE-----\noidc\n-----END CERTIFICATE-----\n"),
-				JWKS:          []byte(`{"keys":[{"kty":"RSA","kid":"k1"}]}`),
-				UsernameClaim: "sub",
-				GroupsClaim:   "groups",
-				GroupsPrefix:  "oidc:",
+				IssuerURL:      "https://keycloak.holos.internal/realms/holos",
+				ClientID:       "holos-authenticator",
+				CABundle:       []byte("-----BEGIN CERTIFICATE-----\noidc\n-----END CERTIFICATE-----\n"),
+				JWKS:           []byte(`{"keys":[{"kty":"RSA","kid":"k1"}]}`),
+				UsernameClaim:  "sub",
+				UsernamePrefix: "oidc:",
+				GroupsClaim:    "groups",
+				GroupsPrefix:   "oidc:",
 			},
 			GroupMapping:         GroupMapping{CELExpression: "claims.groups"},
 			CredentialsSecretRef: &SecretReference{Name: "custom-creds", Key: "token"},
@@ -95,6 +96,9 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 	}
 	if clone.Spec.OIDC.GroupsPrefix != "oidc:" {
 		t.Errorf("cloned OIDC.GroupsPrefix = %q, want oidc:", clone.Spec.OIDC.GroupsPrefix)
+	}
+	if clone.Spec.OIDC.UsernamePrefix != "oidc:" {
+		t.Errorf("cloned OIDC.UsernamePrefix = %q, want oidc:", clone.Spec.OIDC.UsernamePrefix)
 	}
 }
 
