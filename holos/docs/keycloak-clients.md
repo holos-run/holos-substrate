@@ -183,6 +183,24 @@ The realm-role and client-role mappers set `id.token.claim`,
 
 ## The role model
 
+> **Two distinct owners — and the controller reserves nothing.** Everything in
+> this section (the `platform-owner`/`platform-editor`/`platform-viewer` realm
+> roles, the `quay` client's `platform-admin`/`project-admin` client roles, the
+> reserved-looking `platform-*` names) is **platform realm configuration owned by
+> the `keycloak-config-cli` Job** — it is the platform declaring its **own**
+> realm objects, not policy the controller enforces. The separate
+> **`keycloak.holos.run` controller** ([ADR-20](../../docs/adr/ADR-20.md)) that
+> reconciles tenant-facing `KeycloakClient`/`KeycloakGroup`/… CRs is
+> **transparent** (HOL-1421, ADR-20 Rev 7): it writes client IDs, group paths,
+> and role names **verbatim** and **reserves/refuses no name** — including
+> `platform-*`, `argocd`, `kargo`, or `https://quay.holos.internal`. The
+> `platform-*` names are reserved only by **convention**; if a cluster needs that
+> reservation enforced against hand-authored tenant CRs, it is now the job of
+> **admission control** (`ValidatingAdmissionPolicy` / `ValidatingAdmissionWebhook`
+> + policy CRs), a separate downstream effort — not the controller. The
+> declarative-client mechanics below (PKCE, the three mappers, the secret
+> bootstrap) are config-cli's and are unchanged.
+
 ### Realm roles
 
 Three platform realm roles are reconciled by the Job: `platform-owner`,

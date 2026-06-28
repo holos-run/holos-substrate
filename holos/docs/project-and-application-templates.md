@@ -104,14 +104,16 @@ control namespace.
 
 > **As-built deviation from ADR-21 Revision 3.** Revision 3 chose `prod-<name>`
 > (`#ProjectControlEnvironment`) as the control namespace. The as-built
-> components use **bare `<name>`** instead, because the Holos Controller's
-> `validateDirectClientRole` guard (HOL-1350) requires a role group's CR
-> namespace to **equal the bare project name** for the direct-`clientId`
-> Quay-client role grant the project's `syncedTeams` claim population depends on.
+> components use **bare `<name>`** instead — the same namespace the deleted
+> bespoke component used, kept for continuity and legibility. This placement was
+> originally also *required* by the Holos Controller's `validateDirectClientRole`
+> project↔namespace guard (HOL-1350), but **that guard was removed in HOL-1421
+> (ADR-20 Rev 7): the `keycloak.holos.run` controller is now transparent and no
+> longer requires a role group's CR namespace to equal the project name** — the
+> bare-`<name>` placement is now a convention, not a controller requirement.
 > `#ProjectControlEnvironment` is still defined and the `prod-<name>` env
 > namespace still carries the per-app validation annotation, but the CRs use bare
-> `<name>` — the same namespace the deleted bespoke component used. ADR-21
-> Revision 4 ratifies this.
+> `<name>`. ADR-21 Revision 4 ratifies this.
 
 The `ci-/qa-/prod-<name>` namespaces are derived (so the topology, RBAC
 boundaries, and Kargo adoption labels exist) but, in the current phase, the
@@ -153,11 +155,17 @@ Each role group confers its primitive role on **three** clients via
    the Project component iterates the project's apps and adds one `clientRoles[]`
    entry per app to each role group.
 
-The direct-`clientId` Quay grant is tightly guarded: the target must be the Quay
-client (an allowlist), the path must be a `projects/<name>/roles/<leaf>` group
-**whose `<name>` equals the CR's namespace** (the project↔namespace ownership
-boundary — RBAC governs who creates a CR in a namespace), and the role must be
-**exactly** `<name>-<leaf>`. See [ADR-20](../../docs/adr/ADR-20.md) and the
+The direct-`clientId` grant is **transparent** (HOL-1421, ADR-20 Rev 7): the
+controller resolves the named client, ensures the named role exists, and confers
+it **verbatim** for any client and any role name — it no longer restricts the
+target to a Quay-client allowlist, no longer requires the role group's `<name>`
+to equal the CR's namespace, and no longer enforces an exact `<name>-<leaf>`
+match or any reserved-name refusal. The Project component still emits only the
+conventional `<name>-<role>` names against the Quay client, so its rendered
+output is unchanged. Enforcing naming conventions, reserved prefixes, or
+tenant/platform disjointness is now the job of **admission control**
+(`ValidatingAdmissionPolicy` / `ValidatingAdmissionWebhook` + policy CRs), a
+separate downstream effort. See [ADR-20](../../docs/adr/ADR-20.md) and the
 *Project Delivery Scaffold* guardrail in [AGENTS.md](../../AGENTS.md).
 
 The cross-namespace reference each Keycloak CR makes to the central

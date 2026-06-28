@@ -142,8 +142,14 @@ components** (the per-phase revision rows track what landed).
 >    below that places the project-scoped control-plane CRs (the Quay
 >    `Organization`, the `keycloak.holos.run` CRs, the adopted Kargo `Project`
 >    namespace) in `prod-<name>`, or names the Kargo `Project` `prod-<name>`, is
->    superseded: they land in the **bare `<name>`** namespace (the
->    `validateDirectClientRole` guard, HOL-1350 — see *Consequences*).
+>    superseded: they land in the **bare `<name>`** namespace (originally driven by
+>    the `validateDirectClientRole` guard, HOL-1350 — see *Consequences*).
+>    **Update (HOL-1421, [ADR-20](ADR-20.md) Rev 7):** that
+>    `validateDirectClientRole` project↔namespace guard has since been **removed** —
+>    the `keycloak.holos.run` controller is now transparent and no longer requires
+>    the CR namespace to equal the project name. Every mention of the guard in the
+>    prose below is therefore **historical**; bare `<name>` is now a **convention**
+>    (also what the deleted bespoke component used), not a controller requirement.
 > 2. **The editor Quay team is `role: creator` + `repositoryPermission: write`**,
 >    not `member` + `write`. The worked-example YAML and prose below that say
 >    `member`/`write` for editor are superseded by the rendered
