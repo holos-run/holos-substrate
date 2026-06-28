@@ -157,8 +157,8 @@ gh workflow run images.yaml -f ref=v0.1.0 -f tag=v0.1.0
 
 Inputs:
 
-- `image` (required, default `both`) — which image(s) to build: `both`,
-  `holos-paas`, `holos-controller`, or `holos-authenticator` (`both` builds all
+- `image` (required, default `all`) — which image(s) to build: `all`,
+  `holos-paas`, `holos-controller`, or `holos-authenticator` (`all` builds all
   three). Each runs as its own job; select one to skip building the others.
 - `ref` (required, default `main`) — the Git reference to build: a commit SHA,
   a branch (`main` or `refs/heads/main`), or a tag (`v0.1.0` or
