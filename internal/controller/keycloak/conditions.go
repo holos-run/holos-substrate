@@ -63,10 +63,10 @@ const (
 )
 
 // Condition reasons. They re-export the shared reason vocabulary the API package
-// declares, plus the controller-only reasons (Reserved) the reconcilers need but
-// the API surface does not. Reasons are stable, CamelCase machine-readable tokens
-// (metav1.Condition requires this) describing why a condition holds its current
-// status.
+// declares, plus the controller-only reasons (Released, InstanceNotReady) the
+// reconcilers need but the API surface does not. Reasons are stable, CamelCase
+// machine-readable tokens (metav1.Condition requires this) describing why a
+// condition holds its current status.
 const (
 	// ReasonCreated marks the Keycloak object as newly created by this resource.
 	ReasonCreated = keycloakv1alpha1.ReasonCreated
@@ -89,11 +89,6 @@ const (
 	// ReasonReconciled marks a resource as in steady state — its Keycloak object
 	// reflects the spec.
 	ReasonReconciled = keycloakv1alpha1.ReasonReconciled
-	// ReasonReserved marks a condition False because the spec targets a
-	// platform-reserved Keycloak name the controller refuses to manage (ADR-20,
-	// e.g. authenticated or a platform-* group). It is a controller-layer guard
-	// with no API-package counterpart.
-	ReasonReserved = "Reserved"
 	// ReasonReleased marks an adopted or out-of-band-replaced Keycloak group
 	// released on CR removal (the finalizer dropped without deleting) — adoption
 	// and the recreate-at-same-path race are both non-destructive. It is a
@@ -143,17 +138,6 @@ func markNotReady(conditions *[]metav1.Condition, reason, message string, observ
 	p := setCondition(conditions, ConditionProgrammed, string(metav1.ConditionFalse), reason, message, observedGeneration)
 	r := setCondition(conditions, ConditionReady, string(metav1.ConditionFalse), reason, message, observedGeneration)
 	return p || r
-}
-
-// markRejected sets Accepted, Programmed, and Ready all False with the given
-// reason and message. It is the terminal-rejection path: the spec itself is not
-// acceptable (a reserved name, a denied cross-namespace reference), so even
-// Accepted is False. It returns true when any of the three conditions changed.
-func markRejected(conditions *[]metav1.Condition, reason, message string, observedGeneration int64) bool {
-	a := setCondition(conditions, ConditionAccepted, string(metav1.ConditionFalse), reason, message, observedGeneration)
-	p := setCondition(conditions, ConditionProgrammed, string(metav1.ConditionFalse), reason, message, observedGeneration)
-	r := setCondition(conditions, ConditionReady, string(metav1.ConditionFalse), reason, message, observedGeneration)
-	return a || p || r
 }
 
 // setConflict marks Programmed and Ready False with reason Conflict. It returns
