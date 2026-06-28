@@ -594,8 +594,9 @@ func clientRefDescription(ref keycloakv1alpha1.ClientRoleReference) string {
 // ref.ClientRef names a same-namespace KeycloakClient CR whose spec.clientId is
 // the target, so the reference stays a valid Kubernetes object name even though
 // the Keycloak clientId is a URL. The CRD CEL rule guarantees exactly one of the
-// two is set. Either path may name any client and confer any role name — the
-// controller reserves nothing (HOL-1421).
+// two is set. The controller reserves no client ID or role name (HOL-1421); the
+// conferral mechanics still differ by path (see conferClientRoles: the direct
+// clientId path ensures the role exists, the clientRef path resolves it get-only).
 func (r *GroupReconciler) resolveClientID(ctx context.Context, namespace string, ref keycloakv1alpha1.ClientRoleReference) (string, error) {
 	if ref.ClientID != "" {
 		return ref.ClientID, nil
