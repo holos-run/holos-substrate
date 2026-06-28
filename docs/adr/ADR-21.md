@@ -974,8 +974,10 @@ admin.)
    design record when first written; the Project and Application components are now
    shipped and the bespoke `my-project` component is deleted. The one as-built
    deviation from Revision 3 — the control-plane CRs land in the **bare `<name>`**
-   control namespace rather than `prod-<name>`, forced by the controller's
-   `validateDirectClientRole` guard (HOL-1350) — is ratified in Revision 4. The
+   control namespace rather than `prod-<name>`, originally forced by the controller's
+   `validateDirectClientRole` guard (HOL-1350; that guard was **removed in HOL-1421**,
+   [ADR-20](ADR-20.md) Rev 7, so bare `<name>` is now a convention) — is ratified in
+   Revision 4. The
    deferred follow-ons (the `ci→qa→prod` promotion chain + progressive delivery,
    the external-secrets store/controller prerequisite, and a self-service
    `ProjectRequest` API) are recorded as known gaps in
@@ -1025,17 +1027,24 @@ admin.)
   claim values populate `syncedTeams` membership. Because the claim value is carried
   by a client role on the **Quay client**, this required **no Quay-side change** — the
   existing `quay-client-roles` mapper already emits it. The role→Quay-client grant
-  uses the direct-`clientId` path, gated by the controller's `validateDirectClientRole`
-  guard (the project↔namespace ownership boundary — see the control-namespace
-  consequence below).
+  uses the direct-`clientId` path. *(Historical: this was originally gated by the
+  controller's `validateDirectClientRole` guard — the project↔namespace ownership
+  boundary. That guard was **removed in HOL-1421 ([ADR-20](ADR-20.md) Rev 7)**; the
+  controller is now transparent and the grant is conferred verbatim. See the
+  control-namespace consequence below and the note at the top of the Revision 4
+  section.)*
 - **The control-plane CRs land in the bare `<name>` namespace, not `prod-<name>`
   (Revision 4 ratification).** Revision 3 chose `prod-<name>` (`#ProjectControlEnvironment`)
   as the control namespace. The as-built components place the project-scoped CRs (the
   Quay `Organization`, the `keycloak.holos.run` groups/user/client, the adopted Kargo
-  `Project` namespace) in the **bare `<name>`** namespace instead, because the
-  controller's `validateDirectClientRole` guard (HOL-1350) requires a role group's CR
-  namespace to **equal the bare project name** for the direct-`clientId` Quay-client
-  role grant. `#ProjectControlEnvironment` is still defined and the `prod-<name>` env
+  `Project` namespace) in the **bare `<name>`** namespace instead. This was
+  originally *required* by the controller's `validateDirectClientRole` guard
+  (HOL-1350), which made a role group's CR namespace **equal the bare project name**
+  for the direct-`clientId` Quay-client role grant. *(Historical: that guard was
+  **removed in HOL-1421 ([ADR-20](ADR-20.md) Rev 7)** — the controller is now
+  transparent and no longer requires the namespace to equal the project name; bare
+  `<name>` is now a **convention**, also exactly what the deleted bespoke component
+  used.)* `#ProjectControlEnvironment` is still defined and the `prod-<name>` env
   namespace still carries the per-app validation annotation, but the CRs use bare
   `<name>` — also exactly what the deleted bespoke component used. The
   `ci-/qa-/prod-<name>` env namespaces are derived (topology, RBAC boundaries, Kargo
