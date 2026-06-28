@@ -56,9 +56,9 @@ let CONTROLLER_CREDS_SECRET = "holos-controller-keycloak-creds"
 // PROJECT_NAMESPACES are the project namespaces the ReferenceGrant authorizes to
 // reference this instance.  Derived from the `projects` collection (HOL-1355):
 // each project's bare <name> CONTROL namespace — where the Project component
-// places its keycloak.holos.run CRs (the bare-<name> control-namespace resolution
-// forced by the controller's validateDirectClientRole guard; see
-// holos/components/project/buildplan.cue).  As of HOL-1357 the derivation covers
+// places its keycloak.holos.run CRs (the bare-<name> control-namespace
+// convention; see holos/components/project/buildplan.cue.  HOL-1421 removed the
+// controller guard that formerly forced it).  As of HOL-1357 the derivation covers
 // EVERY project including my-project (the bespoke component and its static literal
 // were removed; my-project is now a registered project), so the grant authorizes
 // the bare my-project namespace exactly as the static literal did before.  Each

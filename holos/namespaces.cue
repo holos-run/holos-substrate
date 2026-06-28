@@ -390,14 +390,15 @@ namespaces: {
 	// The Project component (HOL-1355) places a project's control-plane CRs (the
 	// keycloak.holos.run role/custodian groups + owner user + client, the Quay
 	// Organization, and the cluster-scoped Kargo Project's adopted namespace) in a
-	// namespace named EXACTLY the bare project name.  This is forced by the
-	// as-built controller guard validateDirectClientRole (HOL-1350): a role group
-	// may confer <name>-<role> on the platform Quay client directly only when its
-	// CR namespace equals the bare project name <name> — the Quay claim-population
-	// the Project's syncedTeams depend on.  This DEVIATES from ADR-21 Revision 3's
-	// prod-<name> control-namespace pick (recorded as a Deferred AC on HOL-1355,
-	// to be ratified in ADR-21 by HOL-1358); the bare-<name> control namespace is
-	// also exactly what the bespoke my-project component uses today.
+	// namespace named EXACTLY the bare project name.  This is a CONVENTION (kept for
+	// continuity and legibility — a project's control CRs in the namespace named for
+	// the project): it was originally forced by the as-built controller guard
+	// validateDirectClientRole (HOL-1350), but that guard was REMOVED in HOL-1421
+	// (ADR-20 Rev 7 — the keycloak.holos.run controller is now transparent and no
+	// longer requires the CR namespace to equal the project name).  This DEVIATES
+	// from ADR-21 Revision 3's prod-<name> control-namespace pick (ratified as bare
+	// <name> in ADR-21 Revision 4, HOL-1358); the bare-<name> control namespace is
+	// also exactly what the deleted bespoke my-project component used.
 	//
 	// As of HOL-1357 this comprehension derives a bare control namespace for EVERY
 	// registered project, including my-project: the bespoke component and the

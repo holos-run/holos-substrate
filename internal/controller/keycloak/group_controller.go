@@ -589,12 +589,13 @@ func clientRefDescription(ref keycloakv1alpha1.ClientRoleReference) string {
 
 // resolveClientID resolves a ClientRoleReference to the underlying Keycloak
 // clientId (ADR-20, ClientRoleReference). When ref.ClientID is set it names the
-// Keycloak clientId directly (the "Quay use case" — conferring a project-prefixed
-// role on the platform-reserved Quay client, for which no same-namespace
-// KeycloakClient CR exists). Otherwise ref.ClientRef names a same-namespace
-// KeycloakClient CR whose spec.clientId is the target, so the reference stays a
-// valid Kubernetes object name even though the Keycloak clientId is a URL. The CRD
-// CEL rule guarantees exactly one of the two is set.
+// Keycloak clientId directly (e.g. conferring a role on a client that has no
+// same-namespace KeycloakClient CR, such as the platform Quay client). Otherwise
+// ref.ClientRef names a same-namespace KeycloakClient CR whose spec.clientId is
+// the target, so the reference stays a valid Kubernetes object name even though
+// the Keycloak clientId is a URL. The CRD CEL rule guarantees exactly one of the
+// two is set. Either path may name any client and confer any role name — the
+// controller reserves nothing (HOL-1421).
 func (r *GroupReconciler) resolveClientID(ctx context.Context, namespace string, ref keycloakv1alpha1.ClientRoleReference) (string, error) {
 	if ref.ClientID != "" {
 		return ref.ClientID, nil

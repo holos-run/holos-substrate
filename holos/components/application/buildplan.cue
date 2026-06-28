@@ -35,13 +35,10 @@ import (
 //   - The role-group → app-client-role binding uses the KeycloakGroup
 //     clientRoles[].clientRef path (a SAME-NAMESPACE KeycloakClient resolution;
 //     internal/controller/keycloak/group_controller.go).  The project's role
-//     KeycloakGroups live in the bare <project> namespace (the
-//     validateDirectClientRole guard forces it for their Quay direct-clientId
-//     path — see the project component's control-namespace resolution), so the
-//     app's KeycloakClient MUST live in that same <project> namespace for the
-//     clientRef to resolve.  (The clientRef path is NOT subject to
-//     validateDirectClientRole; same-namespace resolution is its only
-//     constraint.)
+//     KeycloakGroups live in the bare <project> control namespace (a convention —
+//     see the project component's control-namespace resolution; HOL-1421 removed
+//     the controller guard that formerly forced it), so the app's KeycloakClient
+//     MUST live in that same <project> namespace for the clientRef to resolve.
 //   - The Project component's Argo CD Application destination is the bare
 //     <project> control namespace, and the project namespace doubles as the
 //     workload namespace (the my-project topology HOL-1355 generalizes).  So the
