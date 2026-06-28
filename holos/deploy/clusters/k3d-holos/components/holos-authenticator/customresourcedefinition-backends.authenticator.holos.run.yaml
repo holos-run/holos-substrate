@@ -152,6 +152,63 @@ spec:
                       value. Required.
                     minLength: 1
                     type: string
+                  extra:
+                    description: |-
+                      Extra maps token claims to Kubernetes Impersonate-Extra-<key> impersonation
+                      headers, carrying additional claims (e.g. email, a tenant/org id) so downstream
+                      authorizers and audit tooling can key off them. Each entry names the extra key
+                      (the suffix of the emitted Impersonate-Extra-<key> header) and the claim to read
+                      its value from. It is opt-in: an omitted or empty Extra emits no extra headers.
+                      An entry whose ValueClaim is absent (or JSON null) on a given token is skipped
+                      for that request (the extra is optional context, like a missing groups claim);
+                      an entry whose claim is present as a string is emitted verbatim (including an
+                      empty string); an entry whose claim is present but not a string denies the
+                      request fail-closed (a misconfiguration pointing at a list/object/number
+                      claim). Each entry's value is a single string in this phase — multi-valued
+                      extras are a deferred follow-up.
+
+                      The list is a map keyed by Key (listType=map / listMapKey=key), so the API
+                      server rejects duplicate keys at admission. Key must additionally be a
+                      canonical extra key — a lowercase HTTP header field-name token with no '%' (the
+                      reconciler validates it and rejects the spec, Accepted=False, otherwise) —
+                      because it is emitted verbatim as the Impersonate-Extra-<key> header suffix and
+                      the API server derives the extra-map key from that suffix by lowercasing and
+                      percent-unescaping it. Requiring the key be already-canonical keeps the
+                      case-sensitive listMapKey uniqueness aligned with the API server's lowercased
+                      keys and avoids a '%' decoding into a different key.
+                    items:
+                      description: |-
+                        ExtraMapping maps a single token claim to a Kubernetes Impersonate-Extra-<key>
+                        impersonation header value: the authorizer reads the claim named by ValueClaim
+                        from the validated token and emits it as the Impersonate-Extra-<Key> header.
+                      properties:
+                        key:
+                          description: |-
+                            Key is the extra key — the suffix of the emitted Impersonate-Extra-<key>
+                            impersonation header (e.g. "email" yields Impersonate-Extra-email). It must be
+                            a canonical extra key: a lowercase HTTP header field-name token (RFC 7230) with
+                            no '%'. The reconciler rejects a Key with other characters (uppercase or '%'
+                            included) so the emitted header round-trips to the same extra key after the API
+                            server lowercases and percent-unescapes the suffix. Keys are unique within a
+                            Backend (enforced by the listMapKey on Extra). Required.
+                          minLength: 1
+                          type: string
+                        valueClaim:
+                          description: |-
+                            ValueClaim is the token claim the extra value is read from. A token missing
+                            this claim (or carrying it as JSON null) skips the entry (no header emitted); a
+                            present string is emitted verbatim, including an empty string; a
+                            present-but-non-string claim denies the request fail-closed. Required.
+                          minLength: 1
+                          type: string
+                      required:
+                      - key
+                      - valueClaim
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - key
+                    x-kubernetes-list-type: map
                   groupsClaim:
                     default: groups
                     description: |-
@@ -205,6 +262,22 @@ spec:
                       shared CABundle convention in common_types.go. oidc.caBundle is unused when
                       JWKS is set (there is no HTTP fetch to establish trust for).
                     format: byte
+                    type: string
+                  uidClaim:
+                    description: |-
+                      UIDClaim is the token claim the authorizer reads a stable, non-reassignable
+                      user identifier from and emits as the Kubernetes Impersonate-Uid header. It is
+                      opt-in: there is no default, so an omitted UIDClaim emits no Impersonate-Uid
+                      header at all (the backward-compatible behavior). The recommended value is
+                      "sub" — a claim guaranteed stable across username changes — so audit logs and
+                      any UID-based policy can distinguish a renamed or recycled username from the
+                      original principal, while UsernameClaim carries a human-friendly identity
+                      (e.g. preferred_username or email). When set, the claim MUST be present and a
+                      non-empty string on every token or the request is denied fail-closed: a stable
+                      UID the operator asked for must not be silently dropped for some principals.
+                      MinLength=1 rejects an explicit empty string, which would otherwise be an
+                      ambiguous no-op; omit the field to emit no UID.
+                    minLength: 1
                     type: string
                   usernameClaim:
                     default: sub

@@ -41,7 +41,7 @@ func newTestAuthenticator(t *testing.T, claims map[string]any, usernameClaim str
 	if err != nil {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
-	return NewAuthenticator(&fakeVerifier{claims: claims}, mapper, usernameClaim, "")
+	return NewAuthenticator(&fakeVerifier{claims: claims}, mapper, usernameClaim, "", "", nil)
 }
 
 // newFailingAuthenticator builds an Authenticator whose verifier always fails,
@@ -52,7 +52,7 @@ func newFailingAuthenticator(t *testing.T) *Authenticator {
 	if err != nil {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
-	return NewAuthenticator(&fakeVerifier{err: fmt.Errorf("token expired")}, mapper, "sub", "")
+	return NewAuthenticator(&fakeVerifier{err: fmt.Errorf("token expired")}, mapper, "sub", "", "", nil)
 }
 
 // secretReader returns a non-caching client.Reader backed by the given objects,
@@ -226,6 +226,47 @@ func TestCheckAllowNoGroups(t *testing.T) {
 	assertHeaderOptions(t, resp.GetOkResponse().GetHeaders(), want)
 }
 
+// TestCheckAllowSetsUIDAndExtraHeaders is the end-to-end happy path for the UID and
+// extra mappings (HOL-1419): a backend configured with a UID claim and an extra
+// mapping returns Impersonate-Uid and Impersonate-Extra-<key> alongside the username,
+// groups, and impersonator Authorization. The username is read from email, the UID
+// from sub (a stable identifier), and the extra carries email.
+func TestCheckAllowSetsUIDAndExtraHeaders(t *testing.T) {
+	const host = "api.example.com"
+	mapper, err := NewGroupMapper(DefaultGroupExpression("groups", ""))
+	if err != nil {
+		t.Fatalf("NewGroupMapper: %v", err)
+	}
+	claims := map[string]any{
+		"sub":    "uid-123",
+		"email":  "alice@example.com",
+		"groups": []any{"dev"},
+	}
+	auth := NewAuthenticator(&fakeVerifier{claims: claims}, mapper, "email", "", "sub",
+		[]authenticatorv1alpha1.ExtraMapping{{Key: "email", ValueClaim: "email"}})
+
+	store := NewStore()
+	store.Set(testNamespace+"/backend", &Entry{
+		Host:                 host,
+		Authenticator:        auth,
+		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
+	})
+	reader := secretReader(t, credentialSecret("creds", "impersonator-token"))
+	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.Discard()))
+
+	resp := mustCheck(t, client, checkRequest(host, map[string]string{"authorization": "Bearer caller-token"}))
+	if got, want := codes.Code(resp.GetStatus().GetCode()), codes.OK; got != want {
+		t.Fatalf("status code = %v, want %v", got, want)
+	}
+	assertHeaderOptions(t, resp.GetOkResponse().GetHeaders(), []*corev3.HeaderValueOption{
+		overwriteHeader(headerImpersonateUser, "alice@example.com"),
+		overwriteHeader(headerImpersonateUID, "uid-123"),
+		overwriteHeader(defaultGroupsHeader, "dev"),
+		overwriteHeader(headerImpersonateExtraPrefix+"email", "alice@example.com"),
+		overwriteHeader(headerAuthorization, "Bearer impersonator-token"),
+	})
+}
+
 // TestOkResponseGroupsHeaderIsCommaJoinedOverwrite pins the HOL-1416 fix: the
 // mapped groups are emitted as a SINGLE comma-joined value under the configured
 // groups header, with the OVERWRITE (set) action and no append bool — never as
@@ -265,6 +306,87 @@ func TestOkResponseGroupsHeaderDefaultName(t *testing.T) {
 		overwriteHeader("x-impersonate-groups", "dev"),
 		overwriteHeader(headerAuthorization, "Bearer tok"),
 	})
+}
+
+// TestOkResponseSetsUIDAndExtraHeaders asserts the OK response sets Impersonate-Uid
+// (when a UID is resolved) and one Impersonate-Extra-<key> header per extra mapping,
+// both single-valued overwrite/set headers like Impersonate-User. The full
+// header-option slice is asserted in order: user, uid, groups, the extra headers in
+// lexical key order, then Authorization.
+func TestOkResponseSetsUIDAndExtraHeaders(t *testing.T) {
+	s := &CheckServer{log: logr.Discard()}
+	resp := s.okResponse(&Identity{
+		Username: "alice@example.com",
+		UID:      "uid-123",
+		Groups:   []string{"dev", "ops"},
+		// Deliberately out of lexical order to prove the emission is sorted.
+		Extra: map[string]string{"tenant": "acme", "email": "alice@example.com"},
+	}, "tok")
+
+	assertHeaderOptions(t, resp.GetOkResponse().GetHeaders(), []*corev3.HeaderValueOption{
+		overwriteHeader(headerImpersonateUser, "alice@example.com"),
+		overwriteHeader(headerImpersonateUID, "uid-123"),
+		overwriteHeader(defaultGroupsHeader, "dev,ops"),
+		overwriteHeader(headerImpersonateExtraPrefix+"email", "alice@example.com"),
+		overwriteHeader(headerImpersonateExtraPrefix+"tenant", "acme"),
+		overwriteHeader(headerAuthorization, "Bearer tok"),
+	})
+
+	// The UID header uses the overwrite/set action (no append bool) so Envoy adds it
+	// unconditionally, exactly like Impersonate-User — single-valued, no Lua split.
+	uid := resp.GetOkResponse().GetHeaders()[1]
+	if got, want := uid.GetAppendAction(), corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD; got != want {
+		t.Errorf("uid header append action = %v, want %v", got, want)
+	}
+	if got := uid.GetAppend().GetValue(); got != false { //nolint:staticcheck // SA1019: ext_authz reads the deprecated append bool
+		t.Errorf("uid header append bool = %v, want false (set, not append)", got)
+	}
+}
+
+// TestOkResponseOmitsUIDAndExtraWhenUnset asserts a backend with no UID claim and no
+// extra mappings emits neither Impersonate-Uid nor any Impersonate-Extra-* header —
+// the backward-compatible default (only user, groups, Authorization).
+func TestOkResponseOmitsUIDAndExtraWhenUnset(t *testing.T) {
+	s := &CheckServer{log: logr.Discard()}
+	resp := s.okResponse(&Identity{Username: "alice", Groups: []string{"dev"}}, "tok")
+	assertHeaderOptions(t, resp.GetOkResponse().GetHeaders(), []*corev3.HeaderValueOption{
+		overwriteHeader(headerImpersonateUser, "alice"),
+		overwriteHeader(defaultGroupsHeader, "dev"),
+		overwriteHeader(headerAuthorization, "Bearer tok"),
+	})
+}
+
+// TestValidateExtraKey asserts the extra-key validation the reconciler uses: a
+// canonical (lowercase, no '%') HTTP header token passes, and an empty key, an
+// uppercase key, a key containing '%', or one with non-token characters (space,
+// slash, colon) is rejected — so the emitted Impersonate-Extra-<key> header
+// round-trips to the same extra key after the API server lowercases and
+// percent-unescapes the suffix (and the case-sensitive listMapKey uniqueness stays
+// aligned with the API server's lowercased keys).
+func TestValidateExtraKey(t *testing.T) {
+	valid := []string{"email", "example.com-email", "tenant_id", "scopes.v1"}
+	for _, in := range valid {
+		t.Run("valid/"+in, func(t *testing.T) {
+			if err := ValidateExtraKey(in); err != nil {
+				t.Errorf("ValidateExtraKey(%q) returned error: %v", in, err)
+			}
+		})
+	}
+	invalid := map[string]string{
+		"empty":     "",
+		"uppercase": "Email",       // API server lowercases — would not round-trip
+		"percent":   "tenant%2fid", // API server percent-unescapes — would decode to a different key
+		"space":     "ex ample",
+		"slash":     "example.com/email",
+		"colon":     "ex:ample",
+	}
+	for name, in := range invalid {
+		t.Run("invalid/"+name, func(t *testing.T) {
+			if err := ValidateExtraKey(in); err == nil {
+				t.Errorf("ValidateExtraKey(%q) = nil, want an error", in)
+			}
+		})
+	}
 }
 
 // TestValidateGroupsHeader asserts the --impersonate-groups-header validation

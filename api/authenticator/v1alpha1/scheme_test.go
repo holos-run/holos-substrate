@@ -55,6 +55,11 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 				UsernamePrefix: "oidc:",
 				GroupsClaim:    "groups",
 				GroupsPrefix:   "oidc:",
+				UIDClaim:       "sub",
+				Extra: []ExtraMapping{
+					{Key: "email", ValueClaim: "email"},
+					{Key: "tenant", ValueClaim: "tenant_id"},
+				},
 			},
 			GroupMapping:         GroupMapping{CELExpression: "claims.groups"},
 			CredentialsSecretRef: &SecretReference{Name: "custom-creds", Key: "token"},
@@ -99,6 +104,20 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 	}
 	if clone.Spec.OIDC.UsernamePrefix != "oidc:" {
 		t.Errorf("cloned OIDC.UsernamePrefix = %q, want oidc:", clone.Spec.OIDC.UsernamePrefix)
+	}
+	if clone.Spec.OIDC.UIDClaim != "sub" {
+		t.Errorf("cloned OIDC.UIDClaim = %q, want sub", clone.Spec.OIDC.UIDClaim)
+	}
+	// The Extra slice must be cloned independently of the original's backing array.
+	if len(clone.Spec.OIDC.Extra) != 2 {
+		t.Fatalf("cloned OIDC.Extra len = %d, want 2", len(clone.Spec.OIDC.Extra))
+	}
+	if &clone.Spec.OIDC.Extra[0] == &backend.Spec.OIDC.Extra[0] {
+		t.Error("DeepCopy did not clone the OIDC.Extra slice")
+	}
+	clone.Spec.OIDC.Extra[0].Key = "mutated"
+	if backend.Spec.OIDC.Extra[0].Key == "mutated" {
+		t.Error("mutating the clone's OIDC.Extra changed the original (shared backing array)")
 	}
 }
 

@@ -19,6 +19,7 @@
 | 7        | 2026-06-27 | @jeffmccune | Group encoding fix (HOL-1416) — groups emitted as a single comma-joined **overwrite/set** header (configurable, default `X-Impersonate-Groups`), not per-group append options Envoy silently drops; paired reject + split Lua filters (below) |
 | 8        | 2026-06-27 | @jeffmccune | Smuggling-prevention ownership + Lua filter ordering (HOL-1417) — smuggling prevention is the authenticator's responsibility (no `EnvoyFilter` required; the reject filter is optional defense in depth); the split filter is ordered after ext_authz with the version-stable `filterClass: AUTHZ`, on a gateway as on a waypoint (below) |
 | 9        | 2026-06-27 | @jeffmccune | Username-prefix extension (HOL-1418) — additive `spec.oidc.usernamePrefix` for the impersonated username, the apiserver `--oidc-username-prefix=oidc:` equivalent, paired by convention with `groupsPrefix` (below) |
+| 10       | 2026-06-27 | @jeffmccune | UID + extra-fields extension (HOL-1419) — additive `spec.oidc.uidClaim` → `Impersonate-Uid` and `spec.oidc.extra[]` → `Impersonate-Extra-<key>`, both single-valued overwrite headers (no Lua split), completing the four impersonation dimensions (below) |
 
 ## As-built (Revision 2)
 
@@ -381,6 +382,59 @@ Kubernetes user `oidc:alice` instead of `alice`.
 The operator procedure (the recommended `oidc:` value, the `system:`-user
 rationale, and the pairing convention) is in the [runbook's *OIDC token
 validation + CEL group
+mapping*](../runbooks/holos-authenticator.md#oidc-token-validation--cel-group-mapping)
+section.
+
+## UID and extra-fields extension (Revision 10)
+
+Revision 10 (HOL-1419) completes the four Kubernetes impersonation dimensions.
+The `Backend` already mapped claims to the impersonated **username**
+(`oidc.usernameClaim` / `usernamePrefix`) and **groups** (`oidc.groupsClaim` /
+`groupsPrefix`, or `groupMapping.celExpression`); Revision 10 adds the remaining
+two — the **UID** (`Impersonate-Uid`) and **extra fields**
+(`Impersonate-Extra-<key>`) — via two additive `spec.oidc` fields:
+
+- **`spec.oidc.uidClaim` → `Impersonate-Uid`.** An optional claim name (no
+  default — omitting it emits no UID, byte-for-byte backward compatible). The
+  recommended value is `sub`: a stable, non-reassignable identifier the apiserver's
+  own structured authentication config encourages as the UID, so audit logs and any
+  UID-based policy can distinguish a renamed or recycled username from the original
+  principal while `usernameClaim` carries a human-friendly identity (e.g.
+  `preferred_username` / `email`). When configured the claim **must** resolve to a
+  non-empty string on every token — a missing, empty, or non-string UID claim
+  **denies the request fail-closed** rather than silently impersonating without the
+  stable UID the operator asked for.
+- **`spec.oidc.extra[]` → `Impersonate-Extra-<key>`.** An optional list of
+  `{key, valueClaim}` entries, each emitting the value of `valueClaim` as an
+  `Impersonate-Extra-<key>` header. It is a CRD **`listType=map` keyed by `key`**,
+  so the API server rejects duplicate keys at admission; each `key` must also be a
+  **canonical** extra key — a lowercase HTTP header field-name token with no `%`
+  (the reconciler validates it and rejects the spec `Accepted=False` otherwise,
+  mirroring the `--impersonate-groups-header` guard). It is emitted verbatim as the
+  header suffix, and the API server derives the extra-map key from that suffix by
+  **lowercasing and percent-unescaping** it; requiring the key be already canonical
+  keeps the case-sensitive `listMapKey` uniqueness aligned with the API server's
+  lowercased keys and stops a `%` from decoding into a different key. An entry whose
+  claim is **absent** (or null) on a given token is **skipped** (the extra is
+  optional context, like a missing groups claim); a **present string** is emitted
+  verbatim (including an empty value); an entry whose claim is **present but not a
+  string** **denies fail-closed** (a misconfiguration pointing at a
+  list/object/number claim). Each extra is **single-valued** in this phase;
+  multi-valued extras are a deferred follow-up.
+- **Single-valued → direct overwrite headers, no Lua split.** Both `Impersonate-Uid`
+  and each `Impersonate-Extra-<key>` are single values, so they are emitted directly
+  under their `Impersonate-*` names with the **overwrite/set** action — exactly like
+  `Impersonate-User`. The comma-join + Lua split the multi-valued **groups** header
+  requires (Revision 7, HOL-1416, to survive Envoy's ext_authz append-drop) does
+  **not** apply: a single overwrite header is added unconditionally by Envoy
+  (`setCopy`). No new Lua filter or `--impersonate-groups-header`-style flag is
+  introduced. The existing inbound-smuggling guard already rejects any client-supplied
+  `Impersonate-*` header (the `impersonate-` prefix covers `Impersonate-Uid` and
+  `Impersonate-Extra-*`), so the only such headers the upstream sees are the
+  authorizer's derived ones.
+
+The operator field reference and a paired example are in the [runbook's *OIDC
+token validation + CEL group
 mapping*](../runbooks/holos-authenticator.md#oidc-token-validation--cel-group-mapping)
 section.
 

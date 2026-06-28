@@ -126,6 +126,19 @@ func (r *BackendReconciler) reconcileNormal(ctx context.Context, logger logr.Log
 			fmt.Sprintf("invalid spec.server.url: %v", err))
 	}
 
+	// Validate the extra-mapping keys: each is emitted verbatim as the suffix of an
+	// Impersonate-Extra-<key> header, so it must be a valid HTTP header token. A bad
+	// key is an invalid spec (Accepted=False) — like a malformed CEL expression or a
+	// bad URL — fixed only by editing the spec, so reject without requeue. Key
+	// uniqueness is already enforced by the CRD's listMapKey.
+	for _, m := range backend.Spec.OIDC.Extra {
+		if err := authenticator.ValidateExtraKey(m.Key); err != nil {
+			r.Store.DeleteByKey(key)
+			return r.reject(ctx, backend, ReasonInvalidSpec,
+				fmt.Sprintf("invalid spec.oidc.extra key: %v", err))
+		}
+	}
+
 	// The spec parsed and the CEL expression compiled: the resource is Accepted
 	// (Gateway-API "the spec was understood"). Set it before discovery so a backend
 	// whose discovery then fails still reports Accepted=True — discovery is a
@@ -186,7 +199,7 @@ func (r *BackendReconciler) reconcileNormal(ctx context.Context, logger logr.Log
 	saRef := normalizeServiceAccountRef(backend.Spec.ServiceAccountRef)
 	entry := &authenticator.Entry{
 		Host:                 backend.Spec.Host,
-		Authenticator:        authenticator.NewAuthenticator(verifier, mapper, backend.Spec.OIDC.UsernameClaim, backend.Spec.OIDC.UsernamePrefix),
+		Authenticator:        authenticator.NewAuthenticator(verifier, mapper, backend.Spec.OIDC.UsernameClaim, backend.Spec.OIDC.UsernamePrefix, backend.Spec.OIDC.UIDClaim, backend.Spec.OIDC.Extra),
 		UsernameClaim:        backend.Spec.OIDC.UsernameClaim,
 		ServerURL:            backend.Spec.Server.URL,
 		ServerCABundle:       backend.Spec.Server.CABundle,

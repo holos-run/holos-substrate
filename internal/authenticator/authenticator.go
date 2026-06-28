@@ -3,10 +3,13 @@ package authenticator
 import (
 	"context"
 	"fmt"
+
+	authenticatorv1alpha1 "github.com/holos-run/holos-paas/api/authenticator/v1alpha1"
 )
 
 // Identity is the resolved Kubernetes identity for a validated token: the
-// username the proxy impersonates and the groups it impersonates alongside it.
+// username the proxy impersonates, the groups it impersonates alongside it, and
+// the optional UID and extra fields it carries.
 type Identity struct {
 	// Username is the Kubernetes username, read from the configured username claim
 	// (spec.oidc.usernameClaim, default "sub") and prefixed with the configured
@@ -16,6 +19,15 @@ type Identity struct {
 	// compiled group-mapping CEL expression over the validated claims. It may be
 	// empty (the user is in no extra groups).
 	Groups []string
+	// UID is the Kubernetes user UID, read from the configured UID claim
+	// (spec.oidc.uidClaim) when one is set. Empty when no UID claim is configured;
+	// the server emits an Impersonate-Uid header only for a non-empty UID.
+	UID string
+	// Extra maps each configured extra key (spec.oidc.extra[].key) to the single
+	// string value read from its claim, which the server emits as an
+	// Impersonate-Extra-<key> header. It is nil/empty when no extra mappings are
+	// configured or none of their claims were present on the token.
+	Extra map[string]string
 }
 
 // Authenticator validates an OIDC bearer token for a single Backend and resolves
@@ -35,14 +47,21 @@ type Authenticator struct {
 	// usernamePrefix is prepended to the username read from usernameClaim before it
 	// is impersonated. Empty prepends nothing (the backward-compatible default).
 	usernamePrefix string
+	// uidClaim is the token claim the UID is read from (spec.oidc.uidClaim). Empty
+	// disables UID impersonation (no Impersonate-Uid header).
+	uidClaim string
+	// extra is the set of claim→extra-key mappings (spec.oidc.extra) the
+	// authenticator resolves into Identity.Extra. Nil/empty emits no extra headers.
+	extra []authenticatorv1alpha1.ExtraMapping
 }
 
 // NewAuthenticator constructs an Authenticator from a verifier, a compiled group
-// mapper, the username claim, and the username prefix. usernameClaim defaults to
-// "sub" when empty, matching the OIDC convention and the Backend CRD default.
-// usernamePrefix is prepended to the resolved username; an empty prefix prepends
-// nothing.
-func NewAuthenticator(verifier TokenVerifier, mapper *GroupMapper, usernameClaim, usernamePrefix string) *Authenticator {
+// mapper, the username claim, the username prefix, the UID claim, and the extra
+// claim mappings. usernameClaim defaults to "sub" when empty, matching the OIDC
+// convention and the Backend CRD default. usernamePrefix is prepended to the
+// resolved username; an empty prefix prepends nothing. An empty uidClaim or nil
+// extra emits no UID / no extra headers (the backward-compatible default).
+func NewAuthenticator(verifier TokenVerifier, mapper *GroupMapper, usernameClaim, usernamePrefix, uidClaim string, extra []authenticatorv1alpha1.ExtraMapping) *Authenticator {
 	if usernameClaim == "" {
 		usernameClaim = "sub"
 	}
@@ -51,6 +70,8 @@ func NewAuthenticator(verifier TokenVerifier, mapper *GroupMapper, usernameClaim
 		mapper:         mapper,
 		usernameClaim:  usernameClaim,
 		usernamePrefix: usernamePrefix,
+		uidClaim:       uidClaim,
+		extra:          extra,
 	}
 }
 
@@ -80,7 +101,36 @@ func (a *Authenticator) Authenticate(ctx context.Context, rawToken string) (*Ide
 		return nil, fmt.Errorf("mapping token claims to groups: %w", err)
 	}
 
-	return &Identity{Username: a.usernamePrefix + username, Groups: groups}, nil
+	identity := &Identity{Username: a.usernamePrefix + username, Groups: groups}
+
+	// UID is opt-in. When a UID claim is configured it MUST resolve to a non-empty
+	// string: the operator asked for a stable UID (e.g. sub) for audit, so a token
+	// missing it is rejected rather than silently impersonated without one.
+	if a.uidClaim != "" {
+		uid, err := stringClaim(verified.Claims, a.uidClaim)
+		if err != nil {
+			return nil, fmt.Errorf("reading uid claim: %w", err)
+		}
+		identity.UID = uid
+	}
+
+	// Extra fields are optional context: a claim absent from this token is skipped,
+	// but a claim present as a non-string is a misconfiguration and fails closed.
+	for _, m := range a.extra {
+		value, ok, err := optionalStringClaim(verified.Claims, m.ValueClaim)
+		if err != nil {
+			return nil, fmt.Errorf("reading extra %q claim: %w", m.Key, err)
+		}
+		if !ok {
+			continue
+		}
+		if identity.Extra == nil {
+			identity.Extra = make(map[string]string, len(a.extra))
+		}
+		identity.Extra[m.Key] = value
+	}
+
+	return identity, nil
 }
 
 // stringClaim reads claim from claims as a non-empty string. A missing claim, a
@@ -99,4 +149,26 @@ func stringClaim(claims map[string]any, claim string) (string, error) {
 		return "", fmt.Errorf("token claim %q is empty", claim)
 	}
 	return s, nil
+}
+
+// optionalStringClaim reads claim from claims as a string for an optional mapping
+// (an impersonation extra). It distinguishes a claim that is absent from one that is
+// present: a token missing the claim — or carrying it as JSON null — returns
+// ("", false, nil) so the caller skips the entry (mirroring the "missing groups
+// claim → no groups" behavior), while a claim present as a string is returned with
+// ok=true and emitted verbatim, including an empty string. The absent-vs-present
+// distinction is the whole contract, so a present empty value is NOT silently
+// dropped — it is emitted as an empty extra value. A present non-string value (a
+// list, object, number, or bool) is an error so a misconfigured mapping pointing at
+// a non-string claim fails closed rather than emitting a malformed extra value.
+func optionalStringClaim(claims map[string]any, claim string) (string, bool, error) {
+	raw, ok := claims[claim]
+	if !ok || raw == nil {
+		return "", false, nil
+	}
+	s, ok := raw.(string)
+	if !ok {
+		return "", false, fmt.Errorf("token claim %q is not a string (got %T)", claim, raw)
+	}
+	return s, true, nil
 }

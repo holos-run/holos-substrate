@@ -233,6 +233,91 @@ func TestReconcileUsernamePrefixApplied(t *testing.T) {
 	}
 }
 
+// TestReconcileUIDAndExtraApplied asserts a Backend setting spec.oidc.uidClaim and
+// spec.oidc.extra becomes Ready and that its registered Store entry's Authenticator
+// resolves the UID and the extra value — proving the API fields are wired into the
+// runtime identity resolution (HOL-1419). The username is read from email, the UID
+// from the stable sub claim, and the extra carries email.
+func TestReconcileUIDAndExtraApplied(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	discover := func(context.Context, string, string, []byte) (authenticator.TokenVerifier, error) {
+		return claimsVerifier{claims: map[string]any{
+			"sub":    "uid-9",
+			"email":  "alice@example.com",
+			"groups": []any{"dev"},
+		}}, nil
+	}
+	r, store, _ := newReconciler(discover)
+
+	b := makeBackend(ns, "backend-uid-extra", "api-uid-extra.example.test")
+	b.Spec.OIDC.UsernameClaim = "email"
+	b.Spec.OIDC.UIDClaim = "sub"
+	b.Spec.OIDC.Extra = []authenticatorv1alpha1.ExtraMapping{{Key: "email", ValueClaim: "email"}}
+	key := createBackend(ctx, t, b)
+
+	if _, err := reconcile(ctx, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	got := getBackend(ctx, t, key)
+	if status := condStatus(got, ConditionReady); status != metav1.ConditionTrue {
+		t.Fatalf("Ready = %q, want True", status)
+	}
+
+	entry, ok := store.Get("api-uid-extra.example.test")
+	if !ok {
+		t.Fatalf("store missing entry for host api-uid-extra.example.test")
+	}
+	id, err := entry.Authenticator.Authenticate(ctx, "raw-token")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if id.Username != "alice@example.com" {
+		t.Errorf("username = %q, want alice@example.com", id.Username)
+	}
+	if id.UID != "uid-9" {
+		t.Errorf("uid = %q, want uid-9 (uidClaim not wired)", id.UID)
+	}
+	if got, want := id.Extra["email"], "alice@example.com"; got != want {
+		t.Errorf("extra[email] = %q, want %q (extra not wired)", got, want)
+	}
+}
+
+// TestReconcileInvalidExtraKeyRejects asserts a Backend whose spec.oidc.extra names
+// a key that is not a valid HTTP header token (it only satisfies the CRD MinLength)
+// is rejected as an invalid spec (Accepted/Ready=False, reason InvalidSpec), never
+// requeues with an error, and is not registered in the store.
+func TestReconcileInvalidExtraKeyRejects(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	r, store, _ := newReconciler(discoverOK)
+	b := makeBackend(ns, "backend-bad-extra", "api-bad-extra.example.test")
+	b.Spec.OIDC.Extra = []authenticatorv1alpha1.ExtraMapping{{Key: "example.com/email", ValueClaim: "email"}}
+	key := createBackend(ctx, t, b)
+
+	res, err := reconcile(ctx, r, key)
+	if err != nil {
+		t.Fatalf("reconcile returned error for an invalid extra key (should not requeue): %v", err)
+	}
+	if res.RequeueAfter != 0 {
+		t.Errorf("RequeueAfter = %v, want 0 for a terminal rejection", res.RequeueAfter)
+	}
+
+	got := getBackend(ctx, t, key)
+	if s := condStatus(got, ConditionAccepted); s != metav1.ConditionFalse {
+		t.Errorf("Accepted = %q, want False", s)
+	}
+	if reason := condReason(got, ConditionReady); reason != ReasonInvalidSpec {
+		t.Errorf("Ready reason = %q, want %q", reason, ReasonInvalidSpec)
+	}
+	if store.Len() != 0 {
+		t.Errorf("store has %d entries, want 0 for a rejected spec", store.Len())
+	}
+}
+
 // TestReconcileInvalidCELRejects asserts a malformed group-mapping CEL expression
 // rejects the spec (Accepted/Programmed/Ready=False, reason InvalidSpec), does not
 // requeue with an error, and leaves nothing in the store.
@@ -659,6 +744,45 @@ func TestBackendGroupsPrefixMutualExclusion(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestBackendExtraListMapKey asserts the CRD's listType=map / listMapKey=key on
+// spec.oidc.extra: the API server rejects two entries sharing the same key at
+// admission, and admits (and round-trips) a list of unique keys (HOL-1419).
+func TestBackendExtraListMapKey(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	// Duplicate keys are rejected by the API server (set-based list uniqueness).
+	dup := makeBackend(ns, "extra-dup", "api-extra-dup.example.test")
+	dup.Spec.OIDC.Extra = []authenticatorv1alpha1.ExtraMapping{
+		{Key: "email", ValueClaim: "email"},
+		{Key: "email", ValueClaim: "mail"},
+	}
+	if err := shared.k8sClient.Create(ctx, dup); err == nil {
+		_ = shared.k8sClient.Delete(context.Background(), dup)
+		t.Fatalf("Create accepted a Backend with duplicate spec.oidc.extra keys; want listMapKey rejection")
+	}
+
+	// Unique keys are admitted and round-trip through the API server.
+	uniq := makeBackend(ns, "extra-uniq", "api-extra-uniq.example.test")
+	uniq.Spec.OIDC.UIDClaim = "sub"
+	uniq.Spec.OIDC.Extra = []authenticatorv1alpha1.ExtraMapping{
+		{Key: "email", ValueClaim: "email"},
+		{Key: "tenant", ValueClaim: "tenant_id"},
+	}
+	if err := shared.k8sClient.Create(ctx, uniq); err != nil {
+		t.Fatalf("Create rejected a Backend with unique extra keys: %v", err)
+	}
+	t.Cleanup(func() { _ = shared.k8sClient.Delete(context.Background(), uniq) })
+
+	got := getBackend(ctx, t, client.ObjectKeyFromObject(uniq))
+	if got.Spec.OIDC.UIDClaim != "sub" {
+		t.Errorf("oidc.uidClaim = %q, want sub after round-trip", got.Spec.OIDC.UIDClaim)
+	}
+	if len(got.Spec.OIDC.Extra) != 2 {
+		t.Fatalf("oidc.extra len = %d, want 2 after round-trip", len(got.Spec.OIDC.Extra))
 	}
 }
 
