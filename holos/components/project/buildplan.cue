@@ -33,32 +33,25 @@ import (
 // (https://quay.holos.internal) DIRECTLY via clientRoles[].clientId — the
 // ADR-20 Rev 4 "Quay use case" (HOL-1350) that surfaces <name>-<role> in Quay's
 // groups claim (the already-deployed quay-client-roles mapper) so the
-// Organization's spec.syncedTeams[].oidcGroup MEMBERSHIP populates.  That direct
-// path is tightly guarded by the controller (validateDirectClientRole,
-// internal/controller/keycloak/group_controller.go): it is allowed ONLY when the
-// group path is projects/<project>/roles/<leaf>, the role is exactly
-// <project>-<leaf>, AND the KeycloakGroup CR's metadata.namespace EQUALS the bare
-// project name <project> (the project↔namespace ownership boundary — RBAC governs
-// who creates a CR in a namespace).
+// Organization's spec.syncedTeams[].oidcGroup MEMBERSHIP populates.  The
+// keycloak.holos.run controller is TRANSPARENT (HOL-1421, ADR-20 Rev 7): a
+// clientRoles[] entry may name any client by clientId and confer any role name —
+// the reconciler resolves the client, ensures the role exists, and confers it
+// verbatim, reserving/refusing nothing on org-policy grounds.  (Naming
+// conventions and tenant/platform disjointness now belong to admission control,
+// a downstream effort; this component emits only the conventional <name>-<role>
+// names, so behavior is unchanged.)
 //
-// That guard is IMMOVABLE here (changing it is controller scope, not this
-// component's) and it FORCES the project's keycloak.holos.run CRs — and, for a
-// single co-located control plane, all the project-scoped control CRs — into a
-// namespace named exactly <name> (the bare project name).  This DEVIATES from
-// ADR-21 Revision 3's recorded control-namespace pick of prod-<name>
-// (#ProjectControlEnvironment): that revision predates the as-built guard
-// (HOL-1350) and chose prod-<name> for namespace-economy reasons, but a
-// prod-<name>-namespaced role group fails validateDirectClientRole (project
-// segment <name> ≠ namespace prod-<name>), which would silently BREAK the Quay
-// claim population that AC #2/#3 require — the heart of the feature.  ADR-21
-// itself flagged the "un-prefixed <name> control namespace" as the considered
-// alternative; the controller guard settles the choice in its favor.  The bare
-// <name> control namespace is also exactly what the working bespoke my-project
-// component uses today (it lives in the bare my-project namespace), so this keeps
-// the generalized and bespoke components on the same topology until HOL-1357
-// migrates my-project onto this template.  ADR-21's revision to ratify this
-// (Status stays Proposed) is HOL-1358 (the docs/ADR finalization phase); a
-// Deferred Acceptance Criterion on this PR records it.
+// All the project-scoped control CRs land in a namespace named exactly <name>
+// (the bare project name).  This DEVIATES from ADR-21 Revision 3's recorded
+// control-namespace pick of prod-<name> (#ProjectControlEnvironment).  Bare
+// <name> was originally also forced by the controller's validateDirectClientRole
+// guard (HOL-1350, which required the CR namespace to equal the project name);
+// that guard was REMOVED in HOL-1421 (ADR-20 Rev 7), so bare <name> is now a
+// CONVENTION, not a controller requirement — kept for continuity and legibility
+// (a project's control CRs in the namespace named for the project), and exactly
+// what the deleted bespoke my-project component used.  ADR-21 Revision 4
+// (HOL-1358) ratifies the bare-<name> control namespace.
 //
 // Two registry/grant prerequisites follow from the bare-<name> control namespace
 // and are wired in this same change (each a small, collection-derived edit):
@@ -92,14 +85,14 @@ let ROLES = ["owner", "editor", "viewer"]
 
 // ENV_CONTROL is the project's single control namespace ENVIRONMENT-FREE name:
 // the bare project name <name> (see the control-namespace resolution above).
-// Distinct from #ProjectControlEnvironment ("prod") — the as-built controller
-// guard requires the bare name for the Quay-direct client-role path, so the
-// control CRs land in <name>, not prod-<name>.
+// Distinct from #ProjectControlEnvironment ("prod") — the control CRs land in the
+// bare <name> namespace by convention (HOL-1421 removed the controller guard that
+// formerly forced it), not prod-<name>.
 
-// QUAY_CLIENT_ID is the platform Quay client's reserved clientId (realm-config's
+// QUAY_CLIENT_ID is the platform Quay client's clientId (realm-config's
 // QUAY_CLIENT_ID).  The role groups confer <name>-<role> on it directly via
-// clientRoles[].clientId (no tenant KeycloakClient CR exists for the reserved
-// client; the reserved-name guard forbids one), the ADR-20 Rev 4 Quay use case.
+// clientRoles[].clientId (no tenant KeycloakClient CR exists for the platform
+// Quay client object, which stays config-cli's), the ADR-20 Rev 4 Quay use case.
 let QUAY_CLIENT_ID = "https://quay.holos.internal"
 
 // KEYCLOAK_NAMESPACE is the central KeycloakInstance's namespace; the project CRs
@@ -583,11 +576,10 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 	// TWO clients and delegates membership management to the same-tier custodian:
 	//
 	//   - the platform Quay client (clientId: https://quay.holos.internal) — the
-	//     ADR-20 Rev 4 Quay use case.  This direct-clientId path requires the CR's
-	//     namespace to equal the bare project name <name> and the role to be
-	//     exactly <name>-<role> (validateDirectClientRole); both hold because the
-	//     control namespace IS the bare <name> (the control-namespace resolution
-	//     in the file header).  Quay's quay-client-roles mapper then folds
+	//     ADR-20 Rev 4 Quay use case.  The controller confers the role verbatim
+	//     (HOL-1421 made it transparent — no namespace/exact-match guard); the
+	//     component emits the conventional <name>-<role> name in the bare <name>
+	//     control namespace.  Quay's quay-client-roles mapper then folds
 	//     <name>-<role> into Quay's groups claim, populating the Organization's
 	//     syncedTeams[].oidcGroup membership.
 	//   - the project's own client (clientRef: <name>), so the role also reaches
@@ -601,10 +593,9 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 	//     contributes nothing and the role group confers only the Quay + project
 	//     clients (the HOL-1355 zero-app behavior); each registered app adds its
 	//     own clientRef entry.  The clientRef path is a SAME-NAMESPACE KeycloakClient
-	//     resolution (NOT subject to validateDirectClientRole), which holds because
-	//     the Application component places each app's KeycloakClient in this same
-	//     bare <name> control namespace.  app.name (the leaf role) maps 1:1 to the
-	//     app's owner/editor/viewer client roles.
+	//     resolution, which holds because the Application component places each app's
+	//     KeycloakClient in this same bare <name> control namespace.  app.name (the
+	//     leaf role) maps 1:1 to the app's owner/editor/viewer client roles.
 	let KEYCLOAK_ROLE_GROUP_RESOURCES = {
 		for r in ROLES {
 			(r): {
