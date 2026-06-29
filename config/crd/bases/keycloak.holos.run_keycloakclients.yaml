@@ -171,6 +171,13 @@ spec:
                 - message: clientRoles on a KeycloakClient may not set clientId; a
                     client defines roles on itself (use clientRef naming this client)
                   rule: self.all(r, !has(r.clientId))
+              description:
+                description: |-
+                  Description is free text propagated to the Keycloak client's native
+                  Description attribute. When omitted the client's description converges to
+                  empty (the reconciler sends the spec value unconditionally on update, so a
+                  console-set description is corrected back to the spec on every reconcile).
+                type: string
               instanceRef:
                 description: |-
                   InstanceRef references the KeycloakInstance this client is provisioned in. A

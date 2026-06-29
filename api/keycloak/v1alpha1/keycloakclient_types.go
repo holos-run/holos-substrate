@@ -94,6 +94,14 @@ type KeycloakClientSpec struct {
 	// +listType=set
 	WebOrigins []string `json:"webOrigins,omitempty"`
 
+	// Description is free text propagated to the Keycloak client's native
+	// Description attribute. When omitted the client's description converges to
+	// empty (the reconciler sends the spec value unconditionally on update, so a
+	// console-set description is corrected back to the spec on every reconcile).
+	//
+	// +optional
+	Description string `json:"description,omitempty"`
+
 	// ClientRoles optionally lists the client roles defined on this client — the
 	// primitive owner/editor/viewer triad scoped to this one client. A role group
 	// (KeycloakGroup) assigns one of these, and the per-client

@@ -84,6 +84,120 @@ func TestClientReconcileCreatePublicWithRolesAndMapper(t *testing.T) {
 	assertEvent(t, recorder, ReasonCreated)
 }
 
+func TestClientReconcileDescriptionPropagatedOnCreate(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned (KUBEBUILDER_ASSETS unset); run via make controller-test")
+	}
+	ctx := context.Background()
+	const ns = "kc-client-desc-create"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	const want = "the my-project OIDC client"
+	kclient := &keycloakv1alpha1.KeycloakClient{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "desc-create"},
+		Spec: keycloakv1alpha1.KeycloakClientSpec{
+			ClientID:    "https://desc-create.holos.internal",
+			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Description: want,
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, kclient); err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	fake := newFakeKeycloakClient()
+	r, _ := newClientReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(kclient)
+	reconcileClientToSteady(t, ctx, r, key)
+
+	uuid := fake.clients["https://desc-create.holos.internal"]
+	if uuid == "" {
+		t.Fatalf("client was not created in Keycloak; calls = %v", fake.calls)
+	}
+	if got := fake.clientDescription(uuid); got != want {
+		t.Errorf("description = %q, want %q", got, want)
+	}
+}
+
+func TestClientReconcileDescriptionDriftCorrected(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-client-desc-drift"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	const want = "spec-owned description"
+	kclient := &keycloakv1alpha1.KeycloakClient{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "desc-drift"},
+		Spec: keycloakv1alpha1.KeycloakClientSpec{
+			ClientID:    "https://desc-drift.holos.internal",
+			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Description: want,
+			Adopt:       true,
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, kclient); err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	fake := newFakeKeycloakClient()
+	// Pre-existing client whose description was changed in the console (drift).
+	fake.seedClient("https://desc-drift.holos.internal", "drift-uuid")
+	fake.seedClientDescription("drift-uuid", "console-set drift")
+	r, _ := newClientReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(kclient)
+	reconcileClientToSteady(t, ctx, r, key)
+
+	if got := fake.clientDescription("drift-uuid"); got != want {
+		t.Errorf("description after reconcile = %q, want spec value %q (drift not corrected)", got, want)
+	}
+}
+
+func TestClientReconcileDescriptionClearedWhenOmitted(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-client-desc-clear"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	kclient := &keycloakv1alpha1.KeycloakClient{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "desc-clear"},
+		Spec: keycloakv1alpha1.KeycloakClientSpec{
+			ClientID:    "https://desc-clear.holos.internal",
+			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			// Description omitted.
+			Adopt: true,
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, kclient); err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	fake := newFakeKeycloakClient()
+	// Pre-existing client carrying a console-set description that the empty spec
+	// value must actively clear.
+	fake.seedClient("https://desc-clear.holos.internal", "clear-uuid")
+	fake.seedClientDescription("clear-uuid", "stale console description")
+	r, _ := newClientReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(kclient)
+	reconcileClientToSteady(t, ctx, r, key)
+
+	if got := fake.clientDescription("clear-uuid"); got != "" {
+		t.Errorf("description = %q, want empty (omitted spec must clear it)", got)
+	}
+}
+
 func TestClientReconcileAdoptExisting(t *testing.T) {
 	if shared == nil {
 		t.Skip("envtest not provisioned")
