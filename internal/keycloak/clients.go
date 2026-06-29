@@ -21,6 +21,11 @@ type RawClient map[string]any
 type ClientFields struct {
 	// Name, when non-nil, sets the client's display name.
 	Name *string
+	// Description, when non-nil, sets the client's free-text description. A
+	// pointer to the empty string actively clears it (writes an empty
+	// description), distinct from a nil Description, which leaves the existing
+	// description untouched.
+	Description *string
 	// Enabled, when non-nil, sets the enabled flag.
 	Enabled *bool
 	// PublicClient, when non-nil, sets public (true) vs confidential (false).
@@ -49,6 +54,9 @@ type ClientFields struct {
 func (f ClientFields) apply(raw RawClient) {
 	if f.Name != nil {
 		raw["name"] = *f.Name
+	}
+	if f.Description != nil {
+		raw["description"] = *f.Description
 	}
 	if f.Enabled != nil {
 		raw["enabled"] = *f.Enabled
@@ -97,6 +105,10 @@ type OIDCClient struct {
 	ClientID string `json:"clientId,omitempty"`
 	// Name is the client's display name.
 	Name string `json:"name,omitempty"`
+	// Description is the client's free-text description. omitempty so an unset
+	// description is not sent on create (Keycloak then defaults it to empty,
+	// the backward-compatible behavior). Distinct from ClientRole.Description.
+	Description string `json:"description,omitempty"`
 	// Enabled reports whether the client may be used. No omitempty: UpdateClient
 	// is a full PUT, so a desired false must be sent to disable a client rather
 	// than silently dropped.
