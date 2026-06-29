@@ -480,6 +480,104 @@ func TestCreateClientSendsPKCEAttribute(t *testing.T) {
 	}
 }
 
+func TestCreateClientSendsDescription(t *testing.T) {
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodPost, wantPath: clientsBase,
+		status:   http.StatusCreated,
+		location: "https://kc/admin/realms/holos/clients/uuid-desc",
+	}
+	c, _ := newTestClient(t, h)
+
+	_, err := c.CreateClient(context.Background(), OIDCClient{
+		ClientID:    "https://app",
+		Description: "the app client",
+	})
+	if err != nil {
+		t.Fatalf("CreateClient: %v", err)
+	}
+	if h.gotBody["description"] != "the app client" {
+		t.Errorf("body description = %v, want %q", h.gotBody["description"], "the app client")
+	}
+}
+
+func TestUpdateClientFieldsSetsDescription(t *testing.T) {
+	var putBody map[string]any
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + clientsBase + "/uuid-1": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"uuid-1","clientId":"https://app"}`)
+		},
+		"PUT " + clientsBase + "/uuid-1": func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			putBody = decodeJSONObject(t, body)
+			w.WriteHeader(http.StatusNoContent)
+		},
+	}}
+	c, _ := newTestClient(t, m)
+
+	desc := "managed description"
+	if err := c.UpdateClientFields(context.Background(), "uuid-1", ClientFields{Description: &desc}); err != nil {
+		t.Fatalf("UpdateClientFields: %v", err)
+	}
+	if putBody["description"] != "managed description" {
+		t.Errorf("description = %v, want %q", putBody["description"], "managed description")
+	}
+}
+
+func TestUpdateClientFieldsClearsDescription(t *testing.T) {
+	// A pointer to the empty string actively clears the description.
+	var putBody map[string]any
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + clientsBase + "/uuid-1": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"uuid-1","clientId":"https://app","description":"old"}`)
+		},
+		"PUT " + clientsBase + "/uuid-1": func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			putBody = decodeJSONObject(t, body)
+			w.WriteHeader(http.StatusNoContent)
+		},
+	}}
+	c, _ := newTestClient(t, m)
+
+	empty := ""
+	if err := c.UpdateClientFields(context.Background(), "uuid-1", ClientFields{Description: &empty}); err != nil {
+		t.Fatalf("UpdateClientFields: %v", err)
+	}
+	got, ok := putBody["description"]
+	if !ok {
+		t.Fatalf("description key absent; want it written to empty string to clear")
+	}
+	if got != "" {
+		t.Errorf("description = %v, want cleared to empty string", got)
+	}
+}
+
+func TestUpdateClientFieldsNilDescriptionLeavesItUntouched(t *testing.T) {
+	// A nil Description must not appear as an override; the fetched value stays.
+	var putBody map[string]any
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + clientsBase + "/uuid-1": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"uuid-1","clientId":"https://app","description":"keep me"}`)
+		},
+		"PUT " + clientsBase + "/uuid-1": func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			putBody = decodeJSONObject(t, body)
+			w.WriteHeader(http.StatusNoContent)
+		},
+	}}
+	c, _ := newTestClient(t, m)
+
+	newName := "App"
+	if err := c.UpdateClientFields(context.Background(), "uuid-1", ClientFields{Name: &newName}); err != nil {
+		t.Fatalf("UpdateClientFields: %v", err)
+	}
+	if putBody["description"] != "keep me" {
+		t.Errorf("description = %v, want the fetched %q preserved (nil leaves it untouched)", putBody["description"], "keep me")
+	}
+}
+
 func TestUpdateClientFieldsMergesPKCEAttribute(t *testing.T) {
 	var putBody map[string]any
 	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
