@@ -289,6 +289,7 @@ func (r *ClientReconciler) desiredClient(kclient *keycloakv1alpha1.KeycloakClien
 		PublicClient: public,
 		RedirectURIs: kclient.Spec.RedirectURIs,
 		WebOrigins:   kclient.Spec.WebOrigins,
+		Description:  kclient.Spec.Description,
 	}
 	if public {
 		c.Attributes = map[string]string{keycloak.PKCECodeChallengeMethodAttr: keycloak.PKCEMethodS256}
@@ -309,11 +310,13 @@ func (r *ClientReconciler) updateClient(ctx context.Context, kc ClientClient, kc
 	public := kclient.Spec.Type == keycloakv1alpha1.KeycloakClientTypePublic
 	redirects := append([]string(nil), kclient.Spec.RedirectURIs...)
 	origins := append([]string(nil), kclient.Spec.WebOrigins...)
+	desc := kclient.Spec.Description
 	fields := keycloak.ClientFields{
 		Enabled:      &enabled,
 		PublicClient: &public,
 		RedirectURIs: &redirects,
 		WebOrigins:   &origins,
+		Description:  &desc, // always send: corrects drift, clears when empty
 	}
 	if public {
 		fields.Attributes = map[string]string{keycloak.PKCECodeChallengeMethodAttr: keycloak.PKCEMethodS256}

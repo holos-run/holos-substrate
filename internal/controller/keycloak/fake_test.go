@@ -106,6 +106,11 @@ type fakeKeycloakClient struct {
 	// createdClientAttrs records, per clientId, the attributes map passed to
 	// CreateClient, so a test asserts the PKCE attribute was programmed on create.
 	createdClientAttrs map[string]map[string]string
+	// clientDescriptions records, per clientUUID, the client's current description:
+	// CreateClient seeds it from the create representation and UpdateClientFields
+	// overwrites it whenever a non-nil Description is sent, so a test asserts both
+	// the create value and drift correction on update.
+	clientDescriptions map[string]string
 
 	// createClientErr / updateClientErr, when non-nil, are returned by
 	// CreateClient / UpdateClientFields to simulate a Keycloak failure.
@@ -130,6 +135,7 @@ func newFakeKeycloakClient(existingGroups ...string) *fakeKeycloakClient {
 		clientSecrets:      map[string]string{},
 		createdClientAttrs: map[string]map[string]string{},
 		lastUpdateFields:   map[string]keycloak.ClientFields{},
+		clientDescriptions: map[string]string{},
 	}
 	for _, p := range existingGroups {
 		f.addGroup(p)
@@ -334,6 +340,14 @@ func (f *fakeKeycloakClient) seedClient(clientID, uuid string) {
 	f.clients[clientID] = uuid
 }
 
+// seedClientDescription sets a client's current description by UUID, modeling a
+// console-set (drifted) description on a pre-existing client.
+func (f *fakeKeycloakClient) seedClientDescription(clientUUID, description string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clientDescriptions[clientUUID] = description
+}
+
 // seedClientRole registers a client role (clientUUID/role → UUID) so GetClientRole
 // resolves it.
 func (f *fakeKeycloakClient) seedClientRole(clientUUID, role, uuid string) {
@@ -481,6 +495,7 @@ func (f *fakeKeycloakClient) CreateClient(ctx context.Context, client keycloak.O
 	f.nextGroupID++
 	id := "cli-" + strconv.Itoa(f.nextGroupID)
 	f.clients[client.ClientID] = id
+	f.clientDescriptions[id] = client.Description
 	if client.Attributes != nil {
 		attrs := map[string]string{}
 		for k, v := range client.Attributes {
@@ -496,6 +511,9 @@ func (f *fakeKeycloakClient) UpdateClientFields(ctx context.Context, clientUUID 
 	defer f.mu.Unlock()
 	f.record("UpdateClient:" + clientUUID)
 	f.lastUpdateFields[clientUUID] = fields
+	if fields.Description != nil {
+		f.clientDescriptions[clientUUID] = *fields.Description
+	}
 	return f.updateClientErr
 }
 
@@ -629,6 +647,13 @@ func (f *fakeKeycloakClient) mapperEnsured(clientUUID string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.roleMappers[clientUUID]
+}
+
+// clientDescription returns the current description recorded for the client UUID.
+func (f *fakeKeycloakClient) clientDescription(clientUUID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.clientDescriptions[clientUUID]
 }
 
 // createdClientPKCE returns the PKCE code-challenge attribute the client was
