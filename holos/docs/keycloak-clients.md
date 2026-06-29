@@ -200,6 +200,13 @@ The realm-role and client-role mappers set `id.token.claim`,
 > + policy CRs), a separate downstream effort — not the controller. The
 > declarative-client mechanics below (PKCE, the three mappers, the secret
 > bootstrap) are config-cli's and are unchanged.
+>
+> A tenant-facing `KeycloakClient` may also carry an optional
+> `spec.description` (HOL-1424, ADR-20 Rev 8) — free text the controller
+> propagates verbatim to the Keycloak client's native **Description** attribute.
+> The reconciler sends it unconditionally on update, so a console-set
+> description is corrected back to the spec value on every reconcile and omitting
+> the field converges the description to empty.
 
 ### Realm roles
 
