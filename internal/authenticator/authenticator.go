@@ -138,6 +138,14 @@ func (a *Authenticator) Authenticate(ctx context.Context, rawToken string) (*Ide
 	// delegated impersonation. It is resolved with the same semantics as extra but
 	// kept in a separate map on a disjoint key namespace (the reconciler enforces
 	// disjointness). The Check path consumes it in a later phase (HOL-1433).
+	//
+	// Resolving it here — including the present-non-string fail-closed error — is the
+	// prescribed plumbing (AC #4), and it does not change request-path behavior for
+	// any existing traffic: a.actorExtra is non-empty only for a Backend that opts
+	// into spec.impersonation.actorExtra, a field with no prior runtime effect, so no
+	// pre-existing Backend can newly fail here. The fail-closed contract is identical
+	// to the a.extra loop above (spec.oidc.extra), which likewise resolves and can
+	// reject on this same Authenticate path today; ActorExtra adds no new hazard class.
 	if identity.ActorExtra, err = resolveExtra(verified.Claims, a.actorExtra, "actorExtra"); err != nil {
 		return nil, err
 	}
