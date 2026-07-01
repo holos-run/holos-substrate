@@ -145,10 +145,13 @@ spec:
                   are pointers to distinguish omitted from set. A Backend that omits
                   spec.impersonation is byte-for-byte unchanged.
 
-                  Phase note (HOL-1431): this phase ships the API type and generated artifacts
-                  only; the reconciler and the authorizer Check path that consume
-                  spec.impersonation land in later phases (HOL-1432 and beyond). Setting it has
-                  no runtime effect until then.
+                  Status (HOL-1433): spec.impersonation is ACTIVE — the reconciler validates it
+                  (HOL-1432) and the authorizer Check path consumes it (HOL-1433). Setting a
+                  non-nil spec.impersonation changes request-path behavior: it authorizes
+                  delegated Impersonate-* passthrough for an actor on the Groups allowlist and
+                  emits the reserved ActorExtra headers (in delegated and self mode). It is no
+                  longer inert; treat it as the security-sensitive opt-in it is. Omitting it
+                  leaves the Backend byte-for-byte unchanged (self-impersonation only).
                 properties:
                   actorExtra:
                     description: |-
@@ -163,13 +166,17 @@ spec:
                       ActorExtra is a **reserved namespace**. Its values are always set
                       authoritatively by the authorizer from the validated actor token; they are
                       **never client-settable** — inbound Impersonate-Extra-<key> headers naming a
-                      reserved actor key are stripped and overwritten, never trusted. In delegated
-                      mode the target identity's own Impersonate-* headers pass through, but these
-                      actor extras are the **only Backend-derived impersonation headers that
-                      survive** the delegation: they record who actually performed the action
-                      (distinct from the impersonated target) so downstream authorizers and audit
-                      tooling can attribute a delegated request to its real actor. In self
-                      impersonation mode there is no separate actor, so ActorExtra is not emitted.
+                      reserved actor key are rejected fail-closed (the request is denied), never
+                      trusted, in BOTH modes. In delegated mode the target identity's own
+                      Impersonate-* headers pass through, and these actor extras are the **only
+                      Backend-derived impersonation headers that survive** the delegation: they
+                      record who actually performed the action (distinct from the impersonated
+                      target) so downstream authorizers and audit tooling can attribute a delegated
+                      request to its real actor. In self impersonation mode the actor IS the
+                      impersonated user, so ActorExtra is **also emitted** there (alongside the
+                      derived spec.oidc.extra) — the actor identity is always recorded regardless of
+                      mode (HOL-1433). Configuring ActorExtra on a Backend that never receives a
+                      delegated request thus adds these audit headers to every (self-mode) request.
 
                       ActorExtra keys MUST be disjoint from spec.oidc.extra keys: the two share the
                       single Impersonate-Extra-<key> header namespace on the upstream request, and

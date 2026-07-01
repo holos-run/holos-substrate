@@ -18,6 +18,28 @@
 // GRPCServer manager.Runnable runs Check on the manager's lifecycle and
 // leader-election context.
 //
+// Delegated impersonation (kubectl --as passthrough, HOL-1433): a Backend may opt
+// into delegated impersonation via spec.impersonation. When it does, an inbound
+// client Impersonate-* header is no longer always denied fail-closed — instead its
+// presence is the mode switch. A request carrying any Impersonate-* header (other
+// than the reserved actor-extra namespace, below) is served in DELEGATED mode: the
+// authorizer validates the caller (the ACTOR), checks that the actor's mapped
+// groups intersect spec.impersonation.groups, and — only if authorized — forwards
+// the actor-supplied Impersonate-User / groups / Impersonate-Uid / non-reserved
+// Impersonate-Extra-* verbatim to the upstream while stamping the actor's own
+// identity into reserved Impersonate-Extra-<actorKey> headers (spec.impersonation.actorExtra).
+// The actor-derived Impersonate-User/groups/Impersonate-Uid/spec.oidc.extra are NOT
+// emitted in delegated mode; only the actorExtra headers are. An unauthorized actor,
+// or a Backend with spec.impersonation nil, still denies any inbound Impersonate-*
+// fail-closed exactly as before. Absence of any inbound Impersonate-* keeps SELF
+// mode (the derived-identity OK response above), now additionally stamping the
+// actorExtra headers so the actor identity is always recorded. The reserved
+// actor-extra header namespace (Impersonate-Extra-<actorKey> for each configured
+// actorExtra key) is never client-settable: an inbound copy is rejected fail-closed
+// in BOTH modes so an actor cannot spoof their own actor-identity headers.
+// Impersonation-target authorization is delegated entirely to the impersonator SA's
+// RBAC on the upstream API server (there is no target allowlist here).
+//
 // The groups header is deliberately NOT Impersonate-Group: Envoy's ext_authz
 // path classifies an authorizer-returned header carrying the deprecated
 // append=true bool into headers_to_append, which Envoy applies with appendCopy
@@ -64,6 +86,13 @@ const (
 	// comma-join + Lua split helper is needed (that exists only for the multi-valued
 	// groups header the ext_authz append path would otherwise drop, HOL-1416).
 	headerImpersonateUID = "Impersonate-Uid"
+	// headerImpersonateGroup is the Kubernetes impersonation groups header. The
+	// authorizer never EMITS it directly (Envoy's ext_authz append path silently
+	// drops an appended Impersonate-Group, HOL-1416 — the groups are re-emitted via
+	// the comma-joined groups header + Lua split instead); it is used only to READ
+	// the actor-supplied inbound groups in delegated mode (splitInboundGroups), which
+	// arrive Envoy-comma-joined under the lowercased key.
+	headerImpersonateGroup = "Impersonate-Group"
 	// headerImpersonateExtraPrefix is the prefix of a Kubernetes impersonation extra
 	// header; the per-entry extra key is appended verbatim to form
 	// Impersonate-Extra-<key>. Each extra is single-valued in this phase, so each is
@@ -255,24 +284,50 @@ func isHeaderTokenChar(r rune) bool {
 }
 
 // Check implements envoy.service.auth.v3.Authorization. It executes the full
-// authorization flow:
+// authorization flow. Token validation precedes the impersonation-authz decision
+// because the delegated-impersonation allowlist is keyed on the actor's mapped
+// groups (identity.Groups), which are only known after the token is validated:
 //
 //  1. Resolve the Backend from the request :authority/Host; unknown host →
 //     Denied 403.
-//  2. Extract the bearer token from the Authorization header; missing → Denied
+//  2. Always-forbidden inbound guards (fail-closed, both modes): the configured
+//     groups header, and any RESERVED actor-extra header
+//     (Impersonate-Extra-<actorKey> for each spec.impersonation.actorExtra key) —
+//     these are never client-settable, so an inbound copy is Denied 403. A
+//     non-reserved inbound Impersonate-* header is NOT rejected here; it is the
+//     delegated-mode switch (step 7).
+//  3. Extract the bearer token from the Authorization header; missing → Denied
 //     401 with a WWW-Authenticate challenge.
-//  3. Validate the OIDC token and map groups via the backend's Authenticator;
-//     invalid → Denied 401.
-//  4. Resolve the backend's privileged impersonator credential (a minted
+//  4. Validate the OIDC token and map groups via the backend's Authenticator;
+//     invalid → Denied 401. This resolves the ACTOR identity (its groups gate the
+//     impersonation authz below, and its actorExtra is always stamped).
+//  5. Reject any derived group unsafe under the comma-joined groups encoding
+//     (self mode) → Denied 403.
+//  6. Resolve the backend's privileged impersonator credential (a minted
 //     ServiceAccount token or the credential Secret); resolution failure →
 //     Denied 403.
-//  5. Return OK setting Impersonate-User and a single comma-joined groups header
-//     (the configured groupsHeader, default X-Impersonate-Groups) via overwrite,
-//     paired with a Lua split filter that unpacks it into one Impersonate-Group
-//     line per group — see okResponse — with the impersonator token as the
-//     upstream Authorization, removing the caller's original Authorization. Groups
-//     unsafe under that comma-joined encoding (a comma or surrounding whitespace)
-//     are denied fail-closed before this step.
+//  7. Branch on whether the request carries a non-reserved inbound Impersonate-*
+//     header:
+//     - None → SELF mode: return OK setting the derived Impersonate-User, the
+//     single comma-joined groups header, the derived UID/spec.oidc.extra, and
+//     the actor-identity actorExtra headers, with the impersonator token as
+//     Authorization.
+//     - Present → DELEGATED mode: the request is authorized only when the
+//     Backend opts into impersonation (spec.impersonation non-nil) AND the
+//     actor's mapped groups intersect spec.impersonation.groups; otherwise
+//     Denied 403 (this preserves today's "inbound Impersonate-* denied" for a
+//     nil-impersonation Backend and for an unauthorized actor). An authorized
+//     request must also carry ONLY recognized Impersonate-* headers
+//     (User/Uid/Group/Extra-*) and a non-empty Impersonate-User target — an
+//     unrecognized header or a target-less (groups/extras-only) request is
+//     Denied 403, since either would otherwise emit an OK that swaps in the
+//     impersonator credential with no valid target (the impersonator SA acting
+//     as itself). When authorized, return OK forwarding the actor-supplied
+//     Impersonate-User/Impersonate-Uid/non-reserved Impersonate-Extra-* and the
+//     inbound groups (re-emitted via the groups header for the Lua split),
+//     stamping the actorExtra headers, with the impersonator token as
+//     Authorization; the actor-DERIVED Impersonate-User/groups/Uid/oidc.extra
+//     are NOT emitted.
 //
 // Every failure path — including any internal error — returns a Denied response,
 // never OK, so the authorizer fails closed. The gRPC error return is always nil:
@@ -298,41 +353,49 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (resp
 		return deniedResponse(typev3.StatusCode_Forbidden, "unknown host", nil), nil
 	}
 
-	// 2. Sanitize inbound impersonation headers (mandatory, ADR-23). The authorizer
-	// injects the backend's privileged credential downstream, so any client-supplied
-	// Impersonate-* header would otherwise be impersonated at that privilege — a
-	// confused-deputy / header-smuggling hole (e.g. a smuggled
-	// Impersonate-Group: system:masters). Because Envoy does not document a
-	// guaranteed apply order between the OkResponse's header sets and
-	// headers_to_remove, we fail closed and DENY any request carrying an
-	// Impersonate-* header rather than relying on a scrub the upstream might race —
-	// ADR-23: "denied rather than silently scrubbed if there is any doubt the
-	// upstream would see the client's version." The caller's own Authorization
-	// (their OIDC token) is expected and is overwritten in place below, so it is not
-	// part of this denial.
-	if name, ok := firstImpersonationHeader(http.GetHeaders()); ok {
-		s.log.V(1).Info("denying request carrying inbound impersonation header", "host", host, "header", name)
-		return deniedResponse(typev3.StatusCode_Forbidden, "inbound impersonation header not allowed", nil), nil
-	}
+	headers := http.GetHeaders()
 
-	// 2b. Reject an inbound copy of the configured groups header too (HOL-1416).
-	// The groups header (default X-Impersonate-Groups) is NOT Impersonate-* prefixed,
-	// so the prefix guard above does not cover it; but the Lua split filter turns its
-	// comma list into Impersonate-Group lines for the API server, so a client-supplied
-	// value carrying it (e.g. X-Impersonate-Groups: system:masters) would be smuggled
-	// the same way an Impersonate-Group would. The OK path overwrites the header on a
-	// request that maps to at least one group, but a request mapping to zero groups
-	// emits no groups header at all — leaving a smuggled value intact — so deny
-	// fail-closed up front rather than relying on the overwrite. This mirrors the
-	// reject Lua filter (which also runs before ext_authz) as defense in depth.
-	if _, ok := http.GetHeaders()[strings.ToLower(s.groupsHeaderName())]; ok {
+	// Precompute the reserved actor-extra header names for this backend
+	// (Impersonate-Extra-<actorKey>, lowercased) once — they gate both the inbound
+	// guard (step 2) and the impersonation-request detection (step 7). When the
+	// Backend does not opt into delegated impersonation the set is empty, so every
+	// Impersonate-* header is non-reserved (the pre-HOL-1433 behavior).
+	reserved := reservedActorExtraHeaders(entry)
+
+	// 2. Reject the always-forbidden inbound headers fail-closed (both modes):
+	//   - the configured groups header (HOL-1416): the split Lua filter turns its
+	//     comma list into Impersonate-Group lines for the API server, so a
+	//     client-supplied value (e.g. X-Impersonate-Groups: system:masters) would be
+	//     smuggled the same way an Impersonate-Group would; and
+	//   - any RESERVED actor-extra header (Impersonate-Extra-<actorKey>): the
+	//     authorizer stamps these from the validated token to describe the actor, so
+	//     an inbound copy is a spoof of the actor's own identity and must never
+	//     survive — rejected in self mode AND delegated mode (ADR-23, HOL-1433).
+	// A non-reserved Impersonate-* header is deliberately NOT rejected here: its
+	// presence is the delegated-impersonation mode switch resolved in step 7 (only
+	// an authorized actor's target passes through; an unauthorized actor or a
+	// nil-impersonation Backend is denied there, preserving today's fail-closed
+	// default). This mirrors the reject Lua filter (which also runs before ext_authz)
+	// as defense in depth for the groups header.
+	if _, ok := headers[strings.ToLower(s.groupsHeaderName())]; ok {
 		s.log.V(1).Info("denying request carrying inbound groups header", "host", host, "header", s.groupsHeaderName())
 		return deniedResponse(typev3.StatusCode_Forbidden, "inbound impersonation header not allowed", nil), nil
 	}
+	if name, ok := firstReservedActorExtraHeader(headers, reserved); ok {
+		s.log.V(1).Info("denying request carrying reserved actor-extra header", "host", host, "header", name)
+		return deniedResponse(typev3.StatusCode_Forbidden, "inbound impersonation header not allowed", nil), nil
+	}
 
-	// 3. Extract the caller's bearer token. A missing token is a 401 with a
+	// 3. Detect a delegated-impersonation request: any inbound Impersonate-* header
+	// that is NOT a reserved actor-extra header. Its presence is the mode switch
+	// (step 7); its absence keeps self mode. The reserved set was already rejected in
+	// step 2, so anything found here is a genuine target the actor is asking to
+	// impersonate.
+	impName, wantsImpersonation := firstNonReservedImpersonationHeader(headers, reserved)
+
+	// 4. Extract the caller's bearer token. A missing token is a 401 with a
 	// WWW-Authenticate challenge so a compliant client knows to authenticate.
-	token, ok := bearerToken(http.GetHeaders())
+	token, ok := bearerToken(headers)
 	if !ok {
 		s.log.V(1).Info("denying request with no bearer token", "host", host)
 		return deniedResponse(
@@ -342,67 +405,252 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (resp
 		), nil
 	}
 
-	// 4. Validate the OIDC token and map its claims to a Kubernetes identity. A
+	// 5. Validate the OIDC token and map its claims to a Kubernetes identity. A
 	// verification or mapping failure is a 401 — the caller authenticated but the
-	// token is not acceptable.
+	// token is not acceptable. In delegated mode this is the ACTOR identity: its
+	// groups gate the impersonation authz below and its actorExtra is always stamped.
 	identity, err := entry.Authenticator.Authenticate(ctx, token)
 	if err != nil {
 		s.log.V(1).Info("denying request with invalid token", "host", host, "error", err.Error())
 		return deniedResponse(typev3.StatusCode_Unauthorized, "invalid token", nil), nil
 	}
 
-	// 4b. Reject any mapped group that is unsafe under the comma-joined groups
-	// encoding (failure-closed). The groups are returned as a single comma-joined
-	// groups header (see okResponse), which the paired Lua filter splits back on
-	// commas and trims of surrounding whitespace. Two group shapes break that
-	// round-trip and could smuggle a different group:
+	// 5b. Reject any DERIVED group unsafe under the comma-joined groups encoding
+	// (failure-closed). The groups are returned as a single comma-joined groups
+	// header (see okResponse), which the paired Lua filter splits back on commas and
+	// trims of surrounding whitespace. Two group shapes break that round-trip and
+	// could smuggle a different group:
 	//   - a comma in the value ("dev,system:masters") splits into two groups; and
 	//   - leading/trailing whitespace (" system:masters") is trimmed by the split
 	//     filter into the bare group.
-	// Both are denied rather than impersonated. The username is set with a single
-	// overwrite header (no comma-join, no split filter), so it needs no such guard.
+	// Both are denied rather than impersonated. This guards the self-mode derived
+	// groups; the delegated-mode passthrough groups get the same guard in step 7
+	// after their inbound value is split. The username is set with a single overwrite
+	// header (no comma-join, no split filter), so it needs no such guard.
 	if group, ok := firstUnsafeGroup(identity.Groups); ok {
 		s.log.V(1).Info("denying request: mapped group is unsafe for the Impersonate-Group encoding", "host", host, "group", group)
 		return deniedResponse(typev3.StatusCode_Forbidden, "mapped group contains a comma or surrounding whitespace", nil), nil
 	}
 
-	// 5. Resolve the backend's privileged impersonator credential from whichever
+	// 6. Resolve the backend's privileged impersonator credential from whichever
 	// source the backend declares: a minted ServiceAccount token (serviceAccountRef)
 	// or the credential Secret (credentialsSecretRef). A failure — a missing Secret,
 	// a TokenRequest mint error, or an unwired TokenManager — is a 403 and fails
 	// closed: the caller is authenticated but the authorizer cannot act on their
 	// behalf, which is an internal/configuration fault, not a client authentication
-	// error.
+	// error. The same credential backs both self and delegated mode.
 	impersonatorToken, err := resolveCredential(ctx, s.reader, s.tokenManager, s.namespace, entry)
 	if err != nil {
 		s.log.Error(err, "denying request: cannot resolve impersonator credential", "host", host)
 		return deniedResponse(typev3.StatusCode_Forbidden, "credential unavailable", nil), nil
 	}
 
-	// 6. Build the OK response: set the impersonation identity and replace the
-	// caller's Authorization with the impersonator token. Inbound impersonation
-	// headers were already rejected in step 2, so the only Impersonate-* headers
-	// the upstream sees are the derived ones.
-	s.log.V(1).Info("allowing request",
-		"host", host, "user", identity.Username, "groups", len(identity.Groups))
-	return s.okResponse(identity, impersonatorToken), nil
+	// 7. Branch on the mode switch detected in step 3.
+	if !wantsImpersonation {
+		// SELF mode: impersonate the actor's own derived identity, additionally
+		// stamping the actorExtra headers so the actor identity is always recorded.
+		// The reserved actor-extra headers were rejected inbound in step 2, so the
+		// only Impersonate-* headers the upstream sees are the ones derived here.
+		s.log.V(1).Info("allowing request (self mode)",
+			"host", host, "user", identity.Username, "groups", len(identity.Groups))
+		return s.okResponse(identity, impersonatorToken), nil
+	}
+
+	// DELEGATED mode: an inbound Impersonate-* header asked to impersonate a target.
+	// It is authorized only when the Backend opts into delegated impersonation AND
+	// the actor's mapped groups intersect the allowlist. A nil-impersonation Backend
+	// and an unauthorized actor are both denied fail-closed here — this is where
+	// today's "inbound Impersonate-* always denied" behavior is preserved.
+	if entry.Impersonation == nil || !groupsIntersect(identity.Groups, entry.Impersonation.Groups) {
+		s.log.V(1).Info("denying delegated-impersonation request: actor not authorized",
+			"host", host, "user", identity.Username, "header", impName)
+		return deniedResponse(typev3.StatusCode_Forbidden, "actor not authorized to impersonate", nil), nil
+	}
+
+	// Reject any UNRECOGNIZED inbound Impersonate-* header fail-closed. Only the
+	// Kubernetes impersonation headers the authorizer knows how to forward —
+	// Impersonate-User, Impersonate-Uid, Impersonate-Group, and Impersonate-Extra-*
+	// — are valid targets. An unrecognized header (e.g. a typo'd "Impersonate-Foo")
+	// is not forwarded by delegatedResponse, so allowing it would flip the request
+	// into delegated mode yet emit no valid target: the upstream would then see the
+	// bare impersonator ServiceAccount credential acting as itself. Denying closes
+	// that hole and surfaces the misconfiguration to the client.
+	if name, ok := firstUnrecognizedImpersonationHeader(headers, reserved); ok {
+		s.log.V(1).Info("denying delegated-impersonation request: unrecognized impersonation header",
+			"host", host, "header", name)
+		return deniedResponse(typev3.StatusCode_Forbidden, "unrecognized impersonation header not allowed", nil), nil
+	}
+
+	// A delegated request MUST name a target user. Kubernetes rejects impersonation
+	// that sets only groups/UID/extras without a user ("without impersonating a
+	// user"), and client-go validates the same, so a groups-only or extras-only
+	// delegated request could never succeed upstream. Reject it fail-closed here
+	// rather than returning an OK that swaps in the impersonator credential for a
+	// request that cannot work — which would otherwise leave the impersonator SA
+	// acting as itself.
+	target, hasTarget := headers[strings.ToLower(headerImpersonateUser)]
+	if !hasTarget || target == "" {
+		s.log.V(1).Info("denying delegated-impersonation request: no target user", "host", host)
+		return deniedResponse(typev3.StatusCode_Forbidden, "delegated impersonation requires Impersonate-User", nil), nil
+	}
+
+	// The actor's inbound groups round-trip through the same comma-joined groups
+	// header the Lua split filter unpacks, so they get the same unsafe-element guard
+	// as the derived groups (step 5b): a comma-bearing or surrounding-whitespace
+	// element is denied fail-closed rather than smuggled. (A group value containing a
+	// literal comma cannot be represented on this Envoy-comma-joined passthrough path
+	// — it is indistinguishable from two groups — so it is unsupported by design and
+	// rejected here, per HOL-1416.)
+	passthroughGroups := splitInboundGroups(headers)
+	if group, ok := firstUnsafeGroup(passthroughGroups); ok {
+		s.log.V(1).Info("denying delegated-impersonation request: passthrough group is unsafe for the Impersonate-Group encoding",
+			"host", host, "group", group)
+		return deniedResponse(typev3.StatusCode_Forbidden, "impersonated group contains a comma or surrounding whitespace", nil), nil
+	}
+
+	s.log.V(1).Info("allowing request (delegated mode)",
+		"host", host, "actor", identity.Username, "target", target)
+	return s.delegatedResponse(identity, headers, passthroughGroups, impersonatorToken), nil
 }
 
-// firstImpersonationHeader returns the name of the first inbound Kubernetes
-// impersonation header (Impersonate-User, Impersonate-Group, Impersonate-Uid, or
-// any Impersonate-Extra-* header) present in the request headers, and whether one
-// was found. Envoy lowercases header keys in the ext_authz Headers map, so the
-// prefix match is against the lowercase "impersonate-". The returned name is the
-// key as Envoy presented it, for logging. A caller-supplied impersonation header
-// is a smuggling attempt; the Check path denies the request fail-closed rather
-// than scrubbing it (ADR-23).
-func firstImpersonationHeader(headers map[string]string) (string, bool) {
+// reservedActorExtraHeaders returns the set of reserved actor-extra header names
+// (Impersonate-Extra-<actorKey>, lowercased) for entry — the headers the authorizer
+// stamps from the validated token to describe the actor in delegated impersonation.
+// They are never client-settable, so an inbound copy is rejected fail-closed in both
+// modes (an actor must not spoof their own actor-identity headers). The set is empty
+// when the Backend does not opt into delegated impersonation (entry.Impersonation
+// nil), so every Impersonate-* header is treated as non-reserved — the pre-HOL-1433
+// behavior. actorExtra keys are already canonical lowercase (ValidateExtraKey), so
+// the composed header name is lowercased once to match Envoy's lowercased header
+// keys.
+func reservedActorExtraHeaders(entry *Entry) map[string]struct{} {
+	if entry.Impersonation == nil || len(entry.Impersonation.ActorExtra) == 0 {
+		return nil
+	}
+	reserved := make(map[string]struct{}, len(entry.Impersonation.ActorExtra))
+	for _, m := range entry.Impersonation.ActorExtra {
+		reserved[strings.ToLower(headerImpersonateExtraPrefix+m.Key)] = struct{}{}
+	}
+	return reserved
+}
+
+// firstReservedActorExtraHeader returns the name of the first inbound header that is
+// a reserved actor-extra header (present in reserved), and whether one was found.
+// Envoy lowercases header keys in the ext_authz Headers map, so each header name is
+// matched against reserved (whose keys are already lowercase). The returned name is
+// the key as Envoy presented it, for logging. A reserved actor-extra header is a
+// spoof of the actor's own identity; the Check path denies the request fail-closed
+// in both self and delegated mode (HOL-1433).
+func firstReservedActorExtraHeader(headers map[string]string, reserved map[string]struct{}) (string, bool) {
+	if len(reserved) == 0 {
+		return "", false
+	}
 	for name := range headers {
-		if strings.HasPrefix(strings.ToLower(name), impersonatePrefix) {
+		if _, ok := reserved[strings.ToLower(name)]; ok {
 			return name, true
 		}
 	}
 	return "", false
+}
+
+// firstNonReservedImpersonationHeader returns the name of the first inbound
+// Kubernetes impersonation header (Impersonate-User, Impersonate-Group,
+// Impersonate-Uid, or any Impersonate-Extra-* header) that is NOT a reserved
+// actor-extra header, and whether one was found. Its presence is the
+// delegated-impersonation mode switch (HOL-1433); the reserved actor-extra headers
+// are excluded because they were already rejected fail-closed inbound (they are
+// never a target the actor may set). Envoy lowercases header keys in the ext_authz
+// Headers map, so the prefix match is against the lowercase "impersonate-". The
+// returned name is the key as Envoy presented it, for logging.
+func firstNonReservedImpersonationHeader(headers map[string]string, reserved map[string]struct{}) (string, bool) {
+	for name := range headers {
+		lower := strings.ToLower(name)
+		if !strings.HasPrefix(lower, impersonatePrefix) {
+			continue
+		}
+		if _, ok := reserved[lower]; ok {
+			continue
+		}
+		return name, true
+	}
+	return "", false
+}
+
+// firstUnrecognizedImpersonationHeader returns the name of the first inbound
+// Impersonate-* header that is neither one of the recognized Kubernetes
+// impersonation headers (Impersonate-User, Impersonate-Uid, Impersonate-Group, or
+// any Impersonate-Extra-* header) nor a reserved actor-extra header, and whether one
+// was found. delegatedResponse only forwards the recognized set, so an unrecognized
+// Impersonate-* header would flip the request into delegated mode yet contribute no
+// forwarded target — leaving the impersonator credential acting as itself. The Check
+// path denies such a request fail-closed. Reserved actor-extra headers are skipped
+// here because they are rejected by their own inbound guard (step 2). Envoy
+// lowercases header keys, so the comparisons are against lowercase names.
+func firstUnrecognizedImpersonationHeader(headers map[string]string, reserved map[string]struct{}) (string, bool) {
+	extraPrefix := strings.ToLower(headerImpersonateExtraPrefix)
+	recognized := map[string]struct{}{
+		strings.ToLower(headerImpersonateUser):  {},
+		strings.ToLower(headerImpersonateUID):   {},
+		strings.ToLower(headerImpersonateGroup): {},
+	}
+	for name := range headers {
+		lower := strings.ToLower(name)
+		if !strings.HasPrefix(lower, impersonatePrefix) {
+			continue
+		}
+		if _, ok := reserved[lower]; ok {
+			continue // rejected by the reserved-actor-extra guard (step 2)
+		}
+		if _, ok := recognized[lower]; ok {
+			continue
+		}
+		if strings.HasPrefix(lower, extraPrefix) {
+			continue // a non-reserved Impersonate-Extra-* target field, forwarded verbatim
+		}
+		return name, true
+	}
+	return "", false
+}
+
+// splitInboundGroups returns the actor-supplied impersonation groups from the
+// inbound Impersonate-Group header, split on commas. Envoy comma-joins duplicate
+// header lines, so multiple kubectl --as-group values arrive as a single
+// "impersonate-group: a,b" value; splitting on commas recovers the individual
+// groups. It returns nil when no Impersonate-Group header is present (a delegated
+// request may target only a user with no groups). Elements are returned verbatim
+// (not trimmed) so the firstUnsafeGroup guard can reject a surrounding-whitespace
+// element the same way it does for derived groups; the empty-string element from an
+// empty inbound value is dropped so an "Impersonate-Group:" with no value adds no
+// group.
+func splitInboundGroups(headers map[string]string) []string {
+	raw, ok := headers[strings.ToLower(headerImpersonateGroup)]
+	if !ok || raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	groups := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		groups = append(groups, p)
+	}
+	return groups
+}
+
+// groupsIntersect reports whether any element of groups is a member of allow. It is
+// the delegated-impersonation authz test: the actor's mapped groups (identity.Groups)
+// must intersect the Backend's spec.impersonation.groups allowlist (built into a set
+// for O(1) membership) for the actor to be permitted to impersonate. An empty allow
+// set intersects nothing, so an empty allowlist denies every delegated request even
+// when spec.impersonation is otherwise present.
+func groupsIntersect(groups []string, allow map[string]struct{}) bool {
+	for _, g := range groups {
+		if _, ok := allow[g]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // firstUnsafeGroup returns the first group that is unsafe under the comma-joined
@@ -445,12 +693,12 @@ func bearerToken(headers map[string]string) (string, bool) {
 	return token, true
 }
 
-// okResponse builds the allow CheckResponse carrying the Kubernetes impersonation
-// headers. Impersonate-User, the groups header, and Authorization all use
-// OVERWRITE_IF_EXISTS_OR_ADD so they replace any caller-supplied value. When the
-// backend configures a UID claim (spec.oidc.uidClaim) the resolved UID is set as
-// Impersonate-Uid, and each configured extra mapping (spec.oidc.extra) whose claim
-// was present is set as an Impersonate-Extra-<key> header — both single-valued and
+// okResponse builds the SELF-mode allow CheckResponse carrying the actor's own
+// derived Kubernetes impersonation headers. Impersonate-User, the groups header, and
+// Authorization all use OVERWRITE_IF_EXISTS_OR_ADD so they replace any caller-supplied
+// value. When the backend configures a UID claim (spec.oidc.uidClaim) the resolved UID
+// is set as Impersonate-Uid, and each configured extra mapping (spec.oidc.extra) whose
+// claim was present is set as an Impersonate-Extra-<key> header — both single-valued and
 // emitted with the same overwrite/set action directly under their Impersonate-*
 // names. Unlike the multi-valued groups header they need no comma-join + Lua split:
 // a single overwrite header is added unconditionally by Envoy (setCopy), so the
@@ -468,7 +716,9 @@ func bearerToken(headers map[string]string) (string, bool) {
 // the comma list into one Impersonate-Group header per element before the request
 // reaches the API server (the API server requires one Impersonate-Group header per
 // group and does NOT split a comma-separated value). A request that maps to zero
-// groups emits no groups header at all. See docs/runbooks/holos-authenticator.md
+// groups emits no groups header at all. Finally, each actorExtra mapping (whose claim
+// was present, HOL-1433) is stamped as an Impersonate-Extra-<actorKey> header so the
+// actor identity is recorded even in self mode. See docs/runbooks/holos-authenticator.md
 // ("Splitting the comma-joined groups header") and ADR-23.
 //
 // The caller's original Authorization is NOT listed in HeadersToRemove. Setting
@@ -482,7 +732,7 @@ func bearerToken(headers map[string]string) (string, bool) {
 // the API server. The AC scopes HeadersToRemove to the "cannot be overwritten in
 // place" case, which does not apply here.
 func (s *CheckServer) okResponse(identity *Identity, impersonatorToken string) *authv3.CheckResponse {
-	headers := make([]*corev3.HeaderValueOption, 0, 4+len(identity.Extra))
+	headers := make([]*corev3.HeaderValueOption, 0, 4+len(identity.Extra)+len(identity.ActorExtra))
 	headers = append(headers, overwriteHeader(headerImpersonateUser, identity.Username))
 	// UID is single-valued, so it is set directly as Impersonate-Uid with the
 	// overwrite action — Envoy adds it unconditionally (setCopy), exactly like
@@ -497,19 +747,150 @@ func (s *CheckServer) okResponse(identity *Identity, impersonatorToken string) *
 	// Each extra is single-valued and set directly as Impersonate-Extra-<key> with
 	// the overwrite action. Keys are emitted in lexical order so the response (and
 	// the debug log) is deterministic regardless of Go map iteration order.
-	for _, key := range sortedExtraKeys(identity.Extra) {
-		headers = append(headers, overwriteHeader(headerImpersonateExtraPrefix+key, identity.Extra[key]))
-	}
+	headers = appendExtraHeaders(headers, identity.Extra)
+	// The actorExtra headers describing the actor identity are stamped last (also in
+	// lexical key order). In self mode the actor IS the impersonated user, so these
+	// simply record the actor's own audited identity fields.
+	headers = appendExtraHeaders(headers, identity.ActorExtra)
 	headers = append(headers, overwriteHeader(headerAuthorization, "Bearer "+impersonatorToken))
 
+	return okResponseFromHeaders(headers, nil)
+}
+
+// delegatedResponse builds the DELEGATED-mode allow CheckResponse (HOL-1433) for an
+// authorized actor impersonating a target carried on inbound Impersonate-* headers.
+// It forwards the actor-supplied target VERBATIM — Impersonate-User, Impersonate-Uid,
+// and every non-reserved Impersonate-Extra-* — and re-emits the actor-supplied groups
+// (already split from the Envoy-comma-joined inbound Impersonate-Group by the caller)
+// as the single comma-joined groups header the paired Lua split filter unpacks, the
+// same encoding self mode uses (a bare Impersonate-Group would be dropped by Envoy's
+// ext_authz append path, HOL-1416). It then stamps the actor's OWN identity into the
+// reserved Impersonate-Extra-<actorKey> headers (identity.ActorExtra) and writes the
+// impersonator credential to Authorization. It deliberately does NOT emit any
+// actor-DERIVED identity (Impersonate-User/groups/Uid/spec.oidc.extra): in delegated
+// mode the client's target replaces the derived self identity entirely, except for the
+// reserved actor-extra namespace which the client can never set. The reserved
+// actor-extra headers were rejected inbound, and the passthrough groups were checked
+// for unsafe elements, before this is called. Impersonation-target authorization is
+// delegated to the impersonator SA's RBAC on the upstream API server (no target
+// allowlist here). headers is the inbound ext_authz header map (lowercased keys).
+//
+// When the request carried an inbound Impersonate-Group, that raw header is added to
+// HeadersToRemove: its groups are re-emitted through the comma-joined groups header
+// the Lua split filter unpacks, and that split filter removes only the groups header,
+// not the original Impersonate-Group — so without this removal the API server would
+// see the stale comma-joined client value alongside the split lines.
+func (s *CheckServer) delegatedResponse(identity *Identity, headers map[string]string, passthroughGroups []string, impersonatorToken string) *authv3.CheckResponse {
+	out := make([]*corev3.HeaderValueOption, 0, 4+len(headers)+len(identity.ActorExtra))
+	// Forward the actor-supplied target user verbatim. A delegated request always
+	// carries at least one Impersonate-* header (the mode switch), but not necessarily
+	// Impersonate-User (kubectl --as-group without --as is possible), so it is emitted
+	// only when present.
+	if user, ok := headers[strings.ToLower(headerImpersonateUser)]; ok {
+		out = append(out, overwriteHeader(headerImpersonateUser, user))
+	}
+	if uid, ok := headers[strings.ToLower(headerImpersonateUID)]; ok {
+		out = append(out, overwriteHeader(headerImpersonateUID, uid))
+	}
+	// Re-emit the actor-supplied groups through the comma-joined groups header + Lua
+	// split, exactly as self mode does — never as a bare Impersonate-Group, which
+	// Envoy's ext_authz append path would drop (HOL-1416). The elements were already
+	// checked for unsafe (comma/surrounding-whitespace) values by the caller.
+	if len(passthroughGroups) > 0 {
+		out = append(out, overwriteHeader(s.groupsHeaderName(), strings.Join(passthroughGroups, ",")))
+	}
+	// Forward the actor-supplied non-reserved Impersonate-Extra-* headers verbatim, in
+	// lexical order for deterministic output. The reserved actor-extra headers were
+	// already rejected inbound (they are stamped from the actor's token below, never
+	// client-settable), so anything remaining under the prefix is a legitimate target
+	// extra field the actor asked to impersonate.
+	for _, name := range sortedNonReservedExtraHeaders(headers, identity.ActorExtra) {
+		out = append(out, overwriteHeader(headerImpersonateExtraPrefix+name, headers[strings.ToLower(headerImpersonateExtraPrefix+name)]))
+	}
+	// Stamp the actor's own identity into the reserved Impersonate-Extra-<actorKey>
+	// headers — the only actor-derived headers emitted in delegated mode.
+	out = appendExtraHeaders(out, identity.ActorExtra)
+	out = append(out, overwriteHeader(headerAuthorization, "Bearer "+impersonatorToken))
+
+	// Remove the actor's raw inbound Impersonate-Group header from the upstream
+	// request. Its groups were re-emitted above through the comma-joined groups
+	// header, which the post-ext_authz Lua split filter unpacks into one
+	// Impersonate-Group line per group; that split filter only removes the groups
+	// header, NOT the original Impersonate-Group. Without this removal the API server
+	// would see BOTH the stale comma-joined client value (a single literal composite
+	// group like "dev,ops") AND the split lines — breaking multi-group impersonation
+	// under scoped impersonator RBAC or granting an unintended composite group.
+	// Unlike Authorization (overwritten in place, so never listed in HeadersToRemove),
+	// Impersonate-Group is NOT one of the headers we set, so it can only be dropped
+	// via HeadersToRemove — there is no overwrite that would clear it. Self mode never
+	// carries an inbound Impersonate-Group (it is rejected fail-closed), so this
+	// removal is delegated-mode only. It is listed only when actually present inbound.
+	var removeHeaders []string
+	if _, ok := headers[strings.ToLower(headerImpersonateGroup)]; ok {
+		removeHeaders = []string{headerImpersonateGroup}
+	}
+
+	return okResponseFromHeaders(out, removeHeaders)
+}
+
+// okResponseFromHeaders wraps a built header-option slice (and an optional list of
+// inbound header names to remove from the upstream request) in an OK CheckResponse.
+// It is shared by the self-mode (okResponse) and delegated-mode (delegatedResponse)
+// builders so the OkResponse envelope is constructed in one place. removeHeaders is
+// nil for self mode (Authorization is overwritten in place, and no inbound
+// Impersonate-* survives to be removed) and carries Impersonate-Group in delegated
+// mode so the actor's raw comma-joined header does not reach the API server alongside
+// the Lua-split lines.
+func okResponseFromHeaders(headers []*corev3.HeaderValueOption, removeHeaders []string) *authv3.CheckResponse {
 	return &authv3.CheckResponse{
 		Status: &rpcstatus.Status{Code: int32(codes.OK)},
 		HttpResponse: &authv3.CheckResponse_OkResponse{
 			OkResponse: &authv3.OkHttpResponse{
-				Headers: headers,
+				Headers:         headers,
+				HeadersToRemove: removeHeaders,
 			},
 		},
 	}
+}
+
+// appendExtraHeaders appends one Impersonate-Extra-<key> overwrite header per entry
+// in extra to headers, in lexical key order (via sortedExtraKeys) so the emitted
+// headers and the V(1) debug log are deterministic regardless of Go's randomized map
+// iteration order. It returns the extended slice; an empty extra appends nothing.
+func appendExtraHeaders(headers []*corev3.HeaderValueOption, extra map[string]string) []*corev3.HeaderValueOption {
+	for _, key := range sortedExtraKeys(extra) {
+		headers = append(headers, overwriteHeader(headerImpersonateExtraPrefix+key, extra[key]))
+	}
+	return headers
+}
+
+// sortedNonReservedExtraHeaders returns, in lexical order, the actorExtra-key
+// SUFFIXES of the inbound Impersonate-Extra-* headers that are NOT reserved
+// actor-extra headers (delegated-mode passthrough, HOL-1433). Envoy lowercases header
+// keys, so each inbound key is matched against the Impersonate-Extra- prefix and its
+// suffix returned; the reserved actorExtra keys are excluded (they were rejected
+// inbound and are stamped from the actor's token instead). Sorting makes the emitted
+// passthrough extra headers deterministic. actorExtra names the reserved keys to
+// exclude; each reserved key is already canonical lowercase (ValidateExtraKey).
+func sortedNonReservedExtraHeaders(headers map[string]string, actorExtra map[string]string) []string {
+	prefix := strings.ToLower(headerImpersonateExtraPrefix)
+	var suffixes []string
+	for name := range headers {
+		lower := strings.ToLower(name)
+		if !strings.HasPrefix(lower, prefix) {
+			continue
+		}
+		suffix := lower[len(prefix):]
+		if _, reserved := actorExtra[suffix]; reserved {
+			// Defensive: the reserved actor-extra headers were already rejected
+			// inbound, so this should not be reached; excluding them here keeps the
+			// passthrough correct even if that guard is ever bypassed.
+			continue
+		}
+		suffixes = append(suffixes, suffix)
+	}
+	sort.Strings(suffixes)
+	return suffixes
 }
 
 // deniedResponse builds a fail-closed Denied CheckResponse with the given HTTP

@@ -148,11 +148,16 @@ type ServiceAccountReference struct {
 //     that lets a privileged operator front `kubectl --as <someone-else>` through
 //     the authorizer without the authorizer holding a per-user credential.
 //
-// Phase note (HOL-1431): this phase ships the API type and generated artifacts
-// only — the reconciler and the authorizer Check path that consume
-// spec.impersonation land in later phases (HOL-1432 and beyond). A Backend that
-// sets spec.impersonation has no runtime effect until then. The field is
-// additive and backward-compatible.
+// Status (HOL-1433): spec.impersonation is ACTIVE. The reconciler validates it
+// and carries it into the Store Entry (HOL-1432), and the authorizer Check path
+// consumes it (HOL-1433): a non-nil spec.impersonation authorizes delegated
+// Impersonate-* passthrough for an actor whose mapped groups are on the Groups
+// allowlist below, and its ActorExtra claims are emitted as reserved
+// Impersonate-Extra-<key> headers (in delegated AND self mode). The field remains
+// additive and backward-compatible — a Backend that omits spec.impersonation runs
+// self-impersonation only, byte-for-byte unchanged (inbound Impersonate-* denied
+// fail-closed) — but it is no longer inert: setting it changes request-path
+// behavior, so treat it as the security-sensitive opt-in it is.
 type ImpersonationConfig struct {
 	// Groups is the allowlist of Kubernetes groups that gates delegated
 	// impersonation: delegated impersonation ("kubectl --as passthrough") is
@@ -186,13 +191,17 @@ type ImpersonationConfig struct {
 	// ActorExtra is a **reserved namespace**. Its values are always set
 	// authoritatively by the authorizer from the validated actor token; they are
 	// **never client-settable** — inbound Impersonate-Extra-<key> headers naming a
-	// reserved actor key are stripped and overwritten, never trusted. In delegated
-	// mode the target identity's own Impersonate-* headers pass through, but these
-	// actor extras are the **only Backend-derived impersonation headers that
-	// survive** the delegation: they record who actually performed the action
-	// (distinct from the impersonated target) so downstream authorizers and audit
-	// tooling can attribute a delegated request to its real actor. In self
-	// impersonation mode there is no separate actor, so ActorExtra is not emitted.
+	// reserved actor key are rejected fail-closed (the request is denied), never
+	// trusted, in BOTH modes. In delegated mode the target identity's own
+	// Impersonate-* headers pass through, and these actor extras are the **only
+	// Backend-derived impersonation headers that survive** the delegation: they
+	// record who actually performed the action (distinct from the impersonated
+	// target) so downstream authorizers and audit tooling can attribute a delegated
+	// request to its real actor. In self impersonation mode the actor IS the
+	// impersonated user, so ActorExtra is **also emitted** there (alongside the
+	// derived spec.oidc.extra) — the actor identity is always recorded regardless of
+	// mode (HOL-1433). Configuring ActorExtra on a Backend that never receives a
+	// delegated request thus adds these audit headers to every (self-mode) request.
 	//
 	// ActorExtra keys MUST be disjoint from spec.oidc.extra keys: the two share the
 	// single Impersonate-Extra-<key> header namespace on the upstream request, and
