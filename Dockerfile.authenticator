@@ -44,23 +44,33 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # Use distroless as the minimal base image to package the binary.
 # https://github.com/GoogleContainerTools/distroless
 FROM gcr.io/distroless/static:nonroot
-# Re-declare VERSION in this stage so it can stamp the version label; the value
-# flows from the shared --build-arg VERSION the Makefile docker targets pass.
+# OCI image metadata (org.opencontainers.image.*) is single-sourced in
+# Makefile.authenticator and threaded in as --build-args (see
+# $(call oci-build-args,AUTHENTICATOR)); VERSION carries the git-describe version
+# the same way. These LABELs stamp the per-platform image config — what Quay and
+# a single-arch ghcr package render. A MULTI-ARCH ghcr package instead reads
+# these from the image INDEX, which the authenticator-docker-buildx target stamps
+# with buildx --annotation. Values default empty; the sanctioned build path is
+# always the Makefile (as with VERSION=dev).
 ARG VERSION=dev
+ARG IMAGE_TITLE=
+ARG IMAGE_DESCRIPTION=
+ARG IMAGE_SOURCE=
+ARG IMAGE_URL=
+ARG IMAGE_DOCUMENTATION=
+ARG IMAGE_LICENSES=
+ARG IMAGE_VENDOR=
 WORKDIR /
 COPY --from=build /holos-authenticator /holos-authenticator
 USER 65532:65532
 
-# OCI image metadata (org.opencontainers.image.*). ghcr uses image.source to
-# link the package to its GitHub repository; Quay and ghcr both render the
-# title, description, and license on the repository page.
-LABEL org.opencontainers.image.title="holos-authenticator" \
-      org.opencontainers.image.description="The Holos Authenticator (ADR-23) — an Istio gRPC ext_authz authorizer for OIDC-to-Kubernetes impersonation for the Holos PaaS." \
-      org.opencontainers.image.source="https://github.com/holos-run/holos-paas" \
-      org.opencontainers.image.url="https://github.com/holos-run/holos-paas" \
-      org.opencontainers.image.documentation="https://github.com/holos-run/holos-paas/blob/main/docs/runbooks/holos-authenticator.md" \
-      org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.vendor="Open Infrastructure Services LLC" \
+LABEL org.opencontainers.image.title="${IMAGE_TITLE}" \
+      org.opencontainers.image.description="${IMAGE_DESCRIPTION}" \
+      org.opencontainers.image.source="${IMAGE_SOURCE}" \
+      org.opencontainers.image.url="${IMAGE_URL}" \
+      org.opencontainers.image.documentation="${IMAGE_DOCUMENTATION}" \
+      org.opencontainers.image.licenses="${IMAGE_LICENSES}" \
+      org.opencontainers.image.vendor="${IMAGE_VENDOR}" \
       org.opencontainers.image.version="${VERSION}"
 
 ENTRYPOINT ["/holos-authenticator"]

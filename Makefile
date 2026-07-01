@@ -36,6 +36,58 @@ BUILDX_BUILDER      ?= holos-paas-multiarch
 # VERSION to stamp an explicit value (e.g. a Docker build with no .git context).
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
+# OCI image metadata (org.opencontainers.image.*). Single-sourced HERE and
+# threaded two ways: (1) into each Dockerfile's runtime-stage LABELs via the
+# --build-arg flags produced by $(call oci-build-args,<PREFIX>), and (2) onto the
+# MULTI-ARCH image INDEX via the --annotation flags produced by
+# $(call oci-index-annotations,<PREFIX>). BOTH are required: a per-platform
+# config LABEL is what Quay and a single-arch ghcr package render, but ghcr reads
+# a MULTI-ARCH package's description / source / license from the image INDEX
+# annotations, NOT the child image configs — without (2) the multi-arch package
+# shows "No description provided" and is unlinked from its GitHub repo (the exact
+# symptom this addresses). source/url/license/vendor are identical across the
+# three images; title/description/documentation are per-image and defined beside
+# each image's coordinates (here for holos-paas; in Makefile.controller /
+# Makefile.authenticator for the other two).
+OCI_SOURCE   ?= https://github.com/holos-run/holos-paas
+OCI_URL      ?= https://github.com/holos-run/holos-paas
+OCI_LICENSES ?= Apache-2.0
+OCI_VENDOR   ?= Open Infrastructure Services LLC
+
+PAAS_IMAGE_TITLE         ?= holos-paas
+PAAS_IMAGE_DESCRIPTION   ?= The Holos PaaS multi-service binary — a Kubernetes-native, minimum-viable Heroku experience managed through the Kubernetes API and rendered with the Holos rendered-manifests pattern.
+PAAS_IMAGE_DOCUMENTATION ?= https://github.com/holos-run/holos-paas/blob/main/README.md
+
+# $(call oci-build-args,<PREFIX>) → the --build-arg flags that thread
+# <PREFIX>_IMAGE_TITLE/DESCRIPTION/DOCUMENTATION plus the shared OCI_* constants
+# and VERSION into a Dockerfile's runtime-stage LABELs. The PREFIX (e.g. PAAS) is
+# passed — NOT the values — because $(call) splits its arguments on commas and a
+# description may contain one; dereferencing $($(1)_IMAGE_*) sidesteps that.
+# Values are single-quoted so embedded spaces/em-dashes/commas survive the shell.
+oci-build-args = \
+  --build-arg VERSION=$(VERSION) \
+  --build-arg 'IMAGE_TITLE=$($(1)_IMAGE_TITLE)' \
+  --build-arg 'IMAGE_DESCRIPTION=$($(1)_IMAGE_DESCRIPTION)' \
+  --build-arg 'IMAGE_SOURCE=$(OCI_SOURCE)' \
+  --build-arg 'IMAGE_URL=$(OCI_URL)' \
+  --build-arg 'IMAGE_DOCUMENTATION=$($(1)_IMAGE_DOCUMENTATION)' \
+  --build-arg 'IMAGE_LICENSES=$(OCI_LICENSES)' \
+  --build-arg 'IMAGE_VENDOR=$(OCI_VENDOR)'
+
+# $(call oci-index-annotations,<PREFIX>) → the matching --annotation flags that
+# stamp the SAME metadata onto the multi-arch image INDEX. The "index:" selector
+# targets the manifest list itself (an unprefixed --annotation would land on the
+# child manifests, which is not what ghcr reads for the package page).
+oci-index-annotations = \
+  --annotation 'index:org.opencontainers.image.title=$($(1)_IMAGE_TITLE)' \
+  --annotation 'index:org.opencontainers.image.description=$($(1)_IMAGE_DESCRIPTION)' \
+  --annotation 'index:org.opencontainers.image.source=$(OCI_SOURCE)' \
+  --annotation 'index:org.opencontainers.image.url=$(OCI_URL)' \
+  --annotation 'index:org.opencontainers.image.documentation=$($(1)_IMAGE_DOCUMENTATION)' \
+  --annotation 'index:org.opencontainers.image.licenses=$(OCI_LICENSES)' \
+  --annotation 'index:org.opencontainers.image.vendor=$(OCI_VENDOR)' \
+  --annotation 'index:org.opencontainers.image.version=$(VERSION)'
+
 .PHONY: all
 all: build
 
@@ -137,11 +189,11 @@ config-push: config-build ## Build then oras push the holos/deploy/ bundle to $(
 # binary via -ldflags exactly as `make build` does on the host.
 .PHONY: docker-build
 docker-build: ## Build the container image for $(PLATFORM) tagged $(IMAGE).
-	docker buildx build --platform $(PLATFORM) --build-arg VERSION=$(VERSION) -t $(IMAGE) --load .
+	docker buildx build --platform $(PLATFORM) $(call oci-build-args,PAAS) -t $(IMAGE) --load .
 
 .PHONY: docker-push
 docker-push: ## Build for $(PLATFORM) and push $(IMAGE) to the registry.
-	docker buildx build --platform $(PLATFORM) --build-arg VERSION=$(VERSION) -t $(IMAGE) --push .
+	docker buildx build --platform $(PLATFORM) $(call oci-build-args,PAAS) -t $(IMAGE) --push .
 
 # The multi-arch targets build a single OCI image index (manifest list) spanning
 # $(MULTIARCH_PLATFORMS) — both the amd64 and arm64 cross-compiles in one image,
@@ -187,7 +239,7 @@ docker-buildx-builder: ## Ensure the shared docker-container buildx builder $(BU
 #   docker buildx imagetools inspect $(IMAGE)
 .PHONY: docker-buildx
 docker-buildx: docker-buildx-builder ## Build and push the multi-arch $(MULTIARCH_PLATFORMS) image index $(IMAGE).
-	docker buildx build --builder $(BUILDX_BUILDER) --platform $(MULTIARCH_PLATFORMS) --build-arg VERSION=$(VERSION) -t $(IMAGE) --push .
+	docker buildx build --builder $(BUILDX_BUILDER) --platform $(MULTIARCH_PLATFORMS) $(call oci-build-args,PAAS) $(call oci-index-annotations,PAAS) -t $(IMAGE) --push .
 
 # The holos-controller service (ADR-18, HOL-1309) lives in this same module and
 # repo but keeps its targets isolated in Makefile.controller — all namespaced

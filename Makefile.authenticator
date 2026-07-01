@@ -27,6 +27,15 @@ AUTHENTICATOR_PLATFORM   ?= linux/arm64
 # to the root docker-buildx-builder target.
 AUTHENTICATOR_MULTIARCH_PLATFORMS ?= linux/amd64,linux/arm64
 
+# Per-image OCI metadata for the authenticator image, consumed by the shared
+# $(call oci-build-args,AUTHENTICATOR) / $(call oci-index-annotations,AUTHENTICATOR)
+# helpers defined in the root Makefile (which own the shared OCI_* constants and
+# the LABEL-vs-index-annotation rationale). AUTHENTICATOR is the make-variable
+# prefix those helpers dereference.
+AUTHENTICATOR_IMAGE_TITLE         ?= holos-authenticator
+AUTHENTICATOR_IMAGE_DESCRIPTION   ?= The Holos Authenticator (ADR-23) — an Istio gRPC ext_authz authorizer for OIDC-to-Kubernetes impersonation for the Holos PaaS.
+AUTHENTICATOR_IMAGE_DOCUMENTATION ?= https://github.com/holos-run/holos-paas/blob/main/docs/runbooks/holos-authenticator.md
+
 # Code generation (HOL-1386). controller-gen is pinned and installed under bin/
 # exactly as Makefile.controller does — the same pinned version and bin/ location,
 # declared with ?= so the two includes share one definition rather than colliding.
@@ -128,11 +137,11 @@ authenticator-test: authenticator-fmt authenticator-vet envtest-tool ## Run the 
 # as `make authenticator-build` does on the host.
 .PHONY: authenticator-docker-build
 authenticator-docker-build: ## Build the authenticator image for $(AUTHENTICATOR_PLATFORM) tagged $(AUTHENTICATOR_IMAGE).
-	docker buildx build --platform $(AUTHENTICATOR_PLATFORM) --build-arg VERSION=$(VERSION) -f Dockerfile.authenticator -t $(AUTHENTICATOR_IMAGE) --load .
+	docker buildx build --platform $(AUTHENTICATOR_PLATFORM) $(call oci-build-args,AUTHENTICATOR) -f Dockerfile.authenticator -t $(AUTHENTICATOR_IMAGE) --load .
 
 .PHONY: authenticator-docker-push
 authenticator-docker-push: ## Build for $(AUTHENTICATOR_PLATFORM) and push $(AUTHENTICATOR_IMAGE) to the registry.
-	docker buildx build --platform $(AUTHENTICATOR_PLATFORM) --build-arg VERSION=$(VERSION) -f Dockerfile.authenticator -t $(AUTHENTICATOR_IMAGE) --push .
+	docker buildx build --platform $(AUTHENTICATOR_PLATFORM) $(call oci-build-args,AUTHENTICATOR) -f Dockerfile.authenticator -t $(AUTHENTICATOR_IMAGE) --push .
 
 # Multi-arch authenticator image index. Mirrors the root docker-buildx pair and
 # reuses the same shared $(BUILDX_BUILDER), since all services produce identical
@@ -154,4 +163,4 @@ authenticator-docker-buildx-builder: docker-buildx-builder ## Ensure the shared 
 #   docker buildx imagetools inspect $(AUTHENTICATOR_IMAGE)
 .PHONY: authenticator-docker-buildx
 authenticator-docker-buildx: authenticator-docker-buildx-builder ## Build and push the multi-arch $(AUTHENTICATOR_MULTIARCH_PLATFORMS) image index $(AUTHENTICATOR_IMAGE).
-	docker buildx build --builder $(BUILDX_BUILDER) --platform $(AUTHENTICATOR_MULTIARCH_PLATFORMS) --build-arg VERSION=$(VERSION) -f Dockerfile.authenticator -t $(AUTHENTICATOR_IMAGE) --push .
+	docker buildx build --builder $(BUILDX_BUILDER) --platform $(AUTHENTICATOR_MULTIARCH_PLATFORMS) $(call oci-build-args,AUTHENTICATOR) $(call oci-index-annotations,AUTHENTICATOR) -f Dockerfile.authenticator -t $(AUTHENTICATOR_IMAGE) --push .

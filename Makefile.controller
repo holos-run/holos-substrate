@@ -23,6 +23,15 @@ CONTROLLER_PLATFORM   ?= linux/arm64
 # the root docker-buildx-builder target.
 CONTROLLER_MULTIARCH_PLATFORMS ?= linux/amd64,linux/arm64
 
+# Per-image OCI metadata for the controller image, consumed by the shared
+# $(call oci-build-args,CONTROLLER) / $(call oci-index-annotations,CONTROLLER)
+# helpers defined in the root Makefile (which own the shared OCI_* constants and
+# the LABEL-vs-index-annotation rationale). CONTROLLER is the make-variable
+# prefix those helpers dereference.
+CONTROLLER_IMAGE_TITLE         ?= holos-controller
+CONTROLLER_IMAGE_DESCRIPTION   ?= The Holos Controller (ADR-18) — a Kubernetes controller reconciling the quay.holos.run and keycloak.holos.run API groups for the Holos PaaS.
+CONTROLLER_IMAGE_DOCUMENTATION ?= https://github.com/holos-run/holos-paas/blob/main/docs/runbooks/holos-controller.md
+
 # Pinned tool versions and locations. bin/ is gitignored (root .gitignore /bin/).
 LOCALBIN ?= $(CURDIR)/bin
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
@@ -184,11 +193,11 @@ controller-test: controller-fmt controller-vet envtest-tool ## Run controller, A
 # `make controller-build` does on the host.
 .PHONY: controller-docker-build
 controller-docker-build: ## Build the controller image for $(CONTROLLER_PLATFORM) tagged $(CONTROLLER_IMAGE).
-	docker buildx build --platform $(CONTROLLER_PLATFORM) --build-arg VERSION=$(VERSION) -f Dockerfile.controller -t $(CONTROLLER_IMAGE) --load .
+	docker buildx build --platform $(CONTROLLER_PLATFORM) $(call oci-build-args,CONTROLLER) -f Dockerfile.controller -t $(CONTROLLER_IMAGE) --load .
 
 .PHONY: controller-docker-push
 controller-docker-push: ## Build for $(CONTROLLER_PLATFORM) and push $(CONTROLLER_IMAGE) to the registry.
-	docker buildx build --platform $(CONTROLLER_PLATFORM) --build-arg VERSION=$(VERSION) -f Dockerfile.controller -t $(CONTROLLER_IMAGE) --push .
+	docker buildx build --platform $(CONTROLLER_PLATFORM) $(call oci-build-args,CONTROLLER) -f Dockerfile.controller -t $(CONTROLLER_IMAGE) --push .
 
 # Multi-arch controller image index. Mirrors the root docker-buildx pair and
 # reuses the same shared $(BUILDX_BUILDER), since both services produce identical
@@ -212,4 +221,4 @@ controller-docker-buildx-builder: docker-buildx-builder ## Ensure the shared doc
 #   docker buildx imagetools inspect $(CONTROLLER_IMAGE)
 .PHONY: controller-docker-buildx
 controller-docker-buildx: controller-docker-buildx-builder ## Build and push the multi-arch $(CONTROLLER_MULTIARCH_PLATFORMS) image index $(CONTROLLER_IMAGE).
-	docker buildx build --builder $(BUILDX_BUILDER) --platform $(CONTROLLER_MULTIARCH_PLATFORMS) --build-arg VERSION=$(VERSION) -f Dockerfile.controller -t $(CONTROLLER_IMAGE) --push .
+	docker buildx build --builder $(BUILDX_BUILDER) --platform $(CONTROLLER_MULTIARCH_PLATFORMS) $(call oci-build-args,CONTROLLER) $(call oci-index-annotations,CONTROLLER) -f Dockerfile.controller -t $(CONTROLLER_IMAGE) --push .
