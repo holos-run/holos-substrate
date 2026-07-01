@@ -795,9 +795,10 @@ spec:
   `Accepted=False`).
 - **AC6 — user headers disable all Backend-derived headers except `actorExtra`.**
   In delegated mode the authorizer forwards the actor-supplied
-  `Impersonate-User`/`Impersonate-Uid`/`--as-group`/non-reserved
-  `Impersonate-Extra-*` **verbatim** and does **not** emit the derived
-  `Impersonate-User`/groups/`Impersonate-Uid`/`spec.oidc.extra`. The only
+  `Impersonate-User`/`Impersonate-Uid`/non-reserved `Impersonate-Extra-*`
+  **verbatim** (and the actor's `--as-group` values re-emitted through the
+  comma-joined groups header per the split-then-re-emit above) and does **not** emit
+  the derived `Impersonate-User`/groups/`Impersonate-Uid`/`spec.oidc.extra`. The only
   Backend-derived headers that survive are the reserved `Impersonate-Extra-actor-*`.
 - **A delegated request must name a target user.** Kubernetes rejects impersonation
   that sets only groups/UID/extras with no `Impersonate-User`, so a groups-only
