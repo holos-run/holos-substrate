@@ -754,7 +754,7 @@ func (s *CheckServer) okResponse(identity *Identity, impersonatorToken string) *
 	headers = appendExtraHeaders(headers, identity.ActorExtra)
 	headers = append(headers, overwriteHeader(headerAuthorization, "Bearer "+impersonatorToken))
 
-	return okResponseFromHeaders(headers)
+	return okResponseFromHeaders(headers, nil)
 }
 
 // delegatedResponse builds the DELEGATED-mode allow CheckResponse (HOL-1433) for an
@@ -774,6 +774,12 @@ func (s *CheckServer) okResponse(identity *Identity, impersonatorToken string) *
 // for unsafe elements, before this is called. Impersonation-target authorization is
 // delegated to the impersonator SA's RBAC on the upstream API server (no target
 // allowlist here). headers is the inbound ext_authz header map (lowercased keys).
+//
+// When the request carried an inbound Impersonate-Group, that raw header is added to
+// HeadersToRemove: its groups are re-emitted through the comma-joined groups header
+// the Lua split filter unpacks, and that split filter removes only the groups header,
+// not the original Impersonate-Group — so without this removal the API server would
+// see the stale comma-joined client value alongside the split lines.
 func (s *CheckServer) delegatedResponse(identity *Identity, headers map[string]string, passthroughGroups []string, impersonatorToken string) *authv3.CheckResponse {
 	out := make([]*corev3.HeaderValueOption, 0, 4+len(headers)+len(identity.ActorExtra))
 	// Forward the actor-supplied target user verbatim. A delegated request always
@@ -806,18 +812,42 @@ func (s *CheckServer) delegatedResponse(identity *Identity, headers map[string]s
 	out = appendExtraHeaders(out, identity.ActorExtra)
 	out = append(out, overwriteHeader(headerAuthorization, "Bearer "+impersonatorToken))
 
-	return okResponseFromHeaders(out)
+	// Remove the actor's raw inbound Impersonate-Group header from the upstream
+	// request. Its groups were re-emitted above through the comma-joined groups
+	// header, which the post-ext_authz Lua split filter unpacks into one
+	// Impersonate-Group line per group; that split filter only removes the groups
+	// header, NOT the original Impersonate-Group. Without this removal the API server
+	// would see BOTH the stale comma-joined client value (a single literal composite
+	// group like "dev,ops") AND the split lines — breaking multi-group impersonation
+	// under scoped impersonator RBAC or granting an unintended composite group.
+	// Unlike Authorization (overwritten in place, so never listed in HeadersToRemove),
+	// Impersonate-Group is NOT one of the headers we set, so it can only be dropped
+	// via HeadersToRemove — there is no overwrite that would clear it. Self mode never
+	// carries an inbound Impersonate-Group (it is rejected fail-closed), so this
+	// removal is delegated-mode only. It is listed only when actually present inbound.
+	var removeHeaders []string
+	if _, ok := headers[strings.ToLower(headerImpersonateGroup)]; ok {
+		removeHeaders = []string{headerImpersonateGroup}
+	}
+
+	return okResponseFromHeaders(out, removeHeaders)
 }
 
-// okResponseFromHeaders wraps a built header-option slice in an OK CheckResponse. It
-// is shared by the self-mode (okResponse) and delegated-mode (delegatedResponse)
-// builders so the OkResponse envelope is constructed in one place.
-func okResponseFromHeaders(headers []*corev3.HeaderValueOption) *authv3.CheckResponse {
+// okResponseFromHeaders wraps a built header-option slice (and an optional list of
+// inbound header names to remove from the upstream request) in an OK CheckResponse.
+// It is shared by the self-mode (okResponse) and delegated-mode (delegatedResponse)
+// builders so the OkResponse envelope is constructed in one place. removeHeaders is
+// nil for self mode (Authorization is overwritten in place, and no inbound
+// Impersonate-* survives to be removed) and carries Impersonate-Group in delegated
+// mode so the actor's raw comma-joined header does not reach the API server alongside
+// the Lua-split lines.
+func okResponseFromHeaders(headers []*corev3.HeaderValueOption, removeHeaders []string) *authv3.CheckResponse {
 	return &authv3.CheckResponse{
 		Status: &rpcstatus.Status{Code: int32(codes.OK)},
 		HttpResponse: &authv3.CheckResponse_OkResponse{
 			OkResponse: &authv3.OkHttpResponse{
-				Headers: headers,
+				Headers:         headers,
+				HeadersToRemove: removeHeaders,
 			},
 		},
 	}

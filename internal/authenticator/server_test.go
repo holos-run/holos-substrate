@@ -895,6 +895,43 @@ func TestCheckDelegatedModeAuthorizedActor(t *testing.T) {
 		overwriteHeader(headerImpersonateExtraPrefix+"actor-uid", "actor-sub"),
 		overwriteHeader(headerAuthorization, "Bearer impersonator-token"),
 	})
+	// The actor's raw inbound Impersonate-Group must be removed from the upstream
+	// request: its groups were re-emitted via the groups header for the Lua split, and
+	// the split filter does not remove the original Impersonate-Group, so leaving it
+	// would let the API server see the stale composite "dev,ops" alongside the split
+	// lines.
+	if got, want := resp.GetOkResponse().GetHeadersToRemove(), []string{headerImpersonateGroup}; len(got) != len(want) || (len(got) == 1 && got[0] != want[0]) {
+		t.Errorf("headers_to_remove = %v, want %v", got, want)
+	}
+}
+
+// TestCheckDelegatedModeNoGroupsNoRemoval asserts a delegated request with a target
+// user but NO inbound Impersonate-Group does not populate headers_to_remove — there
+// is no stale group header to strip, so the removal is emitted only when needed.
+func TestCheckDelegatedModeNoGroupsNoRemoval(t *testing.T) {
+	const host = "api.example.com"
+	store := NewStore()
+	store.Set(testNamespace+"/backend", &Entry{
+		Host: host,
+		Authenticator: newImpersonationAuthenticator(t, map[string]any{
+			"sub": "actor-sub", "email": "actor@example.com", "groups": []any{"platform-admins"},
+		}, "sub", actorExtraEmailUID),
+		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
+		Impersonation:        resolvedImpersonation([]string{"platform-admins"}, actorExtraEmailUID),
+	})
+	reader := secretReader(t, credentialSecret("creds", "impersonator-token"))
+	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.Discard()))
+
+	resp := mustCheck(t, client, checkRequest(host, map[string]string{
+		"authorization":    "Bearer caller",
+		"impersonate-user": "target-user",
+	}))
+	if got, want := codes.Code(resp.GetStatus().GetCode()), codes.OK; got != want {
+		t.Fatalf("status code = %v, want %v", got, want)
+	}
+	if got := resp.GetOkResponse().GetHeadersToRemove(); len(got) != 0 {
+		t.Errorf("headers_to_remove = %v, want empty", got)
+	}
 }
 
 // TestCheckDelegatedModeForwardsTargetUIDAndExtra asserts the actor-supplied
