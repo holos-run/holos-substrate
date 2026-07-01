@@ -133,7 +133,7 @@ userDefinedBuildPlan: {
 											}
 											securityContext: {
 												allowPrivilegeEscalation: false
-												readOnlyRootFilesystem:    true
+												readOnlyRootFilesystem:   true
 												capabilities: drop: ["ALL"]
 											}
 											resources: {
@@ -171,7 +171,7 @@ userDefinedBuildPlan: {
 							apiVersion: "rbac.authorization.k8s.io/v1"
 							kind:       "ClusterRole"
 							metadata: {
-								name: "holos-authenticator-role"
+								name:   "holos-authenticator-role"
 								labels: METADATA.labels
 							}
 							rules: [
@@ -207,7 +207,7 @@ userDefinedBuildPlan: {
 							apiVersion: "rbac.authorization.k8s.io/v1"
 							kind:       "ClusterRoleBinding"
 							metadata: {
-								name: "holos-authenticator-rolebinding"
+								name:   "holos-authenticator-rolebinding"
 								labels: METADATA.labels
 							}
 							roleRef: {
@@ -340,7 +340,7 @@ userDefinedBuildPlan: {
 							apiVersion: "rbac.authorization.k8s.io/v1"
 							kind:       "ClusterRole"
 							metadata: {
-								name: "holos-authenticator-impersonator"
+								name:   "holos-authenticator-impersonator"
 								labels: METADATA.labels
 							}
 							rules: [{
@@ -355,7 +355,7 @@ userDefinedBuildPlan: {
 							apiVersion: "rbac.authorization.k8s.io/v1"
 							kind:       "ClusterRoleBinding"
 							metadata: {
-								name: "holos-authenticator-impersonator"
+								name:   "holos-authenticator-impersonator"
 								labels: METADATA.labels
 							}
 							roleRef: {
@@ -414,7 +414,7 @@ userDefinedBuildPlan: {
 							metadata:   METADATA
 							spec: {
 								selector: matchLabels: SELECTOR
-								action:   "CUSTOM"
+								action: "CUSTOM"
 								provider: name: "holos-authenticator"
 								// An empty rules entry matches all requests to the selected
 								// workloads, sending every one to the ext_authz provider.
@@ -604,6 +604,100 @@ userDefinedBuildPlan: {
 								// in the committed default, which would otherwise be a cluster-wide
 								// escalation credential.
 								serviceAccountRef: {}
+							}
+						}
+
+						// A third example Backend demonstrating DELEGATED IMPERSONATION —
+						// the "kubectl --as passthrough" mode (ADR-23 Revision 11,
+						// HOL-1429/HOL-1430/HOL-1433).  By default a Backend runs SELF
+						// impersonation (the authorizer impersonates the validated caller
+						// and denies any inbound Impersonate-* header fail-closed).  A
+						// non-nil spec.impersonation opts an AUTHORIZED actor into
+						// forwarding an actor-specified target — exactly like
+						// `kubectl --as <someone-else>` — without the authorizer holding a
+						// per-user credential.  The presence of any inbound Impersonate-*
+						// header is the self-vs-delegated MODE SWITCH; the target passes
+						// through only when the actor's MAPPED Kubernetes groups intersect
+						// spec.impersonation.groups (otherwise the request is denied 403,
+						// exactly as a self-only Backend denies inbound Impersonate-*).
+						//
+						// spec.impersonation.actorExtra maps the actor's ID-token claims
+						// into RESERVED Impersonate-Extra-actor-* headers that record WHO
+						// performed the delegated request — distinct from the impersonator
+						// ServiceAccount and from the impersonated target — so the API
+						// server audit log can attribute the action.  These keys are never
+						// client-settable (an inbound copy is denied in both modes) and MUST
+						// be disjoint from spec.oidc.extra keys.  In delegated mode the
+						// derived Impersonate-User/groups/Uid/oidc.extra are NOT emitted;
+						// only the actorExtra headers survive alongside the actor's target
+						// (the AC6 rule).
+						//
+						// The actorExtra list below mirrors the HOL-1429 worked example
+						// (actor-* claims identifying a Keycloak human actor).  Like the
+						// other examples this is a placeholder: the component is excluded
+						// from the bootstrap floor and never applied automatically, and it
+						// names the same credentialsSecretRef Secret created out of band.
+						//
+						// NOT ready out of the box: the actor allowlist authorizes the
+						// REQUEST, but the API server still authorizes the IMPERSONATION
+						// against the impersonator SA's RBAC — impersonation-target authz is
+						// delegated to that RBAC, there is no target allowlist here.  The
+						// shipped holos-authenticator-impersonator ClusterRole grants
+						// impersonate ONLY on the two SA virtual groups and is deliberately
+						// NOT broadened; to actually impersonate a human target
+						// (Impersonate-User + non-system groups) the operator grants this SA
+						// impersonate on the intended users/groups per-Backend, per the
+						// runbook's "Delegated impersonation" and "Impersonation RBAC"
+						// sections.
+						Backend: "delegated-example": {
+							apiVersion: "authenticator.holos.run/v1alpha1"
+							kind:       "Backend"
+							metadata: {
+								name:      "delegated-example"
+								namespace: NAMESPACE
+								labels:    METADATA.labels
+							}
+							spec: {
+								host: "api.delegated.holos.internal"
+								oidc: {
+									issuerURL: "https://keycloak.holos.internal/realms/holos"
+									clientID:  "holos-authenticator"
+									// Human actors: a friendly username and prefixed identity so
+									// the IdP namespace is isolated from Kubernetes system: names.
+									usernameClaim:  "preferred_username"
+									usernamePrefix: "oidc:"
+									groupsClaim:    "groups"
+									groupsPrefix:   "oidc:"
+								}
+								server: {
+									// The in-cluster management API server the actor's target is
+									// impersonated on.
+									url: "https://kubernetes.default.svc"
+								}
+								// spec.impersonation opts this Backend into delegated mode.
+								impersonation: {
+									// The actor allowlist matches the actor's MAPPED groups (the
+									// oidc:-prefixed groups the default mapping produces above),
+									// NOT the raw claim.  Only an actor in this group may forward a
+									// `kubectl --as` target; everyone else is denied delegated
+									// impersonation (self mode only).
+									groups: ["oidc:platform-admins"]
+									// actorExtra stamps the actor's own identity from the validated
+									// token into reserved Impersonate-Extra-actor-* headers (disjoint
+									// from any spec.oidc.extra keys), mirroring the HOL-1429 example
+									// so the Kubernetes audit log records the real human behind a
+									// delegated request.
+									actorExtra: [
+										{key: "actor-sub", valueClaim: "sub"},
+										{key: "actor-email", valueClaim: "email"},
+										{key: "actor-preferred_username", valueClaim: "preferred_username"},
+									]
+								}
+								// The impersonator credential (the identity the API server
+								// authenticates Envoy as for the forwarded, impersonated request)
+								// — the same credential source self mode uses.  Its material is
+								// created at runtime and NEVER committed (Runtime Secret Handling).
+								credentialsSecretRef: name: "holos-authenticator-backend-creds"
 							}
 						}
 					}
