@@ -1,0 +1,30 @@
+apiVersion: authenticator.holos.run/v1alpha1
+kind: Backend
+metadata:
+  labels:
+    app.kubernetes.io/name: holos-authenticator
+  name: delegated-example
+  namespace: holos-authenticator
+spec:
+  credentialsSecretRef:
+    name: holos-authenticator-backend-creds
+  host: api.delegated.holos.internal
+  impersonation:
+    actorExtra:
+    - key: actor-sub
+      valueClaim: sub
+    - key: actor-email
+      valueClaim: email
+    - key: actor-preferred_username
+      valueClaim: preferred_username
+    groups:
+    - oidc:platform-admins
+  oidc:
+    clientID: holos-authenticator
+    groupsClaim: groups
+    groupsPrefix: 'oidc:'
+    issuerURL: https://keycloak.holos.internal/realms/holos
+    usernameClaim: preferred_username
+    usernamePrefix: 'oidc:'
+  server:
+    url: https://kubernetes.default.svc
