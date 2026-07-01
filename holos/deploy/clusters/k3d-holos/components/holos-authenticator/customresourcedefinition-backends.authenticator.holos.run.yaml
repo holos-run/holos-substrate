@@ -129,6 +129,115 @@ spec:
                   Host equals this value. Required.
                 minLength: 1
                 type: string
+              impersonation:
+                description: |-
+                  Impersonation gates and shapes delegated impersonation ("kubectl --as
+                  passthrough") for this Backend: the Groups allowlist of actor groups that may
+                  impersonate a different target identity, and the reserved ActorExtra headers
+                  recording who actually performed a delegated request. See ImpersonationConfig
+                  in common_types.go for the self-vs-delegated impersonation modes and the
+                  reserved-namespace semantics.
+
+                  It is a pointer (rather than a value) and intentionally not defaulted so a nil
+                  value cleanly means "delegated impersonation disabled" — the current
+                  fail-closed self-impersonation behavior — distinct from an explicitly-set
+                  (possibly empty) config, mirroring how CredentialsSecretRef/ServiceAccountRef
+                  are pointers to distinguish omitted from set. A Backend that omits
+                  spec.impersonation is byte-for-byte unchanged.
+
+                  Phase note (HOL-1431): this phase ships the API type and generated artifacts
+                  only; the reconciler and the authorizer Check path that consume
+                  spec.impersonation land in later phases (HOL-1432 and beyond). Setting it has
+                  no runtime effect until then.
+                properties:
+                  actorExtra:
+                    description: |-
+                      ActorExtra maps token claims to Kubernetes Impersonate-Extra-<key>
+                      impersonation headers describing the **actor** — the authenticated identity
+                      that performs a delegated impersonation — exactly like spec.oidc.extra maps
+                      claims for the impersonated user (see ExtraMapping and OIDCConfig.Extra for
+                      the per-entry claim-read/emit semantics, which are identical here: a missing
+                      or null claim skips the entry, a present string is emitted verbatim, a
+                      present non-string denies the request fail-closed).
+
+                      ActorExtra is a **reserved namespace**. Its values are always set
+                      authoritatively by the authorizer from the validated actor token; they are
+                      **never client-settable** — inbound Impersonate-Extra-<key> headers naming a
+                      reserved actor key are stripped and overwritten, never trusted. In delegated
+                      mode the target identity's own Impersonate-* headers pass through, but these
+                      actor extras are the **only Backend-derived impersonation headers that
+                      survive** the delegation: they record who actually performed the action
+                      (distinct from the impersonated target) so downstream authorizers and audit
+                      tooling can attribute a delegated request to its real actor. In self
+                      impersonation mode there is no separate actor, so ActorExtra is not emitted.
+
+                      ActorExtra keys MUST be disjoint from spec.oidc.extra keys: the two share the
+                      single Impersonate-Extra-<key> header namespace on the upstream request, and
+                      an overlapping key would make it ambiguous whether the header describes the
+                      actor or the impersonated user. The disjointness (and each key's canonicality,
+                      like spec.oidc.extra) is validated by the reconciler in a later phase
+                      (Accepted=False on violation) — it is not a CRD marker, consistent with how
+                      spec.oidc.extra[].key canonicality is a reconciler check (InvalidSpec) rather
+                      than an admission-time constraint.
+
+                      The list is a map keyed by Key (listType=map / listMapKey=key), so the API
+                      server rejects duplicate keys at admission — exactly like spec.oidc.extra.
+                    items:
+                      description: |-
+                        ExtraMapping maps a single token claim to a Kubernetes Impersonate-Extra-<key>
+                        impersonation header value: the authorizer reads the claim named by ValueClaim
+                        from the validated token and emits it as the Impersonate-Extra-<Key> header.
+                      properties:
+                        key:
+                          description: |-
+                            Key is the extra key — the suffix of the emitted Impersonate-Extra-<key>
+                            impersonation header (e.g. "email" yields Impersonate-Extra-email). It must be
+                            a canonical extra key: a lowercase HTTP header field-name token (RFC 7230) with
+                            no '%'. The reconciler rejects a Key with other characters (uppercase or '%'
+                            included) so the emitted header round-trips to the same extra key after the API
+                            server lowercases and percent-unescapes the suffix. Keys are unique within a
+                            Backend (enforced by the listMapKey on Extra). Required.
+                          minLength: 1
+                          type: string
+                        valueClaim:
+                          description: |-
+                            ValueClaim is the token claim the extra value is read from. A token missing
+                            this claim (or carrying it as JSON null) skips the entry (no header emitted); a
+                            present string is emitted verbatim, including an empty string; a
+                            present-but-non-string claim denies the request fail-closed. Required.
+                          minLength: 1
+                          type: string
+                      required:
+                      - key
+                      - valueClaim
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - key
+                    x-kubernetes-list-type: map
+                  groups:
+                    description: |-
+                      Groups is the allowlist of Kubernetes groups that gates delegated
+                      impersonation: delegated impersonation ("kubectl --as passthrough") is
+                      permitted for a request only when the actor's **mapped** Kubernetes groups —
+                      the groups the authorizer computes for the validated actor token via the
+                      default groups-claim mapping or spec.groupMapping.celExpression, *not* the raw
+                      token claim — intersect this list. An actor whose mapped groups do not match
+                      any entry here is denied the ability to impersonate a different target
+                      identity (fail-closed), falling back to self impersonation semantics.
+
+                      It is opt-in: an omitted or empty Groups permits no delegated impersonation
+                      at all (no group is allowlisted), so a spec.impersonation present but with an
+                      empty Groups still leaves delegated impersonation effectively disabled. The
+                      list is a set (listType=set), so the API server rejects duplicate entries at
+                      admission, and each entry MinLength=1 rejects an empty group name (an empty
+                      string would never match a real mapped group and only muddies the allowlist).
+                    items:
+                      minLength: 1
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                type: object
               oidc:
                 description: |-
                   OIDC is the single OIDC client this Backend validates end-user tokens with
