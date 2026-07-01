@@ -44,9 +44,24 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # Use distroless as the minimal base image to package the binary.
 # https://github.com/GoogleContainerTools/distroless
 FROM gcr.io/distroless/static:nonroot
+# Re-declare VERSION in this stage so it can stamp the version label; the value
+# flows from the shared --build-arg VERSION the Makefile docker targets pass.
+ARG VERSION=dev
 WORKDIR /
 COPY --from=build /holos-paas /holos-paas
 USER 65532:65532
+
+# OCI image metadata (org.opencontainers.image.*). ghcr uses image.source to
+# link the package to its GitHub repository; Quay and ghcr both render the
+# title, description, and license on the repository page.
+LABEL org.opencontainers.image.title="holos-paas" \
+      org.opencontainers.image.description="The Holos PaaS multi-service binary — a Kubernetes-native, minimum-viable Heroku experience managed through the Kubernetes API and rendered with the Holos rendered-manifests pattern." \
+      org.opencontainers.image.source="https://github.com/holos-run/holos-paas" \
+      org.opencontainers.image.url="https://github.com/holos-run/holos-paas" \
+      org.opencontainers.image.documentation="https://github.com/holos-run/holos-paas/blob/main/README.md" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.vendor="Open Infrastructure Services LLC" \
+      org.opencontainers.image.version="${VERSION}"
 
 # The running service is selected by subcommand args (ADR-12). The root
 # command registers no service subcommands yet — the NATS pipeline services
