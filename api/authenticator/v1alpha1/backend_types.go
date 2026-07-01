@@ -301,6 +301,28 @@ type BackendSpec struct {
 	//
 	// +optional
 	ServiceAccountRef *ServiceAccountReference `json:"serviceAccountRef,omitempty"`
+
+	// Impersonation gates and shapes delegated impersonation ("kubectl --as
+	// passthrough") for this Backend: the Groups allowlist of actor groups that may
+	// impersonate a different target identity, and the reserved ActorExtra headers
+	// recording who actually performed a delegated request. See ImpersonationConfig
+	// in common_types.go for the self-vs-delegated impersonation modes and the
+	// reserved-namespace semantics.
+	//
+	// It is a pointer (rather than a value) and intentionally not defaulted so a nil
+	// value cleanly means "delegated impersonation disabled" — the current
+	// fail-closed self-impersonation behavior — distinct from an explicitly-set
+	// (possibly empty) config, mirroring how CredentialsSecretRef/ServiceAccountRef
+	// are pointers to distinguish omitted from set. A Backend that omits
+	// spec.impersonation is byte-for-byte unchanged.
+	//
+	// Phase note (HOL-1431): this phase ships the API type and generated artifacts
+	// only; the reconciler and the authorizer Check path that consume
+	// spec.impersonation land in later phases (HOL-1432 and beyond). Setting it has
+	// no runtime effect until then.
+	//
+	// +optional
+	Impersonation *ImpersonationConfig `json:"impersonation,omitempty"`
 }
 
 // Condition types surfaced on Backend status. The vocabulary follows the Gateway

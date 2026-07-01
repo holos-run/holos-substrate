@@ -122,3 +122,97 @@ type ServiceAccountReference struct {
 	// +kubebuilder:validation:Minimum=600
 	ExpirationSeconds *int64 `json:"expirationSeconds,omitempty"`
 }
+
+// ImpersonationConfig gates and shapes delegated impersonation for a Backend —
+// the "kubectl --as passthrough" mode. It is entirely opt-in: a Backend with a
+// nil spec.impersonation runs in self impersonation only, the current
+// fail-closed behavior (delegated impersonation disabled), byte-for-byte
+// unchanged.
+//
+// Two impersonation modes.
+//
+//   - Self impersonation (the default, delegated impersonation disabled): the
+//     authorizer validates the end user's OIDC token and impersonates *that
+//     user* on the upstream API server — the identity is derived solely from the
+//     validated token (spec.oidc.usernameClaim/groupsClaim/…), and any inbound
+//     Impersonate-* headers on the request are stripped fail-closed. This is the
+//     only mode when spec.impersonation is nil.
+//
+//   - Delegated impersonation ("kubectl --as passthrough", enabled by a non-nil
+//     spec.impersonation): the validated token identifies an *actor* who is then
+//     permitted to impersonate a *different* target identity carried on the
+//     request's inbound Impersonate-* headers — exactly like `kubectl --as`. The
+//     actor is trusted to name the target, but only if the actor's own mapped
+//     Kubernetes groups are on the Groups allowlist below; the target the actor
+//     names then flows through to the upstream API server. This is the mechanism
+//     that lets a privileged operator front `kubectl --as <someone-else>` through
+//     the authorizer without the authorizer holding a per-user credential.
+//
+// Phase note (HOL-1431): this phase ships the API type and generated artifacts
+// only — the reconciler and the authorizer Check path that consume
+// spec.impersonation land in later phases (HOL-1432 and beyond). A Backend that
+// sets spec.impersonation has no runtime effect until then. The field is
+// additive and backward-compatible.
+type ImpersonationConfig struct {
+	// Groups is the allowlist of Kubernetes groups that gates delegated
+	// impersonation: delegated impersonation ("kubectl --as passthrough") is
+	// permitted for a request only when the actor's **mapped** Kubernetes groups —
+	// the groups the authorizer computes for the validated actor token via the
+	// default groups-claim mapping or spec.groupMapping.celExpression, *not* the raw
+	// token claim — intersect this list. An actor whose mapped groups do not match
+	// any entry here is denied the ability to impersonate a different target
+	// identity (fail-closed), falling back to self impersonation semantics.
+	//
+	// It is opt-in: an omitted or empty Groups permits no delegated impersonation
+	// at all (no group is allowlisted), so a spec.impersonation present but with an
+	// empty Groups still leaves delegated impersonation effectively disabled. The
+	// list is a set (listType=set), so the API server rejects duplicate entries at
+	// admission, and each entry MinLength=1 rejects an empty group name (an empty
+	// string would never match a real mapped group and only muddies the allowlist).
+	//
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:items:MinLength=1
+	Groups []string `json:"groups,omitempty"`
+
+	// ActorExtra maps token claims to Kubernetes Impersonate-Extra-<key>
+	// impersonation headers describing the **actor** — the authenticated identity
+	// that performs a delegated impersonation — exactly like spec.oidc.extra maps
+	// claims for the impersonated user (see ExtraMapping and OIDCConfig.Extra for
+	// the per-entry claim-read/emit semantics, which are identical here: a missing
+	// or null claim skips the entry, a present string is emitted verbatim, a
+	// present non-string denies the request fail-closed).
+	//
+	// ActorExtra is a **reserved namespace**. Its values are always set
+	// authoritatively by the authorizer from the validated actor token; they are
+	// **never client-settable** — inbound Impersonate-Extra-<key> headers naming a
+	// reserved actor key are stripped and overwritten, never trusted. In delegated
+	// mode the target identity's own Impersonate-* headers pass through, but these
+	// actor extras are the **only Backend-derived impersonation headers that
+	// survive** the delegation: they record who actually performed the action
+	// (distinct from the impersonated target) so downstream authorizers and audit
+	// tooling can attribute a delegated request to its real actor. In self
+	// impersonation mode there is no separate actor, so ActorExtra is not emitted.
+	//
+	// ActorExtra keys MUST be disjoint from spec.oidc.extra keys: the two share the
+	// single Impersonate-Extra-<key> header namespace on the upstream request, and
+	// an overlapping key would make it ambiguous whether the header describes the
+	// actor or the impersonated user. The disjointness (and each key's canonicality,
+	// like spec.oidc.extra) is validated by the reconciler in a later phase
+	// (HOL-1432, Accepted=False on violation) — it is intentionally NOT a CRD marker
+	// or admission-time CEL rule in this phase, consistent with how
+	// spec.oidc.extra[].key canonicality is a reconciler check (InvalidSpec) rather
+	// than an admission-time constraint. Because this phase ships API types only and
+	// the reconciler ignores spec.impersonation, an overlapping key is not rejected
+	// yet; the field is inert (no impersonation headers are emitted from it) until
+	// the reconciler and Check path land, so no ambiguous header can reach the
+	// upstream API server in the interim.
+	//
+	// The list is a map keyed by Key (listType=map / listMapKey=key), so the API
+	// server rejects duplicate keys at admission — exactly like spec.oidc.extra.
+	//
+	// +optional
+	// +listType=map
+	// +listMapKey=key
+	ActorExtra []ExtraMapping `json:"actorExtra,omitempty"`
+}
