@@ -71,18 +71,35 @@ On each `Check` the authorizer:
    ServiceAccount (minted/rotated via TokenRequest, [below](#provisioning-the-credential-serviceaccountref-or-a-runtime-secret));
    otherwise it reads the Secret named by `credentialsSecretRef`. An
    unavailable credential (missing Secret, or a TokenRequest failure) yields 403.
-6. **Returns the OK response** setting `Impersonate-User` (the username claim), a
-   **single comma-joined groups header** carrying the mapped groups as one CSV
-   value (`oidc:dev,oidc:ops`), and overwriting `Authorization` with the
-   impersonator credential's `Bearer <token>`. The groups header name defaults to
+6. **Returns the OK response**, overwriting `Authorization` with the impersonator
+   credential's `Bearer <token>` in **both** modes. Which impersonation headers it
+   sets depends on the mode ([*Delegated
+   impersonation*](#delegated-impersonation-kubectl---as-passthrough) below):
+   - **Self mode** (no inbound `Impersonate-*`, or a nil-`spec.impersonation`
+     Backend) — the **derived** identity: `Impersonate-User` (the username claim),
+     the mapped groups as the single comma-joined groups header, and the derived
+     `Impersonate-Uid`/`spec.oidc.extra`, plus any `spec.impersonation.actorExtra`
+     actor headers.
+   - **Delegated mode** (an authorized actor sent an inbound `Impersonate-*`) — the
+     **actor-supplied target** forwarded verbatim (`Impersonate-User`/
+     `Impersonate-Uid`/non-reserved `Impersonate-Extra-*`, and the actor's
+     `--as-group` values re-emitted through the same comma-joined groups header),
+     plus **only** the reserved `Impersonate-Extra-actor-*` headers; the
+     actor-**derived** `Impersonate-User`/groups/`Impersonate-Uid`/`spec.oidc.extra`
+     are **not** emitted (the AC6 rule).
+
+   In either mode the **groups** are carried as a **single comma-joined groups
+   header** (`oidc:dev,oidc:ops`). The groups header name defaults to
    `X-Impersonate-Groups` and is configurable with the `--impersonate-groups-header`
-   flag (HOL-1416). Every header uses the **overwrite/set** action (not append):
-   an authorizer-returned **append** header is dropped by Envoy's ext_authz path
-   unless the request *already* carries that header — and the inbound request never
-   carries `Impersonate-Group` (it is rejected, step 2) — so an appended
-   `Impersonate-Group` would be silently discarded before reaching the API server.
-   A **set** into a distinct, non-`Impersonate-*` header is added unconditionally
-   (`setCopy`) and survives. The header is **not** what the API server consumes:
+   flag (HOL-1416). Every header the authorizer emits uses the **overwrite/set**
+   action (not append): an authorizer-returned **append** header is dropped by
+   Envoy's ext_authz path unless the request *already* carries that header — and the
+   authorizer never emits `Impersonate-Group` directly (in delegated mode the actor's
+   inbound `Impersonate-Group` is removed and its values re-emitted through the
+   comma-joined groups header instead) — so an appended `Impersonate-Group` would be
+   silently discarded before reaching the API server. A **set** into a distinct,
+   non-`Impersonate-*` header is added unconditionally (`setCopy`) and survives. The
+   header is **not** what the API server consumes:
    the API server requires **one `Impersonate-Group` header per group** and does
    not split a comma list, so this must be paired with a Lua filter that unpacks
    the CSV into one `Impersonate-Group` per group (see [*Splitting the comma-joined
