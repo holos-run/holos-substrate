@@ -316,8 +316,13 @@ func isHeaderTokenChar(r rune) bool {
 //     Backend opts into impersonation (spec.impersonation non-nil) AND the
 //     actor's mapped groups intersect spec.impersonation.groups; otherwise
 //     Denied 403 (this preserves today's "inbound Impersonate-* denied" for a
-//     nil-impersonation Backend and for an unauthorized actor). When
-//     authorized, return OK forwarding the actor-supplied
+//     nil-impersonation Backend and for an unauthorized actor). An authorized
+//     request must also carry ONLY recognized Impersonate-* headers
+//     (User/Uid/Group/Extra-*) and a non-empty Impersonate-User target — an
+//     unrecognized header or a target-less (groups/extras-only) request is
+//     Denied 403, since either would otherwise emit an OK that swaps in the
+//     impersonator credential with no valid target (the impersonator SA acting
+//     as itself). When authorized, return OK forwarding the actor-supplied
 //     Impersonate-User/Impersonate-Uid/non-reserved Impersonate-Extra-* and the
 //     inbound groups (re-emitted via the groups header for the Lua split),
 //     stamping the actorExtra headers, with the impersonator token as
@@ -462,6 +467,33 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (resp
 		return deniedResponse(typev3.StatusCode_Forbidden, "actor not authorized to impersonate", nil), nil
 	}
 
+	// Reject any UNRECOGNIZED inbound Impersonate-* header fail-closed. Only the
+	// Kubernetes impersonation headers the authorizer knows how to forward —
+	// Impersonate-User, Impersonate-Uid, Impersonate-Group, and Impersonate-Extra-*
+	// — are valid targets. An unrecognized header (e.g. a typo'd "Impersonate-Foo")
+	// is not forwarded by delegatedResponse, so allowing it would flip the request
+	// into delegated mode yet emit no valid target: the upstream would then see the
+	// bare impersonator ServiceAccount credential acting as itself. Denying closes
+	// that hole and surfaces the misconfiguration to the client.
+	if name, ok := firstUnrecognizedImpersonationHeader(headers, reserved); ok {
+		s.log.V(1).Info("denying delegated-impersonation request: unrecognized impersonation header",
+			"host", host, "header", name)
+		return deniedResponse(typev3.StatusCode_Forbidden, "unrecognized impersonation header not allowed", nil), nil
+	}
+
+	// A delegated request MUST name a target user. Kubernetes rejects impersonation
+	// that sets only groups/UID/extras without a user ("without impersonating a
+	// user"), and client-go validates the same, so a groups-only or extras-only
+	// delegated request could never succeed upstream. Reject it fail-closed here
+	// rather than returning an OK that swaps in the impersonator credential for a
+	// request that cannot work — which would otherwise leave the impersonator SA
+	// acting as itself.
+	target, hasTarget := headers[strings.ToLower(headerImpersonateUser)]
+	if !hasTarget || target == "" {
+		s.log.V(1).Info("denying delegated-impersonation request: no target user", "host", host)
+		return deniedResponse(typev3.StatusCode_Forbidden, "delegated impersonation requires Impersonate-User", nil), nil
+	}
+
 	// The actor's inbound groups round-trip through the same comma-joined groups
 	// header the Lua split filter unpacks, so they get the same unsafe-element guard
 	// as the derived groups (step 5b): a comma-bearing or surrounding-whitespace
@@ -477,7 +509,7 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (resp
 	}
 
 	s.log.V(1).Info("allowing request (delegated mode)",
-		"host", host, "actor", identity.Username, "target", headers[strings.ToLower(headerImpersonateUser)])
+		"host", host, "actor", identity.Username, "target", target)
 	return s.delegatedResponse(identity, headers, passthroughGroups, impersonatorToken), nil
 }
 
@@ -538,6 +570,42 @@ func firstNonReservedImpersonationHeader(headers map[string]string, reserved map
 		}
 		if _, ok := reserved[lower]; ok {
 			continue
+		}
+		return name, true
+	}
+	return "", false
+}
+
+// firstUnrecognizedImpersonationHeader returns the name of the first inbound
+// Impersonate-* header that is neither one of the recognized Kubernetes
+// impersonation headers (Impersonate-User, Impersonate-Uid, Impersonate-Group, or
+// any Impersonate-Extra-* header) nor a reserved actor-extra header, and whether one
+// was found. delegatedResponse only forwards the recognized set, so an unrecognized
+// Impersonate-* header would flip the request into delegated mode yet contribute no
+// forwarded target — leaving the impersonator credential acting as itself. The Check
+// path denies such a request fail-closed. Reserved actor-extra headers are skipped
+// here because they are rejected by their own inbound guard (step 2). Envoy
+// lowercases header keys, so the comparisons are against lowercase names.
+func firstUnrecognizedImpersonationHeader(headers map[string]string, reserved map[string]struct{}) (string, bool) {
+	extraPrefix := strings.ToLower(headerImpersonateExtraPrefix)
+	recognized := map[string]struct{}{
+		strings.ToLower(headerImpersonateUser):  {},
+		strings.ToLower(headerImpersonateUID):   {},
+		strings.ToLower(headerImpersonateGroup): {},
+	}
+	for name := range headers {
+		lower := strings.ToLower(name)
+		if !strings.HasPrefix(lower, impersonatePrefix) {
+			continue
+		}
+		if _, ok := reserved[lower]; ok {
+			continue // rejected by the reserved-actor-extra guard (step 2)
+		}
+		if _, ok := recognized[lower]; ok {
+			continue
+		}
+		if strings.HasPrefix(lower, extraPrefix) {
+			continue // a non-reserved Impersonate-Extra-* target field, forwarded verbatim
 		}
 		return name, true
 	}
