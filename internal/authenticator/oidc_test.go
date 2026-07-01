@@ -1009,7 +1009,7 @@ func TestAuthenticatorDefaultGroups(t *testing.T) {
 		"sub":    "alice",
 		"groups": []any{"dev", "ops"},
 	}}
-	auth := NewAuthenticator(verifier, mapper, "sub", "", "", nil)
+	auth := NewAuthenticator(verifier, mapper, "sub", "", "", nil, nil)
 
 	id, err := auth.Authenticate(context.Background(), "raw-token")
 	if err != nil {
@@ -1034,7 +1034,7 @@ func TestAuthenticatorCustomUsernameClaim(t *testing.T) {
 		"email":  "alice@example.com",
 		"groups": []any{"dev"},
 	}}
-	auth := NewAuthenticator(verifier, mapper, "email", "", "", nil)
+	auth := NewAuthenticator(verifier, mapper, "email", "", "", nil, nil)
 
 	id, err := auth.Authenticate(context.Background(), "raw-token")
 	if err != nil {
@@ -1092,7 +1092,7 @@ func TestAuthenticatorUsernamePrefix(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewGroupMapper: %v", err)
 			}
-			auth := NewAuthenticator(&fakeVerifier{claims: tc.claims}, mapper, tc.usernameClaim, tc.prefix, "", nil)
+			auth := NewAuthenticator(&fakeVerifier{claims: tc.claims}, mapper, tc.usernameClaim, tc.prefix, "", nil, nil)
 
 			id, err := auth.Authenticate(context.Background(), "raw-token")
 			if err != nil {
@@ -1118,7 +1118,7 @@ func TestAuthenticatorUsernameAndGroupsPrefixIndependent(t *testing.T) {
 		"sub":    "alice",
 		"groups": []any{"dev", "ops"},
 	}}
-	auth := NewAuthenticator(verifier, mapper, "sub", "oidc:", "", nil)
+	auth := NewAuthenticator(verifier, mapper, "sub", "oidc:", "", nil, nil)
 	id, err := auth.Authenticate(context.Background(), "raw-token")
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
@@ -1135,7 +1135,7 @@ func TestAuthenticatorUsernameAndGroupsPrefixIndependent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
-	auth = NewAuthenticator(verifier, prefixedMapper, "sub", "", "", nil)
+	auth = NewAuthenticator(verifier, prefixedMapper, "sub", "", "", nil, nil)
 	id, err = auth.Authenticate(context.Background(), "raw-token")
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
@@ -1156,7 +1156,7 @@ func TestAuthenticatorMissingUsernameClaim(t *testing.T) {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
 	verifier := &fakeVerifier{claims: map[string]any{"groups": []any{"dev"}}}
-	auth := NewAuthenticator(verifier, mapper, "sub", "", "", nil)
+	auth := NewAuthenticator(verifier, mapper, "sub", "", "", nil, nil)
 
 	if _, err := auth.Authenticate(context.Background(), "raw-token"); err == nil {
 		t.Fatalf("Authenticate with missing username claim = nil error, want rejection")
@@ -1171,7 +1171,7 @@ func TestAuthenticatorMissingGroupsClaimIsEmpty(t *testing.T) {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
 	verifier := &fakeVerifier{claims: map[string]any{"sub": "alice"}}
-	auth := NewAuthenticator(verifier, mapper, "sub", "", "", nil)
+	auth := NewAuthenticator(verifier, mapper, "sub", "", "", nil, nil)
 
 	id, err := auth.Authenticate(context.Background(), "raw-token")
 	if err != nil {
@@ -1190,7 +1190,7 @@ func TestAuthenticatorVerifyError(t *testing.T) {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
 	verifier := &fakeVerifier{err: context.DeadlineExceeded}
-	auth := NewAuthenticator(verifier, mapper, "sub", "", "", nil)
+	auth := NewAuthenticator(verifier, mapper, "sub", "", "", nil, nil)
 
 	if _, err := auth.Authenticate(context.Background(), "raw-token"); err == nil {
 		t.Fatalf("Authenticate with a verifier error = nil error, want propagation")
@@ -1208,7 +1208,7 @@ func TestAuthenticatorUIDClaim(t *testing.T) {
 	claims := map[string]any{"sub": "uid-123", "email": "alice@example.com"}
 
 	// UID claim configured: Identity.UID is the sub claim.
-	auth := NewAuthenticator(&fakeVerifier{claims: claims}, mapper, "email", "", "sub", nil)
+	auth := NewAuthenticator(&fakeVerifier{claims: claims}, mapper, "email", "", "sub", nil, nil)
 	id, err := auth.Authenticate(context.Background(), "raw-token")
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
@@ -1221,7 +1221,7 @@ func TestAuthenticatorUIDClaim(t *testing.T) {
 	}
 
 	// No UID claim configured: Identity.UID is empty.
-	authNoUID := NewAuthenticator(&fakeVerifier{claims: claims}, mapper, "email", "", "", nil)
+	authNoUID := NewAuthenticator(&fakeVerifier{claims: claims}, mapper, "email", "", "", nil, nil)
 	idNoUID, err := authNoUID.Authenticate(context.Background(), "raw-token")
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
@@ -1246,7 +1246,7 @@ func TestAuthenticatorUIDClaimMissingDenies(t *testing.T) {
 	}
 	for name, claims := range cases {
 		t.Run(name, func(t *testing.T) {
-			auth := NewAuthenticator(&fakeVerifier{claims: claims}, mapper, "sub", "", "uid", nil)
+			auth := NewAuthenticator(&fakeVerifier{claims: claims}, mapper, "sub", "", "uid", nil, nil)
 			if _, err := auth.Authenticate(context.Background(), "raw-token"); err == nil {
 				t.Fatalf("Authenticate with %s uid claim = nil error, want rejection", name)
 			}
@@ -1273,7 +1273,7 @@ func TestAuthenticatorExtraMappings(t *testing.T) {
 		{Key: "note", ValueClaim: "note"},
 	}
 	claims := map[string]any{"sub": "alice", "email": "alice@example.com", "note": ""}
-	auth := NewAuthenticator(&fakeVerifier{claims: claims}, mapper, "sub", "", "", extra)
+	auth := NewAuthenticator(&fakeVerifier{claims: claims}, mapper, "sub", "", "", extra, nil)
 	id, err := auth.Authenticate(context.Background(), "raw-token")
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
@@ -1289,7 +1289,7 @@ func TestAuthenticatorExtraMappings(t *testing.T) {
 	}
 
 	// No extra configured: Identity.Extra is nil.
-	authNone := NewAuthenticator(&fakeVerifier{claims: claims}, mapper, "sub", "", "", nil)
+	authNone := NewAuthenticator(&fakeVerifier{claims: claims}, mapper, "sub", "", "", nil, nil)
 	idNone, err := authNone.Authenticate(context.Background(), "raw-token")
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
@@ -1302,9 +1302,78 @@ func TestAuthenticatorExtraMappings(t *testing.T) {
 	badExtra := []authenticatorv1alpha1.ExtraMapping{{Key: "groups", ValueClaim: "groups"}}
 	authBad := NewAuthenticator(
 		&fakeVerifier{claims: map[string]any{"sub": "alice", "groups": []any{"dev", "ops"}}},
-		mapper, "sub", "", "", badExtra)
+		mapper, "sub", "", "", badExtra, nil)
 	if _, err := authBad.Authenticate(context.Background(), "raw-token"); err == nil {
 		t.Fatalf("Authenticate with a non-string extra claim = nil error, want rejection")
+	}
+}
+
+// TestAuthenticatorActorExtraMappings mirrors TestAuthenticatorExtraMappings for
+// spec.impersonation.actorExtra: the Authenticator resolves actor-extra claim
+// mappings into Identity.ActorExtra with the same absent/present/non-string
+// semantics as spec.oidc.extra, keeping ActorExtra separate from Extra and on a
+// disjoint key namespace (HOL-1432).
+func TestAuthenticatorActorExtraMappings(t *testing.T) {
+	mapper, err := NewGroupMapper(DefaultGroupExpression("groups", ""))
+	if err != nil {
+		t.Fatalf("NewGroupMapper: %v", err)
+	}
+
+	// One oidc.extra mapping and three disjoint actorExtra mappings: one claim
+	// present with a value, one absent, one present but an empty string. The valued
+	// one is mapped, the absent one is skipped, the present-empty one is emitted
+	// verbatim — exactly the extra contract, applied to the actorExtra namespace.
+	extra := []authenticatorv1alpha1.ExtraMapping{{Key: "email", ValueClaim: "email"}}
+	actorExtra := []authenticatorv1alpha1.ExtraMapping{
+		{Key: "actor-email", ValueClaim: "actor_email"},
+		{Key: "actor-tenant", ValueClaim: "actor_tenant_id"},
+		{Key: "actor-note", ValueClaim: "actor_note"},
+	}
+	claims := map[string]any{
+		"sub":         "alice",
+		"email":       "alice@example.com",
+		"actor_email": "bob@example.com",
+		"actor_note":  "",
+	}
+	auth := NewAuthenticator(&fakeVerifier{claims: claims}, mapper, "sub", "", "", extra, actorExtra)
+	id, err := auth.Authenticate(context.Background(), "raw-token")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	// oidc.extra and actorExtra are resolved into separate maps.
+	if got, want := id.Extra["email"], "alice@example.com"; got != want {
+		t.Errorf("extra[email] = %q, want %q", got, want)
+	}
+	if _, ok := id.Extra["actor-email"]; ok {
+		t.Errorf("extra must not carry actorExtra keys; extra = %v", id.Extra)
+	}
+	if got, want := id.ActorExtra["actor-email"], "bob@example.com"; got != want {
+		t.Errorf("actorExtra[actor-email] = %q, want %q", got, want)
+	}
+	if _, ok := id.ActorExtra["actor-tenant"]; ok {
+		t.Errorf("actorExtra[actor-tenant] present, want skipped (claim absent)")
+	}
+	if v, ok := id.ActorExtra["actor-note"]; !ok || v != "" {
+		t.Errorf("actorExtra[actor-note] = (%q, %v), want (\"\", true) — a present empty claim is emitted, not skipped", v, ok)
+	}
+
+	// No actorExtra configured: Identity.ActorExtra is nil.
+	authNone := NewAuthenticator(&fakeVerifier{claims: claims}, mapper, "sub", "", "", extra, nil)
+	idNone, err := authNone.Authenticate(context.Background(), "raw-token")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if idNone.ActorExtra != nil {
+		t.Errorf("actorExtra = %v, want nil when no actorExtra configured", idNone.ActorExtra)
+	}
+
+	// A present-but-non-string actorExtra claim is a misconfiguration and fails closed.
+	badActorExtra := []authenticatorv1alpha1.ExtraMapping{{Key: "actor-groups", ValueClaim: "groups"}}
+	authBad := NewAuthenticator(
+		&fakeVerifier{claims: map[string]any{"sub": "alice", "groups": []any{"dev", "ops"}}},
+		mapper, "sub", "", "", nil, badActorExtra)
+	if _, err := authBad.Authenticate(context.Background(), "raw-token"); err == nil {
+		t.Fatalf("Authenticate with a non-string actorExtra claim = nil error, want rejection")
 	}
 }
 

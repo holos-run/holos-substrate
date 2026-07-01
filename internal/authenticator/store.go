@@ -54,6 +54,34 @@ type Entry struct {
 	// Check path need not re-apply CRD defaults. A nil ref selects the
 	// CredentialsSecretRef Secret path (HOL-1400).
 	ServiceAccountRef *authenticatorv1alpha1.ServiceAccountReference
+
+	// Impersonation is the resolved delegated-impersonation config
+	// (spec.impersonation), or nil when the Backend omits it (delegated
+	// impersonation disabled — the fail-closed default). The reconciler builds it
+	// once and the Check path (a later phase) consults it to decide whether a
+	// validated actor may impersonate a target identity carried on inbound
+	// Impersonate-* headers. This phase populates it but the Check path does not yet
+	// consume it, so request-path behavior is unchanged (HOL-1432).
+	Impersonation *ResolvedImpersonation
+}
+
+// ResolvedImpersonation is the reconciler-resolved form of spec.impersonation,
+// shaped for the Check path's runtime tests. Groups is a set (built from
+// spec.impersonation.groups) for O(1) membership tests against an actor's mapped
+// Kubernetes groups; ActorExtra carries the validated spec.impersonation.actorExtra
+// claim mappings the Authenticator resolves into Identity.ActorExtra. Like the
+// Entry that holds it, a ResolvedImpersonation is treated as immutable once stored.
+type ResolvedImpersonation struct {
+	// Groups is the allowlist of Kubernetes group names that gate delegated
+	// impersonation, as a set for O(1) membership tests. It is built from
+	// spec.impersonation.groups; an empty set allowlists no group (delegated
+	// impersonation effectively disabled even with a non-nil spec.impersonation).
+	Groups map[string]struct{}
+
+	// ActorExtra is the set of claim→extra-key mappings (spec.impersonation.actorExtra)
+	// describing the actor identity. The Authenticator resolves them into
+	// Identity.ActorExtra with the same semantics as spec.oidc.extra.
+	ActorExtra []authenticatorv1alpha1.ExtraMapping
 }
 
 // Store is a concurrency-safe registry of ready Backends keyed by spec.host. The

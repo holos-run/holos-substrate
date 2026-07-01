@@ -318,6 +318,171 @@ func TestReconcileInvalidExtraKeyRejects(t *testing.T) {
 	}
 }
 
+// TestReconcileImpersonationApplied asserts a Backend with a valid
+// spec.impersonation (a group allowlist plus a disjoint actorExtra mapping)
+// becomes Ready and that its registered Store entry carries the resolved
+// impersonation config: the group set for O(1) membership tests and the actorExtra
+// mappings, with the Authenticator resolving them into Identity.ActorExtra
+// (HOL-1432).
+func TestReconcileImpersonationApplied(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	discover := func(context.Context, string, string, []byte) (authenticator.TokenVerifier, error) {
+		return claimsVerifier{claims: map[string]any{
+			"sub":         "alice",
+			"actor_email": "bob@example.com",
+			"groups":      []any{"platform-admins"},
+		}}, nil
+	}
+	r, store, _ := newReconciler(discover)
+
+	b := makeBackend(ns, "backend-imp", "api-imp.example.test")
+	b.Spec.OIDC.Extra = []authenticatorv1alpha1.ExtraMapping{{Key: "email", ValueClaim: "email"}}
+	b.Spec.Impersonation = &authenticatorv1alpha1.ImpersonationConfig{
+		Groups:     []string{"platform-admins", "sre"},
+		ActorExtra: []authenticatorv1alpha1.ExtraMapping{{Key: "actor-email", ValueClaim: "actor_email"}},
+	}
+	key := createBackend(ctx, t, b)
+
+	if _, err := reconcile(ctx, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	got := getBackend(ctx, t, key)
+	if status := condStatus(got, ConditionReady); status != metav1.ConditionTrue {
+		t.Fatalf("Ready = %q, want True", status)
+	}
+
+	entry, ok := store.Get("api-imp.example.test")
+	if !ok {
+		t.Fatalf("store missing entry for host api-imp.example.test")
+	}
+	if entry.Impersonation == nil {
+		t.Fatalf("entry.Impersonation is nil, want the resolved config")
+	}
+	for _, g := range []string{"platform-admins", "sre"} {
+		if _, ok := entry.Impersonation.Groups[g]; !ok {
+			t.Errorf("resolved impersonation groups missing %q; got %v", g, entry.Impersonation.Groups)
+		}
+	}
+	if n := len(entry.Impersonation.Groups); n != 2 {
+		t.Errorf("resolved impersonation groups size = %d, want 2", n)
+	}
+	if n := len(entry.Impersonation.ActorExtra); n != 1 || entry.Impersonation.ActorExtra[0].Key != "actor-email" {
+		t.Errorf("resolved impersonation actorExtra = %v, want a single actor-email mapping", entry.Impersonation.ActorExtra)
+	}
+
+	// The Authenticator resolves the actorExtra claim into Identity.ActorExtra,
+	// separate from the oidc.extra namespace.
+	id, err := entry.Authenticator.Authenticate(ctx, "raw-token")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if got, want := id.ActorExtra["actor-email"], "bob@example.com"; got != want {
+		t.Errorf("ActorExtra[actor-email] = %q, want %q", got, want)
+	}
+}
+
+// TestReconcileImpersonationNilEntryEmpty asserts a Backend without
+// spec.impersonation reconciles Ready and its Store entry carries a nil resolved
+// impersonation (feature off), so the plumbing is inert by default (HOL-1432).
+func TestReconcileImpersonationNilEntryEmpty(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	r, store, _ := newReconciler(discoverOK)
+	key := createBackend(ctx, t, makeBackend(ns, "backend-imp-nil", "api-imp-nil.example.test"))
+
+	if _, err := reconcile(ctx, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	got := getBackend(ctx, t, key)
+	if status := condStatus(got, ConditionReady); status != metav1.ConditionTrue {
+		t.Fatalf("Ready = %q, want True", status)
+	}
+	entry, ok := store.Get("api-imp-nil.example.test")
+	if !ok {
+		t.Fatalf("store missing entry for host api-imp-nil.example.test")
+	}
+	if entry.Impersonation != nil {
+		t.Errorf("entry.Impersonation = %v, want nil when spec.impersonation is omitted", entry.Impersonation)
+	}
+}
+
+// TestReconcileInvalidActorExtraKeyRejects asserts a Backend whose
+// spec.impersonation.actorExtra names a non-canonical extra key is rejected as an
+// invalid spec (Accepted/Ready=False, reason InvalidSpec), mirroring the
+// spec.oidc.extra key check, and leaves nothing in the store (HOL-1432).
+func TestReconcileInvalidActorExtraKeyRejects(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	r, store, _ := newReconciler(discoverOK)
+	b := makeBackend(ns, "backend-bad-actor-extra", "api-bad-actor-extra.example.test")
+	b.Spec.Impersonation = &authenticatorv1alpha1.ImpersonationConfig{
+		ActorExtra: []authenticatorv1alpha1.ExtraMapping{{Key: "Actor/Email", ValueClaim: "actor_email"}},
+	}
+	key := createBackend(ctx, t, b)
+
+	res, err := reconcile(ctx, r, key)
+	if err != nil {
+		t.Fatalf("reconcile returned error for an invalid actorExtra key (should not requeue): %v", err)
+	}
+	if res.RequeueAfter != 0 {
+		t.Errorf("RequeueAfter = %v, want 0 for a terminal rejection", res.RequeueAfter)
+	}
+
+	got := getBackend(ctx, t, key)
+	if s := condStatus(got, ConditionAccepted); s != metav1.ConditionFalse {
+		t.Errorf("Accepted = %q, want False", s)
+	}
+	if reason := condReason(got, ConditionReady); reason != ReasonInvalidSpec {
+		t.Errorf("Ready reason = %q, want %q", reason, ReasonInvalidSpec)
+	}
+	if store.Len() != 0 {
+		t.Errorf("store has %d entries, want 0 for a rejected spec", store.Len())
+	}
+}
+
+// TestReconcileActorExtraKeyCollisionRejects asserts a Backend whose
+// spec.impersonation.actorExtra key collides with a spec.oidc.extra key is rejected
+// as an invalid spec (Accepted/Ready=False, reason InvalidSpec) — the two
+// extra-key namespaces must be disjoint — and leaves nothing in the store
+// (HOL-1432).
+func TestReconcileActorExtraKeyCollisionRejects(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	r, store, _ := newReconciler(discoverOK)
+	b := makeBackend(ns, "backend-actor-extra-collide", "api-actor-extra-collide.example.test")
+	b.Spec.OIDC.Extra = []authenticatorv1alpha1.ExtraMapping{{Key: "email", ValueClaim: "email"}}
+	b.Spec.Impersonation = &authenticatorv1alpha1.ImpersonationConfig{
+		ActorExtra: []authenticatorv1alpha1.ExtraMapping{{Key: "email", ValueClaim: "actor_email"}},
+	}
+	key := createBackend(ctx, t, b)
+
+	res, err := reconcile(ctx, r, key)
+	if err != nil {
+		t.Fatalf("reconcile returned error for a colliding actorExtra key (should not requeue): %v", err)
+	}
+	if res.RequeueAfter != 0 {
+		t.Errorf("RequeueAfter = %v, want 0 for a terminal rejection", res.RequeueAfter)
+	}
+
+	got := getBackend(ctx, t, key)
+	if s := condStatus(got, ConditionAccepted); s != metav1.ConditionFalse {
+		t.Errorf("Accepted = %q, want False", s)
+	}
+	if reason := condReason(got, ConditionReady); reason != ReasonInvalidSpec {
+		t.Errorf("Ready reason = %q, want %q", reason, ReasonInvalidSpec)
+	}
+	if store.Len() != 0 {
+		t.Errorf("store has %d entries, want 0 for a rejected spec", store.Len())
+	}
+}
+
 // TestReconcileInvalidCELRejects asserts a malformed group-mapping CEL expression
 // rejects the spec (Accepted/Programmed/Ready=False, reason InvalidSpec), does not
 // requeue with an error, and leaves nothing in the store.

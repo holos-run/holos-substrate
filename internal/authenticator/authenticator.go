@@ -28,6 +28,14 @@ type Identity struct {
 	// Impersonate-Extra-<key> header. It is nil/empty when no extra mappings are
 	// configured or none of their claims were present on the token.
 	Extra map[string]string
+	// ActorExtra maps each configured actor-extra key
+	// (spec.impersonation.actorExtra[].key) to the single string value read from its
+	// claim, describing the **actor** identity in delegated impersonation. It is
+	// resolved with the same claim-read semantics as Extra but from a disjoint key
+	// namespace (the reconciler enforces disjointness). It is nil/empty when no
+	// actorExtra mappings are configured or none of their claims were present. The
+	// Check path consumes it in a later phase (HOL-1433); this phase only resolves it.
+	ActorExtra map[string]string
 }
 
 // Authenticator validates an OIDC bearer token for a single Backend and resolves
@@ -53,15 +61,21 @@ type Authenticator struct {
 	// extra is the set of claim→extra-key mappings (spec.oidc.extra) the
 	// authenticator resolves into Identity.Extra. Nil/empty emits no extra headers.
 	extra []authenticatorv1alpha1.ExtraMapping
+	// actorExtra is the set of claim→extra-key mappings (spec.impersonation.actorExtra)
+	// describing the actor identity in delegated impersonation, resolved into
+	// Identity.ActorExtra with the same semantics as extra. Nil/empty resolves no
+	// actor extras. Its keys are disjoint from extra's (the reconciler enforces this).
+	actorExtra []authenticatorv1alpha1.ExtraMapping
 }
 
 // NewAuthenticator constructs an Authenticator from a verifier, a compiled group
-// mapper, the username claim, the username prefix, the UID claim, and the extra
-// claim mappings. usernameClaim defaults to "sub" when empty, matching the OIDC
-// convention and the Backend CRD default. usernamePrefix is prepended to the
-// resolved username; an empty prefix prepends nothing. An empty uidClaim or nil
-// extra emits no UID / no extra headers (the backward-compatible default).
-func NewAuthenticator(verifier TokenVerifier, mapper *GroupMapper, usernameClaim, usernamePrefix, uidClaim string, extra []authenticatorv1alpha1.ExtraMapping) *Authenticator {
+// mapper, the username claim, the username prefix, the UID claim, the oidc.extra
+// claim mappings, and the impersonation.actorExtra claim mappings. usernameClaim
+// defaults to "sub" when empty, matching the OIDC convention and the Backend CRD
+// default. usernamePrefix is prepended to the resolved username; an empty prefix
+// prepends nothing. An empty uidClaim or nil extra/actorExtra emits no UID / no
+// extra / no actor-extra fields (the backward-compatible default).
+func NewAuthenticator(verifier TokenVerifier, mapper *GroupMapper, usernameClaim, usernamePrefix, uidClaim string, extra, actorExtra []authenticatorv1alpha1.ExtraMapping) *Authenticator {
 	if usernameClaim == "" {
 		usernameClaim = "sub"
 	}
@@ -72,6 +86,7 @@ func NewAuthenticator(verifier TokenVerifier, mapper *GroupMapper, usernameClaim
 		usernamePrefix: usernamePrefix,
 		uidClaim:       uidClaim,
 		extra:          extra,
+		actorExtra:     actorExtra,
 	}
 }
 
@@ -116,21 +131,51 @@ func (a *Authenticator) Authenticate(ctx context.Context, rawToken string) (*Ide
 
 	// Extra fields are optional context: a claim absent from this token is skipped,
 	// but a claim present as a non-string is a misconfiguration and fails closed.
-	for _, m := range a.extra {
-		value, ok, err := optionalStringClaim(verified.Claims, m.ValueClaim)
+	if identity.Extra, err = resolveExtra(verified.Claims, a.extra, "extra"); err != nil {
+		return nil, err
+	}
+	// ActorExtra (spec.impersonation.actorExtra) describes the actor identity in
+	// delegated impersonation. It is resolved with the same semantics as extra but
+	// kept in a separate map on a disjoint key namespace (the reconciler enforces
+	// disjointness). The Check path consumes it in a later phase (HOL-1433).
+	//
+	// Resolving it here — including the present-non-string fail-closed error — is the
+	// prescribed plumbing (AC #4), and it does not change request-path behavior for
+	// any existing traffic: a.actorExtra is non-empty only for a Backend that opts
+	// into spec.impersonation.actorExtra, a field with no prior runtime effect, so no
+	// pre-existing Backend can newly fail here. The fail-closed contract is identical
+	// to the a.extra loop above (spec.oidc.extra), which likewise resolves and can
+	// reject on this same Authenticate path today; ActorExtra adds no new hazard class.
+	if identity.ActorExtra, err = resolveExtra(verified.Claims, a.actorExtra, "actorExtra"); err != nil {
+		return nil, err
+	}
+
+	return identity, nil
+}
+
+// resolveExtra resolves a set of claim→extra-key mappings against the validated
+// claims into a map, using the optional-string-claim semantics shared by
+// spec.oidc.extra and spec.impersonation.actorExtra: a claim absent from the token
+// (or carrying JSON null) is skipped, a present string is emitted verbatim
+// (including an empty string), and a present non-string fails closed. label names
+// the mapping group in error messages ("extra" or "actorExtra"). It returns a nil
+// map when no mapping's claim was present.
+func resolveExtra(claims map[string]any, mappings []authenticatorv1alpha1.ExtraMapping, label string) (map[string]string, error) {
+	var out map[string]string
+	for _, m := range mappings {
+		value, ok, err := optionalStringClaim(claims, m.ValueClaim)
 		if err != nil {
-			return nil, fmt.Errorf("reading extra %q claim: %w", m.Key, err)
+			return nil, fmt.Errorf("reading %s %q claim: %w", label, m.Key, err)
 		}
 		if !ok {
 			continue
 		}
-		if identity.Extra == nil {
-			identity.Extra = make(map[string]string, len(a.extra))
+		if out == nil {
+			out = make(map[string]string, len(mappings))
 		}
-		identity.Extra[m.Key] = value
+		out[m.Key] = value
 	}
-
-	return identity, nil
+	return out, nil
 }
 
 // stringClaim reads claim from claims as a non-empty string. A missing claim, a
