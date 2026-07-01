@@ -55,10 +55,11 @@ privileged credential, so Envoy forwards the request straight to the API server.
   `config/crd/bases/authenticator.holos.run_backends.yaml`);
 - an **AuthorizationPolicy** with `action: CUSTOM` and
   `provider.name: holos-authenticator`, matching the Istio extension provider;
-- two example **Backend** CRs, one per credential source — the discovery-based
-  `example` (in-cluster Keycloak issuer, `credentialsSecretRef`) and the
-  static-JWKS `remote-cluster-a` (KSA / offline mode, `serviceAccountRef: {}`,
-  below).
+- three example **Backend** CRs — the discovery-based `example` (in-cluster
+  Keycloak issuer, `credentialsSecretRef`), the static-JWKS `remote-cluster-a`
+  (KSA / offline mode, `serviceAccountRef: {}`, below), and `delegated-example`
+  demonstrating **delegated impersonation** (`spec.impersonation` — a `groups`
+  allowlist + `actorExtra`, see *Delegated impersonation* below).
 
 No `Namespace` is emitted: the `holos-authenticator` namespace is owned by the
 central registry (`holos/namespaces.cue`) and rendered by the `namespaces`
@@ -220,6 +221,42 @@ token.) The example `Backend`s likewise omit the `caBundle` fields so the
 committed manifests carry no per-cluster trust material; an operator injects the
 local-ca PEM out of band (mirroring the caBundle convention the
 project/application components use).
+
+## Delegated impersonation (`spec.impersonation`)
+
+By default a `Backend` runs **self impersonation**: the authorizer impersonates the
+validated caller, and any inbound `Impersonate-*` header is denied fail-closed. An
+optional **`spec.impersonation`** block (ADR-23 Revision 11) opts an **authorized
+actor** into **delegated impersonation** — `kubectl --as <someone-else>` passthrough
+— without the authorizer holding a per-user credential. It is additive: a `Backend`
+omitting `spec.impersonation` is byte-for-byte the self-only behavior.
+
+- **`spec.impersonation.groups[]`** — the actor allowlist. Delegated impersonation
+  is permitted only when the actor's **mapped** Kubernetes groups (what the CEL /
+  default mapping computes, not the raw claim) intersect this set. An
+  omitted/empty list allowlists nothing (opt-in default).
+- **`spec.impersonation.actorExtra[]`** — reserved actor-identity headers stamped
+  from the validated actor token as `Impersonate-Extra-<key>` (e.g. `actor-sub`,
+  `actor-email`). They are **never client-settable** (an inbound copy is denied in
+  both modes) and must be **disjoint** from `spec.oidc.extra` keys.
+
+The presence of an inbound `Impersonate-*` header is the self-vs-delegated **mode
+switch**; an unauthorized actor (or a nil-`spec.impersonation` Backend) is denied
+403. In delegated mode the actor's target passes through and the Backend-derived
+`Impersonate-User`/groups/`Impersonate-Uid`/`spec.oidc.extra` are **not** emitted —
+only the reserved `actorExtra` headers survive (the AC6 rule). Impersonation-target
+authorization is delegated to the **impersonator SA's `impersonate` RBAC on the
+upstream API server**; the shipped default ClusterRole (above) is impersonate-only
+on the two SA virtual groups and is **not** broadened — grant the impersonator SA
+`impersonate` for the intended targets **per `Backend`**.
+
+The rendered **`delegated-example`** `Backend` demonstrates the shape (a `groups`
+allowlist plus `actor-*` `actorExtra` mappings). The full operator procedure — the
+`kubectl --as` flow, the audit-log distinction between impersonator SA / actor /
+impersonated principal, and the required per-`Backend` impersonator RBAC — is in the
+runbook's [*Delegated
+impersonation*](../../../docs/runbooks/holos-authenticator.md#delegated-impersonation-kubectl---as-passthrough)
+section.
 
 ## Tenant isolation (Backend is a platform-owned object)
 

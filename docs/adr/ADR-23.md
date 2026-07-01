@@ -20,6 +20,7 @@
 | 8        | 2026-06-27 | @jeffmccune | Smuggling-prevention ownership + Lua filter ordering (HOL-1417) — smuggling prevention is the authenticator's responsibility (no `EnvoyFilter` required; the reject filter is optional defense in depth); the split filter is ordered after ext_authz with the version-stable `filterClass: AUTHZ`, on a gateway as on a waypoint (below) |
 | 9        | 2026-06-27 | @jeffmccune | Username-prefix extension (HOL-1418) — additive `spec.oidc.usernamePrefix` for the impersonated username, the apiserver `--oidc-username-prefix=oidc:` equivalent, paired by convention with `groupsPrefix` (below) |
 | 10       | 2026-06-27 | @jeffmccune | UID + extra-fields extension (HOL-1419) — additive `spec.oidc.uidClaim` → `Impersonate-Uid` and `spec.oidc.extra[]` → `Impersonate-Extra-<key>`, both single-valued overwrite headers (no Lua split), completing the four impersonation dimensions (below) |
+| 11       | 2026-07-01 | @jeffmccune | Delegated impersonation (`kubectl --as` passthrough, HOL-1429/HOL-1430/HOL-1433) — additive `spec.impersonation` (`groups` allowlist + reserved `actorExtra[]`); inbound `Impersonate-*` is no longer *always* denied but is the self-vs-delegated **mode switch**; an authorized actor's target passes through, the reserved `Impersonate-Extra-actor-*` namespace is never client-settable, target authz is delegated to the impersonator SA's API-server RBAC, and the AC6 rule disables all Backend-derived headers except `actorExtra` in delegated mode (below) |
 
 ## As-built (Revision 2)
 
@@ -29,7 +30,8 @@ with the deviations noted below. `Status` is now `Implemented`.
 - **As built.** The `cmd/holos-authenticator` controller-runtime manager runs
   the Envoy ext_authz gRPC server as a `manager.Runnable` with
   `NeedLeaderElection() == false`; `Check` routes by `Host`, sanitizes inbound
-  `Impersonate-*` headers (failure-closed — denies rather than scrubs), validates
+  `Impersonate-*` headers (failure-closed — denies rather than scrubs; made
+  conditional for an authorized actor by Revision 11's delegated mode), validates
   the OIDC token (issuer discovery + JWKS, `iss`/`aud`/`exp`), maps claims to
   groups via CEL (default `claims["<groupsClaim>"]`, i.e. `claims["groups"]`),
   and returns `Impersonate-User` plus a single comma-joined groups header and the
@@ -54,7 +56,13 @@ with the deviations noted below. `Status` is now `Implemented`.
   security property (a client cannot smuggle a privileged group or reuse its own
   token downstream) holds; the mechanism is overwrite-on-allow, not
   reject-on-inbound, for `Authorization`. The runbook documents the as-built
-  model.
+  model. **(Superseded in part by Revision 11.)** The "inbound `Impersonate-*`
+  headers are rejected fail-closed" clause here describes the **self-only**
+  behavior. Revision 11 (delegated impersonation) makes that rejection
+  **conditional**: it is the default (nil `spec.impersonation`) and still applies
+  to an unauthorized actor, but a Backend may opt an **authorized** actor into
+  forwarding an actor-supplied `Impersonate-*` target (`kubectl --as`
+  passthrough). See Revision 11 below.
 - **Deviation: `server.caBundle` is recorded but not yet consumed.** The
   authorizer copies `spec.server.caBundle` into its in-memory `Backend` entry but
   does **not** dial the upstream API server — Envoy (the waypoint) forwards the
@@ -438,6 +446,112 @@ token validation + CEL group
 mapping*](../runbooks/holos-authenticator.md#oidc-token-validation--cel-group-mapping)
 section.
 
+## Delegated impersonation: `kubectl --as` passthrough (Revision 11)
+
+Revision 11 (HOL-1429 → HOL-1430 → HOL-1433) adds **delegated impersonation** —
+the `kubectl --as` passthrough mode. Until now the authorizer ran **self
+impersonation** only: it validated the caller's OIDC token and impersonated *that
+caller*, and any inbound `Impersonate-*` header was **always denied fail-closed**
+(the confused-deputy guard: a client must not smuggle a privileged group under the
+backend's impersonation credential). Revision 11 makes that denial **conditional**:
+a Backend may opt an **authorized actor** into forwarding the actor-specified
+target — exactly as `kubectl --as <someone-else>` — without the authorizer holding
+a per-user credential.
+
+This revision supersedes the Revision 2 as-built claim that inbound
+`Impersonate-*` is *always* denied, and the Design step 2 / Consequences
+"inbound header sanitization is non-negotiable" framing: those describe the
+self-only behavior, which remains the default (nil `spec.impersonation`) but is no
+longer universal. The security property is preserved — an **unauthorized** actor,
+and a Backend that does not opt in, still deny any inbound `Impersonate-*`
+fail-closed — but it is enforced by an authorization check, not a blanket reject.
+
+### The two modes
+
+- **Self impersonation (default, `spec.impersonation` nil).** Unchanged,
+  byte-for-byte: validate the caller's token, impersonate the caller's derived
+  identity (`Impersonate-User` + the comma-joined groups header + derived
+  `Impersonate-Uid`/`spec.oidc.extra`), and **deny any inbound `Impersonate-*`
+  header** fail-closed. This is the only mode when `spec.impersonation` is nil.
+- **Delegated impersonation (`spec.impersonation` non-nil).** The presence of any
+  inbound `Impersonate-*` header — other than the reserved actor-extra namespace
+  (below) — is the **mode switch**. The validated token identifies an **actor**;
+  if the actor is authorized (below) the actor-supplied target
+  (`Impersonate-User`/`Impersonate-Uid`/`--as-group`/non-reserved
+  `Impersonate-Extra-*`) is forwarded to the upstream verbatim, and the
+  authorizer stamps the actor's own identity into the reserved
+  `Impersonate-Extra-actor-*` headers. Absence of any inbound `Impersonate-*`
+  keeps self mode — now additionally stamping the `actorExtra` headers so the
+  actor identity is always recorded.
+
+### `spec.impersonation` — the additive opt-in
+
+A single additive `spec.impersonation` block (`*ImpersonationConfig`, no new CRD;
+a Backend that omits it is fully backward-compatible):
+
+- **`groups` (`[]string`, `listType=set`) — the actor allowlist.** Delegated
+  impersonation is permitted only when the actor's **mapped** Kubernetes groups —
+  the groups the authorizer computes for the validated actor token via the default
+  groups-claim mapping or `spec.groupMapping.celExpression`, **not** the raw token
+  claim — intersect this list. An omitted or empty `groups` allowlists nothing, so
+  a `spec.impersonation` present but with empty `groups` leaves delegated
+  impersonation effectively disabled (a deliberate opt-in default).
+- **`actorExtra[]` (`[]ExtraMapping`, `listType=map` keyed by `key`) — the
+  reserved actor-identity headers.** Maps token claims to
+  `Impersonate-Extra-<key>` headers describing the **actor** (e.g.
+  `actor-sub`/`actor-email`), exactly as `spec.oidc.extra` maps claims for the
+  impersonated user. Its values are always set authoritatively by the authorizer
+  from the validated actor token; they are a **reserved namespace** — an inbound
+  `Impersonate-Extra-<actorKey>` header is rejected fail-closed in **both** modes,
+  so an actor can never spoof their own actor-identity. `actorExtra` keys must be
+  disjoint from `spec.oidc.extra` keys (both share the single
+  `Impersonate-Extra-<key>` header space); the reconciler validates disjointness
+  and per-key canonicality (`Accepted=False` on violation).
+
+### Semantics (the AC6 rule and the security invariants)
+
+- **Allowlist matches mapped groups, not the raw claim.** The authz test is the
+  actor's post-mapping Kubernetes groups intersected with `spec.impersonation.groups`.
+- **AC6 — user-supplied headers disable all Backend-derived headers *except*
+  `actorExtra`.** In delegated mode the actor's target **replaces** the derived
+  self identity entirely: the authorizer does **not** emit the derived
+  `Impersonate-User`/groups/`Impersonate-Uid`/`spec.oidc.extra`. The **only**
+  Backend-derived headers that survive the delegation are the reserved
+  `Impersonate-Extra-actor-*` headers, which record who actually performed the
+  request (distinct from the impersonated target and from the impersonator SA) so
+  audit tooling can attribute a delegated request to its real actor.
+- **Target authorization is delegated to API-server RBAC — no target allowlist
+  here.** The authorizer does not constrain *which* identity an authorized actor
+  may impersonate; that is enforced by the **impersonator ServiceAccount's
+  `impersonate` RBAC on the upstream API server**. The shipped default
+  `holos-authenticator-impersonator` ClusterRole remains impersonate-only on the
+  two SA virtual groups and is **not** broadened (Revision 4); an operator grants
+  the impersonator SA `impersonate` on the intended target users/groups
+  **per-`Backend`**. A target the impersonator SA cannot impersonate is rejected by
+  the API server (403), not by the authorizer.
+- **Every failure path stays fail-closed.** An unauthorized actor, a nil-
+  `spec.impersonation` Backend receiving an inbound `Impersonate-*`, an inbound
+  reserved `Impersonate-Extra-actor-*`, an unrecognized `Impersonate-*` header, a
+  delegated request with no `Impersonate-User` target, or a passthrough group with
+  **surrounding whitespace** — all Denied (403), never OK. The delegated-mode
+  passthrough groups round-trip through the same comma-joined groups header + Lua
+  split filter self mode uses (Revision 7): the actor's inbound `Impersonate-Group`
+  is **split on commas** into individual groups (a comma is a group *separator*, not
+  a denial — `dev,ops` is two groups), and the `firstUnsafeGroup` guard then denies
+  only a surrounding-whitespace element on the split result.
+- **The impersonator credential is unchanged.** Both modes present the same
+  `serviceAccountRef`/`credentialsSecretRef` impersonator credential (Revision 4)
+  as `Authorization` to the upstream.
+
+The Check-path implementation is `internal/authenticator/server.go` (the reordered
+flow, the reserved-actor-extra inbound guard, the mode detection, and the
+delegated OK response), with table-driven `server_test.go` coverage. The operator
+procedure (enabling delegated impersonation, the group-allowlist semantics,
+configuring `actorExtra`, the `kubectl --as` flow, the audit-log distinction, and
+the **required** per-`Backend` impersonator RBAC) is in the [runbook's *Delegated
+impersonation*](../runbooks/holos-authenticator.md#delegated-impersonation-kubectl---as-passthrough)
+section; the component ships a worked example `Backend` with `spec.impersonation`.
+
 ## Group encoding: comma-joined `Impersonate-Group` + Lua split filter (Revision 6)
 
 > **Superseded by Revision 7 (HOL-1416).** This revision's encoding — per-group
@@ -721,7 +835,12 @@ On each request Envoy forwards to the authorizer's `Check`, the authenticator
    *carries* impersonation headers is denied rather than silently scrubbed if there
    is any doubt the upstream would see the client's version. HOL-1388 implements
    this with explicit unit tests for spoofed inbound `Impersonate-*` /
-   `Authorization` headers.
+   `Authorization` headers. **(Revision 11 makes the `Impersonate-*` rejection
+   conditional.)** This blanket rejection is the self-only behavior and remains the
+   default; a Backend that opts into delegated impersonation (`spec.impersonation`)
+   instead treats an inbound `Impersonate-*` header as the mode switch and forwards
+   an **authorized** actor's target — see Revision 11. The `Authorization`
+   overwrite is unchanged in both modes.
 3. **Validates the OIDC identity token.** It extracts the bearer token, performs
    issuer discovery and JWKS signature verification, and checks `iss`, `aud`
    (the backend's OIDC client), and `exp`. A token that fails validation yields a
@@ -865,6 +984,13 @@ dependency footprint legible.
   upstream honor it under the backend credential — a full privilege-escalation. The
   allow-path implementation (HOL-1388) carries this requirement and explicit
   spoofed-inbound-header tests; the scaffold has no allow path and so cannot leak.
+  **(Refined by Revision 11.)** "Reject every inbound `Impersonate-*`" is the
+  self-only rule; delegated impersonation replaces the blanket reject with an
+  **authorization check** — an unauthorized actor (and a Backend that does not opt
+  in) is still denied fail-closed, but an authorized actor's target passes through.
+  The reserved `Impersonate-Extra-actor-*` namespace is never client-settable in
+  either mode, and impersonation-target authorization is delegated to the
+  impersonator SA's API-server RBAC. See Revision 11.
 - **Conformant-cluster portability, external backends included.** Relying only on
   standard Kubernetes impersonation (not cluster-specific auth plumbing) lets one
   authorizer front in-cluster and external API servers alike, but it binds the
