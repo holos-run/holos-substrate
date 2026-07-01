@@ -63,6 +63,12 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 			},
 			GroupMapping:         GroupMapping{CELExpression: "claims.groups"},
 			CredentialsSecretRef: &SecretReference{Name: "custom-creds", Key: "token"},
+			Impersonation: &ImpersonationConfig{
+				Groups: []string{"oidc:platform-admins", "oidc:sre"},
+				ActorExtra: []ExtraMapping{
+					{Key: "actor-email", ValueClaim: "email"},
+				},
+			},
 		},
 	}
 	clone := backend.DeepCopy()
@@ -118,6 +124,25 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 	clone.Spec.OIDC.Extra[0].Key = "mutated"
 	if backend.Spec.OIDC.Extra[0].Key == "mutated" {
 		t.Error("mutating the clone's OIDC.Extra changed the original (shared backing array)")
+	}
+	// Impersonation is a pointer to a struct holding a []string and a []ExtraMapping;
+	// both must be cloned into independent backing arrays.
+	if clone.Spec.Impersonation == backend.Spec.Impersonation {
+		t.Error("DeepCopy did not clone the Impersonation pointer")
+	}
+	if &clone.Spec.Impersonation.Groups[0] == &backend.Spec.Impersonation.Groups[0] {
+		t.Error("DeepCopy did not clone the Impersonation.Groups slice")
+	}
+	clone.Spec.Impersonation.Groups[0] = "mutated"
+	if backend.Spec.Impersonation.Groups[0] == "mutated" {
+		t.Error("mutating the clone's Impersonation.Groups changed the original (shared backing array)")
+	}
+	if &clone.Spec.Impersonation.ActorExtra[0] == &backend.Spec.Impersonation.ActorExtra[0] {
+		t.Error("DeepCopy did not clone the Impersonation.ActorExtra slice")
+	}
+	clone.Spec.Impersonation.ActorExtra[0].Key = "mutated"
+	if backend.Spec.Impersonation.ActorExtra[0].Key == "mutated" {
+		t.Error("mutating the clone's Impersonation.ActorExtra changed the original (shared backing array)")
 	}
 }
 
