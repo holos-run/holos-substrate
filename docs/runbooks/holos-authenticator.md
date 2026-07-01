@@ -11,7 +11,10 @@ user's real groups.
 
 This runbook is the operator's guide to the as-built service: the ext_authz
 model, the `authenticator.holos.run` `Backend` CR, OIDC validation + CEL group
-mapping, the impersonation RBAC the forwarded credential must hold, the two
+mapping, **delegated impersonation** (`kubectl --as` passthrough via
+`spec.impersonation` — the group allowlist, the reserved `actorExtra` headers, and
+the impersonator RBAC it requires), the impersonation RBAC the forwarded credential
+must hold, the two
 mutually-exclusive credential sources — the controller-minted `serviceAccountRef`
 (the shipped impersonate-only `holos-authenticator-impersonator` SA, TokenRequest
 mint/cache/rotation) and the runtime `credentialsSecretRef` Secret — the Istio
@@ -39,20 +42,27 @@ On each `Check` the authorizer:
 1. **Routes by `Host`.** It looks up the request's `:authority`/`Host` against
    the host-keyed `Backend` registry (`spec.host`). An unknown host is denied
    (HTTP 403).
-2. **Sanitizes inbound impersonation headers (failure-closed).** If the inbound
-   request carries any `Impersonate-*` header **or a copy of the configured groups
-   header** (default `X-Impersonate-Groups`), the request is **denied** — not
-   silently scrubbed. Because the authorizer injects a privileged impersonation
-   credential downstream, a client that smuggled `Impersonate-Group:
-   system:masters` — or `X-Impersonate-Groups: system:masters`, which the split Lua
-   filter would turn into one — would otherwise be impersonated at that privilege.
-   This is the confused-deputy guard; it has explicit spoofed-header unit tests
+2. **Guards inbound impersonation headers (failure-closed).** A **copy of the
+   configured groups header** (default `X-Impersonate-Groups`) and any **reserved
+   `Impersonate-Extra-actor-*` header** (a Backend's `spec.impersonation.actorExtra`
+   keys) are **always denied** — the groups header because the split Lua filter
+   would turn `X-Impersonate-Groups: system:masters` into a real
+   `Impersonate-Group`, and the actor-extra namespace because the authorizer stamps
+   those itself from the validated token (a client must not spoof the actor's own
+   identity). An inbound **`Impersonate-*` header** (`Impersonate-User`/`-Group`/
+   `-Uid`/non-reserved `-Extra-*`) is handled by **mode** ([*Delegated
+   impersonation*](#delegated-impersonation-kubectl---as-passthrough) below): a
+   Backend with `spec.impersonation` **nil** denies it fail-closed exactly as before
+   (self mode only), and a Backend that opts in treats it as the **delegated-mode
+   switch** — forwarding it only for an **authorized** actor (whose mapped groups are
+   on the allowlist) and denying an unauthorized actor fail-closed. This is the
+   confused-deputy guard; it has explicit spoofed-header unit tests
    (`internal/authenticator/server_test.go`). **Preventing header smuggling is the
    authenticator's responsibility, enforced server-side on every `Check`, so no
    Envoy `EnvoyFilter` is required to strip client-supplied impersonation headers.**
    The optional reject Lua filter (below) re-enforces the same guard at the proxy,
-   before ext_authz, as defense in depth — it hardens, but is **not required for**,
-   the security property.
+   before ext_authz, as defense in depth — but note it rejects **all** inbound
+   `Impersonate-*` (see the delegated-mode caveat in that section).
 3. **Extracts the bearer token.** A missing `Authorization: Bearer …` yields a
    401 with a `WWW-Authenticate: Bearer` challenge.
 4. **Validates the OIDC token** (below). An invalid token yields 401.
@@ -128,6 +138,10 @@ own OIDC client and mapping.
 | `serviceAccountRef.name`     | no       | `holos-authenticator-impersonator`         | Name of a ServiceAccount in the `holos-authenticator` namespace whose token the controller mints/rotates via TokenRequest as the impersonator credential. Mutually exclusive with `credentialsSecretRef`. See [*Provisioning the credential*](#provisioning-the-credential-serviceaccountref-or-a-runtime-secret). |
 | `serviceAccountRef.audience` | no       | API server default audience                | Audience the minted SA token is requested with (empty → the API server's default audience). |
 | `serviceAccountRef.expirationSeconds` | no | `3600` (min `600`)                      | Requested lifetime of the minted SA token; the controller rotates it before expiry. |
+| `impersonation`              | no       | nil → self mode only                       | Opt-in to **delegated impersonation** (`kubectl --as` passthrough). Nil is byte-for-byte the self-only behavior (inbound `Impersonate-*` denied). See [*Delegated impersonation*](#delegated-impersonation-kubectl---as-passthrough). |
+| `impersonation.groups[]`     | no       | empty → allowlists nothing                 | The actor allowlist: an actor may delegate-impersonate only when their **mapped** Kubernetes groups intersect this set (`listType=set`; each entry `MinLength=1`). Empty leaves delegated impersonation effectively disabled. |
+| `impersonation.actorExtra[].key` | yes (per entry) | —                               | Reserved actor-identity extra key, emitted as `Impersonate-Extra-<key>` from the validated **actor** token. Canonical (lowercase, no `%`), unique (`listType=map`), and **disjoint from `oidc.extra` keys**. Never client-settable (an inbound copy is denied in both modes). |
+| `impersonation.actorExtra[].valueClaim` | yes (per entry) | —                        | Token claim read for the actor-extra value (same absent-skip / present-string-emit / non-string-deny semantics as `oidc.extra`). |
 
 > **At most one credential source.** `credentialsSecretRef` and
 > `serviceAccountRef` are **mutually exclusive** — a CRD-level CEL validation
@@ -707,12 +721,137 @@ SA, not the SA's own read access), or the Backend's `jwks` not matching the remo
 cluster's current signing keys (a key rotation on
 the remote cluster requires re-capturing `/openid/v1/jwks` into `spec.oidc.jwks`).
 
+## Delegated impersonation (`kubectl --as` passthrough)
+
+By default a `Backend` runs **self impersonation**: the authorizer validates the
+caller's OIDC token and impersonates *that caller*, and any inbound `Impersonate-*`
+header is denied fail-closed. **Delegated impersonation** (ADR-23 Revision 11) lets
+a Backend opt an **authorized actor** into forwarding an actor-specified target —
+exactly like `kubectl --as <someone-else>` — without the authorizer holding a
+per-user credential. It is entirely opt-in: a Backend with `spec.impersonation`
+nil is byte-for-byte unchanged (self mode only).
+
+### Enabling it
+
+Add a `spec.impersonation` block with two fields:
+
+```yaml
+spec:
+  # ... host / server / oidc / credential ...
+  impersonation:
+    # The actor allowlist: an actor may impersonate a target only when their
+    # MAPPED Kubernetes groups (what the CEL/default mapping computes, not the raw
+    # claim) intersect this set. Omitted/empty allowlists nothing (opt-in default).
+    groups:
+      - "oidc:platform-admins"
+    # The reserved actor-identity headers, stamped from the validated actor token
+    # as Impersonate-Extra-<key>. Keys MUST be disjoint from spec.oidc.extra keys.
+    actorExtra:
+      - key: "actor-sub"
+        valueClaim: "sub"
+      - key: "actor-email"
+        valueClaim: "email"
+      - key: "actor-preferred_username"
+        valueClaim: "preferred_username"
+```
+
+### How a delegated request flows
+
+- **The mode switch is the presence of an inbound `Impersonate-*` header** (other
+  than the reserved actor-extra namespace). No inbound `Impersonate-*` → **self
+  mode** (the caller's derived identity), now additionally stamping the `actorExtra`
+  headers so the actor is always recorded. An inbound `Impersonate-*` → **delegated
+  mode**.
+- **The group allowlist gates it against *mapped* groups.** The actor's token is
+  validated and mapped to Kubernetes groups (the default groups-claim mapping or
+  `spec.groupMapping.celExpression`); delegated mode is authorized only if those
+  mapped groups intersect `spec.impersonation.groups`. An unauthorized actor — or a
+  Backend with `spec.impersonation` nil — is denied **403** fail-closed (this is the
+  same denial that protected self-only backends before Revision 11).
+- **`actorExtra` identifies the actor.** The authorizer resolves each
+  `actorExtra` claim from the validated actor token and emits it as
+  `Impersonate-Extra-<key>`. These headers are **reserved**: an inbound copy is
+  rejected fail-closed in **both** modes, so an actor can never forge their own
+  actor-identity. Keys must be disjoint from `spec.oidc.extra` (both share the
+  `Impersonate-Extra-<key>` namespace; the reconciler rejects an overlap
+  `Accepted=False`).
+- **AC6 — user headers disable all Backend-derived headers except `actorExtra`.**
+  In delegated mode the authorizer forwards the actor-supplied
+  `Impersonate-User`/`Impersonate-Uid`/`--as-group`/non-reserved
+  `Impersonate-Extra-*` **verbatim** and does **not** emit the derived
+  `Impersonate-User`/groups/`Impersonate-Uid`/`spec.oidc.extra`. The only
+  Backend-derived headers that survive are the reserved `Impersonate-Extra-actor-*`.
+- **A delegated request must name a target user.** Kubernetes rejects impersonation
+  that sets only groups/UID/extras with no `Impersonate-User`, so a groups-only
+  delegated request is denied **403** rather than forwarded with the bare
+  impersonator credential.
+- **Groups passthrough already round-trips.** The actor's `--as-group` values arrive
+  Envoy-comma-joined as one `Impersonate-Group: a,b`; the authorizer re-emits them
+  through the configured groups header (`s.groupsHeaderName()`, default
+  `x-impersonate-groups`), so **the paired split Lua filter unpacks them into
+  `Impersonate-Group` lines exactly as in self mode** — no extra wiring. The
+  `firstUnsafeGroup` guard applies to the passthrough groups too (a comma-bearing or
+  surrounding-whitespace element is denied 403). A single group value containing a
+  literal comma cannot be represented on this path and is unsupported by design.
+
+### The operator flow (`kubectl --as`)
+
+An authorized operator impersonates a target through the authenticator's host with
+the standard `kubectl --as` / `--as-group` flags, presenting their **own** OIDC
+token:
+
+```bash
+# The operator's own token authenticates them as the ACTOR; --as/--as-group name
+# the target. The authorizer forwards the target (allowlist permitting) and stamps
+# Impersonate-Extra-actor-* from the operator's token.
+kubectl --server https://api.example.holos.internal \
+  --token "$ACTOR_OIDC_TOKEN" \
+  --as alice --as-group dev --as-group ops \
+  get pods -n some-namespace
+```
+
+### The audit log distinguishes three identities
+
+On the upstream API server's audit log a delegated request records **three**
+distinct identities, so an auditor can attribute the action precisely:
+
+- the **impersonator ServiceAccount** — the authenticated identity of the request
+  Envoy makes (`user.username` = the `serviceAccountRef`/`credentialsSecretRef` SA,
+  e.g. `system:serviceaccount:holos-authenticator:holos-authenticator-impersonator`);
+- the **impersonated principal** — the target the actor named
+  (`impersonatedUser.username`/`groups`, e.g. `alice` with `dev`/`ops`); and
+- the **actor** — recorded in the `Impersonate-Extra-actor-*` headers, surfaced in
+  the audit event's `impersonatedUser.extra` map (e.g. `actor-sub`, `actor-email`)
+  so the real human who ran `kubectl --as` is never conflated with either the
+  impersonator SA or the impersonated target.
+
+### Required: the impersonator SA needs `impersonate` RBAC for the target
+
+**Delegated impersonation does not widen the impersonator's RBAC** — the authorizer
+allows the *request* (the actor is on the allowlist) but the **API server** still
+authorizes the *impersonation* against the impersonator ServiceAccount's RBAC.
+Target authorization is **delegated to that RBAC**: there is no target allowlist in
+the authorizer. The shipped default `holos-authenticator-impersonator` ClusterRole
+is **impersonate-only on the two SA virtual groups** and is **not broadened** for
+delegated impersonation (consistent with ADR-23 Revision 4). So the impersonator SA
+**must be granted `impersonate` for the intended target users/groups**, applied
+**per `Backend`**, exactly as in [*Adding per-Backend impersonate
+scope*](#adding-per-backend-impersonate-scope) below. For a human-target Backend
+mapping to non-`system:` groups, that means `impersonate` on `users` (scoped by
+`resourceNames` to the expected usernames where practical) and on `groups` (scoped
+to the mapped group names); add `uids`/`userextras/<key>` grants if the forwarded
+target carries `Impersonate-Uid`/`Impersonate-Extra-*`. Without these grants a
+delegated request the authorizer **allows** is then **rejected 403 by the API
+server**. Never widen the shipped default ClusterRole to satisfy this.
+
 ## Impersonation RBAC (the forwarded credential)
 
 The impersonator credential — whether `serviceAccountRef` or
 `credentialsSecretRef` supplies it — is the **impersonator identity** the
 upstream API server authenticates Envoy as. It **must** hold RBAC granting the
-`impersonate` verb on whatever identity the CEL mapping emits.
+`impersonate` verb on whatever identity the CEL mapping emits (in delegated mode,
+on whatever target an authorized actor may name — see [*Delegated
+impersonation*](#delegated-impersonation-kubectl---as-passthrough) above).
 
 ### The shipped default impersonator SA and its scoped ClusterRole
 
@@ -994,15 +1133,27 @@ below.
 ### Rejecting inbound impersonation headers (optional, before ext_authz)
 
 Because the split filter turns the groups header into `Impersonate-Group` lines the
-API server trusts, a client must never be able to **supply** the groups header (or
-any `Impersonate-*` header) itself. The authorizer **already** denies such requests
-server-side (step 2) — that, not this filter, is the smuggling defense — so this
-Lua **reject** filter is **optional** and **not required** for the security
-property. It runs **before** ext_authz and re-enforces the same guard at the proxy
-as defense in depth, rejecting the request (HTTP 403) before any header mutation. It
-refuses the configured groups header (substitute the
-value of `--impersonate-groups-header`; the default `x-impersonate-groups` is shown)
-**and** every Kubernetes impersonation header on the incoming request:
+API server trusts, a client must never be able to **supply** the configured groups
+header itself. The authorizer **already** denies such requests server-side (step 2)
+— that, not this filter, is the smuggling defense — so this Lua **reject** filter is
+**optional** and **not required** for the security property. It runs **before**
+ext_authz and re-enforces the same guard at the proxy as defense in depth, rejecting
+the request (HTTP 403) before any header mutation. It refuses the configured groups
+header (substitute the value of `--impersonate-groups-header`; the default
+`x-impersonate-groups` is shown) **and** every Kubernetes impersonation header on
+the incoming request:
+
+> **Do not deploy the blanket reject filter on a Backend that uses delegated
+> impersonation.** This filter rejects **all** inbound `Impersonate-*` before
+> ext_authz, so it would refuse the very `Impersonate-*` headers a `kubectl --as`
+> passthrough request depends on (see [*Delegated
+> impersonation*](#delegated-impersonation-kubectl---as-passthrough)) — an
+> authorized actor's target would be dropped at the proxy before the authorizer
+> could evaluate it. On a delegated-impersonation route, rely on the authorizer's
+> own server-side guards (which correctly allow an authorized actor's target and
+> always reject the reserved `Impersonate-Extra-actor-*` and the configured groups
+> header) and omit this reject filter, or narrow it to the configured groups header
+> only. The split filter below is unaffected — deploy it as usual.
 
 ```lua
 function envoy_on_request(handle)
@@ -1406,10 +1557,18 @@ See [README.md](../../README.md) (*Container image* → *Multi-arch images* /
   resource, not `users`) needs the per-`Backend` grants from the *Impersonation
   RBAC* section. Verify the credential source, the manager `Role`, and the
   impersonator ClusterRole/Role bindings.
-- **Request denied because it "carries impersonation headers."** This is the
-  failure-closed sanitization (step 2): a client (or an upstream proxy) sent an
-  `Impersonate-*` header. Ensure no proxy in front of the waypoint injects one;
-  the authorizer refuses to forward a request that already carries them.
+- **Request denied because it "carries impersonation headers."** On a Backend with
+  `spec.impersonation` **nil** (self mode) this is the failure-closed guard (step
+  2): a client or upstream proxy sent an `Impersonate-*` header and the authorizer
+  refuses to forward it — ensure no proxy in front of the waypoint injects one. On a
+  Backend with **delegated impersonation** enabled, an inbound `Impersonate-*` is
+  instead the mode switch, so a 403 here means the **actor is not authorized** (their
+  mapped groups do not intersect `spec.impersonation.groups`), the request set a
+  reserved `Impersonate-Extra-actor-*` header (never client-settable), it carried an
+  unrecognized `Impersonate-*` header, it named no `Impersonate-User` target, or a
+  passthrough group contained a comma/surrounding whitespace. Check the actor's
+  mapped groups against the allowlist and the [*Delegated
+  impersonation*](#delegated-impersonation-kubectl---as-passthrough) rules.
 - **401 challenge on every request.** No `Authorization: Bearer …` reached the
   authorizer, or the token failed OIDC validation (issuer unreachable, wrong
   `aud`, expired). Check `oidc.issuerURL`/`oidc.clientID` and the issuer
