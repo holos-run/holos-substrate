@@ -131,11 +131,36 @@ func (r *BackendReconciler) reconcileNormal(ctx context.Context, logger logr.Log
 	// key is an invalid spec (Accepted=False) — like a malformed CEL expression or a
 	// bad URL — fixed only by editing the spec, so reject without requeue. Key
 	// uniqueness is already enforced by the CRD's listMapKey.
+	oidcExtraKeys := make(map[string]struct{}, len(backend.Spec.OIDC.Extra))
 	for _, m := range backend.Spec.OIDC.Extra {
 		if err := authenticator.ValidateExtraKey(m.Key); err != nil {
 			r.Store.DeleteByKey(key)
 			return r.reject(ctx, backend, ReasonInvalidSpec,
 				fmt.Sprintf("invalid spec.oidc.extra key: %v", err))
+		}
+		oidcExtraKeys[m.Key] = struct{}{}
+	}
+
+	// Validate spec.impersonation.actorExtra the same way: each key is emitted as
+	// the suffix of an Impersonate-Extra-<key> header describing the actor, so it
+	// must be a canonical extra key. Additionally the actorExtra keys must be
+	// disjoint from the spec.oidc.extra keys — the two share the single
+	// Impersonate-Extra-<key> header namespace, and an overlapping key would make it
+	// ambiguous whether the header describes the actor or the impersonated user. Both
+	// are invalid-spec rejections (Accepted=False), fixed only by editing the spec, so
+	// reject without requeue. A nil Impersonation skips the whole block.
+	if backend.Spec.Impersonation != nil {
+		for _, m := range backend.Spec.Impersonation.ActorExtra {
+			if err := authenticator.ValidateExtraKey(m.Key); err != nil {
+				r.Store.DeleteByKey(key)
+				return r.reject(ctx, backend, ReasonInvalidSpec,
+					fmt.Sprintf("invalid spec.impersonation.actorExtra key: %v", err))
+			}
+			if _, collides := oidcExtraKeys[m.Key]; collides {
+				r.Store.DeleteByKey(key)
+				return r.reject(ctx, backend, ReasonInvalidSpec,
+					fmt.Sprintf("spec.impersonation.actorExtra key %q collides with a spec.oidc.extra key; the two extra-key namespaces must be disjoint", m.Key))
+			}
 		}
 	}
 
@@ -197,14 +222,33 @@ func (r *BackendReconciler) reconcileNormal(ctx context.Context, logger logr.Log
 	// exclusive (the CRD CEL rule); the Check path additionally prefers the SA path
 	// when both are somehow present, so recording the SA ref is sufficient.
 	saRef := normalizeServiceAccountRef(backend.Spec.ServiceAccountRef)
+	// Resolve the delegated-impersonation config once so the Check path (a later
+	// phase) need not re-derive it. A nil spec.impersonation yields a nil resolved
+	// value — delegated impersonation off, the fail-closed default. The actorExtra
+	// mappings flow into the Authenticator (resolved into Identity.ActorExtra); the
+	// group allowlist is precomputed into a set for O(1) membership tests.
+	var impersonation *authenticator.ResolvedImpersonation
+	var actorExtra []authenticatorv1alpha1.ExtraMapping
+	if backend.Spec.Impersonation != nil {
+		groups := make(map[string]struct{}, len(backend.Spec.Impersonation.Groups))
+		for _, g := range backend.Spec.Impersonation.Groups {
+			groups[g] = struct{}{}
+		}
+		actorExtra = backend.Spec.Impersonation.ActorExtra
+		impersonation = &authenticator.ResolvedImpersonation{
+			Groups:     groups,
+			ActorExtra: actorExtra,
+		}
+	}
 	entry := &authenticator.Entry{
 		Host:                 backend.Spec.Host,
-		Authenticator:        authenticator.NewAuthenticator(verifier, mapper, backend.Spec.OIDC.UsernameClaim, backend.Spec.OIDC.UsernamePrefix, backend.Spec.OIDC.UIDClaim, backend.Spec.OIDC.Extra),
+		Authenticator:        authenticator.NewAuthenticator(verifier, mapper, backend.Spec.OIDC.UsernameClaim, backend.Spec.OIDC.UsernamePrefix, backend.Spec.OIDC.UIDClaim, backend.Spec.OIDC.Extra, actorExtra),
 		UsernameClaim:        backend.Spec.OIDC.UsernameClaim,
 		ServerURL:            backend.Spec.Server.URL,
 		ServerCABundle:       backend.Spec.Server.CABundle,
 		CredentialsSecretRef: credRef,
 		ServiceAccountRef:    saRef,
+		Impersonation:        impersonation,
 	}
 	if !r.Store.Set(key, entry) {
 		owner, _ := r.Store.Owner(backend.Spec.Host)

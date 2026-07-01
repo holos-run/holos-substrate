@@ -41,7 +41,7 @@ func newTestAuthenticator(t *testing.T, claims map[string]any, usernameClaim str
 	if err != nil {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
-	return NewAuthenticator(&fakeVerifier{claims: claims}, mapper, usernameClaim, "", "", nil)
+	return NewAuthenticator(&fakeVerifier{claims: claims}, mapper, usernameClaim, "", "", nil, nil)
 }
 
 // newFailingAuthenticator builds an Authenticator whose verifier always fails,
@@ -52,7 +52,7 @@ func newFailingAuthenticator(t *testing.T) *Authenticator {
 	if err != nil {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
-	return NewAuthenticator(&fakeVerifier{err: fmt.Errorf("token expired")}, mapper, "sub", "", "", nil)
+	return NewAuthenticator(&fakeVerifier{err: fmt.Errorf("token expired")}, mapper, "sub", "", "", nil, nil)
 }
 
 // secretReader returns a non-caching client.Reader backed by the given objects,
@@ -243,7 +243,7 @@ func TestCheckAllowSetsUIDAndExtraHeaders(t *testing.T) {
 		"groups": []any{"dev"},
 	}
 	auth := NewAuthenticator(&fakeVerifier{claims: claims}, mapper, "email", "", "sub",
-		[]authenticatorv1alpha1.ExtraMapping{{Key: "email", ValueClaim: "email"}})
+		[]authenticatorv1alpha1.ExtraMapping{{Key: "email", ValueClaim: "email"}}, nil)
 
 	store := NewStore()
 	store.Set(testNamespace+"/backend", &Entry{
