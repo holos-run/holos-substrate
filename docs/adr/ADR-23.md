@@ -533,10 +533,12 @@ a Backend that omits it is fully backward-compatible):
   `spec.impersonation` Backend receiving an inbound `Impersonate-*`, an inbound
   reserved `Impersonate-Extra-actor-*`, an unrecognized `Impersonate-*` header, a
   delegated request with no `Impersonate-User` target, or a passthrough group with
-  a comma/surrounding whitespace — all Denied (403), never OK. The delegated-mode
+  **surrounding whitespace** — all Denied (403), never OK. The delegated-mode
   passthrough groups round-trip through the same comma-joined groups header + Lua
-  split filter self mode uses (Revision 7), and get the same `firstUnsafeGroup`
-  guard.
+  split filter self mode uses (Revision 7): the actor's inbound `Impersonate-Group`
+  is **split on commas** into individual groups (a comma is a group *separator*, not
+  a denial — `dev,ops` is two groups), and the `firstUnsafeGroup` guard then denies
+  only a surrounding-whitespace element on the split result.
 - **The impersonator credential is unchanged.** Both modes present the same
   `serviceAccountRef`/`credentialsSecretRef` impersonator credential (Revision 4)
   as `Authorization` to the upstream.

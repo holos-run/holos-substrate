@@ -75,11 +75,12 @@ On each `Check` the authorizer:
    credential's `Bearer <token>` in **both** modes. Which impersonation headers it
    sets depends on the mode ([*Delegated
    impersonation*](#delegated-impersonation-kubectl---as-passthrough) below):
-   - **Self mode** (no inbound `Impersonate-*`, or a nil-`spec.impersonation`
-     Backend) — the **derived** identity: `Impersonate-User` (the username claim),
-     the mapped groups as the single comma-joined groups header, and the derived
-     `Impersonate-Uid`/`spec.oidc.extra`, plus any `spec.impersonation.actorExtra`
-     actor headers.
+   - **Self mode** (no inbound `Impersonate-*` — the only OK path for a
+     nil-`spec.impersonation` Backend, which otherwise denies an inbound
+     `Impersonate-*` at step 2) — the **derived** identity: `Impersonate-User` (the
+     username claim), the mapped groups as the single comma-joined groups header, and
+     the derived `Impersonate-Uid`/`spec.oidc.extra`, plus any
+     `spec.impersonation.actorExtra` actor headers.
    - **Delegated mode** (an authorized actor sent an inbound `Impersonate-*`) — the
      **actor-supplied target** forwarded verbatim (`Impersonate-User`/
      `Impersonate-Uid`/non-reserved `Impersonate-Extra-*`, and the actor's
@@ -803,13 +804,18 @@ spec:
   delegated request is denied **403** rather than forwarded with the bare
   impersonator credential.
 - **Groups passthrough already round-trips.** The actor's `--as-group` values arrive
-  Envoy-comma-joined as one `Impersonate-Group: a,b`; the authorizer re-emits them
-  through the configured groups header (`s.groupsHeaderName()`, default
-  `x-impersonate-groups`), so **the paired split Lua filter unpacks them into
-  `Impersonate-Group` lines exactly as in self mode** — no extra wiring. The
-  `firstUnsafeGroup` guard applies to the passthrough groups too (a comma-bearing or
-  surrounding-whitespace element is denied 403). A single group value containing a
-  literal comma cannot be represented on this path and is unsupported by design.
+  Envoy-comma-joined as one `Impersonate-Group: a,b`; the authorizer **splits that
+  value on commas** into the individual groups and re-emits them through the
+  configured groups header (`s.groupsHeaderName()`, default `x-impersonate-groups`),
+  so **the paired split Lua filter unpacks them into `Impersonate-Group` lines
+  exactly as in self mode** — no extra wiring. Because the inbound value is split on
+  commas first, a comma is interpreted as a **group separator** (so `dev,ops` is two
+  groups, not denied), and the `firstUnsafeGroup` guard then applies to each split
+  element and denies **403** only a **surrounding-whitespace** element (a leading/
+  trailing space the split filter would trim into a different group). A single group
+  name that itself contains a literal comma therefore cannot be represented on this
+  Envoy-comma-joined path — it is indistinguishable from two groups — so it is
+  unsupported by design.
 
 ### The operator flow (`kubectl --as`)
 
@@ -1583,8 +1589,9 @@ See [README.md](../../README.md) (*Container image* → *Multi-arch images* /
   mapped groups do not intersect `spec.impersonation.groups`), the request set a
   reserved `Impersonate-Extra-actor-*` header (never client-settable), it carried an
   unrecognized `Impersonate-*` header, it named no `Impersonate-User` target, or a
-  passthrough group contained a comma/surrounding whitespace. Check the actor's
-  mapped groups against the allowlist and the [*Delegated
+  passthrough `--as-group` element had **surrounding whitespace** (a comma is not a
+  denial — it separates groups). Check the actor's mapped groups against the
+  allowlist and the [*Delegated
   impersonation*](#delegated-impersonation-kubectl---as-passthrough) rules.
 - **401 challenge on every request.** No `Authorization: Bearer …` reached the
   authorizer, or the token failed OIDC validation (issuer unreachable, wrong
