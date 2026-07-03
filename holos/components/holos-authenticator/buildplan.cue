@@ -622,15 +622,17 @@ userDefinedBuildPlan: {
 						// exactly as a self-only Backend denies inbound Impersonate-*).
 						//
 						// spec.impersonation.extra maps the actor's ID-token claims
-						// into RESERVED Impersonate-Extra-actor-* headers that record WHO
-						// performed the delegated request — distinct from the impersonator
+						// into Impersonate-Extra-actor-* headers that record WHO performed
+						// the delegated request — distinct from the impersonator
 						// ServiceAccount and from the impersonated target — so the API
-						// server audit log can attribute the action.  These keys are never
-						// client-settable (an inbound copy is denied in both modes) and MUST
-						// be disjoint from spec.oidc.extra keys.  In delegated mode the
-						// derived Impersonate-User/groups/Uid/oidc.extra are NOT emitted;
-						// only the impersonation extra headers survive alongside the actor's target
-						// (the AC6 rule).
+						// server audit log can attribute the action.  Inbound
+						// Impersonate-Extra-* headers are denied in both modes, so these
+						// values are always authorizer-derived, never client-settable.  The
+						// keys may overlap with spec.oidc.extra because oidc.extra is
+						// emitted only in self mode and impersonation.extra only in
+						// delegated mode.  In delegated mode the derived
+						// Impersonate-User/groups/Uid/oidc.extra are NOT emitted; only the
+						// impersonation extra headers survive alongside the actor's target.
 						//
 						// The extra list below mirrors the HOL-1429 worked example
 						// (actor-* claims identifying a Keycloak human actor).  Like the
@@ -683,10 +685,9 @@ userDefinedBuildPlan: {
 									// impersonation (self mode only).
 									groups: ["oidc:platform-admins"]
 									// extra stamps the actor's own identity from the validated
-									// token into reserved Impersonate-Extra-actor-* headers (disjoint
-									// from any spec.oidc.extra keys), mirroring the HOL-1429 example
-									// so the Kubernetes audit log records the real human behind a
-									// delegated request.
+									// token into Impersonate-Extra-actor-* headers in delegated
+									// mode, mirroring the HOL-1429 example so the Kubernetes audit
+									// log records the real human behind a delegated request.
 									extra: [
 										{key: "actor-sub", valueClaim: "sub"},
 										{key: "actor-email", valueClaim: "email"},

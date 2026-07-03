@@ -152,12 +152,14 @@ type ServiceAccountReference struct {
 // and carries it into the Store Entry (HOL-1432), and the authorizer Check path
 // consumes it (HOL-1433): a non-nil spec.impersonation authorizes delegated
 // Impersonate-* passthrough for an actor whose mapped groups are on the Groups
-// allowlist below, and its Extra claims are emitted as reserved
-// Impersonate-Extra-<key> headers (in delegated AND self mode). The field remains
-// additive and backward-compatible — a Backend that omits spec.impersonation runs
-// self-impersonation only, byte-for-byte unchanged (inbound Impersonate-* denied
-// fail-closed) — but it is no longer inert: setting it changes request-path
-// behavior, so treat it as the security-sensitive opt-in it is.
+// allowlist below, and its Extra claims are emitted as Impersonate-Extra-<key>
+// headers in delegated mode only. Inbound Impersonate-Extra-* headers are denied
+// fail-closed in both modes; the authorizer never trusts client-supplied extras.
+// The field remains additive and backward-compatible — a Backend that omits
+// spec.impersonation runs self-impersonation only, byte-for-byte unchanged
+// (inbound Impersonate-* denied fail-closed) — but it is no longer inert: setting
+// it changes request-path behavior, so treat it as the security-sensitive opt-in
+// it is.
 type ImpersonationConfig struct {
 	// Groups is the allowlist of Kubernetes groups that gates delegated
 	// impersonation: delegated impersonation ("kubectl --as passthrough") is
@@ -182,38 +184,23 @@ type ImpersonationConfig struct {
 
 	// Extra maps token claims to Kubernetes Impersonate-Extra-<key>
 	// impersonation headers describing the **actor** — the authenticated identity
-	// that performs a delegated impersonation — exactly like spec.oidc.extra maps
-	// claims for the impersonated user (see ExtraMapping and OIDCConfig.Extra for
-	// the per-entry claim-read/emit semantics, which are identical here: a missing
-	// or null claim skips the entry, a present string is emitted verbatim, a
-	// present non-string denies the request fail-closed).
+	// that performs a delegated impersonation. It is emitted only in delegated mode,
+	// after the actor's mapped groups intersect Groups. Self mode ignores
+	// spec.impersonation.extra and emits only spec.oidc.extra.
 	//
-	// Extra is a **reserved namespace**. Its values are always set
-	// authoritatively by the authorizer from the validated actor token; they are
-	// **never client-settable** — inbound Impersonate-Extra-<key> headers naming a
-	// reserved actor key are rejected fail-closed (the request is denied), never
-	// trusted, in BOTH modes. In delegated mode the target identity's own
-	// Impersonate-* headers pass through, and these actor extras are the **only
-	// Backend-derived impersonation headers that survive** the delegation: they
-	// record who actually performed the action (distinct from the impersonated
-	// target) so downstream authorizers and audit tooling can attribute a delegated
-	// request to its real actor. In self impersonation mode the actor IS the
-	// impersonated user, so Extra is **also emitted** there (alongside the
-	// derived spec.oidc.extra) — the actor identity is always recorded regardless of
-	// mode (HOL-1433). Configuring Extra on a Backend that never receives a
-	// delegated request thus adds these audit headers to every (self-mode) request.
+	// The per-entry claim-read semantics are identical to spec.oidc.extra: a
+	// missing or null claim skips the entry, a present string is emitted verbatim,
+	// and a present non-string denies the delegated request fail-closed. That
+	// misconfiguration does not affect self-mode requests because
+	// spec.impersonation.extra is resolved only on the delegated branch.
 	//
-	// Extra keys MUST be disjoint from spec.oidc.extra keys: the two share the
-	// single Impersonate-Extra-<key> header namespace on the upstream request, and
-	// an overlapping key would make it ambiguous whether the header describes the
-	// actor or the impersonated user. The disjointness (and each key's canonicality,
-	// like spec.oidc.extra) is validated by the reconciler
-	// (Accepted=False on violation) — it is intentionally NOT a CRD marker
-	// or admission-time CEL rule in this phase, consistent with how
-	// spec.oidc.extra[].key canonicality is a reconciler check (InvalidSpec) rather
-	// than an admission-time constraint. An overlapping key is rejected by the
-	// reconciler before a Backend is registered in the data path, so no ambiguous
-	// header can reach the upstream API server.
+	// Inbound Impersonate-Extra-* headers are always rejected fail-closed in both
+	// self and delegated mode, regardless of key. The authorizer never forwards or
+	// trusts client-supplied extras; it stamps extras only from validated token
+	// claims. Because spec.oidc.extra and spec.impersonation.extra are emitted in
+	// different modes, their keys may overlap without ambiguity. Each key's
+	// canonicality, like spec.oidc.extra, is still validated by the reconciler
+	// (Accepted=False on violation) rather than by an admission-time CEL rule.
 	//
 	// The list is a map keyed by Key (listType=map / listMapKey=key), so the API
 	// server rejects duplicate keys at admission — exactly like spec.oidc.extra.
