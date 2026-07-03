@@ -319,10 +319,10 @@ func TestReconcileInvalidExtraKeyRejects(t *testing.T) {
 }
 
 // TestReconcileImpersonationApplied asserts a Backend with a valid
-// spec.impersonation (a group allowlist plus a disjoint actorExtra mapping)
+// spec.impersonation (a group allowlist plus a disjoint impersonation extra mapping)
 // becomes Ready and that its registered Store entry carries the resolved
-// impersonation config: the group set for O(1) membership tests and the actorExtra
-// mappings, with the Authenticator resolving them into Identity.ActorExtra
+// impersonation config: the group set for O(1) membership tests and the impersonationExtra
+// mappings, with the Authenticator resolving them into Identity.ImpersonationExtra
 // (HOL-1432).
 func TestReconcileImpersonationApplied(t *testing.T) {
 	ctx := context.Background()
@@ -340,8 +340,8 @@ func TestReconcileImpersonationApplied(t *testing.T) {
 	b := makeBackend(ns, "backend-imp", "api-imp.example.test")
 	b.Spec.OIDC.Extra = []authenticatorv1alpha1.ExtraMapping{{Key: "email", ValueClaim: "email"}}
 	b.Spec.Impersonation = &authenticatorv1alpha1.ImpersonationConfig{
-		Groups:     []string{"platform-admins", "sre"},
-		ActorExtra: []authenticatorv1alpha1.ExtraMapping{{Key: "actor-email", ValueClaim: "actor_email"}},
+		Groups: []string{"platform-admins", "sre"},
+		Extra:  []authenticatorv1alpha1.ExtraMapping{{Key: "actor-email", ValueClaim: "actor_email"}},
 	}
 	key := createBackend(ctx, t, b)
 
@@ -369,18 +369,18 @@ func TestReconcileImpersonationApplied(t *testing.T) {
 	if n := len(entry.Impersonation.Groups); n != 2 {
 		t.Errorf("resolved impersonation groups size = %d, want 2", n)
 	}
-	if n := len(entry.Impersonation.ActorExtra); n != 1 || entry.Impersonation.ActorExtra[0].Key != "actor-email" {
-		t.Errorf("resolved impersonation actorExtra = %v, want a single actor-email mapping", entry.Impersonation.ActorExtra)
+	if n := len(entry.Impersonation.Extra); n != 1 || entry.Impersonation.Extra[0].Key != "actor-email" {
+		t.Errorf("resolved impersonation impersonationExtra = %v, want a single actor-email mapping", entry.Impersonation.Extra)
 	}
 
-	// The Authenticator resolves the actorExtra claim into Identity.ActorExtra,
+	// The Authenticator resolves the impersonation extra claim into Identity.ImpersonationExtra,
 	// separate from the oidc.extra namespace.
 	id, err := entry.Authenticator.Authenticate(ctx, "raw-token")
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
-	if got, want := id.ActorExtra["actor-email"], "bob@example.com"; got != want {
-		t.Errorf("ActorExtra[actor-email] = %q, want %q", got, want)
+	if got, want := id.ImpersonationExtra["actor-email"], "bob@example.com"; got != want {
+		t.Errorf("ImpersonationExtra[actor-email] = %q, want %q", got, want)
 	}
 }
 
@@ -411,24 +411,24 @@ func TestReconcileImpersonationNilEntryEmpty(t *testing.T) {
 	}
 }
 
-// TestReconcileInvalidActorExtraKeyRejects asserts a Backend whose
-// spec.impersonation.actorExtra names a non-canonical extra key is rejected as an
+// TestReconcileInvalidImpersonationExtraKeyRejects asserts a Backend whose
+// spec.impersonation.extra names a non-canonical extra key is rejected as an
 // invalid spec (Accepted/Ready=False, reason InvalidSpec), mirroring the
 // spec.oidc.extra key check, and leaves nothing in the store (HOL-1432).
-func TestReconcileInvalidActorExtraKeyRejects(t *testing.T) {
+func TestReconcileInvalidImpersonationExtraKeyRejects(t *testing.T) {
 	ctx := context.Background()
 	ns := makeNamespace(ctx, t)
 
 	r, store, _ := newReconciler(discoverOK)
 	b := makeBackend(ns, "backend-bad-actor-extra", "api-bad-actor-extra.example.test")
 	b.Spec.Impersonation = &authenticatorv1alpha1.ImpersonationConfig{
-		ActorExtra: []authenticatorv1alpha1.ExtraMapping{{Key: "Actor/Email", ValueClaim: "actor_email"}},
+		Extra: []authenticatorv1alpha1.ExtraMapping{{Key: "Actor/Email", ValueClaim: "actor_email"}},
 	}
 	key := createBackend(ctx, t, b)
 
 	res, err := reconcile(ctx, r, key)
 	if err != nil {
-		t.Fatalf("reconcile returned error for an invalid actorExtra key (should not requeue): %v", err)
+		t.Fatalf("reconcile returned error for an invalid impersonation extra key (should not requeue): %v", err)
 	}
 	if res.RequeueAfter != 0 {
 		t.Errorf("RequeueAfter = %v, want 0 for a terminal rejection", res.RequeueAfter)
@@ -446,12 +446,12 @@ func TestReconcileInvalidActorExtraKeyRejects(t *testing.T) {
 	}
 }
 
-// TestReconcileActorExtraKeyCollisionRejects asserts a Backend whose
-// spec.impersonation.actorExtra key collides with a spec.oidc.extra key is rejected
+// TestReconcileImpersonationExtraKeyCollisionRejects asserts a Backend whose
+// spec.impersonation.extra key collides with a spec.oidc.extra key is rejected
 // as an invalid spec (Accepted/Ready=False, reason InvalidSpec) — the two
 // extra-key namespaces must be disjoint — and leaves nothing in the store
 // (HOL-1432).
-func TestReconcileActorExtraKeyCollisionRejects(t *testing.T) {
+func TestReconcileImpersonationExtraKeyCollisionRejects(t *testing.T) {
 	ctx := context.Background()
 	ns := makeNamespace(ctx, t)
 
@@ -459,13 +459,13 @@ func TestReconcileActorExtraKeyCollisionRejects(t *testing.T) {
 	b := makeBackend(ns, "backend-actor-extra-collide", "api-actor-extra-collide.example.test")
 	b.Spec.OIDC.Extra = []authenticatorv1alpha1.ExtraMapping{{Key: "email", ValueClaim: "email"}}
 	b.Spec.Impersonation = &authenticatorv1alpha1.ImpersonationConfig{
-		ActorExtra: []authenticatorv1alpha1.ExtraMapping{{Key: "email", ValueClaim: "actor_email"}},
+		Extra: []authenticatorv1alpha1.ExtraMapping{{Key: "email", ValueClaim: "actor_email"}},
 	}
 	key := createBackend(ctx, t, b)
 
 	res, err := reconcile(ctx, r, key)
 	if err != nil {
-		t.Fatalf("reconcile returned error for a colliding actorExtra key (should not requeue): %v", err)
+		t.Fatalf("reconcile returned error for a colliding impersonation extra key (should not requeue): %v", err)
 	}
 	if res.RequeueAfter != 0 {
 		t.Errorf("RequeueAfter = %v, want 0 for a terminal rejection", res.RequeueAfter)

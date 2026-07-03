@@ -304,7 +304,7 @@ type BackendSpec struct {
 
 	// Impersonation gates and shapes delegated impersonation ("kubectl --as
 	// passthrough") for this Backend: the Groups allowlist of actor groups that may
-	// impersonate a different target identity, and the reserved ActorExtra headers
+	// impersonate a different target identity, and the reserved impersonation extra headers
 	// recording who actually performed a delegated request. See ImpersonationConfig
 	// in common_types.go for the self-vs-delegated impersonation modes and the
 	// reserved-namespace semantics.
@@ -320,7 +320,7 @@ type BackendSpec struct {
 	// (HOL-1432) and the authorizer Check path consumes it (HOL-1433). Setting a
 	// non-nil spec.impersonation changes request-path behavior: it authorizes
 	// delegated Impersonate-* passthrough for an actor on the Groups allowlist and
-	// emits the reserved ActorExtra headers (in delegated and self mode). It is no
+	// emits the reserved impersonation extra headers (in delegated and self mode). It is no
 	// longer inert; treat it as the security-sensitive opt-in it is. Omitting it
 	// leaves the Backend byte-for-byte unchanged (self-impersonation only).
 	//

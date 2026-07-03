@@ -164,8 +164,8 @@ func (in *ImpersonationConfig) DeepCopyInto(out *ImpersonationConfig) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
-	if in.ActorExtra != nil {
-		in, out := &in.ActorExtra, &out.ActorExtra
+	if in.Extra != nil {
+		in, out := &in.Extra, &out.Extra
 		*out = make([]ExtraMapping, len(*in))
 		copy(*out, *in)
 	}
