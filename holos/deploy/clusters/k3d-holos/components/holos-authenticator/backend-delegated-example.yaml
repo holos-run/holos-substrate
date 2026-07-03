@@ -10,7 +10,7 @@ spec:
     name: holos-authenticator-backend-creds
   host: api.delegated.holos.internal
   impersonation:
-    actorExtra:
+    extra:
     - key: actor-sub
       valueClaim: sub
     - key: actor-email
