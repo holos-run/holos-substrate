@@ -69,7 +69,7 @@ type Entry struct {
 // shaped for the Check path's runtime tests. Groups is a set (built from
 // spec.impersonation.groups) for O(1) membership tests against an actor's mapped
 // Kubernetes groups; Extra carries the validated spec.impersonation.extra
-// claim mappings the Authenticator resolves into Identity.ImpersonationExtra. Like the
+// claim mappings the Authenticator resolves on the delegated branch. Like the
 // Entry that holds it, a ResolvedImpersonation is treated as immutable once stored.
 type ResolvedImpersonation struct {
 	// Groups is the allowlist of Kubernetes group names that gate delegated

@@ -158,7 +158,10 @@ type OIDCConfig struct {
 	// headers, carrying additional claims (e.g. email, a tenant/org id) so downstream
 	// authorizers and audit tooling can key off them. Each entry names the extra key
 	// (the suffix of the emitted Impersonate-Extra-<key> header) and the claim to read
-	// its value from. It is opt-in: an omitted or empty Extra emits no extra headers.
+	// its value from. It is emitted only in self mode. Delegated mode emits
+	// spec.impersonation.extra instead, and inbound Impersonate-Extra-* headers are
+	// denied fail-closed before mode selection. It is opt-in: an omitted or empty
+	// Extra emits no extra headers.
 	// An entry whose ValueClaim is absent (or JSON null) on a given token is skipped
 	// for that request (the extra is optional context, like a missing groups claim);
 	// an entry whose claim is present as a string is emitted verbatim (including an
@@ -304,10 +307,10 @@ type BackendSpec struct {
 
 	// Impersonation gates and shapes delegated impersonation ("kubectl --as
 	// passthrough") for this Backend: the Groups allowlist of actor groups that may
-	// impersonate a different target identity, and the reserved impersonation extra headers
-	// recording who actually performed a delegated request. See ImpersonationConfig
-	// in common_types.go for the self-vs-delegated impersonation modes and the
-	// reserved-namespace semantics.
+	// impersonate a different target identity, and the impersonation extra headers
+	// resolved from the actor token in delegated mode. See ImpersonationConfig in
+	// common_types.go for the self-vs-delegated impersonation modes and the
+	// deny-all inbound extra-header semantics.
 	//
 	// It is a pointer (rather than a value) and intentionally not defaulted so a nil
 	// value cleanly means "delegated impersonation disabled" — the current
@@ -320,9 +323,9 @@ type BackendSpec struct {
 	// (HOL-1432) and the authorizer Check path consumes it (HOL-1433). Setting a
 	// non-nil spec.impersonation changes request-path behavior: it authorizes
 	// delegated Impersonate-* passthrough for an actor on the Groups allowlist and
-	// emits the reserved impersonation extra headers (in delegated and self mode). It is no
-	// longer inert; treat it as the security-sensitive opt-in it is. Omitting it
-	// leaves the Backend byte-for-byte unchanged (self-impersonation only).
+	// emits spec.impersonation.extra in delegated mode only. It is no longer inert;
+	// treat it as the security-sensitive opt-in it is. Omitting it leaves the
+	// Backend byte-for-byte unchanged (self-impersonation only).
 	//
 	// +optional
 	Impersonation *ImpersonationConfig `json:"impersonation,omitempty"`
