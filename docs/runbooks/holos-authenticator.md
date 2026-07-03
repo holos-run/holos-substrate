@@ -12,7 +12,7 @@ user's real groups.
 This runbook is the operator's guide to the as-built service: the ext_authz
 model, the `authenticator.holos.run` `Backend` CR, OIDC validation + CEL group
 mapping, **delegated impersonation** (`kubectl --as` passthrough via
-`spec.impersonation` — the group allowlist, the reserved `actorExtra` headers, and
+`spec.impersonation` — the group allowlist, the reserved `extra` actor headers, and
 the impersonator RBAC it requires), the impersonation RBAC the forwarded credential
 must hold, the two
 mutually-exclusive credential sources — the controller-minted `serviceAccountRef`
@@ -44,7 +44,7 @@ On each `Check` the authorizer:
    (HTTP 403).
 2. **Guards inbound impersonation headers (failure-closed).** A **copy of the
    configured groups header** (default `X-Impersonate-Groups`) and any **reserved
-   `Impersonate-Extra-actor-*` header** (a Backend's `spec.impersonation.actorExtra`
+   `Impersonate-Extra-actor-*` header** (a Backend's `spec.impersonation.extra`
    keys) are **always denied** — the groups header because the split Lua filter
    would turn `X-Impersonate-Groups: system:masters` into a real
    `Impersonate-Group`, and the actor-extra namespace because the authorizer stamps
@@ -80,7 +80,7 @@ On each `Check` the authorizer:
      `Impersonate-*` at step 2) — the **derived** identity: `Impersonate-User` (the
      username claim), the mapped groups as the single comma-joined groups header, and
      the derived `Impersonate-Uid`/`spec.oidc.extra`, plus any
-     `spec.impersonation.actorExtra` actor headers.
+     `spec.impersonation.extra` actor headers.
    - **Delegated mode** (an authorized actor sent an inbound `Impersonate-*`) — the
      **actor-supplied target** forwarded verbatim (`Impersonate-User`/
      `Impersonate-Uid`/non-reserved `Impersonate-Extra-*`, and the actor's
@@ -158,8 +158,8 @@ own OIDC client and mapping.
 | `serviceAccountRef.expirationSeconds` | no | `3600` (min `600`)                      | Requested lifetime of the minted SA token; the controller rotates it before expiry. |
 | `impersonation`              | no       | nil → self mode only                       | Opt-in to **delegated impersonation** (`kubectl --as` passthrough). Nil is byte-for-byte the self-only behavior (inbound `Impersonate-*` denied). See [*Delegated impersonation*](#delegated-impersonation-kubectl---as-passthrough). |
 | `impersonation.groups[]`     | no       | empty → allowlists nothing                 | The actor allowlist: an actor may delegate-impersonate only when their **mapped** Kubernetes groups intersect this set (`listType=set`; each entry `MinLength=1`). Empty leaves delegated impersonation effectively disabled. |
-| `impersonation.actorExtra[].key` | yes (per entry) | —                               | Reserved actor-identity extra key, emitted as `Impersonate-Extra-<key>` from the validated **actor** token. Canonical (lowercase, no `%`), unique (`listType=map`), and **disjoint from `oidc.extra` keys**. Never client-settable (an inbound copy is denied in both modes). |
-| `impersonation.actorExtra[].valueClaim` | yes (per entry) | —                        | Token claim read for the actor-extra value (same absent-skip / present-string-emit / non-string-deny semantics as `oidc.extra`). |
+| `impersonation.extra[].key` | yes (per entry) | —                               | Reserved actor-identity extra key, emitted as `Impersonate-Extra-<key>` from the validated **actor** token. Canonical (lowercase, no `%`), unique (`listType=map`), and **disjoint from `oidc.extra` keys**. Never client-settable (an inbound copy is denied in both modes). |
+| `impersonation.extra[].valueClaim` | yes (per entry) | —                        | Token claim read for the actor-extra value (same absent-skip / present-string-emit / non-string-deny semantics as `oidc.extra`). |
 
 > **At most one credential source.** `credentialsSecretRef` and
 > `serviceAccountRef` are **mutually exclusive** — a CRD-level CEL validation
@@ -764,7 +764,7 @@ spec:
       - "oidc:platform-admins"
     # The reserved actor-identity headers, stamped from the validated actor token
     # as Impersonate-Extra-<key>. Keys MUST be disjoint from spec.oidc.extra keys.
-    actorExtra:
+    extra:
       - key: "actor-sub"
         valueClaim: "sub"
       - key: "actor-email"
@@ -777,7 +777,7 @@ spec:
 
 - **The mode switch is the presence of an inbound `Impersonate-*` header** (other
   than the reserved actor-extra namespace). No inbound `Impersonate-*` → **self
-  mode** (the caller's derived identity), now additionally stamping the `actorExtra`
+  mode** (the caller's derived identity), now additionally stamping the `extra` actor
   headers so the actor is always recorded. An inbound `Impersonate-*` → **delegated
   mode**.
 - **The group allowlist gates it against *mapped* groups.** The actor's token is
@@ -786,14 +786,14 @@ spec:
   mapped groups intersect `spec.impersonation.groups`. An unauthorized actor — or a
   Backend with `spec.impersonation` nil — is denied **403** fail-closed (this is the
   same denial that protected self-only backends before Revision 11).
-- **`actorExtra` identifies the actor.** The authorizer resolves each
-  `actorExtra` claim from the validated actor token and emits it as
+- **`extra` identifies the actor.** The authorizer resolves each
+  `extra` claim from the validated actor token and emits it as
   `Impersonate-Extra-<key>`. These headers are **reserved**: an inbound copy is
   rejected fail-closed in **both** modes, so an actor can never forge their own
   actor-identity. Keys must be disjoint from `spec.oidc.extra` (both share the
   `Impersonate-Extra-<key>` namespace; the reconciler rejects an overlap
   `Accepted=False`).
-- **AC6 — user headers disable all Backend-derived headers except `actorExtra`.**
+- **AC6 — user headers disable all Backend-derived headers except `extra`.**
   In delegated mode the authorizer forwards the actor-supplied
   `Impersonate-User`/`Impersonate-Uid`/non-reserved `Impersonate-Extra-*`
   **verbatim** (and the actor's `--as-group` values re-emitted through the
