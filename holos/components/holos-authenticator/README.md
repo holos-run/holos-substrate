@@ -242,10 +242,11 @@ omitting `spec.impersonation` is byte-for-byte the self-only behavior.
   `spec.oidc.extra` keys because `oidc.extra` is self-mode only and
   `impersonation.extra` is delegated-mode only.
 
-The presence of an inbound `Impersonate-*` header is the self-vs-delegated **mode
-switch**; an unauthorized actor (or a nil-`spec.impersonation` Backend) is denied
-403. Every inbound `Impersonate-Extra-*` is denied before mode selection. In
-delegated mode the actor's target passes through and the Backend-derived
+The presence of an inbound non-extra `Impersonate-*` header is the
+self-vs-delegated **mode switch**; an unauthorized actor (or a
+nil-`spec.impersonation` Backend) is denied 403. Every inbound
+`Impersonate-Extra-*` is denied before mode selection. In delegated mode the
+actor's target passes through and the Backend-derived
 `Impersonate-User`/groups/`Impersonate-Uid`/`spec.oidc.extra` are **not** emitted —
 only `spec.impersonation.extra` is emitted from the actor token (the AC6 rule).
 Impersonation-target
