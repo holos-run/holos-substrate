@@ -356,11 +356,17 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (resp
 	//     mode. This mirrors the reject Lua filter (which also runs before ext_authz)
 	//     as defense in depth for the groups header.
 	if _, ok := headers[strings.ToLower(s.groupsHeaderName())]; ok {
-		s.log.V(1).Info("denying request carrying inbound groups header", "host", host, "header", s.groupsHeaderName())
+		// Audit at Info level: a client-supplied groups header is an impersonation
+		// smuggling attempt, and the authorizer-side denial is the audit record.
+		s.log.Info("denying request carrying inbound groups header",
+			"host", host, "reason", "inbound_groups_header", "header", s.groupsHeaderName())
 		return deniedResponse(typev3.StatusCode_Forbidden, "inbound impersonation header not allowed", nil), nil
 	}
 	if name, ok := firstInboundImpersonationExtraHeader(headers); ok {
-		s.log.V(1).Info("denying request carrying inbound impersonation extra header", "host", host, "header", name)
+		// Audit at Info level: inbound Impersonate-Extra-* would inject target or
+		// actor attributes into a privileged impersonation request.
+		s.log.Info("denying request carrying inbound impersonation extra header",
+			"host", host, "reason", "inbound_impersonation_extra_header", "header", name)
 		return deniedResponse(typev3.StatusCode_Forbidden, "inbound impersonation header not allowed", nil), nil
 	}
 
@@ -437,8 +443,14 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (resp
 	// and an unauthorized actor are both denied fail-closed here — this is where
 	// today's "inbound Impersonate-* always denied" behavior is preserved.
 	if entry.Impersonation == nil || !groupsIntersect(identity.Groups, entry.Impersonation.Groups) {
-		s.log.V(1).Info("denying delegated-impersonation request: actor not authorized",
-			"host", host, "user", identity.Username, "header", impName)
+		// Audit at Info level: delegated impersonation is privileged, so the
+		// authorizer records both allowed and denied actor->target decisions.
+		s.log.Info("denying delegated-impersonation request: actor not authorized",
+			"host", host,
+			"reason", "actor_not_authorized",
+			"actor", identity.Username,
+			"actorGroups", identity.Groups,
+			"header", impName)
 		return deniedResponse(typev3.StatusCode_Forbidden, "actor not authorized to impersonate", nil), nil
 	}
 
@@ -452,8 +464,14 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (resp
 	// ServiceAccount credential acting as itself. Denying closes that hole and
 	// surfaces the misconfiguration to the client.
 	if name, ok := firstUnrecognizedImpersonationHeader(headers); ok {
-		s.log.V(1).Info("denying delegated-impersonation request: unrecognized impersonation header",
-			"host", host, "header", name)
+		// Audit at Info level: an authorized actor supplied an unsupported
+		// impersonation target header on the privileged delegated path.
+		s.log.Info("denying delegated-impersonation request: unrecognized impersonation header",
+			"host", host,
+			"reason", "unrecognized_impersonation_header",
+			"actor", identity.Username,
+			"actorGroups", identity.Groups,
+			"header", name)
 		return deniedResponse(typev3.StatusCode_Forbidden, "unrecognized impersonation header not allowed", nil), nil
 	}
 
@@ -466,7 +484,13 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (resp
 	// acting as itself.
 	target, hasTarget := headers[strings.ToLower(headerImpersonateUser)]
 	if !hasTarget || target == "" {
-		s.log.V(1).Info("denying delegated-impersonation request: no target user", "host", host)
+		// Audit at Info level: the actor attempted delegated impersonation without a
+		// valid target user, so record the actor identity even though no target exists.
+		s.log.Info("denying delegated-impersonation request: no target user",
+			"host", host,
+			"reason", "target_user_missing",
+			"actor", identity.Username,
+			"actorGroups", identity.Groups)
 		return deniedResponse(typev3.StatusCode_Forbidden, "delegated impersonation requires Impersonate-User", nil), nil
 	}
 
@@ -479,20 +503,45 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (resp
 	// rejected here, per HOL-1416.)
 	passthroughGroups := splitInboundGroups(headers)
 	if group, ok := firstUnsafeGroup(passthroughGroups); ok {
-		s.log.V(1).Info("denying delegated-impersonation request: passthrough group is unsafe for the Impersonate-Group encoding",
-			"host", host, "group", group)
+		// Audit at Info level: passthrough groups are part of the delegated target
+		// identity, so unsafe values are recorded with actor and target context.
+		s.log.Info("denying delegated-impersonation request: passthrough group is unsafe for the Impersonate-Group encoding",
+			"host", host,
+			"reason", "unsafe_passthrough_group",
+			"actor", identity.Username,
+			"actorGroups", identity.Groups,
+			"target", target,
+			"passthroughGroups", passthroughGroups,
+			"group", group)
 		return deniedResponse(typev3.StatusCode_Forbidden, "impersonated group contains a comma or surrounding whitespace", nil), nil
 	}
 
 	identity.ImpersonationExtra, err = entry.Authenticator.ResolveImpersonationExtra(identity)
 	if err != nil {
-		s.log.V(1).Info("denying delegated-impersonation request: cannot resolve impersonation extra",
-			"host", host, "user", identity.Username, "error", err.Error())
+		// Audit at Info level: impersonation extras stamp actor attributes onto a
+		// privileged delegated request, and resolution failures deny that decision.
+		s.log.Info("denying delegated-impersonation request: cannot resolve impersonation extra",
+			"host", host,
+			"reason", "impersonation_extra_unresolvable",
+			"actor", identity.Username,
+			"actorGroups", identity.Groups,
+			"target", target,
+			"passthroughGroups", passthroughGroups,
+			"error", err.Error())
 		return deniedResponse(typev3.StatusCode_Forbidden, "invalid impersonation extra", nil), nil
 	}
 
-	s.log.V(1).Info("allowing request (delegated mode)",
-		"host", host, "actor", identity.Username, "target", target)
+	// Audit at Info level: delegated impersonation is privileged actor->target
+	// behavior, and this authorizer-side record preserves the actor context that
+	// may not be visible in the upstream API server audit log.
+	_, targetUIDSupplied := headers[strings.ToLower(headerImpersonateUID)]
+	s.log.Info("allowing request (delegated mode)",
+		"host", host,
+		"actor", identity.Username,
+		"actorGroups", identity.Groups,
+		"target", target,
+		"passthroughGroups", passthroughGroups,
+		"targetUIDSupplied", targetUIDSupplied)
 	return s.delegatedResponse(identity, headers, passthroughGroups, impersonatorToken), nil
 }
 

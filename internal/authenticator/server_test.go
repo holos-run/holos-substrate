@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -911,6 +912,59 @@ func TestCheckDelegatedModeAuthorizedActor(t *testing.T) {
 	}
 }
 
+// TestCheckDelegatedModeAuthorizedActorLogsAuditRecord asserts delegated-mode
+// allows are logged at Info level, not only V(1), with the actor and target fields
+// operators need for an authorizer-side audit trail.
+func TestCheckDelegatedModeAuthorizedActorLogsAuditRecord(t *testing.T) {
+	const host = "api.example.com"
+	store := NewStore()
+	store.Set(testNamespace+"/backend", &Entry{
+		Host: host,
+		Authenticator: newImpersonationAuthenticator(t, map[string]any{
+			"sub": "actor-sub", "email": "actor@example.com", "groups": []any{"platform-admins", "auditors"},
+		}, "sub", impersonationExtraEmailUID),
+		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
+		Impersonation:        resolvedImpersonation([]string{"platform-admins"}, impersonationExtraEmailUID),
+	})
+	reader := secretReader(t, credentialSecret("creds", "impersonator-token"))
+	sink := newCaptureSink(false)
+	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.New(sink)))
+
+	resp := mustCheck(t, client, checkRequest(host, map[string]string{
+		"authorization":     "Bearer caller-token",
+		"impersonate-user":  "target-user",
+		"impersonate-uid":   "target-uid",
+		"impersonate-group": "dev,ops",
+	}))
+	if got, want := codes.Code(resp.GetStatus().GetCode()), codes.OK; got != want {
+		t.Fatalf("status code = %v, want %v", got, want)
+	}
+
+	line := sink.find(t, "allowing request (delegated mode)")
+	if got, want := line.kv["host"], host; got != want {
+		t.Errorf("host = %v, want %v", got, want)
+	}
+	if got, want := line.kv["actor"], "actor-sub"; got != want {
+		t.Errorf("actor = %v, want %v", got, want)
+	}
+	assertStringSliceField(t, line, "actorGroups", []string{"platform-admins", "auditors"})
+	if got, want := line.kv["target"], "target-user"; got != want {
+		t.Errorf("target = %v, want %v", got, want)
+	}
+	assertStringSliceField(t, line, "passthroughGroups", []string{"dev", "ops"})
+	if got, want := line.kv["targetUIDSupplied"], true; got != want {
+		t.Errorf("targetUIDSupplied = %v, want %v", got, want)
+	}
+
+	for _, entry := range sink.snapshot() {
+		for key, value := range entry.kv {
+			if s, ok := value.(string); ok && strings.Contains(s, "caller-token") {
+				t.Errorf("log field %s leaks bearer token: %q", key, s)
+			}
+		}
+	}
+}
+
 // TestCheckDelegatedModeNoGroupsNoRemoval asserts a delegated request with a target
 // user but NO inbound Impersonate-Group does not populate headers_to_remove — there
 // is no stale group header to strip, so the removal is emitted only when needed.
@@ -1624,7 +1678,8 @@ type captureEntry struct {
 }
 
 // captureSink is a logr.LogSink that records Info entries for assertion. enabled
-// controls whether V(1) lines are emitted, modeling the debug-verbosity gate.
+// controls whether V(1) lines are emitted; V(0) Info is always enabled, modeling
+// the default production log level.
 type captureSink struct {
 	mu      sync.Mutex
 	enabled bool
@@ -1635,7 +1690,9 @@ func newCaptureSink(enabled bool) *captureSink { return &captureSink{enabled: en
 
 func (s *captureSink) Init(logr.RuntimeInfo) {}
 
-func (s *captureSink) Enabled(int) bool { return s.enabled }
+func (s *captureSink) Enabled(level int) bool {
+	return level <= 0 || s.enabled
+}
 
 func (s *captureSink) Info(_ int, msg string, kv ...any) {
 	s.mu.Lock()
@@ -1671,6 +1728,17 @@ func (s *captureSink) find(t *testing.T, msg string) captureEntry {
 	}
 	t.Fatalf("no log entry with message %q", msg)
 	return captureEntry{}
+}
+
+func assertStringSliceField(t *testing.T, entry captureEntry, key string, want []string) {
+	t.Helper()
+	got, ok := entry.kv[key].([]string)
+	if !ok {
+		t.Fatalf("%s = %T(%v), want []string", key, entry.kv[key], entry.kv[key])
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("%s = %v, want %v", key, got, want)
+	}
 }
 
 // findAll returns every captured entry whose message equals msg, in order.
