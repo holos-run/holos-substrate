@@ -791,52 +791,52 @@ func ptrInt64(v int64) *int64 { return &v }
 
 // newImpersonationAuthenticator builds an Authenticator whose verifier returns the
 // given claims, mapping the "groups" claim to Kubernetes groups (self mode) and
-// resolving the given actorExtra mappings into Identity.ActorExtra — the delegated-
+// resolving the given impersonation extra mappings into Identity.ImpersonationExtra — the delegated-
 // impersonation fixtures need both the actor's groups (to gate authz) and its
-// actorExtra (stamped into reserved headers).
-func newImpersonationAuthenticator(t *testing.T, claims map[string]any, usernameClaim string, actorExtra []authenticatorv1alpha1.ExtraMapping) *Authenticator {
+// impersonationExtra (stamped into reserved headers).
+func newImpersonationAuthenticator(t *testing.T, claims map[string]any, usernameClaim string, impersonationExtra []authenticatorv1alpha1.ExtraMapping) *Authenticator {
 	t.Helper()
 	mapper, err := NewGroupMapper(DefaultGroupExpression("groups", ""))
 	if err != nil {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
-	return NewAuthenticator(&fakeVerifier{claims: claims}, mapper, usernameClaim, "", "", nil, actorExtra)
+	return NewAuthenticator(&fakeVerifier{claims: claims}, mapper, usernameClaim, "", "", nil, impersonationExtra)
 }
 
 // resolvedImpersonation builds a *ResolvedImpersonation for the Entry from an
-// allowlisted group set and actorExtra mappings, mirroring what the reconciler
+// allowlisted group set and impersonation extra mappings, mirroring what the reconciler
 // stores (HOL-1432).
-func resolvedImpersonation(groups []string, actorExtra []authenticatorv1alpha1.ExtraMapping) *ResolvedImpersonation {
+func resolvedImpersonation(groups []string, impersonationExtra []authenticatorv1alpha1.ExtraMapping) *ResolvedImpersonation {
 	set := make(map[string]struct{}, len(groups))
 	for _, g := range groups {
 		set[g] = struct{}{}
 	}
-	return &ResolvedImpersonation{Groups: set, ActorExtra: actorExtra}
+	return &ResolvedImpersonation{Groups: set, Extra: impersonationExtra}
 }
 
-// actorExtraEmailUID is the actorExtra mapping used across the delegated tests: the
+// impersonationExtraEmailUID is the impersonation extra mapping used across the delegated tests: the
 // actor's email and sub are stamped into reserved Impersonate-Extra-actor-email /
 // Impersonate-Extra-actor-uid headers.
-var actorExtraEmailUID = []authenticatorv1alpha1.ExtraMapping{
+var impersonationExtraEmailUID = []authenticatorv1alpha1.ExtraMapping{
 	{Key: "actor-email", ValueClaim: "email"},
 	{Key: "actor-uid", ValueClaim: "sub"},
 }
 
-// TestCheckSelfModeEmitsActorExtra asserts case (a): with no inbound Impersonate-*
-// header, a Backend that configures spec.impersonation.actorExtra is served in self
+// TestCheckSelfModeEmitsImpersonationExtra asserts case (a): with no inbound Impersonate-*
+// header, a Backend that configures spec.impersonation.extra is served in self
 // mode, emitting the DERIVED identity headers (user, groups) PLUS the actor-identity
 // Impersonate-Extra-<actorKey> headers — the actor identity is always recorded, even
 // in self mode (HOL-1433 backward-compat criterion).
-func TestCheckSelfModeEmitsActorExtra(t *testing.T) {
+func TestCheckSelfModeEmitsImpersonationExtra(t *testing.T) {
 	const host = "api.example.com"
 	store := NewStore()
 	store.Set(testNamespace+"/backend", &Entry{
 		Host: host,
 		Authenticator: newImpersonationAuthenticator(t, map[string]any{
 			"sub": "alice", "email": "alice@example.com", "groups": []any{"platform-admins"},
-		}, "sub", actorExtraEmailUID),
+		}, "sub", impersonationExtraEmailUID),
 		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
-		Impersonation:        resolvedImpersonation([]string{"platform-admins"}, actorExtraEmailUID),
+		Impersonation:        resolvedImpersonation([]string{"platform-admins"}, impersonationExtraEmailUID),
 	})
 	reader := secretReader(t, credentialSecret("creds", "impersonator-token"))
 	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.Discard()))
@@ -845,7 +845,7 @@ func TestCheckSelfModeEmitsActorExtra(t *testing.T) {
 	if got, want := codes.Code(resp.GetStatus().GetCode()), codes.OK; got != want {
 		t.Fatalf("status code = %v, want %v", got, want)
 	}
-	// Derived user + groups, then the actorExtra headers in lexical key order, then
+	// Derived user + groups, then the impersonation extra headers in lexical key order, then
 	// Authorization.
 	assertHeaderOptions(t, resp.GetOkResponse().GetHeaders(), []*corev3.HeaderValueOption{
 		overwriteHeader(headerImpersonateUser, "alice"),
@@ -861,7 +861,7 @@ func TestCheckSelfModeEmitsActorExtra(t *testing.T) {
 // --as-group values (arriving Envoy-comma-joined) is served in delegated mode. The
 // actor-supplied target user passes through verbatim, the groups round-trip through
 // the comma-joined groups header, the actor identity is stamped into the reserved
-// actorExtra headers, the DERIVED actor identity (its own user/groups) is absent, and
+// impersonation extra headers, the DERIVED actor identity (its own user/groups) is absent, and
 // Authorization carries the impersonator token.
 func TestCheckDelegatedModeAuthorizedActor(t *testing.T) {
 	const host = "api.example.com"
@@ -870,9 +870,9 @@ func TestCheckDelegatedModeAuthorizedActor(t *testing.T) {
 		Host: host,
 		Authenticator: newImpersonationAuthenticator(t, map[string]any{
 			"sub": "actor-sub", "email": "actor@example.com", "groups": []any{"platform-admins"},
-		}, "sub", actorExtraEmailUID),
+		}, "sub", impersonationExtraEmailUID),
 		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
-		Impersonation:        resolvedImpersonation([]string{"platform-admins"}, actorExtraEmailUID),
+		Impersonation:        resolvedImpersonation([]string{"platform-admins"}, impersonationExtraEmailUID),
 	})
 	reader := secretReader(t, credentialSecret("creds", "impersonator-token"))
 	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.Discard()))
@@ -915,9 +915,9 @@ func TestCheckDelegatedModeNoGroupsNoRemoval(t *testing.T) {
 		Host: host,
 		Authenticator: newImpersonationAuthenticator(t, map[string]any{
 			"sub": "actor-sub", "email": "actor@example.com", "groups": []any{"platform-admins"},
-		}, "sub", actorExtraEmailUID),
+		}, "sub", impersonationExtraEmailUID),
 		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
-		Impersonation:        resolvedImpersonation([]string{"platform-admins"}, actorExtraEmailUID),
+		Impersonation:        resolvedImpersonation([]string{"platform-admins"}, impersonationExtraEmailUID),
 	})
 	reader := secretReader(t, credentialSecret("creds", "impersonator-token"))
 	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.Discard()))
@@ -945,9 +945,9 @@ func TestCheckDelegatedModeForwardsTargetUIDAndExtra(t *testing.T) {
 		Host: host,
 		Authenticator: newImpersonationAuthenticator(t, map[string]any{
 			"sub": "actor-sub", "email": "actor@example.com", "groups": []any{"platform-admins"},
-		}, "sub", actorExtraEmailUID),
+		}, "sub", impersonationExtraEmailUID),
 		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
-		Impersonation:        resolvedImpersonation([]string{"platform-admins"}, actorExtraEmailUID),
+		Impersonation:        resolvedImpersonation([]string{"platform-admins"}, impersonationExtraEmailUID),
 	})
 	reader := secretReader(t, credentialSecret("creds", "impersonator-token"))
 	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.Discard()))
@@ -984,9 +984,9 @@ func TestCheckDelegatedModeUsesImpersonatorCredentialFromServiceAccount(t *testi
 		Host: host,
 		Authenticator: newImpersonationAuthenticator(t, map[string]any{
 			"sub": "actor-sub", "email": "actor@example.com", "groups": []any{"platform-admins"},
-		}, "sub", actorExtraEmailUID),
+		}, "sub", impersonationExtraEmailUID),
 		ServiceAccountRef: &authenticatorv1alpha1.ServiceAccountReference{Name: "impersonator", ExpirationSeconds: ptrInt64(3600)},
-		Impersonation:     resolvedImpersonation([]string{"platform-admins"}, actorExtraEmailUID),
+		Impersonation:     resolvedImpersonation([]string{"platform-admins"}, impersonationExtraEmailUID),
 	})
 	srv := &CheckServer{
 		store:        store,
@@ -1019,9 +1019,9 @@ func TestCheckDelegatedModeUnauthorizedActorDenies(t *testing.T) {
 		Host: host,
 		Authenticator: newImpersonationAuthenticator(t, map[string]any{
 			"sub": "actor-sub", "email": "actor@example.com", "groups": []any{"unprivileged"},
-		}, "sub", actorExtraEmailUID),
+		}, "sub", impersonationExtraEmailUID),
 		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
-		Impersonation:        resolvedImpersonation([]string{"platform-admins"}, actorExtraEmailUID),
+		Impersonation:        resolvedImpersonation([]string{"platform-admins"}, impersonationExtraEmailUID),
 	})
 	reader := secretReader(t, credentialSecret("creds", "imp"))
 	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.Discard()))
@@ -1060,13 +1060,13 @@ func TestCheckDelegatedModeNilImpersonationDenies(t *testing.T) {
 	}
 }
 
-// TestCheckReservedActorExtraHeaderDeniesBothModes asserts case (e): an inbound copy
+// TestCheckReservedImpersonationExtraHeaderDeniesBothModes asserts case (e): an inbound copy
 // of a reserved actor-extra header (Impersonate-Extra-actor-email) is rejected 403 —
 // even for an otherwise-authorized actor, and both when it would be self mode (the
 // reserved header is the only Impersonate-* present, but it is reserved so it is not a
 // mode switch) and delegated mode (a real target header is also present). An actor
 // must never be able to spoof their own actor-identity headers.
-func TestCheckReservedActorExtraHeaderDeniesBothModes(t *testing.T) {
+func TestCheckReservedImpersonationExtraHeaderDeniesBothModes(t *testing.T) {
 	const host = "api.example.com"
 	newStore := func() *Store {
 		store := NewStore()
@@ -1074,9 +1074,9 @@ func TestCheckReservedActorExtraHeaderDeniesBothModes(t *testing.T) {
 			Host: host,
 			Authenticator: newImpersonationAuthenticator(t, map[string]any{
 				"sub": "actor-sub", "email": "actor@example.com", "groups": []any{"platform-admins"},
-			}, "sub", actorExtraEmailUID),
+			}, "sub", impersonationExtraEmailUID),
 			CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
-			Impersonation:        resolvedImpersonation([]string{"platform-admins"}, actorExtraEmailUID),
+			Impersonation:        resolvedImpersonation([]string{"platform-admins"}, impersonationExtraEmailUID),
 		})
 		return store
 	}
@@ -1123,9 +1123,9 @@ func TestCheckDelegatedModeUnsafePassthroughGroupDenies(t *testing.T) {
 				Host: host,
 				Authenticator: newImpersonationAuthenticator(t, map[string]any{
 					"sub": "actor-sub", "email": "actor@example.com", "groups": []any{"platform-admins"},
-				}, "sub", actorExtraEmailUID),
+				}, "sub", impersonationExtraEmailUID),
 				CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
-				Impersonation:        resolvedImpersonation([]string{"platform-admins"}, actorExtraEmailUID),
+				Impersonation:        resolvedImpersonation([]string{"platform-admins"}, impersonationExtraEmailUID),
 			})
 			reader := secretReader(t, credentialSecret("creds", "imp"))
 			client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.Discard()))
@@ -1153,9 +1153,9 @@ func TestCheckDelegatedModeMultipleGroupsRoundTrip(t *testing.T) {
 		Host: host,
 		Authenticator: newImpersonationAuthenticator(t, map[string]any{
 			"sub": "actor-sub", "email": "actor@example.com", "groups": []any{"platform-admins"},
-		}, "sub", actorExtraEmailUID),
+		}, "sub", impersonationExtraEmailUID),
 		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
-		Impersonation:        resolvedImpersonation([]string{"platform-admins"}, actorExtraEmailUID),
+		Impersonation:        resolvedImpersonation([]string{"platform-admins"}, impersonationExtraEmailUID),
 	})
 	reader := secretReader(t, credentialSecret("creds", "impersonator-token"))
 	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.Discard()))
@@ -1199,9 +1199,9 @@ func TestCheckDelegatedModeRequiresTargetUser(t *testing.T) {
 				Host: host,
 				Authenticator: newImpersonationAuthenticator(t, map[string]any{
 					"sub": "actor-sub", "email": "actor@example.com", "groups": []any{"platform-admins"},
-				}, "sub", actorExtraEmailUID),
+				}, "sub", impersonationExtraEmailUID),
 				CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
-				Impersonation:        resolvedImpersonation([]string{"platform-admins"}, actorExtraEmailUID),
+				Impersonation:        resolvedImpersonation([]string{"platform-admins"}, impersonationExtraEmailUID),
 			})
 			reader := secretReader(t, credentialSecret("creds", "imp"))
 			client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.Discard()))
@@ -1225,9 +1225,9 @@ func TestCheckDelegatedModeUnrecognizedHeaderDenies(t *testing.T) {
 		Host: host,
 		Authenticator: newImpersonationAuthenticator(t, map[string]any{
 			"sub": "actor-sub", "email": "actor@example.com", "groups": []any{"platform-admins"},
-		}, "sub", actorExtraEmailUID),
+		}, "sub", impersonationExtraEmailUID),
 		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
-		Impersonation:        resolvedImpersonation([]string{"platform-admins"}, actorExtraEmailUID),
+		Impersonation:        resolvedImpersonation([]string{"platform-admins"}, impersonationExtraEmailUID),
 	})
 	reader := secretReader(t, credentialSecret("creds", "imp"))
 	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.Discard()))

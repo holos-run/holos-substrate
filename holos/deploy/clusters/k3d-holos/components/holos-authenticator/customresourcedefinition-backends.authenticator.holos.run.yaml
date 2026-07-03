@@ -133,7 +133,7 @@ spec:
                 description: |-
                   Impersonation gates and shapes delegated impersonation ("kubectl --as
                   passthrough") for this Backend: the Groups allowlist of actor groups that may
-                  impersonate a different target identity, and the reserved ActorExtra headers
+                  impersonate a different target identity, and the reserved impersonation extra headers
                   recording who actually performed a delegated request. See ImpersonationConfig
                   in common_types.go for the self-vs-delegated impersonation modes and the
                   reserved-namespace semantics.
@@ -149,13 +149,13 @@ spec:
                   (HOL-1432) and the authorizer Check path consumes it (HOL-1433). Setting a
                   non-nil spec.impersonation changes request-path behavior: it authorizes
                   delegated Impersonate-* passthrough for an actor on the Groups allowlist and
-                  emits the reserved ActorExtra headers (in delegated and self mode). It is no
+                  emits the reserved impersonation extra headers (in delegated and self mode). It is no
                   longer inert; treat it as the security-sensitive opt-in it is. Omitting it
                   leaves the Backend byte-for-byte unchanged (self-impersonation only).
                 properties:
-                  actorExtra:
+                  extra:
                     description: |-
-                      ActorExtra maps token claims to Kubernetes Impersonate-Extra-<key>
+                      Extra maps token claims to Kubernetes Impersonate-Extra-<key>
                       impersonation headers describing the **actor** — the authenticated identity
                       that performs a delegated impersonation — exactly like spec.oidc.extra maps
                       claims for the impersonated user (see ExtraMapping and OIDCConfig.Extra for
@@ -163,7 +163,7 @@ spec:
                       or null claim skips the entry, a present string is emitted verbatim, a
                       present non-string denies the request fail-closed).
 
-                      ActorExtra is a **reserved namespace**. Its values are always set
+                      Extra is a **reserved namespace**. Its values are always set
                       authoritatively by the authorizer from the validated actor token; they are
                       **never client-settable** — inbound Impersonate-Extra-<key> headers naming a
                       reserved actor key are rejected fail-closed (the request is denied), never
@@ -173,27 +173,33 @@ spec:
                       record who actually performed the action (distinct from the impersonated
                       target) so downstream authorizers and audit tooling can attribute a delegated
                       request to its real actor. In self impersonation mode the actor IS the
-                      impersonated user, so ActorExtra is **also emitted** there (alongside the
+                      impersonated user, so Extra is **also emitted** there (alongside the
                       derived spec.oidc.extra) — the actor identity is always recorded regardless of
-                      mode (HOL-1433). Configuring ActorExtra on a Backend that never receives a
+                      mode (HOL-1433). Configuring Extra on a Backend that never receives a
                       delegated request thus adds these audit headers to every (self-mode) request.
 
-                      ActorExtra keys MUST be disjoint from spec.oidc.extra keys: the two share the
+                      Extra keys MUST be disjoint from spec.oidc.extra keys: the two share the
                       single Impersonate-Extra-<key> header namespace on the upstream request, and
                       an overlapping key would make it ambiguous whether the header describes the
                       actor or the impersonated user. The disjointness (and each key's canonicality,
-                      like spec.oidc.extra) is validated by the reconciler in a later phase
-                      (HOL-1432, Accepted=False on violation) — it is intentionally NOT a CRD marker
+                      like spec.oidc.extra) is validated by the reconciler
+                      (Accepted=False on violation) — it is intentionally NOT a CRD marker
                       or admission-time CEL rule in this phase, consistent with how
                       spec.oidc.extra[].key canonicality is a reconciler check (InvalidSpec) rather
-                      than an admission-time constraint. Because this phase ships API types only and
-                      the reconciler ignores spec.impersonation, an overlapping key is not rejected
-                      yet; the field is inert (no impersonation headers are emitted from it) until
-                      the reconciler and Check path land, so no ambiguous header can reach the
-                      upstream API server in the interim.
+                      than an admission-time constraint. An overlapping key is rejected by the
+                      reconciler before a Backend is registered in the data path, so no ambiguous
+                      header can reach the upstream API server.
 
                       The list is a map keyed by Key (listType=map / listMapKey=key), so the API
                       server rejects duplicate keys at admission — exactly like spec.oidc.extra.
+
+                      Before HOL-1448 this field used the older actor-extra JSON name. The v1alpha1
+                      API has no conversion webhook: after the CRD schema changes, stored values
+                      using the old name are pruned by the structural schema until operators
+                      re-apply their Backends with spec.impersonation.extra.
+                      HOL-1448 is one phase of the HOL-1447 series and is not intended to ship on
+                      its own; promote it only with the rest of the series so the transitional
+                      pruning window is never exposed as a standalone platform release.
                     items:
                       description: |-
                         ExtraMapping maps a single token claim to a Kubernetes Impersonate-Extra-<key>

@@ -68,8 +68,8 @@ type Entry struct {
 // ResolvedImpersonation is the reconciler-resolved form of spec.impersonation,
 // shaped for the Check path's runtime tests. Groups is a set (built from
 // spec.impersonation.groups) for O(1) membership tests against an actor's mapped
-// Kubernetes groups; ActorExtra carries the validated spec.impersonation.actorExtra
-// claim mappings the Authenticator resolves into Identity.ActorExtra. Like the
+// Kubernetes groups; Extra carries the validated spec.impersonation.extra
+// claim mappings the Authenticator resolves into Identity.ImpersonationExtra. Like the
 // Entry that holds it, a ResolvedImpersonation is treated as immutable once stored.
 type ResolvedImpersonation struct {
 	// Groups is the allowlist of Kubernetes group names that gate delegated
@@ -78,10 +78,10 @@ type ResolvedImpersonation struct {
 	// impersonation effectively disabled even with a non-nil spec.impersonation).
 	Groups map[string]struct{}
 
-	// ActorExtra is the set of claim→extra-key mappings (spec.impersonation.actorExtra)
+	// Extra is the set of claim→extra-key mappings (spec.impersonation.extra)
 	// describing the actor identity. The Authenticator resolves them into
-	// Identity.ActorExtra with the same semantics as spec.oidc.extra.
-	ActorExtra []authenticatorv1alpha1.ExtraMapping
+	// Identity.ImpersonationExtra with the same semantics as spec.oidc.extra.
+	Extra []authenticatorv1alpha1.ExtraMapping
 }
 
 // Store is a concurrency-safe registry of ready Backends keyed by spec.host. The

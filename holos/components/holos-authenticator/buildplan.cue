@@ -621,7 +621,7 @@ userDefinedBuildPlan: {
 						// spec.impersonation.groups (otherwise the request is denied 403,
 						// exactly as a self-only Backend denies inbound Impersonate-*).
 						//
-						// spec.impersonation.actorExtra maps the actor's ID-token claims
+						// spec.impersonation.extra maps the actor's ID-token claims
 						// into RESERVED Impersonate-Extra-actor-* headers that record WHO
 						// performed the delegated request — distinct from the impersonator
 						// ServiceAccount and from the impersonated target — so the API
@@ -629,10 +629,10 @@ userDefinedBuildPlan: {
 						// client-settable (an inbound copy is denied in both modes) and MUST
 						// be disjoint from spec.oidc.extra keys.  In delegated mode the
 						// derived Impersonate-User/groups/Uid/oidc.extra are NOT emitted;
-						// only the actorExtra headers survive alongside the actor's target
+						// only the impersonation extra headers survive alongside the actor's target
 						// (the AC6 rule).
 						//
-						// The actorExtra list below mirrors the HOL-1429 worked example
+						// The extra list below mirrors the HOL-1429 worked example
 						// (actor-* claims identifying a Keycloak human actor).  Like the
 						// other examples this is a placeholder: the component is excluded
 						// from the bootstrap floor and never applied automatically, and it
@@ -682,12 +682,12 @@ userDefinedBuildPlan: {
 									// `kubectl --as` target; everyone else is denied delegated
 									// impersonation (self mode only).
 									groups: ["oidc:platform-admins"]
-									// actorExtra stamps the actor's own identity from the validated
+									// extra stamps the actor's own identity from the validated
 									// token into reserved Impersonate-Extra-actor-* headers (disjoint
 									// from any spec.oidc.extra keys), mirroring the HOL-1429 example
 									// so the Kubernetes audit log records the real human behind a
 									// delegated request.
-									actorExtra: [
+									extra: [
 										{key: "actor-sub", valueClaim: "sub"},
 										{key: "actor-email", valueClaim: "email"},
 										{key: "actor-preferred_username", valueClaim: "preferred_username"},
