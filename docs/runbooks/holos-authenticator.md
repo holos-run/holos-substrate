@@ -874,10 +874,11 @@ delegated impersonation (consistent with ADR-23 Revision 4). So the impersonator
 scope*](#adding-per-backend-impersonate-scope) below. For a human-target Backend
 mapping to non-`system:` groups, that means `impersonate` on `users` (scoped by
 `resourceNames` to the expected usernames where practical) and on `groups` (scoped
-to the mapped group names); add `uids`/`userextras/<key>` grants if the forwarded
-target carries `Impersonate-Uid`/`Impersonate-Extra-*`. Without these grants a
-delegated request the authorizer **allows** is then **rejected 403 by the API
-server**. Never widen the shipped default ClusterRole to satisfy this.
+to the mapped group names); add `uids` grants if the actor may supply
+`Impersonate-Uid`, and add `userextras/<key>` grants for each
+`spec.impersonation.extra[]` key the Backend emits as actor attribution. Without
+these grants a delegated request the authorizer **allows** is then **rejected 403
+by the API server**. Never widen the shipped default ClusterRole to satisfy this.
 
 ## Impersonation RBAC (the forwarded credential)
 
@@ -937,13 +938,15 @@ Backend mapping to non-`system:` groups, grant `impersonate` on `users`
 `groups` (scoped to the mapped group names). Prefer mapping to non-`system:`
 groups so the blast radius stays bounded.
 
-> **A Backend with `oidc.uidClaim` or `oidc.extra[]` needs `uids` /
-> `userextras/<key>` grants too.** The API server authorizes `Impersonate-Uid`
-> against the **`uids`** resource and `Impersonate-Extra-<key>` against the
-> **`userextras/<key>`** subresource, **both in the `authentication.k8s.io` API
-> group** — separately from `users`/`groups`. Without these grants a request the
-> authorizer **allows** (it emitted the headers) is then **rejected 403 by the API
-> server**. Add one rule per emitted UID/extra dimension, scoped with
+> **A Backend that emits `Impersonate-Uid` or `Impersonate-Extra-*` needs `uids`
+> / `userextras/<key>` grants too.** The API server authorizes
+> `Impersonate-Uid` against the **`uids`** resource and
+> `Impersonate-Extra-<key>` against the **`userextras/<key>`** subresource, **both
+> in the `authentication.k8s.io` API group** — separately from `users`/`groups`.
+> This applies to `oidc.uidClaim` and `oidc.extra[]` in self mode, and to
+> `spec.impersonation.extra[]` in delegated mode. Without these grants a request
+> the authorizer **allows** (it emitted the headers) is then **rejected 403 by the
+> API server**. Add one rule per emitted UID/extra dimension, scoped with
 > `resourceNames` where practical (the `uids` resource generally cannot be usefully
 > name-scoped since the UID is per-principal). Append to the impersonator's role:
 >
@@ -953,7 +956,8 @@ groups so the blast radius stays bounded.
 >   - apiGroups: ["authentication.k8s.io"]
 >     resources: ["uids"]
 >     verbs: ["impersonate"]
->   # Impersonate-Extra-<key> — one subresource per extra key (oidc.extra[].key)
+>   # Impersonate-Extra-<key> — one subresource per emitted extra key
+>   # (oidc.extra[].key in self mode, impersonation.extra[].key in delegated mode)
 >   - apiGroups: ["authentication.k8s.io"]
 >     resources: ["userextras/email"]
 >     verbs: ["impersonate"]

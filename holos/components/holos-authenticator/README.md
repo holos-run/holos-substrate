@@ -258,7 +258,8 @@ on the two SA virtual groups and is **not** broadened — grant the impersonator
 The rendered **`delegated-example`** `Backend` demonstrates the shape (a `groups`
 allowlist plus `actor-*` `extra` mappings). The full operator procedure — the
 `kubectl --as` flow, the audit-log distinction between impersonator SA / actor /
-impersonated principal, and the required per-`Backend` impersonator RBAC — is in the
+impersonated principal, and the required per-`Backend` impersonator RBAC including
+`userextras/<key>` grants for `spec.impersonation.extra[]` — is in the
 runbook's [*Delegated
 impersonation*](../../../docs/runbooks/holos-authenticator.md#delegated-impersonation-kubectl---as-passthrough)
 section.
