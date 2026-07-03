@@ -207,15 +207,13 @@ type ImpersonationConfig struct {
 	// single Impersonate-Extra-<key> header namespace on the upstream request, and
 	// an overlapping key would make it ambiguous whether the header describes the
 	// actor or the impersonated user. The disjointness (and each key's canonicality,
-	// like spec.oidc.extra) is validated by the reconciler in a later phase
-	// (HOL-1432, Accepted=False on violation) — it is intentionally NOT a CRD marker
+	// like spec.oidc.extra) is validated by the reconciler
+	// (Accepted=False on violation) — it is intentionally NOT a CRD marker
 	// or admission-time CEL rule in this phase, consistent with how
 	// spec.oidc.extra[].key canonicality is a reconciler check (InvalidSpec) rather
-	// than an admission-time constraint. Because this phase ships API types only and
-	// the reconciler ignores spec.impersonation, an overlapping key is not rejected
-	// yet; the field is inert (no impersonation headers are emitted from it) until
-	// the reconciler and Check path land, so no ambiguous header can reach the
-	// upstream API server in the interim.
+	// than an admission-time constraint. An overlapping key is rejected by the
+	// reconciler before a Backend is registered in the data path, so no ambiguous
+	// header can reach the upstream API server.
 	//
 	// The list is a map keyed by Key (listType=map / listMapKey=key), so the API
 	// server rejects duplicate keys at admission — exactly like spec.oidc.extra.
