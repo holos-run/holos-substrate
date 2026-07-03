@@ -63,7 +63,7 @@ with the deviations noted below. `Status` is now `Implemented`.
   **conditional**: it is the default (nil `spec.impersonation`) and still applies
   to an unauthorized actor, but a Backend may opt an **authorized** actor into
   forwarding an actor-supplied `Impersonate-*` target (`kubectl --as`
-  passthrough). See Revision 11 below.
+  passthrough). See the delegated impersonation section below.
 - **Deviation: `server.caBundle` is recorded but not yet consumed.** The
   authorizer copies `spec.server.caBundle` into its in-memory `Backend` entry but
   does **not** dial the upstream API server — Envoy (the waypoint) forwards the
@@ -447,7 +447,7 @@ token validation + CEL group
 mapping*](../runbooks/holos-authenticator.md#oidc-token-validation--cel-group-mapping)
 section.
 
-## Delegated impersonation: `kubectl --as` passthrough (Revision 11)
+## Delegated impersonation: `kubectl --as` passthrough (Revisions 11 and 12)
 
 Revision 11 (HOL-1429 → HOL-1430 → HOL-1433) adds **delegated impersonation** —
 the `kubectl --as` passthrough mode. Revision 12 (HOL-1448 → HOL-1449 →
