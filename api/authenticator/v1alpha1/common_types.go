@@ -152,7 +152,7 @@ type ServiceAccountReference struct {
 // and carries it into the Store Entry (HOL-1432), and the authorizer Check path
 // consumes it (HOL-1433): a non-nil spec.impersonation authorizes delegated
 // Impersonate-* passthrough for an actor whose mapped groups are on the Groups
-// allowlist below, and its ActorExtra claims are emitted as reserved
+// allowlist below, and its Extra claims are emitted as reserved
 // Impersonate-Extra-<key> headers (in delegated AND self mode). The field remains
 // additive and backward-compatible — a Backend that omits spec.impersonation runs
 // self-impersonation only, byte-for-byte unchanged (inbound Impersonate-* denied
@@ -180,7 +180,7 @@ type ImpersonationConfig struct {
 	// +kubebuilder:validation:items:MinLength=1
 	Groups []string `json:"groups,omitempty"`
 
-	// ActorExtra maps token claims to Kubernetes Impersonate-Extra-<key>
+	// Extra maps token claims to Kubernetes Impersonate-Extra-<key>
 	// impersonation headers describing the **actor** — the authenticated identity
 	// that performs a delegated impersonation — exactly like spec.oidc.extra maps
 	// claims for the impersonated user (see ExtraMapping and OIDCConfig.Extra for
@@ -188,7 +188,7 @@ type ImpersonationConfig struct {
 	// or null claim skips the entry, a present string is emitted verbatim, a
 	// present non-string denies the request fail-closed).
 	//
-	// ActorExtra is a **reserved namespace**. Its values are always set
+	// Extra is a **reserved namespace**. Its values are always set
 	// authoritatively by the authorizer from the validated actor token; they are
 	// **never client-settable** — inbound Impersonate-Extra-<key> headers naming a
 	// reserved actor key are rejected fail-closed (the request is denied), never
@@ -198,12 +198,12 @@ type ImpersonationConfig struct {
 	// record who actually performed the action (distinct from the impersonated
 	// target) so downstream authorizers and audit tooling can attribute a delegated
 	// request to its real actor. In self impersonation mode the actor IS the
-	// impersonated user, so ActorExtra is **also emitted** there (alongside the
+	// impersonated user, so Extra is **also emitted** there (alongside the
 	// derived spec.oidc.extra) — the actor identity is always recorded regardless of
-	// mode (HOL-1433). Configuring ActorExtra on a Backend that never receives a
+	// mode (HOL-1433). Configuring Extra on a Backend that never receives a
 	// delegated request thus adds these audit headers to every (self-mode) request.
 	//
-	// ActorExtra keys MUST be disjoint from spec.oidc.extra keys: the two share the
+	// Extra keys MUST be disjoint from spec.oidc.extra keys: the two share the
 	// single Impersonate-Extra-<key> header namespace on the upstream request, and
 	// an overlapping key would make it ambiguous whether the header describes the
 	// actor or the impersonated user. The disjointness (and each key's canonicality,
@@ -220,8 +220,13 @@ type ImpersonationConfig struct {
 	// The list is a map keyed by Key (listType=map / listMapKey=key), so the API
 	// server rejects duplicate keys at admission — exactly like spec.oidc.extra.
 	//
+	// Before HOL-1448 this field used the older actor-extra JSON name. The v1alpha1
+	// API has no conversion webhook: after the CRD schema changes, stored values
+	// using the old name are pruned by the structural schema until operators
+	// re-apply their Backends with spec.impersonation.extra.
+	//
 	// +optional
 	// +listType=map
 	// +listMapKey=key
-	ActorExtra []ExtraMapping `json:"actorExtra,omitempty"`
+	Extra []ExtraMapping `json:"extra,omitempty"`
 }

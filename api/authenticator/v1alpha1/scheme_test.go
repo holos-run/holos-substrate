@@ -65,7 +65,7 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 			CredentialsSecretRef: &SecretReference{Name: "custom-creds", Key: "token"},
 			Impersonation: &ImpersonationConfig{
 				Groups: []string{"oidc:platform-admins", "oidc:sre"},
-				ActorExtra: []ExtraMapping{
+				Extra: []ExtraMapping{
 					{Key: "actor-email", ValueClaim: "email"},
 				},
 			},
@@ -137,12 +137,12 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 	if backend.Spec.Impersonation.Groups[0] == "mutated" {
 		t.Error("mutating the clone's Impersonation.Groups changed the original (shared backing array)")
 	}
-	if &clone.Spec.Impersonation.ActorExtra[0] == &backend.Spec.Impersonation.ActorExtra[0] {
-		t.Error("DeepCopy did not clone the Impersonation.ActorExtra slice")
+	if &clone.Spec.Impersonation.Extra[0] == &backend.Spec.Impersonation.Extra[0] {
+		t.Error("DeepCopy did not clone the Impersonation.Extra slice")
 	}
-	clone.Spec.Impersonation.ActorExtra[0].Key = "mutated"
-	if backend.Spec.Impersonation.ActorExtra[0].Key == "mutated" {
-		t.Error("mutating the clone's Impersonation.ActorExtra changed the original (shared backing array)")
+	clone.Spec.Impersonation.Extra[0].Key = "mutated"
+	if backend.Spec.Impersonation.Extra[0].Key == "mutated" {
+		t.Error("mutating the clone's Impersonation.Extra changed the original (shared backing array)")
 	}
 }
 
