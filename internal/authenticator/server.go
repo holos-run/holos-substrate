@@ -442,6 +442,9 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (resp
 	// the actor's mapped groups intersect the allowlist. A nil-impersonation Backend
 	// and an unauthorized actor are both denied fail-closed here — this is where
 	// today's "inbound Impersonate-* always denied" behavior is preserved.
+	target, hasTarget := headers[strings.ToLower(headerImpersonateUser)]
+	targetUID, targetUIDSupplied := headers[strings.ToLower(headerImpersonateUID)]
+	passthroughGroups := splitInboundGroups(headers)
 	if entry.Impersonation == nil || !groupsIntersect(identity.Groups, entry.Impersonation.Groups) {
 		// Audit at Info level: delegated impersonation is privileged, so the
 		// authorizer records both allowed and denied actor->target decisions.
@@ -450,7 +453,11 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (resp
 			"reason", "actor_not_authorized",
 			"actor", identity.Username,
 			"actorGroups", identity.Groups,
-			"header", impName)
+			"header", impName,
+			"target", target,
+			"targetUID", targetUID,
+			"targetUIDSupplied", targetUIDSupplied,
+			"passthroughGroups", passthroughGroups)
 		return deniedResponse(typev3.StatusCode_Forbidden, "actor not authorized to impersonate", nil), nil
 	}
 
@@ -482,7 +489,6 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (resp
 	// rather than returning an OK that swaps in the impersonator credential for a
 	// request that cannot work — which would otherwise leave the impersonator SA
 	// acting as itself.
-	target, hasTarget := headers[strings.ToLower(headerImpersonateUser)]
 	if !hasTarget || target == "" {
 		// Audit at Info level: the actor attempted delegated impersonation without a
 		// valid target user, so record the actor identity even though no target exists.
@@ -501,7 +507,6 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (resp
 	// literal comma cannot be represented on this Envoy-comma-joined passthrough path
 	// — it is indistinguishable from two groups — so it is unsupported by design and
 	// rejected here, per HOL-1416.)
-	passthroughGroups := splitInboundGroups(headers)
 	if group, ok := firstUnsafeGroup(passthroughGroups); ok {
 		// Audit at Info level: passthrough groups are part of the delegated target
 		// identity, so unsafe values are recorded with actor and target context.
@@ -534,7 +539,6 @@ func (s *CheckServer) Check(ctx context.Context, req *authv3.CheckRequest) (resp
 	// Audit at Info level: delegated impersonation is privileged actor->target
 	// behavior, and this authorizer-side record preserves the actor context that
 	// may not be visible in the upstream API server audit log.
-	_, targetUIDSupplied := headers[strings.ToLower(headerImpersonateUID)]
 	s.log.Info("allowing request (delegated mode)",
 		"host", host,
 		"actor", identity.Username,
