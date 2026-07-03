@@ -319,11 +319,10 @@ func TestReconcileInvalidExtraKeyRejects(t *testing.T) {
 }
 
 // TestReconcileImpersonationApplied asserts a Backend with a valid
-// spec.impersonation (a group allowlist plus a disjoint impersonation extra mapping)
+// spec.impersonation (a group allowlist plus an impersonation extra mapping)
 // becomes Ready and that its registered Store entry carries the resolved
 // impersonation config: the group set for O(1) membership tests and the impersonationExtra
-// mappings, with the Authenticator resolving them into Identity.ImpersonationExtra
-// (HOL-1432).
+// mappings, with the Authenticator able to resolve them on the delegated branch.
 func TestReconcileImpersonationApplied(t *testing.T) {
 	ctx := context.Background()
 	ns := makeNamespace(ctx, t)
@@ -373,13 +372,17 @@ func TestReconcileImpersonationApplied(t *testing.T) {
 		t.Errorf("resolved impersonation impersonationExtra = %v, want a single actor-email mapping", entry.Impersonation.Extra)
 	}
 
-	// The Authenticator resolves the impersonation extra claim into Identity.ImpersonationExtra,
-	// separate from the oidc.extra namespace.
+	// The Authenticator resolves the impersonation extra claim on demand for the
+	// delegated branch, separate from the oidc.extra namespace.
 	id, err := entry.Authenticator.Authenticate(ctx, "raw-token")
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
-	if got, want := id.ImpersonationExtra["actor-email"], "bob@example.com"; got != want {
+	impersonationExtra, err := entry.Authenticator.ResolveImpersonationExtra(id)
+	if err != nil {
+		t.Fatalf("ResolveImpersonationExtra: %v", err)
+	}
+	if got, want := impersonationExtra["actor-email"], "bob@example.com"; got != want {
 		t.Errorf("ImpersonationExtra[actor-email] = %q, want %q", got, want)
 	}
 }
@@ -446,40 +449,59 @@ func TestReconcileInvalidImpersonationExtraKeyRejects(t *testing.T) {
 	}
 }
 
-// TestReconcileImpersonationExtraKeyCollisionRejects asserts a Backend whose
-// spec.impersonation.extra key collides with a spec.oidc.extra key is rejected
-// as an invalid spec (Accepted/Ready=False, reason InvalidSpec) — the two
-// extra-key namespaces must be disjoint — and leaves nothing in the store
-// (HOL-1432).
-func TestReconcileImpersonationExtraKeyCollisionRejects(t *testing.T) {
+// TestReconcileImpersonationExtraKeyOverlapAccepted asserts a Backend whose
+// spec.impersonation.extra key overlaps with a spec.oidc.extra key is accepted:
+// the two fields are emitted in different modes, so an overlapping key is
+// unambiguous.
+func TestReconcileImpersonationExtraKeyOverlapAccepted(t *testing.T) {
 	ctx := context.Background()
 	ns := makeNamespace(ctx, t)
 
-	r, store, _ := newReconciler(discoverOK)
-	b := makeBackend(ns, "backend-actor-extra-collide", "api-actor-extra-collide.example.test")
+	discover := func(context.Context, string, string, []byte) (authenticator.TokenVerifier, error) {
+		return claimsVerifier{claims: map[string]any{
+			"sub":         "alice",
+			"email":       "alice@example.com",
+			"actor_email": "actor@example.com",
+			"groups":      []any{"platform-admins"},
+		}}, nil
+	}
+	r, store, _ := newReconciler(discover)
+	b := makeBackend(ns, "backend-extra-overlap", "api-extra-overlap.example.test")
 	b.Spec.OIDC.Extra = []authenticatorv1alpha1.ExtraMapping{{Key: "email", ValueClaim: "email"}}
 	b.Spec.Impersonation = &authenticatorv1alpha1.ImpersonationConfig{
 		Extra: []authenticatorv1alpha1.ExtraMapping{{Key: "email", ValueClaim: "actor_email"}},
 	}
 	key := createBackend(ctx, t, b)
 
-	res, err := reconcile(ctx, r, key)
-	if err != nil {
-		t.Fatalf("reconcile returned error for a colliding impersonation extra key (should not requeue): %v", err)
-	}
-	if res.RequeueAfter != 0 {
-		t.Errorf("RequeueAfter = %v, want 0 for a terminal rejection", res.RequeueAfter)
+	if _, err := reconcile(ctx, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
 	}
 
 	got := getBackend(ctx, t, key)
-	if s := condStatus(got, ConditionAccepted); s != metav1.ConditionFalse {
-		t.Errorf("Accepted = %q, want False", s)
+	if s := condStatus(got, ConditionAccepted); s != metav1.ConditionTrue {
+		t.Errorf("Accepted = %q, want True", s)
 	}
-	if reason := condReason(got, ConditionReady); reason != ReasonInvalidSpec {
-		t.Errorf("Ready reason = %q, want %q", reason, ReasonInvalidSpec)
+	if s := condStatus(got, ConditionReady); s != metav1.ConditionTrue {
+		t.Errorf("Ready = %q, want True", s)
 	}
-	if store.Len() != 0 {
-		t.Errorf("store has %d entries, want 0 for a rejected spec", store.Len())
+
+	entry, ok := store.Get("api-extra-overlap.example.test")
+	if !ok {
+		t.Fatalf("store missing entry for host api-extra-overlap.example.test")
+	}
+	id, err := entry.Authenticator.Authenticate(ctx, "raw-token")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if got, want := id.Extra["email"], "alice@example.com"; got != want {
+		t.Errorf("oidc extra[email] = %q, want %q", got, want)
+	}
+	impersonationExtra, err := entry.Authenticator.ResolveImpersonationExtra(id)
+	if err != nil {
+		t.Fatalf("ResolveImpersonationExtra: %v", err)
+	}
+	if got, want := impersonationExtra["email"], "actor@example.com"; got != want {
+		t.Errorf("impersonation extra[email] = %q, want %q", got, want)
 	}
 }
 

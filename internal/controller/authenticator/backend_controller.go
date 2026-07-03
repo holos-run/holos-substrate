@@ -131,35 +131,25 @@ func (r *BackendReconciler) reconcileNormal(ctx context.Context, logger logr.Log
 	// key is an invalid spec (Accepted=False) — like a malformed CEL expression or a
 	// bad URL — fixed only by editing the spec, so reject without requeue. Key
 	// uniqueness is already enforced by the CRD's listMapKey.
-	oidcExtraKeys := make(map[string]struct{}, len(backend.Spec.OIDC.Extra))
 	for _, m := range backend.Spec.OIDC.Extra {
 		if err := authenticator.ValidateExtraKey(m.Key); err != nil {
 			r.Store.DeleteByKey(key)
 			return r.reject(ctx, backend, ReasonInvalidSpec,
 				fmt.Sprintf("invalid spec.oidc.extra key: %v", err))
 		}
-		oidcExtraKeys[m.Key] = struct{}{}
 	}
 
 	// Validate spec.impersonation.extra the same way: each key is emitted as
 	// the suffix of an Impersonate-Extra-<key> header describing the actor, so it
-	// must be a canonical extra key. Additionally the impersonation extra keys must be
-	// disjoint from the spec.oidc.extra keys — the two share the single
-	// Impersonate-Extra-<key> header namespace, and an overlapping key would make it
-	// ambiguous whether the header describes the actor or the impersonated user. Both
-	// are invalid-spec rejections (Accepted=False), fixed only by editing the spec, so
-	// reject without requeue. A nil Impersonation skips the whole block.
+	// must be a canonical extra key. It may overlap with spec.oidc.extra because
+	// the two fields are emitted in different modes: oidc.extra in self mode,
+	// impersonation.extra in delegated mode. A nil Impersonation skips the block.
 	if backend.Spec.Impersonation != nil {
 		for _, m := range backend.Spec.Impersonation.Extra {
 			if err := authenticator.ValidateExtraKey(m.Key); err != nil {
 				r.Store.DeleteByKey(key)
 				return r.reject(ctx, backend, ReasonInvalidSpec,
 					fmt.Sprintf("invalid spec.impersonation.extra key: %v", err))
-			}
-			if _, collides := oidcExtraKeys[m.Key]; collides {
-				r.Store.DeleteByKey(key)
-				return r.reject(ctx, backend, ReasonInvalidSpec,
-					fmt.Sprintf("spec.impersonation.extra key %q collides with a spec.oidc.extra key; the two extra-key namespaces must be disjoint", m.Key))
 			}
 		}
 	}
@@ -224,9 +214,10 @@ func (r *BackendReconciler) reconcileNormal(ctx context.Context, logger logr.Log
 	saRef := normalizeServiceAccountRef(backend.Spec.ServiceAccountRef)
 	// Resolve the delegated-impersonation config once so the Check path (a later
 	// phase) need not re-derive it. A nil spec.impersonation yields a nil resolved
-	// value — delegated impersonation off, the fail-closed default. The impersonation extra
-	// mappings flow into the Authenticator (resolved into Identity.ImpersonationExtra); the
-	// group allowlist is precomputed into a set for O(1) membership tests.
+	// value — delegated impersonation off, the fail-closed default. The
+	// impersonation extra mappings flow into the Authenticator for delegated-branch
+	// resolution; the group allowlist is precomputed into a set for O(1) membership
+	// tests.
 	var impersonation *authenticator.ResolvedImpersonation
 	var impersonationExtra []authenticatorv1alpha1.ExtraMapping
 	if backend.Spec.Impersonation != nil {
