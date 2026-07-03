@@ -59,7 +59,7 @@ privileged credential, so Envoy forwards the request straight to the API server.
   Keycloak issuer, `credentialsSecretRef`), the static-JWKS `remote-cluster-a`
   (KSA / offline mode, `serviceAccountRef: {}`, below), and `delegated-example`
   demonstrating **delegated impersonation** (`spec.impersonation` — a `groups`
-  allowlist + `actorExtra`, see *Delegated impersonation* below).
+  allowlist + `extra`, see *Delegated impersonation* below).
 
 No `Namespace` is emitted: the `holos-authenticator` namespace is owned by the
 central registry (`holos/namespaces.cue`) and rendered by the `namespaces`
@@ -235,7 +235,7 @@ omitting `spec.impersonation` is byte-for-byte the self-only behavior.
   is permitted only when the actor's **mapped** Kubernetes groups (what the CEL /
   default mapping computes, not the raw claim) intersect this set. An
   omitted/empty list allowlists nothing (opt-in default).
-- **`spec.impersonation.actorExtra[]`** — reserved actor-identity headers stamped
+- **`spec.impersonation.extra[]`** — reserved actor-identity headers stamped
   from the validated actor token as `Impersonate-Extra-<key>` (e.g. `actor-sub`,
   `actor-email`). They are **never client-settable** (an inbound copy is denied in
   both modes) and must be **disjoint** from `spec.oidc.extra` keys.
@@ -244,14 +244,14 @@ The presence of an inbound `Impersonate-*` header is the self-vs-delegated **mod
 switch**; an unauthorized actor (or a nil-`spec.impersonation` Backend) is denied
 403. In delegated mode the actor's target passes through and the Backend-derived
 `Impersonate-User`/groups/`Impersonate-Uid`/`spec.oidc.extra` are **not** emitted —
-only the reserved `actorExtra` headers survive (the AC6 rule). Impersonation-target
+only the reserved `extra` actor headers survive (the AC6 rule). Impersonation-target
 authorization is delegated to the **impersonator SA's `impersonate` RBAC on the
 upstream API server**; the shipped default ClusterRole (above) is impersonate-only
 on the two SA virtual groups and is **not** broadened — grant the impersonator SA
 `impersonate` for the intended targets **per `Backend`**.
 
 The rendered **`delegated-example`** `Backend` demonstrates the shape (a `groups`
-allowlist plus `actor-*` `actorExtra` mappings). The full operator procedure — the
+allowlist plus `actor-*` `extra` mappings). The full operator procedure — the
 `kubectl --as` flow, the audit-log distinction between impersonator SA / actor /
 impersonated principal, and the required per-`Backend` impersonator RBAC — is in the
 runbook's [*Delegated

@@ -200,6 +200,9 @@ spec:
                       API has no conversion webhook: after the CRD schema changes, stored values
                       using the old name are pruned by the structural schema until operators
                       re-apply their Backends with spec.impersonation.extra.
+                      HOL-1448 is one phase of the HOL-1447 series and is not intended to ship on
+                      its own; promote it only with the rest of the series so the transitional
+                      pruning window is never exposed as a standalone platform release.
                     items:
                       description: |-
                         ExtraMapping maps a single token claim to a Kubernetes Impersonate-Extra-<key>
