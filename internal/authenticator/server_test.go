@@ -1088,13 +1088,31 @@ func TestCheckDelegatedModeUnauthorizedActorDenies(t *testing.T) {
 		Impersonation:        resolvedImpersonation([]string{"platform-admins"}, impersonationExtraEmailUID),
 	})
 	reader := secretReader(t, credentialSecret("creds", "imp"))
-	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.Discard()))
+	sink := newCaptureSink(false)
+	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.New(sink)))
 
 	resp := mustCheck(t, client, checkRequest(host, map[string]string{
-		"authorization":    "Bearer caller",
-		"impersonate-user": "target-user",
+		"authorization":     "Bearer caller",
+		"impersonate-user":  "target-user",
+		"impersonate-uid":   "target-uid",
+		"impersonate-group": "dev,ops",
 	}))
 	assertDenied(t, resp, typev3.StatusCode_Forbidden)
+
+	line := sink.find(t, "denying delegated-impersonation request: actor not authorized")
+	if got, want := line.kv["reason"], "actor_not_authorized"; got != want {
+		t.Errorf("reason = %v, want %v", got, want)
+	}
+	if got, want := line.kv["actor"], "actor-sub"; got != want {
+		t.Errorf("actor = %v, want %v", got, want)
+	}
+	if got, want := line.kv["target"], "target-user"; got != want {
+		t.Errorf("target = %v, want %v", got, want)
+	}
+	if got, want := line.kv["targetUID"], "target-uid"; got != want {
+		t.Errorf("targetUID = %v, want %v", got, want)
+	}
+	assertStringSliceField(t, line, "passthroughGroups", []string{"dev", "ops"})
 }
 
 // TestCheckDelegatedModeNilImpersonationDenies asserts case (d): a Backend with
