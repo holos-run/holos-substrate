@@ -1178,8 +1178,8 @@ header itself. The authorizer **already** denies such requests server-side (step
 **optional** and **not required** for the security property. It runs **before**
 ext_authz and rejects the subset of headers that are invalid in both self and
 delegated mode as proxy-level defense in depth, returning HTTP 403 before any
-header mutation. It refuses the configured groups header (substitute the value of
-`--impersonate-groups-header`; the default
+header mutation. This delegated-compatible form refuses the configured groups
+header (substitute the value of `--impersonate-groups-header`; the default
 `x-impersonate-groups` is shown) **and** every inbound `Impersonate-Extra-*`
 header on the incoming request:
 
@@ -1190,6 +1190,11 @@ header on the incoming request:
 > reject the configured groups header and the `Impersonate-Extra-` prefix because
 > the authorizer denies those inbound headers fail-closed in both modes. The split
 > filter below is unaffected — deploy it as usual.
+>
+> On a route that will never enable delegated impersonation, an operator may use a
+> stricter self-mode variant that rejects the whole `impersonate-` prefix at the
+> proxy, mirroring the self-mode authorizer guard. Do not use that stricter variant
+> on delegated routes.
 
 ```lua
 function envoy_on_request(handle)
