@@ -470,10 +470,10 @@ func TestCheckDeniesUnsafeGroup(t *testing.T) {
 // the backend's privileged credential downstream, so a smuggled
 // Impersonate-Group: system:masters must never survive to the API server. Each
 // impersonation-header variant is rejected, even when an otherwise-valid bearer
-// token is present. (When spec.impersonation IS set, a non-reserved Impersonate-*
-// header instead switches to delegated mode for an authorized actor — see the
-// TestCheckDelegatedMode* cases; the nil-impersonation denial here is the
-// backward-compatible default.)
+// token is present. (When spec.impersonation IS set, an inbound Impersonate-*
+// header other than Impersonate-Extra-* switches to delegated mode for an
+// authorized actor — see the TestCheckDelegatedMode* cases; the nil-impersonation
+// denial here is the backward-compatible default.)
 func TestCheckInboundImpersonationHeaderDenies(t *testing.T) {
 	const host = "api.example.com"
 	store := NewStore()
@@ -791,16 +791,21 @@ func ptrInt64(v int64) *int64 { return &v }
 
 // newImpersonationAuthenticator builds an Authenticator whose verifier returns the
 // given claims, mapping the "groups" claim to Kubernetes groups (self mode) and
-// resolving the given impersonation extra mappings into Identity.ImpersonationExtra — the delegated-
-// impersonation fixtures need both the actor's groups (to gate authz) and its
-// impersonationExtra (stamped into reserved headers).
+// carrying the given impersonation extra mappings for delegated-mode resolution —
+// the delegated-impersonation fixtures need both the actor's groups (to gate
+// authz) and its impersonationExtra (stamped into actor headers).
 func newImpersonationAuthenticator(t *testing.T, claims map[string]any, usernameClaim string, impersonationExtra []authenticatorv1alpha1.ExtraMapping) *Authenticator {
+	t.Helper()
+	return newExtraAuthenticator(t, claims, usernameClaim, nil, impersonationExtra)
+}
+
+func newExtraAuthenticator(t *testing.T, claims map[string]any, usernameClaim string, oidcExtra, impersonationExtra []authenticatorv1alpha1.ExtraMapping) *Authenticator {
 	t.Helper()
 	mapper, err := NewGroupMapper(DefaultGroupExpression("groups", ""))
 	if err != nil {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
-	return NewAuthenticator(&fakeVerifier{claims: claims}, mapper, usernameClaim, "", "", nil, impersonationExtra)
+	return NewAuthenticator(&fakeVerifier{claims: claims}, mapper, usernameClaim, "", "", oidcExtra, impersonationExtra)
 }
 
 // resolvedImpersonation builds a *ResolvedImpersonation for the Entry from an
@@ -815,26 +820,25 @@ func resolvedImpersonation(groups []string, impersonationExtra []authenticatorv1
 }
 
 // impersonationExtraEmailUID is the impersonation extra mapping used across the delegated tests: the
-// actor's email and sub are stamped into reserved Impersonate-Extra-actor-email /
-// Impersonate-Extra-actor-uid headers.
+// actor's email and sub are stamped into Impersonate-Extra-actor-email /
+// Impersonate-Extra-actor-uid headers in delegated mode.
 var impersonationExtraEmailUID = []authenticatorv1alpha1.ExtraMapping{
 	{Key: "actor-email", ValueClaim: "email"},
 	{Key: "actor-uid", ValueClaim: "sub"},
 }
 
-// TestCheckSelfModeEmitsImpersonationExtra asserts case (a): with no inbound Impersonate-*
-// header, a Backend that configures spec.impersonation.extra is served in self
-// mode, emitting the DERIVED identity headers (user, groups) PLUS the actor-identity
-// Impersonate-Extra-<actorKey> headers — the actor identity is always recorded, even
-// in self mode (HOL-1433 backward-compat criterion).
-func TestCheckSelfModeEmitsImpersonationExtra(t *testing.T) {
+// TestCheckSelfModeEmitsOIDCExtraOnly asserts self mode emits the derived identity
+// plus spec.oidc.extra only. spec.impersonation.extra is delegated-mode-only and
+// must not be stamped on self-mode responses.
+func TestCheckSelfModeEmitsOIDCExtraOnly(t *testing.T) {
 	const host = "api.example.com"
+	oidcExtra := []authenticatorv1alpha1.ExtraMapping{{Key: "email", ValueClaim: "email"}}
 	store := NewStore()
 	store.Set(testNamespace+"/backend", &Entry{
 		Host: host,
-		Authenticator: newImpersonationAuthenticator(t, map[string]any{
+		Authenticator: newExtraAuthenticator(t, map[string]any{
 			"sub": "alice", "email": "alice@example.com", "groups": []any{"platform-admins"},
-		}, "sub", impersonationExtraEmailUID),
+		}, "sub", oidcExtra, impersonationExtraEmailUID),
 		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
 		Impersonation:        resolvedImpersonation([]string{"platform-admins"}, impersonationExtraEmailUID),
 	})
@@ -845,13 +849,12 @@ func TestCheckSelfModeEmitsImpersonationExtra(t *testing.T) {
 	if got, want := codes.Code(resp.GetStatus().GetCode()), codes.OK; got != want {
 		t.Fatalf("status code = %v, want %v", got, want)
 	}
-	// Derived user + groups, then the impersonation extra headers in lexical key order, then
-	// Authorization.
+	// Derived user + groups, then the OIDC extra header, then Authorization. The
+	// configured impersonation extras are absent in self mode.
 	assertHeaderOptions(t, resp.GetOkResponse().GetHeaders(), []*corev3.HeaderValueOption{
 		overwriteHeader(headerImpersonateUser, "alice"),
 		overwriteHeader(defaultGroupsHeader, "platform-admins"),
-		overwriteHeader(headerImpersonateExtraPrefix+"actor-email", "alice@example.com"),
-		overwriteHeader(headerImpersonateExtraPrefix+"actor-uid", "alice"),
+		overwriteHeader(headerImpersonateExtraPrefix+"email", "alice@example.com"),
 		overwriteHeader(headerAuthorization, "Bearer impersonator-token"),
 	})
 }
@@ -860,17 +863,19 @@ func TestCheckSelfModeEmitsImpersonationExtra(t *testing.T) {
 // groups intersect spec.impersonation.groups) supplying Impersonate-User and two
 // --as-group values (arriving Envoy-comma-joined) is served in delegated mode. The
 // actor-supplied target user passes through verbatim, the groups round-trip through
-// the comma-joined groups header, the actor identity is stamped into the reserved
-// impersonation extra headers, the DERIVED actor identity (its own user/groups) is absent, and
-// Authorization carries the impersonator token.
+// the comma-joined groups header, the actor identity is stamped into
+// spec.impersonation.extra headers, the DERIVED actor identity (its own
+// user/groups/spec.oidc.extra) is absent, and Authorization carries the
+// impersonator token.
 func TestCheckDelegatedModeAuthorizedActor(t *testing.T) {
 	const host = "api.example.com"
+	oidcExtra := []authenticatorv1alpha1.ExtraMapping{{Key: "email", ValueClaim: "email"}}
 	store := NewStore()
 	store.Set(testNamespace+"/backend", &Entry{
 		Host: host,
-		Authenticator: newImpersonationAuthenticator(t, map[string]any{
+		Authenticator: newExtraAuthenticator(t, map[string]any{
 			"sub": "actor-sub", "email": "actor@example.com", "groups": []any{"platform-admins"},
-		}, "sub", impersonationExtraEmailUID),
+		}, "sub", oidcExtra, impersonationExtraEmailUID),
 		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
 		Impersonation:        resolvedImpersonation([]string{"platform-admins"}, impersonationExtraEmailUID),
 	})
@@ -886,8 +891,9 @@ func TestCheckDelegatedModeAuthorizedActor(t *testing.T) {
 		t.Fatalf("status code = %v, want %v", got, want)
 	}
 	// Passed-through target user, the passthrough groups via the groups header, the
-	// actor-identity reserved extras (lexical order), then Authorization. The actor's
-	// OWN derived user ("actor-sub") and groups ("platform-admins") must NOT appear.
+	// actor-identity extras (lexical order), then Authorization. The actor's OWN
+	// derived user ("actor-sub"), groups ("platform-admins"), and spec.oidc.extra
+	// must NOT appear.
 	assertHeaderOptions(t, resp.GetOkResponse().GetHeaders(), []*corev3.HeaderValueOption{
 		overwriteHeader(headerImpersonateUser, "target-user"),
 		overwriteHeader(defaultGroupsHeader, "dev,ops"),
@@ -934,11 +940,11 @@ func TestCheckDelegatedModeNoGroupsNoRemoval(t *testing.T) {
 	}
 }
 
-// TestCheckDelegatedModeForwardsTargetUIDAndExtra asserts the actor-supplied
-// Impersonate-Uid and a non-reserved Impersonate-Extra-* target field are forwarded
-// verbatim alongside the target user, while the reserved actor-extra headers still
-// carry the ACTOR identity (HOL-1433 passthrough criterion).
-func TestCheckDelegatedModeForwardsTargetUIDAndExtra(t *testing.T) {
+// TestCheckDelegatedModeForwardsTargetUIDAndDeniesInboundExtra asserts the
+// actor-supplied Impersonate-Uid is forwarded, but any inbound Impersonate-Extra-*
+// target field is denied before delegated mode is allowed. Client-supplied extras
+// are never forwarded.
+func TestCheckDelegatedModeForwardsTargetUIDAndDeniesInboundExtra(t *testing.T) {
 	const host = "api.example.com"
 	store := NewStore()
 	store.Set(testNamespace+"/backend", &Entry{
@@ -952,25 +958,29 @@ func TestCheckDelegatedModeForwardsTargetUIDAndExtra(t *testing.T) {
 	reader := secretReader(t, credentialSecret("creds", "impersonator-token"))
 	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.Discard()))
 
-	resp := mustCheck(t, client, checkRequest(host, map[string]string{
-		"authorization":                "Bearer caller",
-		"impersonate-user":             "target-user",
-		"impersonate-uid":              "target-uid",
-		"impersonate-extra-department": "sales", // non-reserved target extra
+	uidOnly := mustCheck(t, client, checkRequest(host, map[string]string{
+		"authorization":    "Bearer caller",
+		"impersonate-user": "target-user",
+		"impersonate-uid":  "target-uid",
 	}))
-	if got, want := codes.Code(resp.GetStatus().GetCode()), codes.OK; got != want {
+	if got, want := codes.Code(uidOnly.GetStatus().GetCode()), codes.OK; got != want {
 		t.Fatalf("status code = %v, want %v", got, want)
 	}
-	// Target user, target uid, the passthrough non-reserved extra, then the reserved
-	// actor extras (lexical), then Authorization. No groups header (no --as-group).
-	assertHeaderOptions(t, resp.GetOkResponse().GetHeaders(), []*corev3.HeaderValueOption{
+	assertHeaderOptions(t, uidOnly.GetOkResponse().GetHeaders(), []*corev3.HeaderValueOption{
 		overwriteHeader(headerImpersonateUser, "target-user"),
 		overwriteHeader(headerImpersonateUID, "target-uid"),
-		overwriteHeader(headerImpersonateExtraPrefix+"department", "sales"),
 		overwriteHeader(headerImpersonateExtraPrefix+"actor-email", "actor@example.com"),
 		overwriteHeader(headerImpersonateExtraPrefix+"actor-uid", "actor-sub"),
 		overwriteHeader(headerAuthorization, "Bearer impersonator-token"),
 	})
+
+	withExtra := mustCheck(t, client, checkRequest(host, map[string]string{
+		"authorization":                "Bearer caller",
+		"impersonate-user":             "target-user",
+		"impersonate-uid":              "target-uid",
+		"impersonate-extra-department": "sales",
+	}))
+	assertDenied(t, withExtra, typev3.StatusCode_Forbidden)
 }
 
 // TestCheckDelegatedModeUsesImpersonatorCredentialFromServiceAccount asserts case (b)
@@ -1060,13 +1070,10 @@ func TestCheckDelegatedModeNilImpersonationDenies(t *testing.T) {
 	}
 }
 
-// TestCheckReservedImpersonationExtraHeaderDeniesBothModes asserts case (e): an inbound copy
-// of a reserved actor-extra header (Impersonate-Extra-actor-email) is rejected 403 —
-// even for an otherwise-authorized actor, and both when it would be self mode (the
-// reserved header is the only Impersonate-* present, but it is reserved so it is not a
-// mode switch) and delegated mode (a real target header is also present). An actor
-// must never be able to spoof their own actor-identity headers.
-func TestCheckReservedImpersonationExtraHeaderDeniesBothModes(t *testing.T) {
+// TestCheckInboundImpersonationExtraHeaderDeniesBothModes asserts any inbound
+// Impersonate-Extra-* header is rejected 403 in both self mode and delegated mode,
+// regardless of whether its key is configured in spec.impersonation.extra.
+func TestCheckInboundImpersonationExtraHeaderDeniesBothModes(t *testing.T) {
 	const host = "api.example.com"
 	newStore := func() *Store {
 		store := NewStore()
@@ -1081,14 +1088,19 @@ func TestCheckReservedImpersonationExtraHeaderDeniesBothModes(t *testing.T) {
 		return store
 	}
 	cases := map[string]map[string]string{
-		"self-mode-only-reserved": {
+		"self-mode-impersonation-configured": {
 			"authorization":                 "Bearer caller",
 			"impersonate-extra-actor-email": "spoofed@evil.example.com",
 		},
-		"delegated-mode-with-reserved": {
+		"delegated-mode-authorized-configured-key": {
 			"authorization":               "Bearer caller",
 			"impersonate-user":            "target-user",
 			"impersonate-extra-actor-uid": "spoofed-uid",
+		},
+		"delegated-mode-authorized-unconfigured-key": {
+			"authorization":                  "Bearer caller",
+			"impersonate-user":               "target-user",
+			"impersonate-extra-target-email": "target@example.com",
 		},
 	}
 	for name, headers := range cases {
@@ -1099,6 +1111,105 @@ func TestCheckReservedImpersonationExtraHeaderDeniesBothModes(t *testing.T) {
 			assertDenied(t, resp, typev3.StatusCode_Forbidden)
 		})
 	}
+}
+
+// TestCheckInboundImpersonationExtraHeaderDeniesNilImpersonation asserts the
+// deny-all extras guard runs before mode selection even when spec.impersonation is
+// nil, so an extras-only request is a clean inbound-header denial.
+func TestCheckInboundImpersonationExtraHeaderDeniesNilImpersonation(t *testing.T) {
+	const host = "api.example.com"
+	store := NewStore()
+	store.Set(testNamespace+"/backend", &Entry{
+		Host:                 host,
+		Authenticator:        newTestAuthenticator(t, map[string]any{"sub": "alice"}, "sub"),
+		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
+	})
+	reader := secretReader(t, credentialSecret("creds", "imp"))
+	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.Discard()))
+
+	resp := mustCheck(t, client, checkRequest(host, map[string]string{
+		"authorization":        "Bearer caller",
+		"impersonate-extra-id": "spoofed",
+	}))
+	assertDenied(t, resp, typev3.StatusCode_Forbidden)
+}
+
+// TestCheckOverlappingOIDCAndImpersonationExtraKeysArePerMode asserts the same
+// extra key can be configured in spec.oidc.extra and spec.impersonation.extra
+// without ambiguity: self mode emits the OIDC value, delegated mode emits the
+// actor impersonation value.
+func TestCheckOverlappingOIDCAndImpersonationExtraKeysArePerMode(t *testing.T) {
+	const host = "api.example.com"
+	oidcExtra := []authenticatorv1alpha1.ExtraMapping{{Key: "email", ValueClaim: "email"}}
+	impersonationExtra := []authenticatorv1alpha1.ExtraMapping{{Key: "email", ValueClaim: "actor_email"}}
+	store := NewStore()
+	store.Set(testNamespace+"/backend", &Entry{
+		Host: host,
+		Authenticator: newExtraAuthenticator(t, map[string]any{
+			"sub":         "actor-sub",
+			"email":       "self@example.com",
+			"actor_email": "actor@example.com",
+			"groups":      []any{"platform-admins"},
+		}, "sub", oidcExtra, impersonationExtra),
+		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
+		Impersonation:        resolvedImpersonation([]string{"platform-admins"}, impersonationExtra),
+	})
+	reader := secretReader(t, credentialSecret("creds", "impersonator-token"))
+	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.Discard()))
+
+	self := mustCheck(t, client, checkRequest(host, map[string]string{"authorization": "Bearer caller"}))
+	assertHeaderOptions(t, self.GetOkResponse().GetHeaders(), []*corev3.HeaderValueOption{
+		overwriteHeader(headerImpersonateUser, "actor-sub"),
+		overwriteHeader(defaultGroupsHeader, "platform-admins"),
+		overwriteHeader(headerImpersonateExtraPrefix+"email", "self@example.com"),
+		overwriteHeader(headerAuthorization, "Bearer impersonator-token"),
+	})
+
+	delegated := mustCheck(t, client, checkRequest(host, map[string]string{
+		"authorization":    "Bearer caller",
+		"impersonate-user": "target-user",
+	}))
+	assertHeaderOptions(t, delegated.GetOkResponse().GetHeaders(), []*corev3.HeaderValueOption{
+		overwriteHeader(headerImpersonateUser, "target-user"),
+		overwriteHeader(headerImpersonateExtraPrefix+"email", "actor@example.com"),
+		overwriteHeader(headerAuthorization, "Bearer impersonator-token"),
+	})
+}
+
+// TestCheckImpersonationExtraMisconfigurationOnlyDeniesDelegatedMode asserts a
+// present-but-non-string spec.impersonation.extra claim does not affect self mode,
+// but denies an authorized delegated request fail-closed.
+func TestCheckImpersonationExtraMisconfigurationOnlyDeniesDelegatedMode(t *testing.T) {
+	const host = "api.example.com"
+	impersonationExtra := []authenticatorv1alpha1.ExtraMapping{{Key: "actor-groups", ValueClaim: "groups"}}
+	store := NewStore()
+	store.Set(testNamespace+"/backend", &Entry{
+		Host: host,
+		Authenticator: newExtraAuthenticator(t, map[string]any{
+			"sub":    "actor-sub",
+			"groups": []any{"platform-admins"},
+		}, "sub", nil, impersonationExtra),
+		CredentialsSecretRef: authenticatorv1alpha1.SecretReference{Name: "creds"},
+		Impersonation:        resolvedImpersonation([]string{"platform-admins"}, impersonationExtra),
+	})
+	reader := secretReader(t, credentialSecret("creds", "impersonator-token"))
+	client := serveCheck(t, NewCheckServer(store, reader, nil, testNamespace, "", logr.Discard()))
+
+	self := mustCheck(t, client, checkRequest(host, map[string]string{"authorization": "Bearer caller"}))
+	if got, want := codes.Code(self.GetStatus().GetCode()), codes.OK; got != want {
+		t.Fatalf("self-mode status code = %v, want %v", got, want)
+	}
+	assertHeaderOptions(t, self.GetOkResponse().GetHeaders(), []*corev3.HeaderValueOption{
+		overwriteHeader(headerImpersonateUser, "actor-sub"),
+		overwriteHeader(defaultGroupsHeader, "platform-admins"),
+		overwriteHeader(headerAuthorization, "Bearer impersonator-token"),
+	})
+
+	delegated := mustCheck(t, client, checkRequest(host, map[string]string{
+		"authorization":    "Bearer caller",
+		"impersonate-user": "target-user",
+	}))
+	assertDenied(t, delegated, typev3.StatusCode_Forbidden)
 }
 
 // TestCheckDelegatedModeUnsafePassthroughGroupDenies asserts case (f): a delegated

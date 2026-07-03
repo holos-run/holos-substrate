@@ -1309,17 +1309,16 @@ func TestAuthenticatorExtraMappings(t *testing.T) {
 }
 
 // TestAuthenticatorImpersonationExtraMappings mirrors TestAuthenticatorExtraMappings for
-// spec.impersonation.extra: the Authenticator resolves actor-extra claim
-// mappings into Identity.ImpersonationExtra with the same absent/present/non-string
-// semantics as spec.oidc.extra, keeping ImpersonationExtra separate from Extra and on a
-// disjoint key namespace (HOL-1432).
+// spec.impersonation.extra: the Authenticator resolves actor claim mappings on the
+// delegated branch with the same absent/present/non-string semantics as
+// spec.oidc.extra, keeping ImpersonationExtra separate from Extra.
 func TestAuthenticatorImpersonationExtraMappings(t *testing.T) {
 	mapper, err := NewGroupMapper(DefaultGroupExpression("groups", ""))
 	if err != nil {
 		t.Fatalf("NewGroupMapper: %v", err)
 	}
 
-	// One oidc.extra mapping and three disjoint impersonation extra mappings: one claim
+	// One oidc.extra mapping and three impersonation extra mappings: one claim
 	// present with a value, one absent, one present but an empty string. The valued
 	// one is mapped, the absent one is skipped, the present-empty one is emitted
 	// verbatim — exactly the extra contract, applied to the impersonation extra namespace.
@@ -1347,13 +1346,18 @@ func TestAuthenticatorImpersonationExtraMappings(t *testing.T) {
 	if _, ok := id.Extra["actor-email"]; ok {
 		t.Errorf("extra must not carry impersonation extra keys; extra = %v", id.Extra)
 	}
-	if got, want := id.ImpersonationExtra["actor-email"], "bob@example.com"; got != want {
+
+	impersonation, err := auth.ResolveImpersonationExtra(id)
+	if err != nil {
+		t.Fatalf("ResolveImpersonationExtra: %v", err)
+	}
+	if got, want := impersonation["actor-email"], "bob@example.com"; got != want {
 		t.Errorf("impersonationExtra[actor-email] = %q, want %q", got, want)
 	}
-	if _, ok := id.ImpersonationExtra["actor-tenant"]; ok {
+	if _, ok := impersonation["actor-tenant"]; ok {
 		t.Errorf("impersonationExtra[actor-tenant] present, want skipped (claim absent)")
 	}
-	if v, ok := id.ImpersonationExtra["actor-note"]; !ok || v != "" {
+	if v, ok := impersonation["actor-note"]; !ok || v != "" {
 		t.Errorf("impersonationExtra[actor-note] = (%q, %v), want (\"\", true) — a present empty claim is emitted, not skipped", v, ok)
 	}
 
@@ -1366,14 +1370,26 @@ func TestAuthenticatorImpersonationExtraMappings(t *testing.T) {
 	if idNone.ImpersonationExtra != nil {
 		t.Errorf("impersonationExtra = %v, want nil when no impersonation extra configured", idNone.ImpersonationExtra)
 	}
+	none, err := authNone.ResolveImpersonationExtra(idNone)
+	if err != nil {
+		t.Fatalf("ResolveImpersonationExtra with no mappings: %v", err)
+	}
+	if none != nil {
+		t.Errorf("resolved impersonationExtra = %v, want nil when no impersonation extra configured", none)
+	}
 
-	// A present-but-non-string impersonation extra claim is a misconfiguration and fails closed.
+	// A present-but-non-string impersonation extra claim is a misconfiguration and
+	// fails closed only when the delegated branch resolves impersonation.extra.
 	badImpersonationExtra := []authenticatorv1alpha1.ExtraMapping{{Key: "actor-groups", ValueClaim: "groups"}}
 	authBad := NewAuthenticator(
 		&fakeVerifier{claims: map[string]any{"sub": "alice", "groups": []any{"dev", "ops"}}},
 		mapper, "sub", "", "", nil, badImpersonationExtra)
-	if _, err := authBad.Authenticate(context.Background(), "raw-token"); err == nil {
-		t.Fatalf("Authenticate with a non-string impersonation extra claim = nil error, want rejection")
+	idBad, err := authBad.Authenticate(context.Background(), "raw-token")
+	if err != nil {
+		t.Fatalf("Authenticate with a non-string impersonation extra claim = %v, want self-mode identity unaffected", err)
+	}
+	if _, err := authBad.ResolveImpersonationExtra(idBad); err == nil {
+		t.Fatalf("ResolveImpersonationExtra with a non-string claim = nil error, want rejection")
 	}
 }
 
