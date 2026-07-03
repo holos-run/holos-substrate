@@ -1172,9 +1172,10 @@ API server trusts, a client must never be able to **supply** the configured grou
 header itself. The authorizer **already** denies such requests server-side (step 2)
 — that, not this filter, is the smuggling defense — so this Lua **reject** filter is
 **optional** and **not required** for the security property. It runs **before**
-ext_authz and re-enforces the same guard at the proxy as defense in depth, rejecting
-the request (HTTP 403) before any header mutation. It refuses the configured groups
-header (substitute the value of `--impersonate-groups-header`; the default
+ext_authz and rejects the subset of headers that are invalid in both self and
+delegated mode as proxy-level defense in depth, returning HTTP 403 before any
+header mutation. It refuses the configured groups header (substitute the value of
+`--impersonate-groups-header`; the default
 `x-impersonate-groups` is shown) **and** every inbound `Impersonate-Extra-*`
 header on the incoming request:
 
