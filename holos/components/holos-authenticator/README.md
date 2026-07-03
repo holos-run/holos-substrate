@@ -59,7 +59,7 @@ privileged credential, so Envoy forwards the request straight to the API server.
   Keycloak issuer, `credentialsSecretRef`), the static-JWKS `remote-cluster-a`
   (KSA / offline mode, `serviceAccountRef: {}`, below), and `delegated-example`
   demonstrating **delegated impersonation** (`spec.impersonation` — a `groups`
-  allowlist + `extra`, see *Delegated impersonation* below).
+  allowlist + `extra[]` actor attribution, see *Delegated impersonation* below).
 
 No `Namespace` is emitted: the `holos-authenticator` namespace is owned by the
 central registry (`holos/namespaces.cue`) and rendered by the `namespaces`
@@ -226,7 +226,7 @@ project/application components use).
 
 By default a `Backend` runs **self impersonation**: the authorizer impersonates the
 validated caller, and any inbound `Impersonate-*` header is denied fail-closed. An
-optional **`spec.impersonation`** block (ADR-23 Revision 11) opts an **authorized
+optional **`spec.impersonation`** block (ADR-23 Revision 12) opts an **authorized
 actor** into **delegated impersonation** — `kubectl --as <someone-else>` passthrough
 — without the authorizer holding a per-user credential. It is additive: a `Backend`
 omitting `spec.impersonation` is byte-for-byte the self-only behavior.
@@ -235,16 +235,20 @@ omitting `spec.impersonation` is byte-for-byte the self-only behavior.
   is permitted only when the actor's **mapped** Kubernetes groups (what the CEL /
   default mapping computes, not the raw claim) intersect this set. An
   omitted/empty list allowlists nothing (opt-in default).
-- **`spec.impersonation.extra[]`** — reserved actor-identity headers stamped
-  from the validated actor token as `Impersonate-Extra-<key>` (e.g. `actor-sub`,
-  `actor-email`). They are **never client-settable** (an inbound copy is denied in
-  both modes) and must be **disjoint** from `spec.oidc.extra` keys.
+- **`spec.impersonation.extra[]`** — actor-attribution headers stamped from the
+  validated actor token as `Impersonate-Extra-<key>` (e.g. `actor-sub`,
+  `actor-email`) in delegated mode only. They are **never client-settable**:
+  every inbound `Impersonate-Extra-*` is denied in both modes. They may overlap
+  `spec.oidc.extra` keys because `oidc.extra` is self-mode only and
+  `impersonation.extra` is delegated-mode only.
 
 The presence of an inbound `Impersonate-*` header is the self-vs-delegated **mode
 switch**; an unauthorized actor (or a nil-`spec.impersonation` Backend) is denied
-403. In delegated mode the actor's target passes through and the Backend-derived
+403. Every inbound `Impersonate-Extra-*` is denied before mode selection. In
+delegated mode the actor's target passes through and the Backend-derived
 `Impersonate-User`/groups/`Impersonate-Uid`/`spec.oidc.extra` are **not** emitted —
-only the reserved `extra` actor headers survive (the AC6 rule). Impersonation-target
+only `spec.impersonation.extra` is emitted from the actor token (the AC6 rule).
+Impersonation-target
 authorization is delegated to the **impersonator SA's `impersonate` RBAC on the
 upstream API server**; the shipped default ClusterRole (above) is impersonate-only
 on the two SA virtual groups and is **not** broadened — grant the impersonator SA
