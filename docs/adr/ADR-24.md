@@ -73,10 +73,14 @@ grant is a control-plane resource the project owner manages.
 - [ADR-22 — `security.holos.run` ReferenceGrant](ADR-22.md): cross-namespace
   references between `holos.run` CRs require a grant in the referent
   namespace — the mechanism the membership double-binding builds on. The
-  `keycloak-instance` component already grants **every registered project's
-  bare namespace** the right to reference the central `KeycloakInstance`,
-  so owner-created CRs in that namespace are already authorized referrers of
-  the instance.
+  `keycloak-instance` component already grants every registered project's
+  bare namespace the right to reference the central `KeycloakInstance` —
+  but the grant enumerates referrer **kinds** (today `KeycloakGroup`,
+  `KeycloakUser`, `KeycloakClient`), so **extending its `from[]` with
+  `KeycloakGroupMembership` is an explicit prerequisite** of the grant
+  path: without it, a membership CR's cross-namespace `instanceRef` fails
+  `ReferenceNotGranted`. The HOL-1453 plan's CUE phase owns that grant
+  update.
 
 Group paths in `keycloak.holos.run` specs are written in the **canonical
 spec form `projects/<name>/…` with no leading slash** — the form the CRD
@@ -95,7 +99,7 @@ truth** and **who writes**:
 | Plane | Resources | Source of truth | Writer |
 |-------|-----------|-----------------|--------|
 | 1. Rendered scaffold | Namespaces, AppProject/Application, Kargo Project/Warehouse/Stage, Quay `Organization`, the role/custodian `KeycloakGroup` trees, the project `KeycloakClient`, the standing-owner `KeycloakUser`s and their `KeycloakGroupMembership`s, the owner RoleBinding | `holos/projects/*.cue` + `holos/apps/*.cue` in the platform repository | Platform (GitOps: render → commit → apply) |
-| 2. Owner-managed control plane | Additional `holos.run` CRs the owner creates in the bare `<name>` control namespace — first `KeycloakGroupMembership` (access grants, HOL-1453) and `quay.holos.run` `Repository`; later, policy-gated, `KeycloakUser`, `KeycloakClient`, `KeycloakGroup` | The cluster (the Kubernetes API, per [ADR-2](ADR-2.md)) | Project owner (`kubectl apply`, RBAC-gated) |
+| 2. Owner-managed control plane | Additional `holos.run` CRs the owner creates in the bare `<name>` control namespace — first `KeycloakGroupMembership` (access grants, HOL-1453); later, policy-gated, `quay.holos.run` `Repository`, `KeycloakUser`, `KeycloakClient`, `KeycloakGroup` | The cluster (the Kubernetes API, per [ADR-2](ADR-2.md)) | Project owner (`kubectl apply`, RBAC-gated) |
 | 3. Identity-system day-2 operations | Ad-hoc group-membership approvals in the Keycloak console | Keycloak | Custodians, via FGAP v2 delegation ([ADR-20](ADR-20.md)) |
 
 **Plane 1 is platform-owned and read-only to tenants in practice.** Rendered
@@ -116,7 +120,9 @@ each object. The existing machinery already accommodates them:
   that namespace.
 - The `keycloak-instance` component's `ReferenceGrant` already authorizes
   every registered project's bare namespace to reference the central
-  `KeycloakInstance` ([ADR-22](ADR-22.md)).
+  `KeycloakInstance` ([ADR-22](ADR-22.md)) — per enumerated referrer kind,
+  so each newly-aggregated Kind (starting with `KeycloakGroupMembership`)
+  must be added to the grant's `from[]` (see References).
 - The controller reconciles tenant CRs with the same claim/adoption model and
   Gateway-API status reporting as rendered CRs — a rejected or conflicting
   spec is an observable `Ready=False`, not a silent failure.
@@ -262,23 +268,35 @@ Kind carries under the transparent controller ([ADR-20](ADR-20.md) Rev 7).
 Read access (`view` aggregation) covers all `holos.run` Kinds immediately;
 **no write phase ships without its admission-policy prerequisite**:
 
-1. **Phase 1 — `KeycloakGroupMembership`** (this ADR's grant path, HOL-1453)
-   and `quay.holos.run` `Repository`, **prerequisite: the rendered-object
-   protection policy below.** Membership needs no group-path admission
-   policy — the double-binding model bounds it structurally.
-2. **Phase 2 — `KeycloakUser`, `KeycloakClient`, `KeycloakGroup`,
-   `Organization`, prerequisite: the full tenant/platform disjointness
-   policy set.** The transparent controller writes group paths, client IDs,
-   and role names verbatim; a tenant-created `KeycloakGroup` could confer
-   roles on the `argocd` client, and a tenant `KeycloakClient` could claim a
-   reserved client ID. `KeycloakUser` additionally needs the
-   **created-identity deletion guard**: deleting a CR whose finalizer
-   *created* the Keycloak user (`status.created: true`) deletes the identity
-   and every membership it accrued, so a tenant delete of such a CR must be
-   admission-denied (on `DELETE` the policy evaluates `oldObject.status`).
-   These Kinds stay platform-rendered until the
-   `ValidatingAdmissionPolicy`/webhook effort ADR-20 Rev 7 designates
-   enforces disjointness across the whole surface.
+1. **Phase 1 — `KeycloakGroupMembership` only** (this ADR's grant path,
+   HOL-1453), **prerequisite: the rendered-object protection policy
+   below.** Membership needs no group-path admission policy — the
+   double-binding model bounds it structurally, its reconciler manages
+   membership edges only, and its deletion deletes nothing but those edges.
+   No other Kind qualifies for phase 1: every other `holos.run` Kind's
+   finalizer or reconciler can mutate or destroy a **shared external
+   object** a second CR can name.
+2. **Phase 2 — `Repository`, `KeycloakUser`, `KeycloakClient`,
+   `KeycloakGroup`, `Organization`, prerequisite: the full tenant/platform
+   disjointness policy set plus per-Kind external-identity guards.** The
+   transparent controller writes group paths, client IDs, and role names
+   verbatim; a tenant-created `KeycloakGroup` could confer roles on the
+   `argocd` client, and a tenant `KeycloakClient` could claim a reserved
+   client ID. `Repository` needs an **external-identity collision guard**
+   before tenant writes: the as-built reconciler manages whatever Quay repo
+   `organizationRef`/`name` denote — an owner's second, unmarked CR naming
+   a rendered repo (e.g. `my-app-config`) would manage it and its finalizer
+   would **delete the backing Quay repository** on CR deletion; the marker
+   policy protects the rendered CR object, not the external identity. The
+   guard is a durable claim marker on the Quay side (the Organization's
+   adoption model extended to repositories) or an admission uniqueness rule
+   across CRs. `KeycloakUser` additionally needs the **created-identity
+   deletion guard**: deleting a CR whose finalizer *created* the Keycloak
+   user (`status.created: true`) deletes the identity and every membership
+   it accrued, so a tenant delete of such a CR must be admission-denied (on
+   `DELETE` the policy evaluates `oldObject.status`). These Kinds stay
+   platform-rendered until the `ValidatingAdmissionPolicy`/webhook effort
+   ADR-20 Rev 7 designates enforces disjointness across the whole surface.
 
 **The admission-control effort is load-bearing for plane 2 from phase 1
 onward — a prerequisite, not a follow-up** — though the membership
@@ -297,9 +315,9 @@ write**:
   (b) the marker would be forgeable and (a) meaningless as a boundary.
   Without this policy, the aggregated verbs would let an owner mutate or
   delete the *rendered* CRs of the aggregated Kinds in their namespace —
-  deleting a rendered `Repository` CR whose finalizer deletes the backing
-  Quay repository (data loss), or deleting the rendered standing-owner
-  membership. With it, "rendered resources are read-only to tenants" is
+  in phase 1, the rendered standing-owner membership CRs; in later phases,
+  worse (a rendered `Repository` CR's finalizer deletes the backing Quay
+  repository). With it, "rendered resources are read-only to tenants" is
   enforced, not aspirational.
 
 ### What the rendered `owners` map means now
@@ -351,13 +369,14 @@ are idempotent, and each CR manages its own member edges independently.
    fail-closed without a `ReferenceGrant` in the group's namespace.
 3. **Plane 2 is enabled by aggregated ClusterRoles (`admin`-aggregated only,
    never `edit`), per Kind, in phases, each phase gated on its
-   admission-policy prerequisite**: `KeycloakGroupMembership` and
-   `Repository` first (plus `view` on all `holos.run` Kinds), prerequisite
-   the marker-forgery-proof, identity-keyed rendered-object protection
-   policy; `KeycloakUser` (with the created-identity deletion guard),
-   `KeycloakClient`, `KeycloakGroup`, and `Organization` only after the
-   admission-control policies of [ADR-20](ADR-20.md) Rev 7 enforce full
-   tenant/platform disjointness.
+   admission-policy prerequisite**: `KeycloakGroupMembership` alone first
+   (plus `view` on all `holos.run` Kinds), prerequisite the
+   marker-forgery-proof, identity-keyed rendered-object protection policy;
+   `Repository` (with an external-identity collision guard), `KeycloakUser`
+   (with the created-identity deletion guard), `KeycloakClient`,
+   `KeycloakGroup`, and `Organization` only after the admission-control
+   policies of [ADR-20](ADR-20.md) Rev 7 enforce full tenant/platform
+   disjointness.
 4. **Rendered resources stay platform-owned**; owner-created resources are
    additive and never collide with the rendered set. The registration's
    `owners` map remains the standing-owner record (rendered as membership
