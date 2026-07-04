@@ -146,6 +146,12 @@ components have been removed. Git history preserves them.
 - **How to apply:** On each CR's `status`, add `Conditions []metav1.Condition` with the `+listType=map` / `+listMapKey=type` markers and `patchStrategy:"merge" patchMergeKey:"type"`, an `ObservedGeneration int64`, and a `+kubebuilder:printcolumn` surfacing `Ready` (and any Kind-specific columns). Use `Accepted`/`Programmed`/`Ready` as the standard types (adding Kind-specific types like the Repository's `WebhookConfigured` only when they add legibility), with named reasons defined once in a shared `conditions.go`. The reconciler sets `observedGeneration` and merges conditions on every reconcile.
 - **Reference:** [ADR-22](docs/adr/ADR-22.md) (mandates this for all CRs), [ADR-19](docs/adr/ADR-19.md) (the as-built precedent — *Status conditions (Gateway-API model)*, `api/quay/v1alpha1/organization_types.go` / `repository_types.go`, `internal/controller/quay/conditions.go`), [ADR-18](docs/adr/ADR-18.md) (the controller status model).
 
+### Drift-observability timestamps on external-resource CRs (ADR-22)
+- **Rule:** Every new `holos.run` CR whose reconciler fronts an external system (Keycloak, Quay, or a future remote API) MUST report drift-observability status in addition to conditions; HOL-1454 records the guardrail, and HOL-1459 retrofits existing shipped external-resource CRs: `status.lastValidatedTime` (`metav1.Time`, optional), `status.lastMutatedTime` (`metav1.Time`, optional), `status.lastMutationReason` (optional enum with canonical values `SpecChange` / `DriftRemediation`), and `status.lastDriftTime` (`metav1.Time`, optional). Read-only validators that never mutate the remote system, such as `KeycloakInstance`, carry `lastValidatedTime` only and omit the mutation fields. CRs with no external surface are out of scope.
+- **Why:** `conditions[].lastTransitionTime` moves only when a condition changes, so it cannot tell an operator whether a `Ready=True` resource was checked three seconds ago or three weeks ago. Platform engineers need to distinguish the last successful remote validation from the last actual remote mutation, and classify that mutation by which side moved: `SpecChange` for intentional, spec-driven configuration; `DriftRemediation` when the remote system drifted out-of-band and the controller healed it back. This ports Puppet's per-resource change reporting and corrective-vs-intentional change model into the Holos status contract, with Argo CD self-heal as the model for corrective drift remediation.
+- **How to apply:** Set `lastValidatedTime` only after a successful remote read and confirmation or restoration of declared state, including no-op verification; never update it on a failed remote read/verification. Mutate the external system only after checking observed state, and set `lastMutatedTime` and `lastMutationReason` together only when a real create/update/delete/assign/remove occurred, including when a later operation in the same reconcile fails after the mutation completed. If the mutation reason is `DriftRemediation`, set `lastDriftTime` to the same instant and preserve it across later `SpecChange` mutations. Return a periodic `RequeueAfter` for steady-state external resources so stale validation is actionable, and filter the primary watch to generation changes (`predicate.GenerationChangedPredicate` or equivalent) so status-only timestamp writes do not hot-loop. Add an extended `Validated` printer column (`type=date`, `priority=1`, JSONPath `.status.lastValidatedTime`) where useful.
+- **Reference:** [ADR-22](docs/adr/ADR-22.md) (Rev 2 — drift-observability status model), Puppet's configuration-drift and corrective-vs-intentional change reporting model, and Argo CD self-heal semantics for `DriftRemediation`.
+
 ### Known Issues & Workarounds
 
 #### Quay auth: OIDC sole identity store, Keycloak SSO, no PKCE + team syncing on (HOL-1293/HOL-1317, ADR-15 Revision 4)
@@ -208,11 +214,14 @@ components have been removed. Git history preserves them.
   OIDC-synced Quay teams with org role + optional default repository permission,
   the GCP-style owner/editor/viewer primitive-role model), ADR-20 (the Keycloak
   API group CRDs, **`Partially Implemented`** as built in HOL-1344..HOL-1350,
-  `Updates: ADR-3`), ADR-21 (the Holos Project/Application components,
+  `Updates: ADR-3`; Rev 9 records the first-class
+  `KeycloakGroupMembership` design and deprecates `KeycloakUser.spec.groups`),
+  ADR-21 (the Holos Project/Application components,
   **`Implemented`** as built in HOL-1354..HOL-1358 — Rev 4, `Updates: ADR-1`),
   and ADR-22 (the `security.holos.run` API group
   and its `ReferenceGrant` cross-namespace reference convention, shipped in
-  HOL-1343).
+  HOL-1343; Rev 2 adds drift-observability timestamps for external-resource
+  CRs).
   ADR-23 (the **Holos Authenticator** — an Istio gRPC `ext_authz` authorizer
   for OIDC → Kubernetes impersonation, **`Implemented`** as built in
   HOL-1385..HOL-1390 — Rev 3, `Updates: ADR-3`) is a separate service in the
@@ -428,6 +437,12 @@ components have been removed. Git history preserves them.
   `status.observedGeneration` and a `Ready` printer column, the Quay/Gateway-API
   model. See [ADR-22](docs/adr/ADR-22.md), [ADR-19](docs/adr/ADR-19.md),
   [ADR-18](docs/adr/ADR-18.md).
+- [*Drift-observability timestamps on external-resource CRs*](#drift-observability-timestamps-on-external-resource-crs-adr-22)
+  (Guard Rails, above) — **binding guardrail**: every `holos.run` CR whose
+  reconciler fronts an external system reports `lastValidatedTime` plus mutation
+  timestamps/reason fields (`SpecChange` / `DriftRemediation`) unless it is a
+  read-only validator, which carries only `lastValidatedTime`. See
+  [ADR-22](docs/adr/ADR-22.md) Rev 2.
 - [*Keycloak service-account naming (`svc-` prefix)*](#conventions) (Conventions,
   below) — Keycloak realm users that represent service accounts are named with
   an `svc-` prefix (e.g. `svc-quay-resource-controller`); human accounts are

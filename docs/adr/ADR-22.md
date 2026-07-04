@@ -10,6 +10,7 @@
 | Revision | Date       | Author      | Info           |
 | -------- | ---------- | ----------- | -------------- |
 | 1        | 2026-06-20 | @jeffmccune | Initial design |
+| 2        | 2026-07-04 | @jeffmccune | **Design-record only: add drift-observability status fields for external-resource CRs (HOL-1454).** Every `holos.run` CR whose reconciler fronts an external system (Keycloak, Quay, and future peers) carries `status.lastValidatedTime`, `status.lastMutatedTime`, `status.lastMutationReason`, and `status.lastDriftTime` in addition to the Gateway-API conditions/`observedGeneration` model. The fields distinguish the last successful remote validation from the last actual remote mutation, and classify that mutation as `SpecChange` (intentional/spec-driven) or `DriftRemediation` (corrective/out-of-band drift healed), borrowing Puppet's corrective-vs-intentional change model and Argo CD self-heal semantics. Read-only validators that never mutate the remote system, such as `KeycloakInstance`, carry `lastValidatedTime` only. No CRD or reconciler behavior changes in this revision; `Status: Proposed` unchanged |
 
 ## Context and Problem Statement
 
@@ -232,6 +233,65 @@ types with backend-write semantics for `Programmed`. The vocabulary is uniform;
 the precise per-Kind reasons are fixed by each Kind's later
 CRD-implementation issue.
 
+### Drift-observability status for external-resource CRs
+
+The Gateway-API condition model answers "is this object Ready?" and records when
+that condition last **transitioned**. It does not answer two operational
+questions platform engineers need for controllers that front external systems:
+when did the controller last verify the remote resource still matched the CR, and
+when did it last actually change the remote system? A resource can remain
+`Ready=True` for weeks, so `conditions[].lastTransitionTime` is not a freshness or
+drift signal.
+
+External-resource CRs therefore carry a small, uniform set of drift-observability
+status fields. The model borrows from Puppet's per-resource reporting and its
+corrective-vs-intentional change distinction, and maps corrective changes to the
+same operational idea as Argo CD self-heal: the declared state did not change,
+but the remote object drifted and the controller healed it back.
+
+| Field | Type | Semantics |
+| -- | -- | -- |
+| `status.lastValidatedTime` | `metav1.Time`, optional | Last reconcile that successfully **read** the remote API and confirmed or restored the declared state. Set on every successful reconcile, including no-op verifications. **Never** set when the remote read/verification failed; a stale value must remain visible as staleness. |
+| `status.lastMutatedTime` | `metav1.Time`, optional | Last time the controller actually **changed** the external system for this resource: create, update, delete, assign, remove, or an equivalent remote mutation. **Check-then-apply**: an unconditional idempotent write counts only when observed remote state differed. |
+| `status.lastMutationReason` | string enum `SpecChange` / `DriftRemediation`, optional | Which side changed to cause the last mutation. `SpecChange` means the CR spec changed (a new `metadata.generation`) and the controller configured the external resource to match the new desired state. `DriftRemediation` means the external resource changed out-of-band under an unchanged generation and the controller healed it back to the declared state. Always written in the same status update as `lastMutatedTime`; absent until the first mutation. |
+| `status.lastDriftTime` | `metav1.Time`, optional | Last **corrective** change: validation found the remote resource out of sync while `metadata.generation == status.observedGeneration`, so third-party drift was remediated. Preserved across later intentional changes; it answers "when did drift last occur" while `lastMutationReason` classifies only the most recent mutation. |
+
+Rules:
+
+1. `conditions[].lastTransitionTime` MUST NOT be used as a freshness or drift
+   signal; these timestamps exist to close that gap.
+2. **Fail-closed freshness:** an errored reconcile does not advance
+   `lastValidatedTime`; a stale validation timestamp must remain visible when
+   remote read/verification failed. This does not erase completed mutations: if the
+   controller successfully changed the external system before a later operation
+   failed, it must still record `lastMutatedTime`/`lastMutationReason` for that
+   completed mutation, or retry status recording before doing more work.
+3. `lastMutatedTime` and `lastMutationReason` are written together, atomically in
+   the same status update. A mutation with `lastMutationReason:
+   DriftRemediation` also sets `lastDriftTime` to the same instant.
+4. **Bounded staleness:** reconcilers of external resources MUST re-validate
+   periodically. A steady-state successful reconcile returns `RequeueAfter` with
+   a resync interval, so a stale `lastValidatedTime` is an actionable alert that
+   the controller has stopped verifying the external resource.
+5. **Hot-loop guard:** because `lastValidatedTime` advances on most successful
+   reconciles, the primary watch MUST filter to generation changes
+   (`predicate.GenerationChangedPredicate` or equivalent) so status-only writes
+   do not self-requeue.
+6. **Scope:** every `holos.run` CR whose reconciler talks to an external system
+   carries these fields: Keycloak, Quay, and future external-system groups. CRs
+   with no external surface are out of scope.
+7. **Read-only validators:** a reconciler that never mutates the remote system
+   carries `lastValidatedTime` only and omits the mutation fields entirely. For
+   example, `KeycloakInstance` checks reachability and credentials but does not
+   change Keycloak state.
+8. **Printer column:** external-resource CRDs SHOULD add an extended `Validated`
+   printer column (`type=date`, `priority=1`, JSONPath
+   `.status.lastValidatedTime`) so stale validation is visible without a custom
+   query.
+9. **Canonical enum values:** `SpecChange` and `DriftRemediation` are canonical
+   across all API groups. Each group defines its own Go constants with these
+   exact string values because API packages do not import one another.
+
 ## Decision
 
 1. **A new `security.holos.run` API group is established**, owned by the
@@ -267,12 +327,19 @@ CRD-implementation issue.
    what makes a denied cross-namespace reference observable (`Ready=False`); a
    passive policy resource like `ReferenceGrant` uses `Programmed` for
    acceptance/validation rather than a backend write.
-7. **This convention is a guard rail for all current and future `holos.run`
+7. **External-resource CRs also report drift-observability status.** Every
+   `holos.run` CR whose reconciler fronts an external system records
+   `lastValidatedTime`, `lastMutatedTime`, `lastMutationReason`, and
+   `lastDriftTime` with the semantics in *Drift-observability status for
+   external-resource CRs*. Read-only validators that never mutate the remote
+   system carry `lastValidatedTime` only. The canonical mutation reasons are
+   `SpecChange` and `DriftRemediation`.
+8. **This convention is a guard rail for all current and future `holos.run`
    custom resources.** It is recorded in `AGENTS.md` under *Guard Rails*; the
    API-group ADRs that consume cross-namespace references
    ([ADR-20](ADR-20.md), [ADR-21](ADR-21.md)) will reference it as they are
    revised to adopt the convention (a later phase of this work updates ADR-20).
-8. **This phase fixes the convention only — no Go or CUE code.** The
+9. **This phase fixes the convention only — no Go or CUE code.** The
    `ReferenceGrant` schema here is illustrative; the field-level API, CEL
    validation, printer columns, and the reconciler land in later
    CRD-implementation issues.
@@ -303,6 +370,13 @@ CRD-implementation issue.
   backend-write one. The `quay.holos.run` CRDs ([ADR-19](ADR-19.md)) already
   conform; new groups inherit the contract from this ADR rather than re-deciding
   it.
+- **External-resource status now exposes freshness and drift separately.**
+  Operators can distinguish a controller that recently verified a remote object
+  from one whose `Ready=True` condition is merely old, and can distinguish an
+  intentional spec-driven mutation from corrective drift remediation. This adds
+  implementation discipline: reconcilers must check before applying, preserve
+  stale timestamps on errors, periodically re-validate, and avoid status-write
+  hot loops with generation-change predicates.
 - **Coexistence with Gateway API's grant must stay legible.** Two `ReferenceGrant`
   kinds now exist in the platform — Gateway API's (route/backend/certificate
   references) and `security.holos.run`'s (`holos.run` CR-to-CR references).
