@@ -16,6 +16,7 @@
 | 4        | 2026-06-21 | @jeffmccune | HOL-1358: **Status → `Implemented`.** All component phases shipped: the collection-driven **Project component** ([`holos/components/project/buildplan.cue`](../../holos/components/project/buildplan.cue), HOL-1355) and **Application component** ([`holos/components/application/buildplan.cue`](../../holos/components/application/buildplan.cue), HOL-1356) render the full resource set from one-line `holos/projects/*.cue` / `holos/apps/*.cue` registrations, and the bespoke `holos/components/my-project/` component was **deleted** (HOL-1357) — `my-project` is now produced entirely by the templates from [`holos/projects/my-project.cue`](../../holos/projects/my-project.cue) + [`holos/apps/my-app.cue`](../../holos/apps/my-app.cue). **One as-built deviation from Revision 3, ratified here:** the project-scoped control-plane CRs land in the **bare `<name>`** control namespace, **not** `prod-<name>` (`#ProjectControlEnvironment` is still defined and the `prod-<name>` env namespace still carries the apps annotation, but the CRs themselves use bare `<name>`). The controller's `validateDirectClientRole` guard (HOL-1350) requires a role group's CR namespace to **equal the bare project name** for the direct-`clientId` Quay-client role grant the `syncedTeams` claim population depends on; bare `<name>` is also exactly what the deleted bespoke component used. The "scaffold all envs, wire one delivery path" decision (Rev 3) holds: `ci-/qa-/prod-<name>` are derived but only the bare-`<name>` path is wired; the full `ci→qa→prod` promotion chain, blue-green progressive delivery, the external-secrets store prerequisite, and a self-service `ProjectRequest` API remain deferred (recorded in [`holos/docs/placeholders.md`](../../holos/docs/placeholders.md) and the [authoring guide](../../holos/docs/project-and-application-templates.md)). The "design record only / no CUE written" language throughout is corrected to reflect the shipped components. |
 | 5        | 2026-06-21 | @jeffmccune | HOL-1373/HOL-1378: record the **platform-level system/project separation** the App-of-Apps OCI bootstrap introduced. A project's Argo CD `AppProject` (item 3, named `<name>`) is per-tenant; it is distinct from the two **platform** `AppProject`s — **`platform`** (system components) and **`projects`** (the tenant scope) — and a single **`projects` top-level App-of-Apps** (`Application projects-bootstrap`) now bootstraps **all** registered projects' resources from the `holos-paas-config:dev` bundle declaratively, alongside the `platform` root. The per-project/app `Application.spec.source.targetRevision` posture is unchanged (Kargo owns it). The OCI App-of-Apps and `scripts/apply-projects` (the caBundle-injecting operator path) coexist. See [ADR-16 Rev 3](ADR-16.md) and [holos/docs/oci-publish-workflow.md](../../holos/docs/oci-publish-workflow.md). Item 3 of *The Project component* annotated accordingly. |
 | 6        | 2026-06-22 | @jeffmccune | HOL-1382: **per-project App-of-Apps + control-plane/workload split** ([ADR-16 Rev 6](ADR-16.md)). The single global `projects-bootstrap` root (Rev 5) is **superseded**: each project now has its **own** per-project OCI config bundle (`holos/<project>-config:dev`) and **two** roots — `<project>-control-plane` (`directory.exclude: **/workload/**`, the platform-managed control plane) and `<project>-workload` (`directory.include: **/workload/**`, the service-owner workload) — emitted by the new collection-driven `project-app-of-apps` component. To make the split renderable, the **Project component now renders its (all control-plane) resources into a `control-plane/` subtree** (`clusters/<cluster>/components/project/<name>/control-plane/`), mirroring the Application component's existing control-plane/workload split; the project itself has no workload (its workload lives in its apps). Platform engineers apply the control plane (`scripts/apply-project-app-of-apps <project>`, called per project by `scripts/apply-projects-app-of-apps`); the service owner applies the workload (`scripts/apply-project-workload-app-of-apps <project>`) **after**. `holos-quay-organization` declares one public bundle `Repository` per project; `argocd-projects` pins the `projects` AppProject `sourceRepos` to the exact per-project bundles. `"control-plane"`/`"workload"` are reserved app names (they would collide with the per-project root names). |
+| 7        | 2026-07-04 | @jeffmccune | HOL-1457: project owner membership is no longer rendered through `KeycloakUser.spec.groups`. The Project component now renders first-class `KeycloakGroupMembership` CRs for the standing owner set: one for `projects/<name>/roles/owner` and one for each `projects/<name>/custodians/{owner,editor,viewer}` group. `KeycloakUser` only pre-provisions and auto-links the identity. ADR-24 records the owner-managed control-plane model and the admission-policy prerequisite before tenant write access to rendered membership CRs is enabled. |
 
 ## Context and Problem Statement
 
@@ -562,15 +563,16 @@ manifests provision the identity half of its primitive-role model
    Gateway-API grant).
 10. **`KeycloakUser`** (`keycloak.holos.run`, [ADR-20](ADR-20.md)) — pre-provisions
     the Project **owner** by email (`projects.<name>.owners`, e.g.
-    `bob@example.com`) *only if necessary* and assigns initial group membership in
-    `projects/<project>/roles/owner`, so the owner holds the role before first
-    login. The realm's first-broker-login flow **auto-links** Bob's federated login
-    to this pre-created record (platform realm/IdP config the `KeycloakRealmImport`
-    CR owns, **not** the Project component — [ADR-20](ADR-20.md), *KeycloakUser*).
-    References the `KeycloakInstance` via `instanceRef`. (Editors/viewers are
-    typically added by custodians post-hoc rather than pre-provisioned, so the
-    component renders a `KeycloakUser` for the registered owner(s); broader
-    membership flows through the custodian groups.)
+    `bob@example.com`) *only if necessary*. The realm's first-broker-login flow
+    **auto-links** Bob's federated login to this pre-created record (platform
+    realm/IdP config the `KeycloakRealmImport` CR owns, **not** the Project
+    component — [ADR-20](ADR-20.md), *KeycloakUser*). References the
+    `KeycloakInstance` via `instanceRef`. The Project component assigns the
+    standing owner role through first-class `KeycloakGroupMembership` CRs, not
+    through `KeycloakUser.spec.groups`. (Editors/viewers are typically added by
+    custodians post-hoc rather than pre-provisioned, so the component renders a
+    `KeycloakUser` for the registered owner(s); broader membership flows through
+    the custodian groups.)
 11. **`KeycloakClient`** (`keycloak.holos.run`, [ADR-20](ADR-20.md)) — *only when the
     Project runs its own OIDC service whose token must carry the project roles*: a
     per-project OIDC client named by its URL, with `emitProjectRolesInGroupsClaim`
@@ -813,14 +815,16 @@ as the consumer (the [ADR-19](ADR-19.md) `syncedTeams` case needs **no** project
 `KeycloakClient`), so the controller assigns a `my-project-<role>` **client role on
 the Quay client** to each `roles/<role>` group.
 
-**3. Owner pre-provisioned + auto-linked (`KeycloakUser`).** The component emits a
-`KeycloakUser` for the registered owner `bob@example.com` that the controller
-pre-creates by email (only if necessary) and adds to
-`projects/my-project/roles/owner`. When Bob first signs in through the federated
-IdP, the realm's first-broker-login flow (`Detect Existing Broker User` +
-`Automatically Set Existing User` + `Trust Email`, platform realm/IdP config the
+**3. Owner pre-provisioned, auto-linked, and bound (`KeycloakUser` +
+`KeycloakGroupMembership`).** The component emits a `KeycloakUser` for the
+registered owner `bob@example.com` that the controller pre-creates by email
+(only if necessary). When Bob first signs in through the federated IdP, the
+realm's first-broker-login flow (`Detect Existing Broker User` + `Automatically
+Set Existing User` + `Trust Email`, platform realm/IdP config the
 `KeycloakRealmImport` CR owns — [ADR-20](ADR-20.md)) **auto-links** his login to
-this pre-created record instead of creating a duplicate.
+this pre-created record instead of creating a duplicate. Separate
+`KeycloakGroupMembership` CRs add Bob to `projects/my-project/roles/owner` and
+the project custodian groups.
 
 **4. Role-group → client-role → `groups` claim.** Bob is a member of
 `projects/my-project/roles/owner`, which carries the `my-project-owner` **Quay
@@ -957,7 +961,8 @@ admin.)
    from CUE registration to Quay teams*): `projects: "my-project": owners:
    "bob@example.com": _` (project `my-project`, owner `bob@example.com`) →
    `KeycloakGroup`s `projects/my-project/{roles,custodians}/*`
-   → `KeycloakUser` for Bob in `roles/owner` (first-login auto-link) → the
+   → `KeycloakUser` for Bob (first-login auto-link) plus
+   `KeycloakGroupMembership` CRs for standing-owner membership → the
    `my-project-owner` Quay **client role** → the `groups`-claim value
    `my-project-owner` → the Quay `Organization.spec.syncedTeams[]` mapping
    (owner → `admin`; editor → `creator`+`write`; viewer → `member`+`read`), internally

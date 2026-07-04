@@ -3,9 +3,8 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: keycloakgroupmembership-editor-role
-  labels:
-    rbac.authorization.k8s.io/aggregate-to-admin: "true"
-    rbac.authorization.k8s.io/aggregate-to-edit: "true"
+# Deliberately not aggregated to admin/edit yet. ADR-24 requires rendered-object
+# admission protection before tenants receive write access to this Kind.
 rules:
   - apiGroups:
       - keycloak.holos.run

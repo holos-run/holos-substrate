@@ -40,8 +40,9 @@ projects: "my-project": owners: "bob@example.com": _
   (`projects.<name>.owners.<email>`), so a project may name one or several
   owners. Each owner email is validated. Every project must name **at least one**
   owner (a render-time assertion). The single-owner registration above is the
-  common case; the owner is pre-provisioned as a `KeycloakUser` and granted the
-  project's `owner` role (below).
+  common case; the owner is pre-provisioned as a `KeycloakUser` and seeded into
+  first-class `KeycloakGroupMembership` CRs for the project's owner role and
+  custodian groups (below).
 
 The `#Project` schema lives in [`holos/projects/projects.cue`](../projects/projects.cue);
 `name` is set from the map key (do not author it).
@@ -129,8 +130,12 @@ realized as `keycloak.holos.run` resources the Holos Controller
   person is a member of to hold a primitive role.
 - **Custodian groups** `projects/<name>/custodians/{owner,editor,viewer}` — whose
   members manage the matching `roles/*` group's membership.
-- The owner's **`KeycloakUser`** (pre-created by email, first-login auto-linked)
-  added to `projects/<name>/roles/owner`.
+- Owner **`KeycloakGroupMembership`** CRs — one named
+  `<name>-roles-owner-members` that seeds project owners into
+  `projects/<name>/roles/owner`, plus one per custodian tier named
+  `<name>-custodians-{owner,editor,viewer}-members` that seeds the same owners
+  into every custodian group.
+- The owner's **`KeycloakUser`** (pre-created by email, first-login auto-linked).
 - The project's own **`KeycloakClient`** (`https://<name>.holos.internal`).
 
 Each role group confers its primitive role on **three** clients via
@@ -172,6 +177,16 @@ The cross-namespace reference each Keycloak CR makes to the central
 `KeycloakInstance` (the separate `keycloak-instance` component) is authorized by a
 `security.holos.run` `ReferenceGrant` ([ADR-22](../../docs/adr/ADR-22.md)) the
 **instance namespace's owner** creates — not a resource the templates render.
+Role and custodian group membership is managed through `KeycloakGroupMembership`
+CRs in the project's control namespace. The rendered CRs seed the standing owner
+set; the intended day-2 owner path is separate owner-authored membership CRs in
+that same namespace, using the owner RoleBinding's namespace `admin` role and the
+membership RBAC shipped by the reconciler phase. Treat the rendered standing-owner
+CRs as platform-owned scaffold, and gate broader owner writes with ADR-24's
+rendered-object protection/admission policy.
+During the migration from the old user-owned group list, the user reconciler
+prunes that group edge once, and the membership CR re-adds the declared edge on
+its next reconcile.
 
 ## The application resource set
 

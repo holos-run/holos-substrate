@@ -77,8 +77,8 @@ let KEYCLOAK_GROUP = "keycloak.holos.run"
 
 // The referrer Kinds the project namespaces hold — each carries an instanceRef
 // the controller gates through this grant (the FromRef Kinds in
-// internal/controller/keycloak/{group,user,client}_controller.go).
-let REFERRER_KINDS = ["KeycloakGroup", "KeycloakUser", "KeycloakClient"]
+// internal/controller/keycloak/{group,membership,user,client}_controller.go).
+let REFERRER_KINDS = ["KeycloakGroup", "KeycloakGroupMembership", "KeycloakUser", "KeycloakClient"]
 
 // KEYCLOAK_INSTANCE_RESOURCE is the central KeycloakInstance.  spec.caBundle is
 // GATED on a non-empty _CABundlePEM tag (holos/tags.cue): empty (the default,
@@ -108,9 +108,10 @@ let KEYCLOAK_INSTANCE_RESOURCE = {
 
 // REFERENCE_GRANT_RESOURCE is the security.holos.run ReferenceGrant in the
 // KeycloakInstance's namespace.  It authorizes the project namespaces'
-// keycloak.holos.run referrers (KeycloakGroup/User/Client) to reference this
-// KeycloakInstance by name.  from lists every (referrer namespace × referrer
-// Kind) pair; to constrains the grant to this one KeycloakInstance by name (the
+// keycloak.holos.run referrers (KeycloakGroup/GroupMembership/User/Client) to
+// reference this KeycloakInstance by name.  from lists every
+// (referrer namespace × referrer Kind) pair; to constrains the grant to this one
+// KeycloakInstance by name (the
 // least-privilege ToRef.Name match the authorizer evaluates).
 let REFERENCE_GRANT_RESOURCE = {
 	apiVersion: "security.holos.run/v1alpha1"
@@ -151,7 +152,7 @@ userDefinedBuildPlan: {
 				// the security.holos.run ReferenceGrant ride the open, Kind-scoped
 				// entries there (their CRDs have no vendored CUE type).
 				resources: #Resources & {
-					KeycloakInstance: (NAME):                   KEYCLOAK_INSTANCE_RESOURCE
+					KeycloakInstance: (NAME):                                 KEYCLOAK_INSTANCE_RESOURCE
 					ReferenceGrant: (REFERENCE_GRANT_RESOURCE.metadata.name): REFERENCE_GRANT_RESOURCE
 				}
 			}]

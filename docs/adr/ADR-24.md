@@ -73,14 +73,12 @@ grant is a control-plane resource the project owner manages.
 - [ADR-22 — `security.holos.run` ReferenceGrant](ADR-22.md): cross-namespace
   references between `holos.run` CRs require a grant in the referent
   namespace — the mechanism the membership double-binding builds on. The
-  `keycloak-instance` component already grants every registered project's
-  bare namespace the right to reference the central `KeycloakInstance` —
-  but the grant enumerates referrer **kinds** (today `KeycloakGroup`,
-  `KeycloakUser`, `KeycloakClient`), so **extending its `from[]` with
-  `KeycloakGroupMembership` is an explicit prerequisite** of the grant
-  path: without it, a membership CR's cross-namespace `instanceRef` fails
-  `ReferenceNotGranted`. The HOL-1453 plan's CUE phase owns that grant
-  update.
+  `keycloak-instance` component grants every registered project's bare
+  namespace the right to reference the central `KeycloakInstance`, enumerating
+  each referrer **kind**. HOL-1457 extends that grant to include
+  `KeycloakGroupMembership`, satisfying the membership CR's cross-namespace
+  `instanceRef` prerequisite; without that grant entry the reconciler would
+  fail closed with `Ready=False`, reason `ReferenceNotGranted`.
 
 Group paths in `keycloak.holos.run` specs are written in the **canonical
 spec form `projects/<name>/…` with no leading slash** — the form the CRD
@@ -230,16 +228,19 @@ The rationale:
 
 Today the owner RoleBinding grants less than it appears to: the built-in
 `admin` ClusterRole reaches custom resources only through **aggregation**,
-and no `holos.run` CRD ships an aggregated ClusterRole — so a project owner
-currently cannot create *any* `holos.run` CR. HOL-1456 ships the first
-aggregated ClusterRole (for `keycloakgroupmemberships`) as part of the
-membership plan; this ADR generalizes that mechanism to the plane-2 surface:
+and no `holos.run` CRD ships a write-aggregated ClusterRole — so a project
+owner currently cannot create *any* `holos.run` CR. The membership
+implementation ships the write ClusterRole for `keycloakgroupmemberships`, but
+HOL-1457 deliberately leaves it **unaggregated** until the rendered-object
+protection policy below exists. This ADR generalizes the future aggregation
+mechanism to the plane-2 surface:
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: holos-keycloakgroupmembership-admin
+  # Future state only: add this label after rendered-object protection ships.
   labels:
     # admin ONLY — deliberately NOT aggregate-to-edit. A membership grant is
     # an authorization change; the owner RoleBinding grants admin, and a
@@ -368,10 +369,10 @@ are idempotent, and each CR manages its own member edges independently.
    deletes identities. Authorization is the double-binding model:
    same-namespace `groupRef` implicitly consented, cross-namespace denied
    fail-closed without a `ReferenceGrant` in the group's namespace.
-3. **Plane 2 is enabled by aggregated ClusterRoles (`admin`-aggregated only,
-   never `edit`), per Kind, in phases, each phase gated on its
+3. **Plane 2 will be enabled by aggregated ClusterRoles (`admin`-aggregated
+   only, never `edit`), per Kind, in phases, each phase gated on its
    admission-policy prerequisite**: `KeycloakGroupMembership` alone first
-   (plus `view` on all `holos.run` Kinds), prerequisite the
+   (plus `view` on all `holos.run` Kinds), but only after the
    marker-forgery-proof, identity-keyed rendered-object protection policy;
    `Repository` (with an external-identity collision guard), `KeycloakUser`
    (with the created-identity deletion guard), `KeycloakClient`,
@@ -399,10 +400,11 @@ are idempotent, and each CR manages its own member edges independently.
   owns the Kind's spec). This ADR contributes the surrounding resource
   model: the three planes, the phased aggregation, and the rendered-object
   boundary.
-- **New RBAC manifests ship with the controller**: aggregated ClusterRoles
-  per phase-1 Kind (HOL-1456 ships the membership one) plus the `view`
-  aggregation. No change to the Project component's owner RoleBinding —
-  aggregation makes the existing binding sufficient.
+- **New RBAC manifests ship with the controller**: the phase-1 membership write
+  ClusterRole is present, but intentionally unaggregated until rendered-object
+  protection ships; `view` aggregation is safe immediately. No change to the
+  Project component's owner RoleBinding — once enabled, aggregation makes the
+  existing binding sufficient.
 - **Admission control remains load-bearing, but phase 1 needs only one
   policy.** The membership double-binding replaces group-path admission
   string-matching for the grant path; the rendered-object protection policy
@@ -422,5 +424,5 @@ are idempotent, and each CR manages its own member edges independently.
 - **ADR-21's `owners` map semantics are narrowed** to the standing-owner
   record (`Updates: ADR-21`); the deferred `ProjectRequest` API and the
   admission policies are the natural follow-ups, and this ADR is a design
-  record only — the aggregated ClusterRoles beyond HOL-1456's and the
-  admission policy land in follow-up implementation issues.
+  record only — enabling write aggregation and the admission policy land in
+  follow-up implementation issues.
