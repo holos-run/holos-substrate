@@ -561,22 +561,22 @@ unrelated replacement group.
   tracked-set pattern in `reconcileMemberships` in
   `internal/controller/keycloak/user_controller.go`: members this CR added are
   tracked in `status.managedMembers`; members dropped from `spec.members[]` are
-  pruned only if their stored user UUID still matches and no live peer
-  `KeycloakGroupMembership` has resolved ownership of the same member in the same
-  group. Peer ownership is status-based, not spec-only: the peer must target the
-  same defaulted `groupRef`, carry the same `status.groupID`, have a
-  `status.managedMembers[]` entry for the same email and user UUID, and not be
-  deleting. This peer check is required because Keycloak group membership has no
+  pruned only if their stored user UUID still matches and no other live
+  `KeycloakGroupMembership` for the same defaulted `groupRef` and matching
+  `instanceRef` declares the same email. The peer check is spec-based and
+  fail-safe: a peer does not need to have reconciled yet or written
+  `status.managedMembers[]` to block removal, because otherwise normal reconcile
+  ordering can remove access between the peer's spec write and its first
+  successful reconcile. This is required because Keycloak group membership has no
   per-binding owner marker; overlapping membership CRs are allowed, but one CR may
-  not remove a member another reconciled CR still owns. A stale, invalid, or
-  not-yet-reconciled peer spec does not block pruning. Out-of-band memberships and
+  not remove a member another live CR still desires. Out-of-band memberships and
   memberships owned by other CRs are left alone.
 - Deletion uses a finalizer to prune this CR's managed members. If the stored
   `groupID` no longer matches the current group at the same path, the finalizer
   treats the old group as gone and releases its managed set without touching the
-  replacement. If another non-deleting membership CR's status shows ownership of
-  the same group ID, email, and user UUID, deletion releases this CR's status entry
-  without removing the Keycloak membership.
+  replacement. If another non-deleting membership CR for the same defaulted
+  `groupRef` and matching `instanceRef` still declares the same email, deletion
+  releases this CR's status entry without removing the Keycloak membership.
 - `lastValidatedTime` advances only after a successful remote read and
   verification/remediation. `lastMutatedTime` and `lastMutationReason` are
   updated only when the controller actually adds or removes a member; unchanged

@@ -260,7 +260,12 @@ Rules:
 
 1. `conditions[].lastTransitionTime` MUST NOT be used as a freshness or drift
    signal; these timestamps exist to close that gap.
-2. **Fail-closed freshness:** an errored reconcile touches none of these fields.
+2. **Fail-closed freshness:** an errored reconcile does not advance
+   `lastValidatedTime`; a stale validation timestamp must remain visible when
+   remote read/verification failed. This does not erase completed mutations: if the
+   controller successfully changed the external system before a later operation
+   failed, it must still record `lastMutatedTime`/`lastMutationReason` for that
+   completed mutation, or retry status recording before doing more work.
 3. `lastMutatedTime` and `lastMutationReason` are written together, atomically in
    the same status update. A mutation with `lastMutationReason:
    DriftRemediation` also sets `lastDriftTime` to the same instant.
