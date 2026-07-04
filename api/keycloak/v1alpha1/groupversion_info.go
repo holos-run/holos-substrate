@@ -4,9 +4,9 @@
 // The group models the per-project, tenant-facing Keycloak identity primitives
 // the Holos PaaS provisions on a project's behalf — KeycloakInstance (a
 // centrally-managed reference to one Keycloak target), KeycloakGroup,
-// KeycloakUser, and KeycloakClient — as Kubernetes custom resources reconciled
-// by the holos-controller (ADR-18, ADR-20). It is the second API group the
-// controller owns, alongside quay.holos.run (ADR-19).
+// KeycloakGroupMembership, KeycloakUser, and KeycloakClient — as Kubernetes
+// custom resources reconciled by the holos-controller (ADR-18, ADR-20). It is
+// the second API group the controller owns, alongside quay.holos.run (ADR-19).
 //
 // The resources express their only external coupling to Keycloak as a
 // KeycloakInstance plus a credential secretRef (see SecretReference): reaching

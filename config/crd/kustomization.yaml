@@ -7,6 +7,7 @@ resources:
   - bases/quay.holos.run_repositories.yaml
   - bases/keycloak.holos.run_keycloakinstances.yaml
   - bases/keycloak.holos.run_keycloakgroups.yaml
+  - bases/keycloak.holos.run_keycloakgroupmemberships.yaml
   - bases/keycloak.holos.run_keycloakusers.yaml
   - bases/keycloak.holos.run_keycloakclients.yaml
   - bases/security.holos.run_referencegrants.yaml
