@@ -121,7 +121,8 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 	NAME: string
 
 	// OWNERS is the project's owners map (projects.<name>.owners) keyed by email;
-	// one KeycloakUser is rendered per entry, joined to the owner role group.
+	// one KeycloakUser and one KeycloakGroupMembership member entry are rendered
+	// per owner.
 	OWNERS: {[string]: {email: string, ...}}
 
 	// CTRL_NS is the project's CONTROL namespace: the bare project name (see the
@@ -172,6 +173,7 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 	// names the create-if-absent Job (+ SA/Role/RoleBinding) that generates its
 	// token once.
 	let WEBHOOK_SECRET = "\(NAME)-quay-webhook"
+
 	let WEBHOOK_BOOTSTRAP = "\(WEBHOOK_SECRET)-bootstrap"
 
 	// --- Argo CD: AppProject + Application -----------------------------------
@@ -660,10 +662,60 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 		}
 	}
 
+	// OWNER_MEMBERS is the declared member set all first-class project membership
+	// CRs seed: project owners start in the owner primitive role and in every
+	// custodian tier, so they can manage role membership through delegated FGAP.
+	let OWNER_MEMBERS = [
+		for EMAIL, _ in OWNERS {
+			email: EMAIL
+		},
+	]
+
+	// KEYCLOAK_ROLE_OWNER_MEMBERSHIP_RESOURCE seeds project owners into
+	// projects/<name>/roles/owner. The groupRef is same-namespace, while the
+	// instanceRef is the central cross-namespace KeycloakInstance grant.
+	let KEYCLOAK_ROLE_OWNER_MEMBERSHIP_RESOURCE = {
+		apiVersion: "keycloak.holos.run/v1alpha1"
+		kind:       "KeycloakGroupMembership"
+		metadata: {
+			name:      "\(NAME)-roles-owner-members"
+			namespace: CTRL_NS
+			labels: "app.kubernetes.io/name": NAME
+		}
+		spec: {
+			instanceRef: INSTANCE_REF
+			groupRef: name: "\(NAME)-roles-owner"
+			members: OWNER_MEMBERS
+		}
+	}
+
+	// KEYCLOAK_CUSTODIAN_MEMBERSHIP_RESOURCES seed project owners into all
+	// custodians/{owner,editor,viewer} groups. That makes the role-group
+	// delegation above live immediately for the initial project owner set.
+	let KEYCLOAK_CUSTODIAN_MEMBERSHIP_RESOURCES = {
+		for r in ROLES {
+			(r): {
+				apiVersion: "keycloak.holos.run/v1alpha1"
+				kind:       "KeycloakGroupMembership"
+				metadata: {
+					name:      "\(NAME)-custodians-\(r)-members"
+					namespace: CTRL_NS
+					labels: "app.kubernetes.io/name": NAME
+				}
+				spec: {
+					instanceRef: INSTANCE_REF
+					groupRef: name: "\(NAME)-custodians-\(r)"
+					members: OWNER_MEMBERS
+				}
+			}
+		}
+	}
+
 	// KEYCLOAK_USER_RESOURCES pre-provisions one KeycloakUser per project owner
-	// (projects.<name>.owners), each joined to the owner role group with the IdP
-	// federated-identity link so first federated login auto-links the pre-created
-	// record (paired with the realm's first-broker-login auto-link flow).  The CR
+	// (projects.<name>.owners) with the IdP federated-identity link so first
+	// federated login auto-links the pre-created record (paired with the realm's
+	// first-broker-login auto-link flow). Group membership is owned by
+	// KeycloakGroupMembership CRs above, not by the KeycloakUser group list. The CR
 	// metadata.name must be a DNS label, but an email is not — derive a stable
 	// DNS-safe name from the email's local part (lowercased; @, ., + and any other
 	// non-label char collapsed to "-"; bounded to a valid label by #DNSLabel via
@@ -686,6 +738,7 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 				// ≤49 chars (well under 63).  The email itself is carried in
 				// spec.email; this is only the object name.
 				let _local = regexp.ReplaceAll("^-+|-+$", strings.ToLower(regexp.ReplaceAll("[^a-z0-9]+", strings.SplitN(EMAIL, "@", 2)[0], "-")), "")
+
 				// Truncate the readable prefix to ≤40 chars; for an empty/all-symbol
 				// local part fall back to "user" so the name still starts with a
 				// letter (DNS-label valid).
@@ -703,7 +756,6 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 				spec: {
 					email:       EMAIL
 					instanceRef: INSTANCE_REF
-					groups: ["projects/\(NAME)/roles/owner"]
 					identityProviderLink: alias: "esso"
 					// adopt: true — a Keycloak user is realm-GLOBAL by email, but
 					// these KeycloakUser CRs are per-PROJECT (each project emits one
@@ -715,11 +767,10 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 					// user (same email → same user) without seizing-and-deleting it:
 					// an adopted user is RELEASED, never deleted, on CR removal
 					// (api/keycloak/v1alpha1 KeycloakUserSpec.Adopt), so two projects
-					// adopting one owner is benign and non-destructive.  The group
-					// memberships are additive (each CR adds its own
-					// projects/<name>/roles/owner), so a shared owner ends up in both
-					// projects' owner groups, which is the intended cross-project
-					// ownership semantics.
+					// adopting one owner is benign and non-destructive.  The separate
+					// membership CRs are additive per project, so a shared owner ends
+					// up in both projects' owner groups, which is the intended
+					// cross-project ownership semantics.
 					adopt: true
 				}
 			}
@@ -782,11 +833,17 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 				(KEYCLOAK_CUSTODIAN_GROUP_RESOURCES[r].metadata.name): KEYCLOAK_CUSTODIAN_GROUP_RESOURCES[r]
 			}
 		}
+		KeycloakGroupMembership: {
+			(KEYCLOAK_ROLE_OWNER_MEMBERSHIP_RESOURCE.metadata.name): KEYCLOAK_ROLE_OWNER_MEMBERSHIP_RESOURCE
+			for r in ROLES {
+				(KEYCLOAK_CUSTODIAN_MEMBERSHIP_RESOURCES[r].metadata.name): KEYCLOAK_CUSTODIAN_MEMBERSHIP_RESOURCES[r]
+			}
+		}
 
 		ServiceAccount: (WEBHOOK_BOOTSTRAP): WEBHOOK_BOOTSTRAP_SERVICE_ACCOUNT
 		Role: (WEBHOOK_BOOTSTRAP):           WEBHOOK_BOOTSTRAP_ROLE
 		RoleBinding: {
-			(WEBHOOK_BOOTSTRAP):              WEBHOOK_BOOTSTRAP_ROLE_BINDING
+			(WEBHOOK_BOOTSTRAP):                  WEBHOOK_BOOTSTRAP_ROLE_BINDING
 			(OWNER_ACCESS_BINDING.metadata.name): OWNER_ACCESS_BINDING
 		}
 		Job: (WEBHOOK_BOOTSTRAP): WEBHOOK_BOOTSTRAP_JOB

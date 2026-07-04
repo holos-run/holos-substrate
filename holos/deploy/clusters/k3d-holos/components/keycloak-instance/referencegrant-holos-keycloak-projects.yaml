@@ -11,6 +11,9 @@ spec:
     kind: KeycloakGroup
     namespace: my-project
   - group: keycloak.holos.run
+    kind: KeycloakGroupMembership
+    namespace: my-project
+  - group: keycloak.holos.run
     kind: KeycloakUser
     namespace: my-project
   - group: keycloak.holos.run

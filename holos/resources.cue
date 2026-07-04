@@ -55,24 +55,24 @@ import (
 		metadata: name: string
 		...
 	}
-	Certificate?: [_]:         certv1.#Certificate
-	Cluster?: [_]:             cnpg.#Cluster
-	ClusterIssuer?: [_]:       ci.#ClusterIssuer
-	ClusterRole?: [_]:         rbacv1.#ClusterRole
-	ClusterRoleBinding?: [_]:  rbacv1.#ClusterRoleBinding
-	ConfigMap?: [_]:           corev1.#ConfigMap
-	CronJob?: [_]:             batchv1.#CronJob
-	Deployment?: [_]:          appsv1.#Deployment
-	DestinationRule?: [_]:     dr.#DestinationRule
-	ExternalSecret?: [_]:      es.#ExternalSecret
-	HTTPRoute?: [_]:           hrv1.#HTTPRoute
-	Job?: [_]:                 batchv1.#Job
+	Certificate?: [_]:        certv1.#Certificate
+	Cluster?: [_]:            cnpg.#Cluster
+	ClusterIssuer?: [_]:      ci.#ClusterIssuer
+	ClusterRole?: [_]:        rbacv1.#ClusterRole
+	ClusterRoleBinding?: [_]: rbacv1.#ClusterRoleBinding
+	ConfigMap?: [_]:          corev1.#ConfigMap
+	CronJob?: [_]:            batchv1.#CronJob
+	Deployment?: [_]:         appsv1.#Deployment
+	DestinationRule?: [_]:    dr.#DestinationRule
+	ExternalSecret?: [_]:     es.#ExternalSecret
+	HTTPRoute?: [_]:          hrv1.#HTTPRoute
+	Job?: [_]:                batchv1.#Job
 	// Keycloak CRs use v2beta1, the storage version of the pinned Keycloak
 	// 26.6.3 CRDs (v2alpha1 is served for compatibility but deprecated; both
 	// are vendored under cue.mod/gen/k8s.keycloak.org/).
-	Keycloak?: [_]:              kc.#Keycloak
-	KeycloakRealmImport?: [_]:   kcri.#KeycloakRealmImport
-	Namespace?: [_]:             corev1.#Namespace
+	Keycloak?: [_]:            kc.#Keycloak
+	KeycloakRealmImport?: [_]: kcri.#KeycloakRealmImport
+	Namespace?: [_]:           corev1.#Namespace
 	// NetworkPolicy gets an explicit but DELIBERATELY OPEN entry (the trailing
 	// `...`), like Organization / ReferenceGrant above: k8s.io/api/networking/v1
 	// is not vendored under cue.mod/gen/ (only apps/batch/core/rbac are), and the
@@ -166,14 +166,14 @@ import (
 		...
 	}
 
-	// The keycloak.holos.run Kinds (ADR-20, the shipped Holos Controller's
-	// Keycloak API group — KeycloakInstance/Group/User/Client) get explicit but
-	// DELIBERATELY OPEN entries for the same reason as Organization above: their
-	// CRDs have no generated CUE type under cue.mod/gen/ (they live in
+	// The keycloak.holos.run Kinds (ADR-20/ADR-24, the shipped Holos Controller's
+	// Keycloak API group — KeycloakInstance/Group/GroupMembership/User/Client) get
+	// explicit but DELIBERATELY OPEN entries for the same reason as Organization
+	// above: their CRDs have no generated CUE type under cue.mod/gen/ (they live in
 	// api/keycloak/v1alpha1/).  The openness is SCOPED to these Kinds, so the
 	// generic catch-all stays CLOSED.  The keycloak-instance component
-	// (KeycloakInstance) and the my-project scaffold (Group/User/Client) emit
-	// these through #Resources (HOL-1348).
+	// (KeycloakInstance) and the project scaffold (Group/GroupMembership/User/
+	// Client) emit these through #Resources.
 	KeycloakInstance?: [_]: {
 		kind: "KeycloakInstance"
 		metadata: name: string
@@ -181,6 +181,11 @@ import (
 	}
 	KeycloakGroup?: [_]: {
 		kind: "KeycloakGroup"
+		metadata: name: string
+		...
+	}
+	KeycloakGroupMembership?: [_]: {
+		kind: "KeycloakGroupMembership"
 		metadata: name: string
 		...
 	}
@@ -194,16 +199,16 @@ import (
 		metadata: name: string
 		...
 	}
-	Role?: [_]:                  rbacv1.#Role
-	RoleBinding?: [_]:           rbacv1.#RoleBinding
-	Secret?: [_]:                corev1.#Secret
-	SecretStore?: [_]:           ss.#SecretStore
-	Service?: [_]:               corev1.#Service
-	ServiceAccount?: [_]:        corev1.#ServiceAccount
-	ServiceEntry?: [_]:          se.#ServiceEntry
-	Stage?: [_]:                 kstage.#Stage
-	StatefulSet?: [_]:           appsv1.#StatefulSet
-	Warehouse?: [_]:             kwarehouse.#Warehouse
+	Role?: [_]:           rbacv1.#Role
+	RoleBinding?: [_]:    rbacv1.#RoleBinding
+	Secret?: [_]:         corev1.#Secret
+	SecretStore?: [_]:    ss.#SecretStore
+	Service?: [_]:        corev1.#Service
+	ServiceAccount?: [_]: corev1.#ServiceAccount
+	ServiceEntry?: [_]:   se.#ServiceEntry
+	Stage?: [_]:          kstage.#Stage
+	StatefulSet?: [_]:    appsv1.#StatefulSet
+	Warehouse?: [_]:      kwarehouse.#Warehouse
 
 	Gateway?: [_]: gwv1.#Gateway & {
 		spec: gatewayClassName: string | *"istio"
