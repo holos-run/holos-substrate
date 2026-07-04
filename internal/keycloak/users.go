@@ -106,6 +106,19 @@ func (c *Client) AddUserToGroup(ctx context.Context, userID, groupID string) err
 	return c.doJSON(ctx, http.MethodPut, path, nil, nil)
 }
 
+// ListUserGroups returns the groups the user currently belongs to via
+// GET /admin/realms/{realm}/users/{id}/groups. Reconcilers use it for
+// check-then-apply membership changes so status mutation timestamps advance only
+// when Keycloak actually changed.
+func (c *Client) ListUserGroups(ctx context.Context, userID string) ([]Group, error) {
+	path := c.adminPath("/users/" + url.PathEscape(userID) + "/groups")
+	var groups []Group
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &groups); err != nil {
+		return nil, err
+	}
+	return groups, nil
+}
+
 // RemoveUserFromGroup removes the user from the group via
 // DELETE /admin/realms/{realm}/users/{id}/groups/{groupId}. A user not in the
 // group is returned as an *APIError reporting IsNotFound; use

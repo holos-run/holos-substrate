@@ -161,6 +161,24 @@ func newUserReconciler(fake *fakeKeycloakClient, namespace string) (*UserReconci
 	return r, recorder
 }
 
+// newMembershipReconciler builds a MembershipReconciler wired to the envtest
+// client and a recording event recorder, injecting the supplied fake via a
+// factory.
+func newMembershipReconciler(fake *fakeKeycloakClient, namespace string) (*MembershipReconciler, *record.FakeRecorder) {
+	recorder := record.NewFakeRecorder(64)
+	r := &MembershipReconciler{
+		Client:    shared.k8sClient,
+		APIReader: shared.k8sClient,
+		Recorder:  recorder,
+		Namespace: namespace,
+		NewClient: func(cred *keycloakCredential, url, realm string, caBundle []byte) MembershipClient {
+			fake.gotCABundle = caBundle
+			return fake
+		},
+	}
+	return r, recorder
+}
+
 // newClientReconciler builds a ClientReconciler wired to the envtest client and a
 // recording event recorder, injecting the supplied fake via a factory.
 func newClientReconciler(fake *fakeKeycloakClient, namespace string) (*ClientReconciler, *record.FakeRecorder) {
@@ -190,6 +208,12 @@ func reconcileGroup(ctx context.Context, r *GroupReconciler, key client.ObjectKe
 
 // reconcileUser runs a single Reconcile pass for the named KeycloakUser.
 func reconcileUser(ctx context.Context, r *UserReconciler, key client.ObjectKey) (ctrl.Result, error) {
+	return r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+}
+
+// reconcileMembership runs a single Reconcile pass for the named
+// KeycloakGroupMembership.
+func reconcileMembership(ctx context.Context, r *MembershipReconciler, key client.ObjectKey) (ctrl.Result, error) {
 	return r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 }
 

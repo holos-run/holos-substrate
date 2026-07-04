@@ -58,9 +58,9 @@ import (
 // +kubebuilder:rbac:groups=quay.holos.run,resources=organizations;repositories,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=quay.holos.run,resources=organizations/status;repositories/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=quay.holos.run,resources=organizations/finalizers;repositories/finalizers,verbs=update
-// +kubebuilder:rbac:groups=keycloak.holos.run,resources=keycloakinstances;keycloakgroups;keycloakusers;keycloakclients,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=keycloak.holos.run,resources=keycloakinstances/status;keycloakgroups/status;keycloakusers/status;keycloakclients/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=keycloak.holos.run,resources=keycloakinstances/finalizers;keycloakgroups/finalizers;keycloakusers/finalizers;keycloakclients/finalizers,verbs=update
+// +kubebuilder:rbac:groups=keycloak.holos.run,resources=keycloakinstances;keycloakgroups;keycloakgroupmemberships;keycloakusers;keycloakclients,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=keycloak.holos.run,resources=keycloakinstances/status;keycloakgroups/status;keycloakgroupmemberships/status;keycloakusers/status;keycloakclients/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=keycloak.holos.run,resources=keycloakinstances/finalizers;keycloakgroups/finalizers;keycloakgroupmemberships/finalizers;keycloakusers/finalizers;keycloakclients/finalizers,verbs=update
 // +kubebuilder:rbac:groups=security.holos.run,resources=referencegrants,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -192,6 +192,13 @@ func main() {
 		Client: mgr.GetClient(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "KeycloakGroup")
+		os.Exit(1)
+	}
+
+	if err := (&keycloakcontroller.MembershipReconciler{
+		Client: mgr.GetClient(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "KeycloakGroupMembership")
 		os.Exit(1)
 	}
 

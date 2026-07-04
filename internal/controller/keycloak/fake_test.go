@@ -85,6 +85,12 @@ type fakeKeycloakClient struct {
 	// groupMembers records each "<userID>/<groupID>" the reconciler joined, so a
 	// test asserts membership assignment and pruning.
 	groupMembers map[string]bool
+	// listUserGroupsErr, when non-nil, is returned by ListUserGroups to simulate
+	// a remote read failure after status already has a validation timestamp.
+	listUserGroupsErr error
+	// listUserGroupsErrFor returns an error for one user ID while allowing earlier
+	// users to converge, so tests can exercise partial mutation failures.
+	listUserGroupsErrFor map[string]error
 	// federatedLinks records, per "<userID>/<provider>", the upstream subject
 	// (userId) of the link created, so a test asserts the link was made and that the
 	// subject-verified prune respects an out-of-band recreated link.
@@ -122,20 +128,21 @@ type fakeKeycloakClient struct {
 // paths (each normalized and assigned a synthetic UUID).
 func newFakeKeycloakClient(existingGroups ...string) *fakeKeycloakClient {
 	f := &fakeKeycloakClient{
-		realmReachable:     true,
-		groups:             map[string]string{},
-		clients:            map[string]string{},
-		clientRoles:        map[string]string{},
-		roleAssignments:    map[string]bool{},
-		users:              map[string]*keycloak.User{},
-		groupMembers:       map[string]bool{},
-		federatedLinks:     map[string]string{},
-		createdClientRoles: map[string]map[string]bool{},
-		roleMappers:        map[string]bool{},
-		clientSecrets:      map[string]string{},
-		createdClientAttrs: map[string]map[string]string{},
-		lastUpdateFields:   map[string]keycloak.ClientFields{},
-		clientDescriptions: map[string]string{},
+		realmReachable:       true,
+		groups:               map[string]string{},
+		clients:              map[string]string{},
+		clientRoles:          map[string]string{},
+		roleAssignments:      map[string]bool{},
+		users:                map[string]*keycloak.User{},
+		groupMembers:         map[string]bool{},
+		listUserGroupsErrFor: map[string]error{},
+		federatedLinks:       map[string]string{},
+		createdClientRoles:   map[string]map[string]bool{},
+		roleMappers:          map[string]bool{},
+		clientSecrets:        map[string]string{},
+		createdClientAttrs:   map[string]map[string]string{},
+		lastUpdateFields:     map[string]keycloak.ClientFields{},
+		clientDescriptions:   map[string]string{},
 	}
 	for _, p := range existingGroups {
 		f.addGroup(p)
@@ -434,6 +441,26 @@ func (f *fakeKeycloakClient) AddUserToGroup(ctx context.Context, userID, groupID
 	return nil
 }
 
+func (f *fakeKeycloakClient) ListUserGroups(ctx context.Context, userID string) ([]keycloak.Group, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("ListUserGroups:" + userID)
+	if f.listUserGroupsErr != nil {
+		return nil, f.listUserGroupsErr
+	}
+	if err := f.listUserGroupsErrFor[userID]; err != nil {
+		return nil, err
+	}
+	var out []keycloak.Group
+	prefix := userID + "/"
+	for k, member := range f.groupMembers {
+		if member && strings.HasPrefix(k, prefix) {
+			out = append(out, keycloak.Group{ID: k[len(prefix):]})
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeKeycloakClient) RemoveUserFromGroupIfMember(ctx context.Context, userID, groupID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -666,8 +693,9 @@ func (f *fakeKeycloakClient) createdClientPKCE(clientID string) string {
 
 // compile-time assertions that the fake satisfies all four reconciler seams.
 var (
-	_ InstanceClient = (*fakeKeycloakClient)(nil)
-	_ GroupClient    = (*fakeKeycloakClient)(nil)
-	_ UserClient     = (*fakeKeycloakClient)(nil)
-	_ ClientClient   = (*fakeKeycloakClient)(nil)
+	_ InstanceClient   = (*fakeKeycloakClient)(nil)
+	_ GroupClient      = (*fakeKeycloakClient)(nil)
+	_ UserClient       = (*fakeKeycloakClient)(nil)
+	_ ClientClient     = (*fakeKeycloakClient)(nil)
+	_ MembershipClient = (*fakeKeycloakClient)(nil)
 )

@@ -81,8 +81,15 @@ const (
 	// Secret (or a required key within it) could not be resolved.
 	ReasonCredentialsNotFound = keycloakv1alpha1.ReasonCredentialsNotFound
 	// ReasonReferenceNotGranted marks a condition False because a cross-namespace
-	// instanceRef is not authorized by a security.holos.run ReferenceGrant.
+	// keycloak.holos.run reference is not authorized by a security.holos.run
+	// ReferenceGrant.
 	ReasonReferenceNotGranted = keycloakv1alpha1.ReasonReferenceNotGranted
+	// ReasonInstanceMismatch marks a condition False because a membership CR's
+	// instanceRef does not match its target group's instanceRef after defaulting.
+	ReasonInstanceMismatch = keycloakv1alpha1.ReasonInstanceMismatch
+	// ReasonMemberNotFound marks a condition False because a declared membership
+	// email did not resolve to an existing Keycloak user.
+	ReasonMemberNotFound = keycloakv1alpha1.ReasonMemberNotFound
 	// ReasonKeycloakError marks a condition False because a Keycloak admin-API
 	// call failed.
 	ReasonKeycloakError = keycloakv1alpha1.ReasonKeycloakError
@@ -99,6 +106,9 @@ const (
 	// reconciler requeues until the instance is provisioned, mirroring quay's
 	// OrganizationNotReady.
 	ReasonInstanceNotReady = "InstanceNotReady"
+	// ReasonGroupNotReady marks a condition False because the referenced
+	// KeycloakGroup does not exist or has not reported Ready.
+	ReasonGroupNotReady = "GroupNotReady"
 )
 
 // setCondition sets a single condition on the supplied condition slice using

@@ -46,6 +46,7 @@ rules:
   - keycloak.holos.run
   resources:
   - keycloakclients
+  - keycloakgroupmemberships
   - keycloakgroups
   - keycloakinstances
   - keycloakusers
@@ -61,6 +62,7 @@ rules:
   - keycloak.holos.run
   resources:
   - keycloakclients/finalizers
+  - keycloakgroupmemberships/finalizers
   - keycloakgroups/finalizers
   - keycloakinstances/finalizers
   - keycloakusers/finalizers
@@ -70,6 +72,7 @@ rules:
   - keycloak.holos.run
   resources:
   - keycloakclients/status
+  - keycloakgroupmemberships/status
   - keycloakgroups/status
   - keycloakinstances/status
   - keycloakusers/status
