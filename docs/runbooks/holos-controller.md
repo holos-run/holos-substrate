@@ -277,8 +277,9 @@ Run the bring-up steps **in order**:
    `KeycloakInstance` + its `ReferenceGrant` (the `keycloak-instance` component,
    carrying the injected `caBundle`), then the `my-project` Namespace +
    Organization + the project's `keycloak.holos.run` CRs (the project client, the
-   role/custodian KeycloakGroups, and the owner KeycloakUser, HOL-1348) and the
-   rest of the component. It gates the Organization **and** the
+   role/custodian KeycloakGroups, the owner KeycloakUser, and the standing-owner
+   KeycloakGroupMembership CRs) and the rest of the component. It gates the
+   Organization **and** the
    `keycloak.holos.run` resources (the `KeycloakInstance`, the project
    `KeycloakClient`, the role/custodian `KeycloakGroup`s, and the owner
    `KeycloakUser`) reaching `Ready`.

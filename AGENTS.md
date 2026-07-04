@@ -215,7 +215,8 @@ components have been removed. Git history preserves them.
   the GCP-style owner/editor/viewer primitive-role model), ADR-20 (the Keycloak
   API group CRDs, **`Partially Implemented`** as built in HOL-1344..HOL-1350,
   `Updates: ADR-3`; Rev 9 records the first-class
-  `KeycloakGroupMembership` design and deprecates `KeycloakUser.spec.groups`),
+  `KeycloakGroupMembership` design and Rev 10 removes the former
+  user-side membership field from `KeycloakUser`),
   ADR-21 (the Holos Project/Application components,
   **`Implemented`** as built in HOL-1354..HOL-1358 — Rev 4, `Updates: ADR-1`),
   and ADR-22 (the `security.holos.run` API group

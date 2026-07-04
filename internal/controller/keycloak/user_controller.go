@@ -9,6 +9,7 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
@@ -26,14 +27,14 @@ import (
 
 // userFinalizer guards Keycloak-side cleanup of a KeycloakUser: while present,
 // deleting the CR runs the finalizer (which deletes the Keycloak user only when
-// this CR created it, or prunes the memberships off an adopted user) before the
-// CR is removed from the API server. Its value is the resource's qualified name.
+// this CR created it, or releases an adopted user) before the CR is removed from
+// the API server. Its value is the resource's qualified name.
 const userFinalizer = "user.keycloak.holos.run/finalizer"
 
 // UserClient is the seam the KeycloakUser reconciler drives Keycloak through. It
-// is the subset of internal/keycloak.Client's user, group, and
-// federated-identity operations the reconciler needs, named as an interface so
-// tests inject a fake without HTTP. The concrete *keycloak.Client satisfies it.
+// is the subset of internal/keycloak.Client's user and federated-identity
+// operations the reconciler needs, named as an interface so tests inject a fake
+// without HTTP. The concrete *keycloak.Client satisfies it.
 type UserClient interface {
 	// FindUserByEmail returns the user whose email exactly matches, or nil when
 	// none exists (an absent user is not an error — the reconciler pre-creates on
@@ -45,16 +46,6 @@ type UserClient interface {
 	// DeleteUserIfExists deletes the user by UUID, treating an already-absent user
 	// as success (the finalizer's idempotent cleanup).
 	DeleteUserIfExists(ctx context.Context, userID string) error
-
-	// GetGroupByPath fetches the group at the given full path; a missing group
-	// returns an error for which keycloak.IsNotFound reports true. Used to resolve
-	// a declared membership path to the group UUID the membership endpoint needs.
-	GetGroupByPath(ctx context.Context, path string) (*keycloak.Group, error)
-	// AddUserToGroup adds the user to the group (idempotent on Keycloak's side).
-	AddUserToGroup(ctx context.Context, userID, groupID string) error
-	// RemoveUserFromGroupIfMember removes the user from the group, treating a
-	// not-a-member result as success so the prune is idempotent.
-	RemoveUserFromGroupIfMember(ctx context.Context, userID, groupID string) error
 
 	// CreateFederatedIdentityIfNotExists links the user to an upstream IdP account
 	// so first federated login auto-links this pre-created record. A matching
@@ -87,10 +78,10 @@ var _ UserClient = (*keycloak.Client)(nil)
 
 // UserReconciler reconciles a keycloak.holos.run KeycloakUser against the realm
 // of its referenced KeycloakInstance: it pre-provisions the user by email (only
-// when absent), reconciles the declared group memberships to the desired set,
-// configures the IdP federated-identity link, and on delete runs a finalizer
-// that deletes only a user it created (releasing an adopted one). Status follows
-// the Gateway-API convention and meaningful transitions emit Events.
+// when absent), configures the IdP federated-identity link, and on delete runs a
+// finalizer that deletes only a user it created (releasing an adopted one).
+// Status follows the Gateway-API convention and meaningful transitions emit
+// Events.
 type UserReconciler struct {
 	// Client is the manager's cached client for the KeycloakUser CR and status,
 	// and for resolving the referenced KeycloakInstance.
@@ -112,7 +103,7 @@ type UserReconciler struct {
 // Reconcile drives a KeycloakUser toward its desired state: fetch CR → ensure
 // finalizer → on delete run Keycloak cleanup then remove finalizer → else
 // resolve instance (+ReferenceGrant) → resolve credential → find/create the user
-// (claim model) → reconcile group memberships → ensure the IdP link → mark Ready.
+// (claim model) → ensure the IdP link → mark Ready.
 func (r *UserReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, retErr error) {
 	logger := log.FromContext(ctx)
 	defer func() { recordReconcile(kindUser, retErr) }()
@@ -137,7 +128,7 @@ func (r *UserReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resul
 }
 
 // reconcileNormal resolves the instance and credential, then finds-or-creates
-// the Keycloak user (claim model) and reconciles its memberships and IdP link.
+// the Keycloak user (claim model) and reconciles its IdP link.
 func (r *UserReconciler) reconcileNormal(ctx context.Context, logger logr.Logger, user *keycloakv1alpha1.KeycloakUser) (ctrl.Result, error) {
 	instance, result, err := r.resolveInstance(ctx, user)
 	if instance == nil || err != nil {
@@ -256,143 +247,22 @@ func (r *UserReconciler) userReplaced(ctx context.Context, logger logr.Logger, u
 	return r.recordConflict(ctx, logger, user, message)
 }
 
-// reconcileSideEffectsThenSucceed reconciles the declared group memberships to
-// the desired set (joining new ones AND pruning ones dropped from spec.groups),
-// ensures the IdP federated-identity link, then marks the resource Ready. It is
-// the single funnel every success path runs so side effects are applied only
-// after the user itself exists. extraChanged is set when an ownership/managed-set
-// status field changed so a steady-state reconcile still persists it.
+// reconcileSideEffectsThenSucceed ensures the IdP federated-identity link, then
+// marks the resource Ready. It is the single funnel every success path runs so
+// side effects are applied only after the user itself exists. extraChanged is set
+// when an ownership/managed-set status field changed so a steady-state reconcile
+// still persists it.
 func (r *UserReconciler) reconcileSideEffectsThenSucceed(ctx context.Context, logger logr.Logger, kc UserClient, user *keycloakv1alpha1.KeycloakUser, userID, reason, message string) (ctrl.Result, error) {
 	beforeUserID := user.Status.UserID
-	beforeGroups := append([]string(nil), user.Status.ManagedGroups...)
 	beforeIDP := user.Status.ManagedIdentityProvider
 
-	if err := r.reconcileMemberships(ctx, kc, user, userID); err != nil {
-		return r.fail(ctx, user, err)
-	}
 	if err := r.reconcileIdentityProviderLink(ctx, kc, user, userID); err != nil {
 		return r.fail(ctx, user, err)
 	}
 
 	extraChanged := beforeUserID != user.Status.UserID ||
-		!equalStrings(beforeGroups, user.Status.ManagedGroups) ||
 		beforeIDP != user.Status.ManagedIdentityProvider
 	return r.succeed(ctx, logger, user, reason, message, extraChanged)
-}
-
-// managedGroupSep separates the fields of a status.managedGroups entry, which
-// records "<groupPath>|<groupUUID>" so a membership prune can verify the group
-// currently at the path is still the same object this CR joined the user to. A
-// group deleted and recreated at the same path gets a fresh UUID, so the prune
-// skips it rather than revoking membership from a replacement group this CR never
-// joined (the path-vs-UUID guard, mirroring the KeycloakGroup reconciler).
-const managedGroupSep = "|"
-
-// parseManagedGroups decodes status.managedGroups ("path|uuid" entries) into a
-// map keyed by group path. A legacy bare-path entry (no separator, written before
-// this UUID-pinning landed) decodes with an empty UUID, which the prune treats as
-// "verify by current lookup" — it is upgraded to a pinned entry on the next join.
-func parseManagedGroups(entries []string) map[string]string {
-	out := map[string]string{}
-	for _, e := range entries {
-		path, uuid, found := strings.Cut(e, managedGroupSep)
-		if path == "" {
-			continue
-		}
-		if !found {
-			out[path] = "" // legacy bare-path entry
-			continue
-		}
-		out[path] = uuid
-	}
-	return out
-}
-
-// serializeManagedGroups encodes the managed group set back to the "path|uuid"
-// status slice, sorted by path for stable output (nil when empty so the omitempty
-// status field round-trips cleanly).
-func serializeManagedGroups(managed map[string]string) []string {
-	if len(managed) == 0 {
-		return nil
-	}
-	paths := make([]string, 0, len(managed))
-	for p := range managed {
-		paths = append(paths, p)
-	}
-	sort.Strings(paths)
-	out := make([]string, 0, len(paths))
-	for _, p := range paths {
-		out = append(out, p+managedGroupSep+managed[p])
-	}
-	return out
-}
-
-// reconcileMemberships reconciles the user's group memberships to the desired set
-// declared in spec.groups: it joins every declared group and removes any group
-// this CR previously managed (status.managedGroups) that is no longer desired —
-// so a membership removed from the spec is actively revoked rather than left in
-// place (the add-only gap). status.managedGroups is rewritten to the new desired
-// set, updated live as each side effect lands so a mid-loop failure leaves status
-// reflecting exactly the memberships currently in Keycloak.
-//
-// Each managed entry pins the group UUID, so a prune only revokes membership when
-// the group currently at the path still has the recorded UUID: a group deleted and
-// recreated at the same path out of band is skipped rather than having the
-// replacement's membership revoked (the path-vs-UUID guard).
-func (r *UserReconciler) reconcileMemberships(ctx context.Context, kc UserClient, user *keycloakv1alpha1.KeycloakUser, userID string) error {
-	desired := map[string]bool{}
-	for _, p := range user.Spec.Groups {
-		desired[p] = true
-	}
-
-	managed := parseManagedGroups(user.Status.ManagedGroups)
-	defer func() { user.Status.ManagedGroups = serializeManagedGroups(managed) }()
-
-	// Join every declared group (idempotent on Keycloak's side), pinning its UUID.
-	for _, path := range user.Spec.Groups {
-		group, err := kc.GetGroupByPath(ctx, path)
-		recordKeycloakAPI(opGetGroupByPath, err)
-		if err != nil {
-			return fmt.Errorf("resolving group %q for Keycloak user %q: %w", path, user.Spec.Email, err)
-		}
-		addErr := kc.AddUserToGroup(ctx, userID, group.ID)
-		recordKeycloakAPI(opAddUserToGroup, addErr)
-		if addErr != nil {
-			return fmt.Errorf("adding Keycloak user %q to group %q: %w", user.Spec.Email, path, addErr)
-		}
-		managed[path] = group.ID
-	}
-
-	// Prune memberships this CR previously managed but that are no longer desired.
-	for path, recordedUUID := range managed {
-		if desired[path] {
-			continue
-		}
-		group, err := kc.GetGroupByPath(ctx, path)
-		recordKeycloakAPI(opGetGroupByPath, ignoreNotFound(err))
-		if keycloak.IsNotFound(err) {
-			// The group is gone; the membership went with it. Stop tracking it.
-			delete(managed, path)
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("resolving group %q to prune membership for Keycloak user %q: %w", path, user.Spec.Email, err)
-		}
-		// UUID-pinned prune: only revoke when the group at the path is still the one
-		// this CR joined. A recreated group (different UUID) is not ours to revoke;
-		// stop tracking the stale entry without touching the replacement.
-		if recordedUUID != "" && group.ID != recordedUUID {
-			delete(managed, path)
-			continue
-		}
-		rmErr := kc.RemoveUserFromGroupIfMember(ctx, userID, group.ID)
-		recordKeycloakAPI(opRemoveUserFromGroup, rmErr)
-		if rmErr != nil {
-			return fmt.Errorf("removing Keycloak user %q from stale group %q: %w", user.Spec.Email, path, rmErr)
-		}
-		delete(managed, path)
-	}
-	return nil
 }
 
 // reconcileIdentityProviderLink ensures the federated-identity link declared in
@@ -538,10 +408,9 @@ func (r *UserReconciler) recordConflict(ctx context.Context, logger logr.Logger,
 // reconcileDelete runs the finalizer. Per the claim model the Keycloak user is
 // deleted only when this CR created it (status.Created); an adopted user is
 // released (the finalizer drops without deleting), so removing a CR that merely
-// claimed a pre-existing user never destroys it. In the adopted case the
-// memberships this CR added are pruned explicitly first (a created user's delete
-// cascades them). A Keycloak error during cleanup fails the reconcile and
-// requeues, so the finalizer is not removed until cleanup succeeds.
+// claimed a pre-existing user never destroys it. A Keycloak error during cleanup
+// fails the reconcile and requeues, so the finalizer is not removed until cleanup
+// succeeds.
 func (r *UserReconciler) reconcileDelete(ctx context.Context, logger logr.Logger, user *keycloakv1alpha1.KeycloakUser) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(user, userFinalizer) {
 		return ctrl.Result{}, nil
@@ -550,12 +419,11 @@ func (r *UserReconciler) reconcileDelete(ctx context.Context, logger logr.Logger
 	// Nothing needs Keycloak-side cleanup when the CR never created a user
 	// (rejected, blocked on a missing/not-ready instance, a denied ReferenceGrant,
 	// a missing credential, or an unresolved Conflict) AND it added no side effects
-	// to an adopted user — neither a managed membership nor a managed IdP link.
+	// to an adopted user — currently only a managed IdP link.
 	// Drop the finalizer immediately rather than resolving a Ready instance +
 	// credential that may never resolve. A created user always needs its delete, so
 	// it is never short-circuited here.
-	noManaged := len(user.Status.ManagedGroups) == 0 && user.Status.ManagedIdentityProvider == ""
-	if !user.Status.Created && noManaged {
+	if !user.Status.Created && user.Status.ManagedIdentityProvider == "" {
 		return r.removeFinalizer(ctx, user)
 	}
 
@@ -575,7 +443,7 @@ func (r *UserReconciler) reconcileDelete(ctx context.Context, logger logr.Logger
 
 	kc := r.NewClient(cred, instance.Spec.URL, instance.Spec.Realm, instance.Spec.CABundle)
 
-	// Created user → delete it; the delete cascades its memberships and IdP link.
+	// Created user → delete it; the delete cascades its IdP link.
 	if user.Status.Created {
 		if user.Status.UserID != "" {
 			delErr := kc.DeleteUserIfExists(ctx, user.Status.UserID)
@@ -591,19 +459,15 @@ func (r *UserReconciler) reconcileDelete(ctx context.Context, logger logr.Logger
 		return r.removeFinalizer(ctx, user)
 	}
 
-	// Adopted user → release: prune only the side effects this CR added (group
-	// memberships AND the federated-identity link), never deleting the surviving
-	// user the platform did not create.
-	if err := r.pruneManagedGroups(ctx, kc, user); err != nil {
-		r.Recorder.Event(user, corev1.EventTypeWarning, ReasonKeycloakError, err.Error())
-		return ctrl.Result{}, err
-	}
+	// Adopted user → release: prune only the side effects this CR added (the
+	// federated-identity link), never deleting the surviving user the platform did
+	// not create.
 	if err := r.pruneManagedIdentityProvider(ctx, kc, user); err != nil {
 		r.Recorder.Event(user, corev1.EventTypeWarning, ReasonKeycloakError, err.Error())
 		return ctrl.Result{}, err
 	}
 	r.Recorder.Event(user, corev1.EventTypeNormal, ReasonReleased,
-		fmt.Sprintf("released adopted Keycloak user %q (pruned controller-added memberships and IdP link, user not deleted)", user.Spec.Email))
+		fmt.Sprintf("released adopted Keycloak user %q (pruned controller-added IdP link, user not deleted)", user.Spec.Email))
 	return r.removeFinalizer(ctx, user)
 }
 
@@ -623,41 +487,6 @@ func (r *UserReconciler) pruneManagedIdentityProvider(ctx context.Context, kc Us
 		return err
 	}
 	user.Status.ManagedIdentityProvider = ""
-	return nil
-}
-
-// pruneManagedGroups removes the user from every group this CR joined it to
-// (status.managedGroups), then clears the managed status. It is used on adopted
-// release, where the surviving user is not deleted so its memberships must be
-// removed explicitly. It is UUID-pinned like reconcileMemberships: a group
-// recreated at the same path (different UUID) is skipped rather than having the
-// replacement's membership revoked, and an already-gone group is treated as
-// success.
-func (r *UserReconciler) pruneManagedGroups(ctx context.Context, kc UserClient, user *keycloakv1alpha1.KeycloakUser) error {
-	if user.Status.UserID == "" {
-		user.Status.ManagedGroups = nil
-		return nil
-	}
-	for path, recordedUUID := range parseManagedGroups(user.Status.ManagedGroups) {
-		group, err := kc.GetGroupByPath(ctx, path)
-		recordKeycloakAPI(opGetGroupByPath, ignoreNotFound(err))
-		if keycloak.IsNotFound(err) {
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("resolving group %q to revoke membership on release: %w", path, err)
-		}
-		if recordedUUID != "" && group.ID != recordedUUID {
-			// A different group occupies the path now; not ours to revoke.
-			continue
-		}
-		rmErr := kc.RemoveUserFromGroupIfMember(ctx, user.Status.UserID, group.ID)
-		recordKeycloakAPI(opRemoveUserFromGroup, rmErr)
-		if rmErr != nil {
-			return fmt.Errorf("revoking membership in group %q for Keycloak user %q on release: %w", path, user.Spec.Email, rmErr)
-		}
-	}
-	user.Status.ManagedGroups = nil
 	return nil
 }
 
@@ -831,6 +660,9 @@ func (r *UserReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.NewClient == nil {
 		r.NewClient = NewKeycloakUserClient
 	}
+	if err := checkNoLegacyUserManagedGroups(context.Background(), r.APIReader); err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&keycloakv1alpha1.KeycloakUser{}).
 		// Re-enqueue dependent users when their referenced KeycloakInstance changes
@@ -841,6 +673,36 @@ func (r *UserReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.usersForInstance),
 		).
 		Complete(r)
+}
+
+// checkNoLegacyUserManagedGroups hard-blocks rollout when old KeycloakUser
+// objects still carry the removed status.managedGroups field. HOL-1458
+// deliberately removes the user-side membership prune path, so clusters must
+// first apply the KeycloakGroupMembership migration under the previous
+// controller until this legacy managed set is empty.
+func checkNoLegacyUserManagedGroups(ctx context.Context, reader client.Reader) error {
+	users := &unstructured.UnstructuredList{}
+	users.SetGroupVersionKind(keycloakv1alpha1.GroupVersion.WithKind("KeycloakUserList"))
+	if err := reader.List(ctx, users); err != nil {
+		return fmt.Errorf("checking legacy KeycloakUser managed groups before starting controller: %w", err)
+	}
+
+	var offenders []string
+	for i := range users.Items {
+		user := &users.Items[i]
+		managed, found, err := unstructured.NestedStringSlice(user.Object, "status", "managedGroups")
+		if err != nil {
+			return fmt.Errorf("checking legacy KeycloakUser managed groups on %s: %w", client.ObjectKeyFromObject(user), err)
+		}
+		if found && len(managed) > 0 {
+			offenders = append(offenders, client.ObjectKeyFromObject(user).String())
+		}
+	}
+	if len(offenders) == 0 {
+		return nil
+	}
+	sort.Strings(offenders)
+	return fmt.Errorf("refusing to start KeycloakUser controller: legacy status.managedGroups entries remain on %s; apply the KeycloakGroupMembership migration with the previous controller until the field is empty", strings.Join(offenders, ", "))
 }
 
 // usersForInstance maps a changed KeycloakInstance to reconcile requests for

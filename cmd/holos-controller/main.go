@@ -203,10 +203,9 @@ func main() {
 	}
 
 	// Register the KeycloakUser reconciler (HOL-1347). It pre-provisions a user by
-	// email, assigns the declared group memberships, and configures the IdP
-	// federated-identity link for first-login auto-link, resolving the Keycloak
-	// admin credential from the controller's own namespace like the reconcilers
-	// above.
+	// email and configures the IdP federated-identity link for first-login
+	// auto-link, resolving the Keycloak admin credential from the controller's own
+	// namespace like the reconcilers above.
 	if err := (&keycloakcontroller.UserReconciler{
 		Client: mgr.GetClient(),
 	}).SetupWithManager(mgr); err != nil {

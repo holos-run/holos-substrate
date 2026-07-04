@@ -184,9 +184,18 @@ that same namespace, using the owner RoleBinding's namespace `admin` role and th
 membership RBAC shipped by the reconciler phase. Treat the rendered standing-owner
 CRs as platform-owned scaffold, and gate broader owner writes with ADR-24's
 rendered-object protection/admission policy.
-During the migration from the old user-owned group list, the user reconciler
-prunes that group edge once, and the membership CR re-adds the declared edge on
-its next reconcile.
+Apply ordering matters for existing clusters: apply the project-rendered
+`KeycloakGroupMembership` migration before rolling out the controller/API version
+that removes user-side membership management. Keep the old controller running
+until every live `KeycloakUser` has an empty or absent legacy
+`status.managedGroups`:
+
+```bash
+kubectl get keycloakusers.keycloak.holos.run -A -o json \
+  | jq -e '([.items[] | select(((.status.managedGroups // []) | length) > 0) | "\(.metadata.namespace)/\(.metadata.name)"] | length) == 0'
+```
+
+The membership CRs then own the standing-owner edges going forward.
 
 ## The application resource set
 

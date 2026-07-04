@@ -641,11 +641,6 @@ func (in *KeycloakUserList) DeepCopyObject() runtime.Object {
 func (in *KeycloakUserSpec) DeepCopyInto(out *KeycloakUserSpec) {
 	*out = *in
 	out.InstanceRef = in.InstanceRef
-	if in.Groups != nil {
-		in, out := &in.Groups, &out.Groups
-		*out = make([]string, len(*in))
-		copy(*out, *in)
-	}
 	if in.IdentityProviderLink != nil {
 		in, out := &in.IdentityProviderLink, &out.IdentityProviderLink
 		*out = new(IdentityProviderLink)
@@ -672,11 +667,6 @@ func (in *KeycloakUserStatus) DeepCopyInto(out *KeycloakUserStatus) {
 		for i := range *in {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
-	}
-	if in.ManagedGroups != nil {
-		in, out := &in.ManagedGroups, &out.ManagedGroups
-		*out = make([]string, len(*in))
-		copy(*out, *in)
 	}
 }
 
