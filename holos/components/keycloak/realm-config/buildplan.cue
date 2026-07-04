@@ -240,9 +240,9 @@ let CONTROLLER_CLIENT_SECRET_ENV = "HOLOS_CONTROLLER_CLIENT_SECRET"
 // The realm-management client roles the controller's service account holds —
 // the scoped set ADR-20 recommends (NOT blanket realm-admin).  manage-clients
 // covers KeycloakClient (create/update clients, client roles, protocol mappers);
-// manage-users covers KeycloakUser (create users, group membership,
-// federated-identity links) and KeycloakGroup membership; query-groups +
-// query-clients let the reconcilers look objects up by name/path before acting.
+// manage-users covers KeycloakUser identity records and federated-identity links,
+// plus KeycloakGroupMembership edges; query-groups + query-clients let the
+// reconcilers look objects up by name/path before acting.
 let CONTROLLER_REALM_MGMT_ROLES = [
 	"manage-clients",
 	"manage-users",

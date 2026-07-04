@@ -126,16 +126,12 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 		Spec: KeycloakUserSpec{
 			Email:                "bob@example.com",
 			InstanceRef:          KeycloakInstanceReference{Name: "holos"},
-			Groups:               []string{"projects/my-project/roles/editor"},
 			IdentityProviderLink: &IdentityProviderLink{Alias: "google"},
 		},
 	}
 	userClone := user.DeepCopy()
 	if userClone.Spec.IdentityProviderLink == user.Spec.IdentityProviderLink {
 		t.Error("DeepCopy did not clone the IdentityProviderLink pointer")
-	}
-	if &userClone.Spec.Groups[0] == &user.Spec.Groups[0] {
-		t.Error("DeepCopy did not clone the Groups slice")
 	}
 }
 

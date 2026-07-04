@@ -35,8 +35,7 @@ spec:
       openAPIV3Schema:
         description: |-
           KeycloakUser is the Schema for the keycloakusers API. It pre-provisions a user
-          by email, assigns group membership, and configures the IdP link for first-login
-          auto-link (ADR-20).
+          by email and configures the IdP link for first-login auto-link (ADR-20).
         properties:
           apiVersion:
             description: |-
@@ -58,9 +57,9 @@ spec:
           spec:
             description: |-
               KeycloakUserSpec defines the desired state of a KeycloakUser: a user
-              pre-provisioned by email (only when necessary), its group memberships, and the
-              IdP link that lets first federated login auto-link the existing record
-              (ADR-20).
+              pre-provisioned by email (only when necessary) and the IdP link that lets first
+              federated login auto-link the existing record (ADR-20). Group membership is
+              managed separately by KeycloakGroupMembership.
             properties:
               adopt:
                 description: |-
@@ -84,15 +83,6 @@ spec:
                 x-kubernetes-validations:
                 - message: email is immutable
                   rule: self == oldSelf
-              groups:
-                description: |-
-                  Groups optionally lists the Keycloak group paths the user joins (e.g.
-                  projects/my-project/roles/editor). An empty or omitted list means the user
-                  is provisioned with no managed group memberships.
-                items:
-                  type: string
-                type: array
-                x-kubernetes-list-type: set
               identityProviderLink:
                 description: |-
                   IdentityProviderLink optionally configures the federated-identity link so
@@ -244,19 +234,6 @@ spec:
                   controller-managed owner record persisted on status; the finalizer deletes
                   the Keycloak user only when Created is true.
                 type: boolean
-              managedGroups:
-                description: |-
-                  ManagedGroups records the group memberships this CR has joined the user to,
-                  each entry encoded as "<groupPath>|<groupUUID>", so a membership removed from
-                  spec.groups is actively revoked on the next reconcile (reconcile-to-desired-set
-                  rather than add-only) and an adopted user's release prunes exactly the
-                  memberships this CR added. The UUID pins the membership so a group recreated at
-                  the same path out of band is not pruned as if it were the controller-added one.
-                  The controller manages these entries; do not hand-edit them.
-                items:
-                  type: string
-                type: array
-                x-kubernetes-list-type: set
               managedIdentityProvider:
                 description: |-
                   ManagedIdentityProvider records the federated-identity link this CR created,
@@ -277,8 +254,8 @@ spec:
               userID:
                 description: |-
                   UserID is the Keycloak UUID of the user this CR owns or adopted. It is the
-                  durable handle the reconciler resolves group memberships and the IdP link
-                  against, and the finalizer deletes (when Created) — recorded so a re-run
+                  durable handle the reconciler resolves the IdP link against, and the
+                  finalizer deletes (when Created) — recorded so a re-run
                   targets exactly the user this CR provisioned even if the email lookup were
                   to drift.
                 type: string

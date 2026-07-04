@@ -569,7 +569,7 @@ manifests provision the identity half of its primitive-role model
     component — [ADR-20](ADR-20.md), *KeycloakUser*). References the
     `KeycloakInstance` via `instanceRef`. The Project component assigns the
     standing owner role through first-class `KeycloakGroupMembership` CRs, not
-    through `KeycloakUser.spec.groups`. (Editors/viewers are typically added by
+    through the user spec. (Editors/viewers are typically added by
     custodians post-hoc rather than pre-provisioned, so the component renders a
     `KeycloakUser` for the registered owner(s); broader membership flows through
     the custodian groups.)

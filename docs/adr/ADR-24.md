@@ -61,7 +61,7 @@ grant is a control-plane resource the project owner manages.
   namespace owner owns both objects); a cross-namespace `groupRef` requires
   a `security.holos.run` `ReferenceGrant` in the group's namespace, denied
   fail-closed (`Ready=False`, `ReferenceNotGranted`). The same plan
-  **removes `KeycloakUser.spec.groups`** (HOL-1458) — the self-asserted
+  **removes the former user-side membership field** (HOL-1458) — the self-asserted
   membership path flagged by security finding HOL-1435, where whoever could
   write a `KeycloakUser` could join any user to any group with no consent
   from the group's owner. This ADR builds its grant path on that Kind and
@@ -194,7 +194,7 @@ member is identified by email; if no Keycloak user with that email exists
 yet, the membership reports `Ready=False` and converges once the user
 exists (first login via the `esso` broker, or a `KeycloakUser`
 pre-provisioning the identity — [ADR-20](ADR-20.md)). With
-`KeycloakUser.spec.groups` removed (HOL-1458), `KeycloakUser` is purely the
+the former user-side membership field removed (HOL-1458), `KeycloakUser` is purely the
 identity Kind; granting access never requires writing one.
 
 The rationale:
@@ -344,7 +344,7 @@ are idempotent, and each CR manages its own member edges independently.
   record, a second audit surface, and an alternative interface adopted
   without the written KRM elimination [ADR-2](ADR-2.md) requires. Kept as a
   complement (plane 3), not the primary.
-- **Membership as a field on the user (`KeycloakUser.spec.groups`).** The
+- **Membership as a field on the user.** The
   as-built model this plan retires (HOL-1458): whoever can write a
   `KeycloakUser` can join any user to any group path, with no consent from
   the group's owner — the self-asserted privilege escalation of security
@@ -395,7 +395,7 @@ are idempotent, and each CR manages its own member edges independently.
   honoring [ADR-2](ADR-2.md) without building any new interface.
 - **This ADR depends on HOL-1453 landing.** The grant path is the
   `KeycloakGroupMembership` Kind, its double-binding authorization, the
-  removal of `KeycloakUser.spec.groups`, and the delegation RBAC —
+  removal of the former user-side membership field, and the delegation RBAC —
   designed and implemented under HOL-1453..HOL-1459 (the ADR-20 revision
   owns the Kind's spec). This ADR contributes the surrounding resource
   model: the three planes, the phased aggregation, and the rendered-object

@@ -38,9 +38,9 @@ type IdentityProviderLink struct {
 }
 
 // KeycloakUserSpec defines the desired state of a KeycloakUser: a user
-// pre-provisioned by email (only when necessary), its group memberships, and the
-// IdP link that lets first federated login auto-link the existing record
-// (ADR-20).
+// pre-provisioned by email (only when necessary) and the IdP link that lets first
+// federated login auto-link the existing record (ADR-20). Group membership is
+// managed separately by KeycloakGroupMembership.
 type KeycloakUserSpec struct {
 	// Email is the user's email address (e.g. bob@example.com). It is required
 	// and is the key the first-login auto-link matches on, so it must be the
@@ -72,14 +72,6 @@ type KeycloakUserSpec struct {
 	//
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="instanceRef is immutable"
 	InstanceRef KeycloakInstanceReference `json:"instanceRef"`
-
-	// Groups optionally lists the Keycloak group paths the user joins (e.g.
-	// projects/my-project/roles/editor). An empty or omitted list means the user
-	// is provisioned with no managed group memberships.
-	//
-	// +optional
-	// +listType=set
-	Groups []string `json:"groups,omitempty"`
 
 	// IdentityProviderLink optionally configures the federated-identity link so
 	// first federated login auto-links this pre-created record instead of creating
@@ -137,25 +129,13 @@ type KeycloakUserStatus struct {
 	Adopted bool `json:"adopted,omitempty"`
 
 	// UserID is the Keycloak UUID of the user this CR owns or adopted. It is the
-	// durable handle the reconciler resolves group memberships and the IdP link
-	// against, and the finalizer deletes (when Created) — recorded so a re-run
+	// durable handle the reconciler resolves the IdP link against, and the
+	// finalizer deletes (when Created) — recorded so a re-run
 	// targets exactly the user this CR provisioned even if the email lookup were
 	// to drift.
 	//
 	// +optional
 	UserID string `json:"userID,omitempty"`
-
-	// ManagedGroups records the group memberships this CR has joined the user to,
-	// each entry encoded as "<groupPath>|<groupUUID>", so a membership removed from
-	// spec.groups is actively revoked on the next reconcile (reconcile-to-desired-set
-	// rather than add-only) and an adopted user's release prunes exactly the
-	// memberships this CR added. The UUID pins the membership so a group recreated at
-	// the same path out of band is not pruned as if it were the controller-added one.
-	// The controller manages these entries; do not hand-edit them.
-	//
-	// +optional
-	// +listType=set
-	ManagedGroups []string `json:"managedGroups,omitempty"`
 
 	// ManagedIdentityProvider records the federated-identity link this CR created,
 	// encoded as "<alias>|<upstreamUserId>" (the IdP alias and the upstream subject
@@ -179,8 +159,7 @@ type KeycloakUserStatus struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // KeycloakUser is the Schema for the keycloakusers API. It pre-provisions a user
-// by email, assigns group membership, and configures the IdP link for first-login
-// auto-link (ADR-20).
+// by email and configures the IdP link for first-login auto-link (ADR-20).
 type KeycloakUser struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
