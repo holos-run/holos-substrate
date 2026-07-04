@@ -37,10 +37,11 @@ const metricsNamespace = "holos_controller"
 // reconciler increments with a stable, low-cardinality token rather than an
 // ad-hoc string.
 const (
-	kindInstance = "instance"
-	kindGroup    = "group"
-	kindUser     = "user"
-	kindClient   = "client"
+	kindInstance   = "instance"
+	kindGroup      = "group"
+	kindMembership = "membership"
+	kindUser       = "user"
+	kindClient     = "client"
 )
 
 // Outcome label values shared by the reconcile and Keycloak-API counters.
@@ -70,6 +71,7 @@ const (
 	opFindUserByEmail     = "find_user_by_email"
 	opCreateUser          = "create_user"
 	opDeleteUser          = "delete_user"
+	opListUserGroups      = "list_user_groups"
 	opAddUserToGroup      = "add_user_to_group"
 	opRemoveUserFromGroup = "remove_user_from_group"
 	opCreateFederatedID   = "create_federated_identity"

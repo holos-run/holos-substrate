@@ -110,6 +110,24 @@ func TestAddUserToGroup(t *testing.T) {
 	assertCommonRequest(t, h, false)
 }
 
+func TestListUserGroups(t *testing.T) {
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodGet, wantPath: usersBase + "/u1/groups",
+		status:   http.StatusOK,
+		respBody: `[{"id":"g1","path":"/projects/p/roles/owner"},{"id":"g2","path":"/projects/p/roles/editor"}]`,
+	}
+	c, _ := newTestClient(t, h)
+
+	groups, err := c.ListUserGroups(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("ListUserGroups: %v", err)
+	}
+	assertCommonRequest(t, h, false)
+	if len(groups) != 2 || groups[0].ID != "g1" || groups[1].Path != "/projects/p/roles/editor" {
+		t.Errorf("groups = %+v", groups)
+	}
+}
+
 func TestRemoveUserFromGroup(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: usersBase + "/u1/groups/g1", status: http.StatusNoContent}
 	c, _ := newTestClient(t, h)

@@ -7,6 +7,8 @@ resources:
   - service_account.yaml
   - role.yaml
   - role_binding.yaml
+  - keycloakgroupmembership_editor_role.yaml
+  - keycloakgroupmembership_viewer_role.yaml
   - leader_election_role.yaml
   - leader_election_role_binding.yaml
   - metrics_reader_role.yaml
