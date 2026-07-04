@@ -161,9 +161,10 @@ prescribes them explicitly because they are not symmetric:
   (the platform provisioned the identity) but is a destructive footgun for a
   day-2 grant. This is why the grant form prescribes `adopt: true`: when the
   colleague does not yet exist in Keycloak, the CR falls back to creating
-  them and records `created: true` — an owner revoking such a grant should
-  prefer emptying `spec.groups` over deleting the CR unless deleting the
-  identity is intended.
+  them and records `created: true` — revoking such a grant means emptying
+  `spec.groups`, and the phase-1 *created-identity deletion guard* (below)
+  denies a tenant delete of a `created: true` CR outright, so the
+  destructive path is closed by admission, not left to operator care.
 
 The rationale:
 
@@ -229,7 +230,8 @@ Read access (`view` aggregation) covers all `holos.run` Kinds immediately;
 **no write phase ships without its admission-policy prerequisite**:
 
 1. **Phase 1 — `KeycloakUser`** (this ADR's grant path) and `quay.holos.run`
-   `Repository`, **prerequisite: the two phase-1 admission policies below.**
+   `Repository`, **prerequisite: the three phase-1 admission policies
+   below.**
 2. **Phase 2 — `KeycloakClient`, `KeycloakGroup`, `Organization`,
    prerequisite: the full tenant/platform disjointness policy set.** The
    transparent controller writes group paths, client IDs, and role names
@@ -245,23 +247,43 @@ safe Kind on its own: `spec.groups` is not confined to the owner's own
 project, the controller joins any group path that exists, and Kubernetes
 RBAC, Quay synced teams, and Argo CD all key on the resulting `groups` claim
 — an unconfined tenant `KeycloakUser` is a cross-project privilege
-escalation. Two policies are the phase-1 prerequisite, both expressible as
-`ValidatingAdmissionPolicy` CEL rules:
+escalation. Three policies are the phase-1 prerequisite, all expressible as
+`ValidatingAdmissionPolicy` CEL rules. Every exemption below keys on
+**requester identity** (`request.userInfo` — the platform's delivery-path
+subjects, e.g. the Argo CD applier service account and the platform-admin
+group), **never on object state a tenant can write**:
 
-- **Group-subtree confinement**: every entry in a `KeycloakUser.spec.groups`
-  created outside the platform's own delivery path must match
+- **Group-subtree confinement**: on create/update by a non-platform subject,
+  every entry in `KeycloakUser.spec.groups` must match
   `/projects/<metadata.namespace>/…` — a tenant CR grants roles only within
-  its own project's subtree. (The platform's rendered CRs are exempt via the
-  ownership marker below, preserving any future platform-level grants.)
+  its own project's subtree. Platform subjects are exempt (preserving the
+  rendered CRs and any future platform-level grants); the exemption is the
+  requester's identity, not a marker on the object, precisely so a tenant
+  cannot self-apply an exemption.
 - **Rendered-object protection**: the rendered scaffold carries a
   platform-ownership marker label (the concrete key is settled by the
-  implementation issue; the Project component already labels its resources),
-  and the policy denies update/delete of marker-carrying objects by
-  non-platform subjects. Without this, the aggregated verbs would let an
-  owner mutate or delete the *rendered* CRs in their namespace — including
-  deleting a standing-owner `KeycloakUser` whose finalizer would delete the
-  owner's Keycloak identity. With it, "rendered resources are read-only to
-  tenants" is enforced, not aspirational.
+  implementation issue; the Project component already labels its resources).
+  The policy (a) denies update/delete of marker-carrying objects by
+  non-platform subjects, and (b) denies a non-platform subject setting,
+  changing, or removing the marker on create or update — without (b) the
+  marker would be forgeable and (a) meaningless as a boundary. Without this
+  policy, the aggregated verbs would let an owner mutate or delete the
+  *rendered* CRs in their namespace — including deleting a standing-owner
+  `KeycloakUser` whose finalizer would delete the owner's Keycloak identity.
+  With it, "rendered resources are read-only to tenants" is enforced, not
+  aspirational.
+- **Created-identity deletion guard**: deny a non-platform subject deleting a
+  `KeycloakUser` whose `status.created` is `true` (on `DELETE` the policy
+  evaluates `oldObject.status`), with a message directing the owner to empty
+  `spec.groups` instead. This closes the destructive path the revocation
+  semantics above document: a grant CR that fell back to *creating* the
+  colleague's identity cannot be deleted by a tenant, because its finalizer
+  would delete the Keycloak identity and every membership it accrued —
+  including other projects' grants. Deleting an *adopting* CR (release
+  semantics) remains permitted; a `created=true` grant is removed by a
+  platform operator, or the guard is relaxed if a future
+  `deletionPolicy: Retain`-style API refinement makes tenant deletes
+  uniformly release-only.
 
 ### What the rendered `owners` map means now
 
@@ -302,13 +324,15 @@ membership edges independently.
    colleague access by creating a `KeycloakUser` CR with `adopt: true`
    (email + role-group paths) in the project's control namespace; revocation
    is dropping the group from `spec.groups`, or deleting an adopting CR
-   (release semantics — the identity survives; deleting a CR that *created*
-   the user deletes the identity and is not the routine revocation path).
+   (release semantics — the identity survives; a tenant delete of a CR that
+   *created* the user is denied by the phase-1 deletion guard, because its
+   finalizer would delete the identity).
 3. **Plane 2 is enabled by aggregated ClusterRoles (`admin`-aggregated only,
    never `edit`), per Kind, in phases, each phase gated on its
    admission-policy prerequisite**: `KeycloakUser` and `Repository` first
    (plus `view` on all `holos.run` Kinds), prerequisite the group-subtree
-   confinement and rendered-object protection policies;
+   confinement, rendered-object protection (marker-forgery-proof,
+   identity-keyed exemptions), and created-identity deletion guard policies;
    `KeycloakClient`/`KeycloakGroup`/`Organization` only after the
    admission-control policies of [ADR-20](ADR-20.md) Rev 7 enforce full
    tenant/platform disjointness.
@@ -331,10 +355,12 @@ membership edges independently.
   sufficient.
 - **Admission control becomes load-bearing from phase 1.** The downstream
   `ValidatingAdmissionPolicy` effort ([ADR-20](ADR-20.md) Rev 7) is a
-  **prerequisite** for every write phase: the group-subtree confinement and
-  rendered-object protection policies must ship before `KeycloakUser` write
-  access is aggregated, and the full disjointness set before the phase-2
-  Kinds. No tenant write access is enabled ahead of its policies.
+  **prerequisite** for every write phase: the group-subtree confinement,
+  rendered-object protection, and created-identity deletion guard policies
+  must ship before `KeycloakUser` write access is aggregated, and the full
+  disjointness set before the phase-2 Kinds. No tenant write access is
+  enabled ahead of its policies, and every policy exemption keys on
+  requester identity, never on tenant-writable object state.
 - **Two grant paths exist by design** (KRM and FGAP), with defined
   composition semantics; operators auditing "who has access" must consult
   Keycloak group membership as the effective state, with `KeycloakUser` CRs
