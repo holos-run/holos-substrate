@@ -128,12 +128,34 @@ const (
 	// ReasonCredentialsNotFound indicates the credential Secret the resource
 	// references could not be resolved.
 	ReasonCredentialsNotFound = "CredentialsNotFound"
-	// ReasonReferenceNotGranted indicates a cross-namespace KeycloakInstance
+	// ReasonReferenceNotGranted indicates a cross-namespace keycloak.holos.run
 	// reference is not authorized by a security.holos.run ReferenceGrant.
 	ReasonReferenceNotGranted = "ReferenceNotGranted"
+	// ReasonInstanceMismatch indicates a KeycloakGroupMembership's instanceRef
+	// does not match the referenced KeycloakGroup's instanceRef after namespace
+	// defaulting, so the reconciler refuses to mutate Keycloak.
+	ReasonInstanceMismatch = "InstanceMismatch"
+	// ReasonMemberNotFound indicates a KeycloakGroupMembership member email did
+	// not resolve to an existing Keycloak user.
+	ReasonMemberNotFound = "MemberNotFound"
 	// ReasonKeycloakError indicates a Keycloak admin-API call failed.
 	ReasonKeycloakError = "KeycloakError"
 	// ReasonReconciled indicates the resource's desired state was successfully
 	// reconciled into Keycloak.
 	ReasonReconciled = "Reconciled"
+)
+
+// MutationReason classifies the cause of the last remote mutation an
+// external-resource reconciler performed. These string values are canonical
+// across holos.run API groups (ADR-22), but each group declares local constants
+// to avoid API-package imports.
+type MutationReason string
+
+const (
+	// MutationReasonSpecChange means the controller changed Keycloak to match a
+	// new desired spec generation.
+	MutationReasonSpecChange MutationReason = "SpecChange"
+	// MutationReasonDriftRemediation means the controller corrected out-of-band
+	// drift while the CR's desired spec generation was unchanged.
+	MutationReasonDriftRemediation MutationReason = "DriftRemediation"
 )

@@ -3,6 +3,7 @@ package v1alpha1
 import (
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
@@ -20,6 +21,7 @@ func TestAddToSchemeRegistersKinds(t *testing.T) {
 	for _, kind := range []string{
 		"KeycloakInstance", "KeycloakInstanceList",
 		"KeycloakGroup", "KeycloakGroupList",
+		"KeycloakGroupMembership", "KeycloakGroupMembershipList",
 		"KeycloakUser", "KeycloakUserList",
 		"KeycloakClient", "KeycloakClientList",
 	} {
@@ -80,6 +82,44 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 	groupClone := group.DeepCopy()
 	if &groupClone.Spec.Custodians[0] == &group.Spec.Custodians[0] {
 		t.Error("DeepCopy did not clone the Custodians slice")
+	}
+
+	lastValidated := metav1.Now()
+	lastMutated := metav1.Now()
+	lastDrift := metav1.Now()
+	membership := &KeycloakGroupMembership{
+		Spec: KeycloakGroupMembershipSpec{
+			InstanceRef: KeycloakInstanceReference{Name: "holos"},
+			GroupRef:    KeycloakGroupReference{Name: "my-project-roles-owner"},
+			Members:     []KeycloakGroupMembershipMember{{Email: "bob@example.com"}},
+		},
+		Status: KeycloakGroupMembershipStatus{
+			GroupID:            "group-uuid",
+			ManagedMembers:     []ManagedKeycloakGroupMember{{Email: "bob@example.com", UserID: "user-uuid"}},
+			LastValidatedTime:  &lastValidated,
+			LastMutatedTime:    &lastMutated,
+			LastMutationReason: MutationReasonDriftRemediation,
+			LastDriftTime:      &lastDrift,
+		},
+	}
+	membershipClone := membership.DeepCopy()
+	if &membershipClone.Spec.Members[0] == &membership.Spec.Members[0] {
+		t.Error("DeepCopy did not clone the Members slice")
+	}
+	if &membershipClone.Status.ManagedMembers[0] == &membership.Status.ManagedMembers[0] {
+		t.Error("DeepCopy did not clone the ManagedMembers slice")
+	}
+	if membershipClone.Status.LastValidatedTime == membership.Status.LastValidatedTime {
+		t.Error("DeepCopy did not clone the LastValidatedTime pointer")
+	}
+	if membershipClone.Status.LastMutatedTime == membership.Status.LastMutatedTime {
+		t.Error("DeepCopy did not clone the LastMutatedTime pointer")
+	}
+	if membershipClone.Status.LastDriftTime == membership.Status.LastDriftTime {
+		t.Error("DeepCopy did not clone the LastDriftTime pointer")
+	}
+	if *membershipClone.Status.LastValidatedTime != *membership.Status.LastValidatedTime {
+		t.Error("DeepCopy changed LastValidatedTime")
 	}
 
 	user := &KeycloakUser{
