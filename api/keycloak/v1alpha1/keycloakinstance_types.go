@@ -78,6 +78,14 @@ type KeycloakInstanceStatus struct {
 	//
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// LastValidatedTime is the last time the controller successfully read
+	// Keycloak and confirmed the target realm was reachable. It is not advanced
+	// on failed remote reads or failed verification, so stale values remain
+	// visible.
+	//
+	// +optional
+	LastValidatedTime *metav1.Time `json:"lastValidatedTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -87,6 +95,7 @@ type KeycloakInstanceStatus struct {
 // +kubebuilder:printcolumn:name="URL",type=string,JSONPath=`.spec.url`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:printcolumn:name="Validated",type=date,priority=1,JSONPath=`.status.lastValidatedTime`
 
 // KeycloakInstance is the Schema for the keycloakinstances API. It is the
 // centrally-managed reference to one Keycloak target and realm the rest of the

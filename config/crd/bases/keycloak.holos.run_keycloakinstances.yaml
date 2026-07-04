@@ -30,6 +30,10 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
+    - jsonPath: .status.lastValidatedTime
+      name: Validated
+      priority: 1
+      type: date
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -200,6 +204,14 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              lastValidatedTime:
+                description: |-
+                  LastValidatedTime is the last time the controller successfully read
+                  Keycloak and confirmed the target realm was reachable. It is not advanced
+                  on failed remote reads or failed verification, so stale values remain
+                  visible.
+                format: date-time
+                type: string
               observedGeneration:
                 description: |-
                   ObservedGeneration is the most recent generation observed for this

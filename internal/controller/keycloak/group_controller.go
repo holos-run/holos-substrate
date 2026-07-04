@@ -9,14 +9,17 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	keycloakv1alpha1 "github.com/holos-run/holos-paas/api/keycloak/v1alpha1"
@@ -229,7 +232,7 @@ func (r *GroupReconciler) reconcileCreate(ctx context.Context, logger logr.Logge
 	group.Status.Created = true
 	group.Status.Adopted = false
 	group.Status.GroupID = groupID
-	return r.reconcileMembershipThenSucceed(ctx, logger, kc, instance, group, groupID, ReasonCreated,
+	return r.reconcileMembershipThenSucceed(ctx, logger, kc, instance, group, groupID, true, ReasonCreated,
 		fmt.Sprintf("created Keycloak group %q", group.Spec.Path))
 }
 
@@ -259,14 +262,14 @@ func (r *GroupReconciler) reconcileExisting(ctx context.Context, logger logr.Log
 		if group.Status.Adopted {
 			reason = ReasonAdopted
 		}
-		return r.reconcileMembershipThenSucceed(ctx, logger, kc, instance, group, groupID, reason, message)
+		return r.reconcileMembershipThenSucceed(ctx, logger, kc, instance, group, groupID, false, reason, message)
 	}
 
 	if group.Spec.Adopt {
 		group.Status.Created = false
 		group.Status.Adopted = true
 		group.Status.GroupID = groupID
-		return r.reconcileMembershipThenSucceed(ctx, logger, kc, instance, group, groupID, ReasonAdopted,
+		return r.reconcileMembershipThenSucceed(ctx, logger, kc, instance, group, groupID, false, ReasonAdopted,
 			fmt.Sprintf("adopted existing Keycloak group %q", group.Spec.Path))
 	}
 
@@ -318,7 +321,7 @@ func (r *GroupReconciler) resolveGroupID(ctx context.Context, kc GroupClient, gr
 // reconcile-to-desired-set rather than add-only: a role or custodian removed from
 // the spec is actively unassigned in Keycloak so a downgrade in Kubernetes does
 // not leave a stale privilege active.
-func (r *GroupReconciler) reconcileMembershipThenSucceed(ctx context.Context, logger logr.Logger, kc GroupClient, instance *keycloakv1alpha1.KeycloakInstance, group *keycloakv1alpha1.KeycloakGroup, groupID, reason, message string) (ctrl.Result, error) {
+func (r *GroupReconciler) reconcileMembershipThenSucceed(ctx context.Context, logger logr.Logger, kc GroupClient, instance *keycloakv1alpha1.KeycloakInstance, group *keycloakv1alpha1.KeycloakGroup, groupID string, created bool, reason, message string) (ctrl.Result, error) {
 	// Snapshot the ownership/managed-set status fields before reconciling so a
 	// change to any of them (e.g. a GroupID backfill on an already-current object,
 	// or a pruned role/custodian) is persisted even when Ready and observedGeneration
@@ -328,16 +331,24 @@ func (r *GroupReconciler) reconcileMembershipThenSucceed(ctx context.Context, lo
 	beforeRoles := append([]string(nil), group.Status.ManagedClientRoles...)
 	beforeCustodians := append([]string(nil), group.Status.ManagedCustodians...)
 
-	if err := r.conferClientRoles(ctx, kc, group, groupID); err != nil {
+	roleMutated, err := r.conferClientRoles(ctx, kc, group, groupID)
+	if err != nil {
 		return r.fail(ctx, group, err)
 	}
-	if err := r.configureCustodians(ctx, kc, group, groupID); err != nil {
+	custodianMutated, err := r.configureCustodians(ctx, kc, group, groupID)
+	if err != nil {
 		return r.fail(ctx, group, err)
 	}
 
 	extraChanged := beforeGroupID != group.Status.GroupID ||
 		!equalStrings(beforeRoles, group.Status.ManagedClientRoles) ||
 		!equalStrings(beforeCustodians, group.Status.ManagedCustodians)
+	mutated := created || roleMutated || custodianMutated
+	if mutated {
+		r.stampMutation(group)
+	}
+	now := metav1.Now()
+	group.Status.LastValidatedTime = &now
 	return r.succeed(ctx, logger, group, reason, message, extraChanged)
 }
 
@@ -399,7 +410,8 @@ func (s *stringSet) sorted() []string {
 // client by clientId and confer any role name — no client or role is reserved or
 // refused on org-policy grounds (HOL-1421). status.managedClientRoles is rewritten
 // to the new desired set so the next reconcile knows what it owns.
-func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient, group *keycloakv1alpha1.KeycloakGroup, groupID string) error {
+func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient, group *keycloakv1alpha1.KeycloakGroup, groupID string) (bool, error) {
+	mutated := false
 	// Resolve the desired roles, keyed by managedRoleKey (the NUL-separated
 	// "<clientId>\x00<role>" encoding), to the OIDC client UUID and the role
 	// representation needed to assign or remove them.
@@ -412,7 +424,7 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 	for _, ref := range group.Spec.ClientRoles {
 		clientID, err := r.resolveClientID(ctx, group.Namespace, ref)
 		if err != nil {
-			return err
+			return mutated, err
 		}
 		// The direct clientId path names a client that may have no KeycloakClient CR
 		// of its own (e.g. a platform client), so this reconciler ensures the conferred
@@ -423,10 +435,10 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 		oidc, err := kc.FindClientByClientID(ctx, clientID)
 		recordKeycloakAPI(opFindClientByClientID, err)
 		if err != nil {
-			return fmt.Errorf("finding Keycloak client %q for role %q: %w", clientID, ref.Role, err)
+			return mutated, fmt.Errorf("finding Keycloak client %q for role %q: %w", clientID, ref.Role, err)
 		}
 		if oidc == nil {
-			return fmt.Errorf("no Keycloak client %q (from %s) exists", clientID, clientRefDescription(ref))
+			return mutated, fmt.Errorf("no Keycloak client %q (from %s) exists", clientID, clientRefDescription(ref))
 		}
 		// Ensure the conferred role exists ONLY on the direct path. A client named
 		// directly by clientId may have no KeycloakClient CR to create the role, so
@@ -439,13 +451,13 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 			createRoleErr := kc.CreateClientRoleIfNotExists(ctx, oidc.ID, keycloak.ClientRole{Name: ref.Role})
 			recordKeycloakAPI(opCreateClientRole, createRoleErr)
 			if createRoleErr != nil {
-				return fmt.Errorf("ensuring client role %q on Keycloak client %q: %w", ref.Role, clientID, createRoleErr)
+				return mutated, fmt.Errorf("ensuring client role %q on Keycloak client %q: %w", ref.Role, clientID, createRoleErr)
 			}
 		}
 		role, err := kc.GetClientRole(ctx, oidc.ID, ref.Role)
 		recordKeycloakAPI(opGetClientRole, err)
 		if err != nil {
-			return fmt.Errorf("getting client role %q on Keycloak client %q: %w", ref.Role, clientID, err)
+			return mutated, fmt.Errorf("getting client role %q on Keycloak client %q: %w", ref.Role, clientID, err)
 		}
 		key := managedRoleKey(clientID, ref.Role)
 		desired[key] = roleTarget{clientUUID: oidc.ID, role: *role}
@@ -471,10 +483,18 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 	// Assign every desired role (idempotent on Keycloak's side).
 	for _, key := range desiredKeys {
 		t := desired[key]
-		assignErr := kc.AssignClientRoleToGroup(ctx, groupID, t.clientUUID, t.role)
-		recordKeycloakAPI(opAssignClientRole, assignErr)
-		if assignErr != nil {
-			return fmt.Errorf("assigning client role %q to Keycloak group %q: %w", t.role.Name, group.Spec.Path, assignErr)
+		current, listErr := kc.ListGroupClientRoles(ctx, groupID, t.clientUUID)
+		recordKeycloakAPI(opListGroupClientRoles, listErr)
+		if listErr != nil {
+			return mutated, fmt.Errorf("listing client roles on Keycloak group %q: %w", group.Spec.Path, listErr)
+		}
+		if !containsClientRole(current, t.role) {
+			assignErr := kc.AssignClientRoleToGroup(ctx, groupID, t.clientUUID, t.role)
+			recordKeycloakAPI(opAssignClientRole, assignErr)
+			if assignErr != nil {
+				return mutated, fmt.Errorf("assigning client role %q to Keycloak group %q: %w", t.role.Name, group.Spec.Path, assignErr)
+			}
+			mutated = true
 		}
 		managed.add(key)
 	}
@@ -495,7 +515,7 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 		oidc, err := kc.FindClientByClientID(ctx, clientID)
 		recordKeycloakAPI(opFindClientByClientID, err)
 		if err != nil {
-			return fmt.Errorf("finding Keycloak client %q to prune role %q: %w", clientID, roleName, err)
+			return mutated, fmt.Errorf("finding Keycloak client %q to prune role %q: %w", clientID, roleName, err)
 		}
 		if oidc == nil {
 			// The client is gone; the role mapping went with it. Stop tracking it.
@@ -510,16 +530,29 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 			continue
 		}
 		if err != nil {
-			return fmt.Errorf("getting client role %q to prune on Keycloak client %q: %w", roleName, clientID, err)
+			return mutated, fmt.Errorf("getting client role %q to prune on Keycloak client %q: %w", roleName, clientID, err)
 		}
 		rmErr := kc.RemoveClientRoleFromGroup(ctx, groupID, oidc.ID, *role)
 		recordKeycloakAPI(opRemoveClientRole, rmErr)
 		if rmErr != nil {
-			return fmt.Errorf("unassigning stale client role %q from Keycloak group %q: %w", roleName, group.Spec.Path, rmErr)
+			return mutated, fmt.Errorf("unassigning stale client role %q from Keycloak group %q: %w", roleName, group.Spec.Path, rmErr)
 		}
+		mutated = true
 		managed.remove(prev)
 	}
-	return nil
+	return mutated, nil
+}
+
+func containsClientRole(roles []keycloak.ClientRole, want keycloak.ClientRole) bool {
+	for _, role := range roles {
+		if role.ID != "" && want.ID != "" && role.ID == want.ID {
+			return true
+		}
+		if role.Name == want.Name {
+			return true
+		}
+	}
+	return false
 }
 
 // managedRoleSep separates the clientId and role in a status.managedClientRoles
@@ -637,7 +670,8 @@ const managedCustodianSep = "|"
 // success; on that conflict path the object's UUID is unknown, so the created id
 // recorded for pruning may be empty. The prune therefore deletes by id only when
 // one was captured — the common case where this controller created the objects.
-func (r *GroupReconciler) configureCustodians(ctx context.Context, kc GroupClient, group *keycloakv1alpha1.KeycloakGroup, groupID string) error {
+func (r *GroupReconciler) configureCustodians(ctx context.Context, kc GroupClient, group *keycloakv1alpha1.KeycloakGroup, groupID string) (bool, error) {
+	mutated := false
 	prev := parseManagedCustodians(group.Status.ManagedCustodians)
 
 	// Track the managed custodian set live, seeded from what is already recorded, and
@@ -658,17 +692,17 @@ func (r *GroupReconciler) configureCustodians(ctx context.Context, kc GroupClien
 		c, err := kc.FindClientByClientID(ctx, adminPermissionsClientID)
 		recordKeycloakAPI(opFindClientByClientID, err)
 		if err != nil {
-			return fmt.Errorf("finding the %q client for custodian delegation: %w", adminPermissionsClientID, err)
+			return mutated, fmt.Errorf("finding the %q client for custodian delegation: %w", adminPermissionsClientID, err)
 		}
 		if c == nil {
 			if len(group.Spec.Custodians) > 0 {
-				return fmt.Errorf("the %q client is not present; FGAP v2 must be enabled to configure custodians", adminPermissionsClientID)
+				return mutated, fmt.Errorf("the %q client is not present; FGAP v2 must be enabled to configure custodians", adminPermissionsClientID)
 			}
 			// No spec custodians and the perm client is gone: nothing left to prune.
 			for k := range managed {
 				delete(managed, k)
 			}
-			return nil
+			return mutated, nil
 		}
 		permClient = c
 	}
@@ -682,14 +716,17 @@ func (r *GroupReconciler) configureCustodians(ctx context.Context, kc GroupClien
 		})
 		recordKeycloakAPI(opCreateGroupResource, ignoreConflict(err))
 		if err != nil && !keycloak.IsConflict(err) {
-			return fmt.Errorf("registering FGAP resource for Keycloak group %q: %w", group.Spec.Path, err)
+			return mutated, fmt.Errorf("registering FGAP resource for Keycloak group %q: %w", group.Spec.Path, err)
+		}
+		if err == nil {
+			mutated = true
 		}
 
 		for _, custodian := range group.Spec.Custodians {
 			custodianGroup, err := kc.GetGroupByPath(ctx, custodian.Path)
 			recordKeycloakAPI(opGetGroupByPath, err)
 			if err != nil {
-				return fmt.Errorf("resolving custodian group %q for Keycloak group %q: %w", custodian.Path, group.Spec.Path, err)
+				return mutated, fmt.Errorf("resolving custodian group %q for Keycloak group %q: %w", custodian.Path, group.Spec.Path, err)
 			}
 
 			policyName := fmt.Sprintf("holos:custodian:%s:%s", group.Spec.Path, custodian.Path)
@@ -700,13 +737,16 @@ func (r *GroupReconciler) configureCustodians(ctx context.Context, kc GroupClien
 			})
 			recordKeycloakAPI(opCreateGroupPolicy, ignoreConflict(err))
 			if err != nil && !keycloak.IsConflict(err) {
-				return fmt.Errorf("creating custodian policy for Keycloak group %q: %w", group.Spec.Path, err)
+				return mutated, fmt.Errorf("creating custodian policy for Keycloak group %q: %w", group.Spec.Path, err)
+			}
+			if err == nil {
+				mutated = true
 			}
 			// On a 409 (already exists) the create returns no id; resolve it by name
 			// so status records a real, prunable UUID rather than an empty string.
 			policyID, err = r.resolvePolicyID(ctx, kc, permClient.ID, policyName, policyID, prev[custodian.Path].policyID)
 			if err != nil {
-				return fmt.Errorf("resolving custodian policy id for Keycloak group %q: %w", group.Spec.Path, err)
+				return mutated, fmt.Errorf("resolving custodian policy id for Keycloak group %q: %w", group.Spec.Path, err)
 			}
 
 			permName := fmt.Sprintf("holos:custodian-perm:%s:%s", group.Spec.Path, custodian.Path)
@@ -718,11 +758,14 @@ func (r *GroupReconciler) configureCustodians(ctx context.Context, kc GroupClien
 			})
 			recordKeycloakAPI(opCreateScopePermission, ignoreConflict(permErr))
 			if permErr != nil && !keycloak.IsConflict(permErr) {
-				return fmt.Errorf("binding custodian permission for Keycloak group %q: %w", group.Spec.Path, permErr)
+				return mutated, fmt.Errorf("binding custodian permission for Keycloak group %q: %w", group.Spec.Path, permErr)
+			}
+			if permErr == nil {
+				mutated = true
 			}
 			permID, err = r.resolvePermissionID(ctx, kc, permClient.ID, permName, permID, prev[custodian.Path].permID)
 			if err != nil {
-				return fmt.Errorf("resolving custodian permission id for Keycloak group %q: %w", group.Spec.Path, err)
+				return mutated, fmt.Errorf("resolving custodian permission id for Keycloak group %q: %w", group.Spec.Path, err)
 			}
 
 			// Record the custodian as managed the instant its objects exist, so a
@@ -746,30 +789,32 @@ func (r *GroupReconciler) configureCustodians(ctx context.Context, kc GroupClien
 		permName := fmt.Sprintf("holos:custodian-perm:%s:%s", group.Spec.Path, path)
 		permID, err := r.resolvePermissionID(ctx, kc, permClient.ID, permName, old.permID, "")
 		if err != nil {
-			return fmt.Errorf("resolving stale custodian permission id for Keycloak group %q: %w", group.Spec.Path, err)
+			return mutated, fmt.Errorf("resolving stale custodian permission id for Keycloak group %q: %w", group.Spec.Path, err)
 		}
 		if permID != "" {
 			err := kc.DeleteScopePermissionIfExists(ctx, permClient.ID, permID)
 			recordKeycloakAPI(opDeleteScopePermission, err)
 			if err != nil {
-				return fmt.Errorf("pruning custodian permission for Keycloak group %q: %w", group.Spec.Path, err)
+				return mutated, fmt.Errorf("pruning custodian permission for Keycloak group %q: %w", group.Spec.Path, err)
 			}
+			mutated = true
 		}
 		policyName := fmt.Sprintf("holos:custodian:%s:%s", group.Spec.Path, path)
 		policyID, err := r.resolvePolicyID(ctx, kc, permClient.ID, policyName, old.policyID, "")
 		if err != nil {
-			return fmt.Errorf("resolving stale custodian policy id for Keycloak group %q: %w", group.Spec.Path, err)
+			return mutated, fmt.Errorf("resolving stale custodian policy id for Keycloak group %q: %w", group.Spec.Path, err)
 		}
 		if policyID != "" {
 			err := kc.DeleteScopePermissionIfExists(ctx, permClient.ID, policyID)
 			recordKeycloakAPI(opDeleteScopePermission, err)
 			if err != nil {
-				return fmt.Errorf("pruning custodian policy for Keycloak group %q: %w", group.Spec.Path, err)
+				return mutated, fmt.Errorf("pruning custodian policy for Keycloak group %q: %w", group.Spec.Path, err)
 			}
+			mutated = true
 		}
 		delete(managed, path)
 	}
-	return nil
+	return mutated, nil
 }
 
 // managedCustodian is the parsed form of a status.managedCustodians entry.
@@ -1135,17 +1180,31 @@ func instanceReady(instance *keycloakv1alpha1.KeycloakInstance) bool {
 // generation must still be persisted, otherwise the round-1 ownership/pruning fixes
 // would be silently dropped on an already-current object.
 func (r *GroupReconciler) succeed(ctx context.Context, logger logr.Logger, group *keycloakv1alpha1.KeycloakGroup, reason, message string, extraChanged bool) (ctrl.Result, error) {
+	validationChanged := true
 	changed := markReady(&group.Status.Conditions, reason, message, group.Generation)
-	changed = changed || extraChanged || group.Status.ObservedGeneration != group.Generation
+	changed = changed || extraChanged || validationChanged || group.Status.ObservedGeneration != group.Generation
 	if !changed {
-		return ctrl.Result{}, nil
+		return ctrl.Result{RequeueAfter: keycloakExternalResourceResync}, nil
 	}
 	r.Recorder.Event(group, corev1.EventTypeNormal, reason, message)
 	logger.Info("reconciled KeycloakGroup", "path", group.Spec.Path, "reason", reason)
 	if err := r.updateStatus(ctx, group); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: keycloakExternalResourceResync}, nil
+}
+
+func (r *GroupReconciler) stampMutation(group *keycloakv1alpha1.KeycloakGroup) {
+	now := metav1.Now()
+	reason := keycloakv1alpha1.MutationReasonDriftRemediation
+	if group.Status.ObservedGeneration != group.Generation || !groupReady(group) {
+		reason = keycloakv1alpha1.MutationReasonSpecChange
+	}
+	group.Status.LastMutatedTime = &now
+	group.Status.LastMutationReason = reason
+	if reason == keycloakv1alpha1.MutationReasonDriftRemediation {
+		group.Status.LastDriftTime = &now
+	}
 }
 
 // notReady records a recoverable not-ready condition (Programmed/Ready False,
@@ -1249,7 +1308,7 @@ func (r *GroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.NewClient = NewKeycloakGroupClient
 	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&keycloakv1alpha1.KeycloakGroup{}).
+		For(&keycloakv1alpha1.KeycloakGroup{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		// Re-enqueue dependent groups when their referenced KeycloakInstance changes
 		// (e.g. it transitions to Ready), so a group blocked on InstanceNotReady
 		// recovers promptly rather than only on the requeueDependency backoff.

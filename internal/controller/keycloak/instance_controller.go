@@ -6,11 +6,14 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	keycloakv1alpha1 "github.com/holos-run/holos-paas/api/keycloak/v1alpha1"
 	"github.com/holos-run/holos-paas/internal/keycloak"
@@ -142,17 +145,20 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (r
 // condition flipped or observedGeneration advanced), so a steady-state reconcile
 // does not spin a status/update/event loop.
 func (r *InstanceReconciler) succeed(ctx context.Context, instance *keycloakv1alpha1.KeycloakInstance, reason, message string) (ctrl.Result, error) {
+	now := metav1.Now()
+	instance.Status.LastValidatedTime = &now
+	validationChanged := true
 	changed := markReady(&instance.Status.Conditions, reason, message, instance.Generation)
-	changed = changed || instance.Status.ObservedGeneration != instance.Generation
+	changed = changed || instance.Status.ObservedGeneration != instance.Generation || validationChanged
 	if !changed {
-		return ctrl.Result{}, nil
+		return ctrl.Result{RequeueAfter: keycloakExternalResourceResync}, nil
 	}
 	r.Recorder.Event(instance, corev1.EventTypeNormal, reason, message)
 	log.FromContext(ctx).Info("reconciled KeycloakInstance", "realm", instance.Spec.Realm, "url", instance.Spec.URL)
 	if err := r.updateStatus(ctx, instance); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: keycloakExternalResourceResync}, nil
 }
 
 // handleCredentialError maps a credential-resolution error to a reconcile result.
@@ -235,6 +241,6 @@ func (r *InstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.NewClient = NewKeycloakInstanceClient
 	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&keycloakv1alpha1.KeycloakInstance{}).
+		For(&keycloakv1alpha1.KeycloakInstance{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
 }

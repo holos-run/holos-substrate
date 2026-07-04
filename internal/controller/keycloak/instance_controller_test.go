@@ -90,6 +90,9 @@ func TestInstanceReconcile(t *testing.T) {
 		if !fake.callsContain("GetRealm") {
 			t.Errorf("expected a GetRealm reachability probe, calls = %v", fake.calls)
 		}
+		if got.Status.LastValidatedTime == nil {
+			t.Errorf("lastValidatedTime not set on successful validation")
+		}
 		assertEvent(t, recorder, ReasonReconciled)
 	})
 
@@ -122,6 +125,9 @@ func TestInstanceReconcile(t *testing.T) {
 		if fake.callsContain("GetRealm") {
 			t.Errorf("must not probe Keycloak before the credential resolves")
 		}
+		if got.Status.LastValidatedTime != nil {
+			t.Errorf("lastValidatedTime advanced on failed credential resolution: %v", got.Status.LastValidatedTime)
+		}
 	})
 
 	t.Run("unreachable realm marks not ready", func(t *testing.T) {
@@ -151,6 +157,9 @@ func TestInstanceReconcile(t *testing.T) {
 		status, reason, _ := conditionStatus(got.Status.Conditions, ConditionReady)
 		if status != metav1.ConditionFalse || reason != ReasonKeycloakError {
 			t.Errorf("Ready = (%v, %v), want (False, %s)", status, reason, ReasonKeycloakError)
+		}
+		if got.Status.LastValidatedTime != nil {
+			t.Errorf("lastValidatedTime advanced on failed realm validation: %v", got.Status.LastValidatedTime)
 		}
 	})
 }

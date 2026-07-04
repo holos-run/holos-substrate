@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -140,6 +141,30 @@ func TestReconcileCreatesOrganization(t *testing.T) {
 	}
 	if org.Status.ObservedGeneration != org.Generation {
 		t.Errorf("observedGeneration = %d, want %d", org.Status.ObservedGeneration, org.Generation)
+	}
+	if org.Status.LastValidatedTime == nil {
+		t.Errorf("lastValidatedTime not set on successful reconcile")
+	}
+	if org.Status.LastMutatedTime == nil || org.Status.LastMutationReason != quayv1alpha1.MutationReasonSpecChange {
+		t.Errorf("mutation status = (%v, %q), want time with %q", org.Status.LastMutatedTime, org.Status.LastMutationReason, quayv1alpha1.MutationReasonSpecChange)
+	}
+	firstValidated := org.Status.LastValidatedTime.DeepCopy()
+	firstMutated := org.Status.LastMutatedTime.DeepCopy()
+
+	time.Sleep(time.Second + 100*time.Millisecond)
+	result, err := reconcile(ctx, r, key)
+	if err != nil {
+		t.Fatalf("steady reconcile: %v", err)
+	}
+	if result.RequeueAfter != quayExternalResourceResync {
+		t.Errorf("RequeueAfter = %v, want %v", result.RequeueAfter, quayExternalResourceResync)
+	}
+	org = getOrg(ctx, t, key)
+	if !org.Status.LastValidatedTime.After(firstValidated.Time) {
+		t.Errorf("lastValidatedTime did not advance: first=%v second=%v", firstValidated, org.Status.LastValidatedTime)
+	}
+	if !org.Status.LastMutatedTime.Equal(firstMutated) {
+		t.Errorf("lastMutatedTime changed on steady validation: first=%v second=%v", firstMutated, org.Status.LastMutatedTime)
 	}
 	assertEvent(t, recorder, ReasonCreated)
 }

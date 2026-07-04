@@ -7,12 +7,15 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
 	"github.com/holos-run/holos-paas/internal/quay"
@@ -266,7 +269,7 @@ func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger log
 				// the heal path recovers the marker on the next reconcile.
 				return r.fail(ctx, org, markerErr)
 			}
-			return r.reconcileTeamsThenSucceed(ctx, logger, qc, org, ReasonCreated,
+			return r.reconcileTeamsThenSucceed(ctx, logger, qc, org, true, ReasonCreated,
 				fmt.Sprintf("created Quay organization %q", org.Spec.Name))
 		case quay.IsConflict(err):
 			// Lost the create race: the org now exists but this CR did not
@@ -324,7 +327,7 @@ func (r *OrganizationReconciler) reconcileExisting(ctx context.Context, logger l
 			if err := r.ensureOwnerMarker(ctx, qc, org); err != nil {
 				return r.fail(ctx, org, err)
 			}
-			return r.reconcileOwned(ctx, logger, qc, org, actual)
+			return r.reconcileOwned(ctx, logger, qc, org, actual, true)
 		}
 		// Unowned, externally-created org → adopt (if opted in) or Conflict.
 		return r.reconcileExistingUnowned(ctx, logger, qc, org)
@@ -338,7 +341,8 @@ func (r *OrganizationReconciler) reconcileExisting(ctx context.Context, logger l
 // reconcileOwned reconciles an org this CR owns (the marker matches): it heals
 // status.Created, pushes any mutable spec drift (the contact email) to Quay, then
 // marks Ready. It never errors on an org we own beyond a genuine Quay-API failure.
-func (r *OrganizationReconciler) reconcileOwned(ctx context.Context, logger logr.Logger, qc OrgClient, org *quayv1alpha1.Organization, actual *quay.Organization) (ctrl.Result, error) {
+func (r *OrganizationReconciler) reconcileOwned(ctx context.Context, logger logr.Logger, qc OrgClient, org *quayv1alpha1.Organization, actual *quay.Organization, markerMutated ...bool) (ctrl.Result, error) {
+	mutated := len(markerMutated) > 0 && markerMutated[0]
 	org.Status.Created = true
 
 	// Apply mutable spec drift before marking Ready. Quay 3.17.3 organizations
@@ -358,10 +362,11 @@ func (r *OrganizationReconciler) reconcileOwned(ctx context.Context, logger logr
 		if updateErr != nil {
 			return r.fail(ctx, org, fmt.Errorf("updating Quay organization %q: %w", org.Spec.Name, updateErr))
 		}
+		mutated = true
 		logger.Info("applied Organization email drift", "name", org.Spec.Name)
 	}
 
-	return r.reconcileTeamsThenSucceed(ctx, logger, qc, org, ReasonCreated,
+	return r.reconcileTeamsThenSucceed(ctx, logger, qc, org, mutated, ReasonCreated,
 		fmt.Sprintf("reconciled Quay organization %q", org.Spec.Name))
 }
 
@@ -419,7 +424,7 @@ func (r *OrganizationReconciler) conflict(ctx context.Context, logger logr.Logge
 func (r *OrganizationReconciler) reconcileExistingUnowned(ctx context.Context, logger logr.Logger, qc OrgClient, org *quayv1alpha1.Organization) (ctrl.Result, error) {
 	if org.Spec.Adopt {
 		org.Status.Created = false
-		return r.reconcileTeamsThenSucceed(ctx, logger, qc, org, ReasonAdopted,
+		return r.reconcileTeamsThenSucceed(ctx, logger, qc, org, false, ReasonAdopted,
 			fmt.Sprintf("adopted existing Quay organization %q", org.Spec.Name))
 	}
 
@@ -447,13 +452,14 @@ func (r *OrganizationReconciler) reconcileExistingUnowned(ctx context.Context, l
 // rather than a generic Quay error; any other Quay error fails the reconcile and
 // requeues. The status write that succeed()/teamConflict() performs also persists
 // the status.managedTeams set reconcileSyncedTeams computed.
-func (r *OrganizationReconciler) reconcileTeamsThenSucceed(ctx context.Context, logger logr.Logger, qc OrgClient, org *quayv1alpha1.Organization, reason, message string) (ctrl.Result, error) {
+func (r *OrganizationReconciler) reconcileTeamsThenSucceed(ctx context.Context, logger logr.Logger, qc OrgClient, org *quayv1alpha1.Organization, mutated bool, reason, message string) (ctrl.Result, error) {
 	// Snapshot the managed-team set so a change to status.managedTeams (e.g. a team
 	// added, removed, or healed in) is persisted even when Ready and
 	// observedGeneration are unchanged — without it, succeed() would skip the write
 	// on a steady-state reconcile and lose the updated ownership record.
 	before := append([]string(nil), org.Status.ManagedTeams...)
-	err := r.reconcileSyncedTeams(ctx, qc, org)
+	teamMutated, err := r.reconcileSyncedTeams(ctx, qc, org)
+	mutated = mutated || teamMutated
 	// reconcileSyncedTeams may rewrite status.managedTeams even when it returns a
 	// (conflict) error — it persists the progress made before the conflict — so
 	// compute the change for both the success and the conflict status write.
@@ -464,6 +470,11 @@ func (r *OrganizationReconciler) reconcileTeamsThenSucceed(ctx context.Context, 
 		}
 		return r.fail(ctx, org, err)
 	}
+	if mutated {
+		r.stampMutation(org)
+	}
+	now := metav1.Now()
+	org.Status.LastValidatedTime = &now
 	return r.succeed(ctx, logger, org, reason, message, managedChanged)
 }
 
@@ -513,17 +524,40 @@ func (r *OrganizationReconciler) teamConflict(ctx context.Context, logger logr.L
 // extraChanged is load-bearing for status.managedTeams: a team set that changes
 // without flipping Ready or bumping the generation must still be persisted.
 func (r *OrganizationReconciler) succeed(ctx context.Context, logger logr.Logger, org *quayv1alpha1.Organization, reason, message string, extraChanged bool) (ctrl.Result, error) {
+	validationChanged := true
 	changed := markReady(&org.Status.Conditions, reason, message, org.Generation)
-	changed = changed || extraChanged || org.Status.ObservedGeneration != org.Generation
+	changed = changed || extraChanged || validationChanged || org.Status.ObservedGeneration != org.Generation
 	if !changed {
-		return ctrl.Result{}, nil
+		return ctrl.Result{RequeueAfter: quayExternalResourceResync}, nil
 	}
 	r.Recorder.Event(org, corev1.EventTypeNormal, reason, message)
 	logger.Info("reconciled Organization", "name", org.Spec.Name, "reason", reason)
 	if err := r.updateStatus(ctx, org); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: quayExternalResourceResync}, nil
+}
+
+func (r *OrganizationReconciler) stampMutation(org *quayv1alpha1.Organization) {
+	now := metav1.Now()
+	reason := quayv1alpha1.MutationReasonDriftRemediation
+	if org.Status.ObservedGeneration != org.Generation || !organizationReady(org) {
+		reason = quayv1alpha1.MutationReasonSpecChange
+	}
+	org.Status.LastMutatedTime = &now
+	org.Status.LastMutationReason = reason
+	if reason == quayv1alpha1.MutationReasonDriftRemediation {
+		org.Status.LastDriftTime = &now
+	}
+}
+
+func organizationReady(org *quayv1alpha1.Organization) bool {
+	for _, c := range org.Status.Conditions {
+		if c.Type == ConditionReady {
+			return c.Status == metav1.ConditionTrue && c.ObservedGeneration == org.Generation
+		}
+	}
+	return false
 }
 
 // reconcileDelete runs the finalizer. Per ADR-19's claim model the Quay org is
@@ -746,6 +780,6 @@ func (r *OrganizationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.NewClient = NewQuayClient
 	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&quayv1alpha1.Organization{}).
+		For(&quayv1alpha1.Organization{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
 }

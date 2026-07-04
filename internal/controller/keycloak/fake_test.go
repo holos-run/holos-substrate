@@ -35,6 +35,9 @@ type fakeKeycloakClient struct {
 
 	// clients maps a clientId to its synthetic UUID, modeling FindClientByClientID.
 	clients map[string]string
+	// clientObjects stores the current managed fields for each clientId so
+	// FindClientByClientID reads back creates and updates.
+	clientObjects map[string]keycloak.OIDCClient
 	// clientRoles records, per "<clientUUID>/<role>", a synthetic role UUID,
 	// modeling GetClientRole.
 	clientRoles map[string]string
@@ -131,6 +134,7 @@ func newFakeKeycloakClient(existingGroups ...string) *fakeKeycloakClient {
 		realmReachable:       true,
 		groups:               map[string]string{},
 		clients:              map[string]string{},
+		clientObjects:        map[string]keycloak.OIDCClient{},
 		clientRoles:          map[string]string{},
 		roleAssignments:      map[string]bool{},
 		users:                map[string]*keycloak.User{},
@@ -235,6 +239,12 @@ func (f *fakeKeycloakClient) FindClientByClientID(ctx context.Context, clientID 
 	id, ok := f.clients[clientID]
 	if !ok {
 		return nil, nil
+	}
+	if existing, ok := f.clientObjects[clientID]; ok {
+		cp := existing
+		cp.ID = id
+		cp.ClientID = clientID
+		return &cp, nil
 	}
 	return &keycloak.OIDCClient{ID: id, ClientID: clientID}, nil
 }
@@ -345,6 +355,7 @@ func (f *fakeKeycloakClient) seedClient(clientID, uuid string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.clients[clientID] = uuid
+	f.clientObjects[clientID] = keycloak.OIDCClient{ID: uuid, ClientID: clientID}
 }
 
 // seedClientDescription sets a client's current description by UUID, modeling a
@@ -353,6 +364,17 @@ func (f *fakeKeycloakClient) seedClientDescription(clientUUID, description strin
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.clientDescriptions[clientUUID] = description
+	for clientID, id := range f.clients {
+		if id != clientUUID {
+			continue
+		}
+		current := f.clientObjects[clientID]
+		current.ID = clientUUID
+		current.ClientID = clientID
+		current.Description = description
+		f.clientObjects[clientID] = current
+		break
+	}
 }
 
 // seedClientRole registers a client role (clientUUID/role → UUID) so GetClientRole
@@ -522,6 +544,9 @@ func (f *fakeKeycloakClient) CreateClient(ctx context.Context, client keycloak.O
 	f.nextGroupID++
 	id := "cli-" + strconv.Itoa(f.nextGroupID)
 	f.clients[client.ClientID] = id
+	stored := client
+	stored.ID = id
+	f.clientObjects[client.ClientID] = stored
 	f.clientDescriptions[id] = client.Description
 	if client.Attributes != nil {
 		attrs := map[string]string{}
@@ -538,6 +563,43 @@ func (f *fakeKeycloakClient) UpdateClientFields(ctx context.Context, clientUUID 
 	defer f.mu.Unlock()
 	f.record("UpdateClient:" + clientUUID)
 	f.lastUpdateFields[clientUUID] = fields
+	for clientID, id := range f.clients {
+		if id != clientUUID {
+			continue
+		}
+		current := f.clientObjects[clientID]
+		current.ID = clientUUID
+		current.ClientID = clientID
+		if fields.Name != nil {
+			current.Name = *fields.Name
+		}
+		if fields.Description != nil {
+			current.Description = *fields.Description
+		}
+		if fields.Enabled != nil {
+			current.Enabled = *fields.Enabled
+		}
+		if fields.PublicClient != nil {
+			current.PublicClient = *fields.PublicClient
+		}
+		if fields.RedirectURIs != nil {
+			current.RedirectURIs = append([]string(nil), (*fields.RedirectURIs)...)
+		}
+		if fields.WebOrigins != nil {
+			current.WebOrigins = append([]string(nil), (*fields.WebOrigins)...)
+		}
+		if current.Attributes == nil {
+			current.Attributes = map[string]string{}
+		}
+		for _, attr := range fields.RemoveAttributes {
+			delete(current.Attributes, attr)
+		}
+		for k, v := range fields.Attributes {
+			current.Attributes[k] = v
+		}
+		f.clientObjects[clientID] = current
+		break
+	}
 	if fields.Description != nil {
 		f.clientDescriptions[clientUUID] = *fields.Description
 	}

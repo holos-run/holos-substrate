@@ -16,6 +16,7 @@
 | 4        | 2026-06-18 | @jeffmccune | Remove `spec.displayName` from the Organization CRD (HOL-1316). Quay 3.17.3 organizations have no display-name/description field, so the value was never programmable; the field is dropped entirely (unreleased — no migration or backwards compatibility). |
 | 5        | 2026-06-18 | @jeffmccune | Document the **`caBundle` spec field** (HOL-1320/HOL-1321): both Organization and Repository carry an identical `caBundle []byte` (JSON `caBundle,omitempty`, `+optional`) — a PEM/base64 trust anchor for the in-cluster Quay registry's local-CA serving cert, threaded into the Quay client's TLS `RootCAs`; empty means use the controller pod's system trust store. The shared shape is defined once in `api/quay/v1alpha1/common_types.go` and re-used by both Kinds (the cross-Kind convention ADR-18 Revision 3 states controller-wide). |
 | 6        | 2026-06-19 | @jeffmccune | Document **Organization synced teams** ([HOL-1325](https://linear.app/holos-run/issue/HOL-1325), shipped HOL-1326..HOL-1328): the Organization gains `spec.syncedTeams[]` (`name`, `oidcGroup`, `role` ∈ `admin`/`creator`/`member`, optional `repositoryPermission` ∈ `read`/`write`/`admin`) and `status.managedTeams`. Records the **two distinct Quay concepts** (the team *org role* vs. the org *default repository permission*/prototype), the preserved **API-group dependency boundary** (OIDC groups referenced by name as data — no Keycloak import, AC #7), **non-exclusive management** + **adoption-is-an-error** with a future per-team `adopt` escape hatch, the `status.managedTeams` ownership marker and the durable-description **heal rule**, and the **GCP-style primitive-role use case** (owner/editor/viewer). Moves org group→team/role bindings out of *Out of scope* into the implemented design. |
+| 7        | 2026-07-04 | @jeffmccune | **Implement ADR-22 drift-observability status on Quay external-resource Kinds (HOL-1459).** `Organization` and `Repository` now carry `status.lastValidatedTime`, `status.lastMutatedTime`, `status.lastMutationReason`, and `status.lastDriftTime`, plus the extended `Validated` printer column. The reconcilers stamp validation only after successful Quay verification, stamp mutation only for actual Quay changes (org create/update, synced-team/prototype/sync changes, repo create/update, webhook changes), return bounded steady-state resyncs, and filter primary watches to generation changes to avoid timestamp hot loops. |
 
 ## Context and Problem Statement
 
@@ -527,9 +528,12 @@ Kargo coupling into the API group — forbidden by AC #7.
 
 Both resources report status as a slice of standard `metav1.Condition` following
 the Gateway-API convention (`+listType=map`, `+listMapKey=type`, merge-patch on
-`type`), plus `observedGeneration`. The condition **types** and **reasons** are
-defined once in `internal/controller/quay/conditions.go` (mirroring the constants
-on the API types) and shared by both reconcilers:
+`type`), plus `observedGeneration`. As of Revision 7 (HOL-1459), both resources
+also implement ADR-22 drift-observability status:
+`lastValidatedTime`, `lastMutatedTime`, `lastMutationReason`, and
+`lastDriftTime`, with a `Validated` printer column. The condition **types** and
+**reasons** are defined once in `internal/controller/quay/conditions.go`
+(mirroring the constants on the API types) and shared by both reconcilers:
 
 | Condition type | Meaning |
 | --- | --- |

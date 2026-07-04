@@ -9,15 +9,18 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	keycloakv1alpha1 "github.com/holos-run/holos-paas/api/keycloak/v1alpha1"
@@ -185,7 +188,7 @@ func (r *UserReconciler) reconcileCreate(ctx context.Context, logger logr.Logger
 	user.Status.Created = true
 	user.Status.Adopted = false
 	user.Status.UserID = userID
-	return r.reconcileSideEffectsThenSucceed(ctx, logger, kc, user, userID, ReasonCreated,
+	return r.reconcileSideEffectsThenSucceed(ctx, logger, kc, user, userID, true, ReasonCreated,
 		fmt.Sprintf("created Keycloak user %q", user.Spec.Email))
 }
 
@@ -204,7 +207,7 @@ func (r *UserReconciler) reconcileExisting(ctx context.Context, logger logr.Logg
 		if user.Status.Adopted {
 			reason = ReasonAdopted
 		}
-		return r.reconcileSideEffectsThenSucceed(ctx, logger, kc, user, existing.ID, reason,
+		return r.reconcileSideEffectsThenSucceed(ctx, logger, kc, user, existing.ID, false, reason,
 			fmt.Sprintf("reconciled Keycloak user %q", user.Spec.Email))
 	}
 
@@ -212,7 +215,7 @@ func (r *UserReconciler) reconcileExisting(ctx context.Context, logger logr.Logg
 		user.Status.Created = false
 		user.Status.Adopted = true
 		user.Status.UserID = existing.ID
-		return r.reconcileSideEffectsThenSucceed(ctx, logger, kc, user, existing.ID, ReasonAdopted,
+		return r.reconcileSideEffectsThenSucceed(ctx, logger, kc, user, existing.ID, false, ReasonAdopted,
 			fmt.Sprintf("adopted existing Keycloak user %q", user.Spec.Email))
 	}
 
@@ -252,16 +255,22 @@ func (r *UserReconciler) userReplaced(ctx context.Context, logger logr.Logger, u
 // side effects are applied only after the user itself exists. extraChanged is set
 // when an ownership/managed-set status field changed so a steady-state reconcile
 // still persists it.
-func (r *UserReconciler) reconcileSideEffectsThenSucceed(ctx context.Context, logger logr.Logger, kc UserClient, user *keycloakv1alpha1.KeycloakUser, userID, reason, message string) (ctrl.Result, error) {
+func (r *UserReconciler) reconcileSideEffectsThenSucceed(ctx context.Context, logger logr.Logger, kc UserClient, user *keycloakv1alpha1.KeycloakUser, userID string, created bool, reason, message string) (ctrl.Result, error) {
 	beforeUserID := user.Status.UserID
 	beforeIDP := user.Status.ManagedIdentityProvider
 
-	if err := r.reconcileIdentityProviderLink(ctx, kc, user, userID); err != nil {
+	idpMutated, err := r.reconcileIdentityProviderLink(ctx, kc, user, userID)
+	if err != nil {
 		return r.fail(ctx, user, err)
 	}
 
 	extraChanged := beforeUserID != user.Status.UserID ||
 		beforeIDP != user.Status.ManagedIdentityProvider
+	if created || idpMutated {
+		r.stampMutation(user)
+	}
+	now := metav1.Now()
+	user.Status.LastValidatedTime = &now
 	return r.succeed(ctx, logger, user, reason, message, extraChanged)
 }
 
@@ -286,7 +295,8 @@ func (r *UserReconciler) reconcileSideEffectsThenSucceed(ctx context.Context, lo
 // ensures only the per-user federated-identity record. The first-broker-login flow
 // that makes the auto-link actually happen on login is realm configuration owned by
 // the platform realm config (keycloak-config-cli), NOT this CR.
-func (r *UserReconciler) reconcileIdentityProviderLink(ctx context.Context, kc UserClient, user *keycloakv1alpha1.KeycloakUser, userID string) error {
+func (r *UserReconciler) reconcileIdentityProviderLink(ctx context.Context, kc UserClient, user *keycloakv1alpha1.KeycloakUser, userID string) (bool, error) {
+	mutated := false
 	link := user.Spec.IdentityProviderLink
 
 	// Determine the provider+subject this CR should now manage an Admin-API link
@@ -306,13 +316,14 @@ func (r *UserReconciler) reconcileIdentityProviderLink(ctx context.Context, kc U
 	prevAlias, prevSubject := parseManagedIdentityProvider(user.Status.ManagedIdentityProvider)
 	if prevAlias != "" && (prevAlias != desiredAlias || prevSubject != desiredSubject) {
 		if err := r.deleteFederatedIfSubjectMatches(ctx, kc, user, userID, prevAlias, prevSubject); err != nil {
-			return err
+			return mutated, err
 		}
+		mutated = true
 		user.Status.ManagedIdentityProvider = ""
 	}
 
 	if desiredAlias == "" {
-		return nil
+		return mutated, nil
 	}
 
 	fi := keycloak.FederatedIdentity{
@@ -323,10 +334,13 @@ func (r *UserReconciler) reconcileIdentityProviderLink(ctx context.Context, kc U
 	err := kc.CreateFederatedIdentityIfNotExists(ctx, userID, link.Alias, fi)
 	recordKeycloakAPI(opCreateFederatedID, err)
 	if err != nil {
-		return fmt.Errorf("creating federated-identity link to %q for Keycloak user %q: %w", link.Alias, user.Spec.Email, err)
+		return mutated, fmt.Errorf("creating federated-identity link to %q for Keycloak user %q: %w", link.Alias, user.Spec.Email, err)
+	}
+	if user.Status.ManagedIdentityProvider != serializeManagedIdentityProvider(desiredAlias, desiredSubject) {
+		mutated = true
 	}
 	user.Status.ManagedIdentityProvider = serializeManagedIdentityProvider(desiredAlias, desiredSubject)
-	return nil
+	return mutated, nil
 }
 
 // managedIDPSep separates the alias and the upstream subject (userId) in the
@@ -551,17 +565,40 @@ func (r *UserReconciler) resolveInstance(ctx context.Context, user *keycloakv1al
 // advanced, or extraChanged is set (load-bearing for the ownership/managed-set
 // status fields so a backfill or prune on an already-current object persists).
 func (r *UserReconciler) succeed(ctx context.Context, logger logr.Logger, user *keycloakv1alpha1.KeycloakUser, reason, message string, extraChanged bool) (ctrl.Result, error) {
+	validationChanged := true
 	changed := markReady(&user.Status.Conditions, reason, message, user.Generation)
-	changed = changed || extraChanged || user.Status.ObservedGeneration != user.Generation
+	changed = changed || extraChanged || validationChanged || user.Status.ObservedGeneration != user.Generation
 	if !changed {
-		return ctrl.Result{}, nil
+		return ctrl.Result{RequeueAfter: keycloakExternalResourceResync}, nil
 	}
 	r.Recorder.Event(user, corev1.EventTypeNormal, reason, message)
 	logger.Info("reconciled KeycloakUser", "email", user.Spec.Email, "reason", reason)
 	if err := r.updateStatus(ctx, user); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: keycloakExternalResourceResync}, nil
+}
+
+func (r *UserReconciler) stampMutation(user *keycloakv1alpha1.KeycloakUser) {
+	now := metav1.Now()
+	reason := keycloakv1alpha1.MutationReasonDriftRemediation
+	if user.Status.ObservedGeneration != user.Generation || !userReady(user) {
+		reason = keycloakv1alpha1.MutationReasonSpecChange
+	}
+	user.Status.LastMutatedTime = &now
+	user.Status.LastMutationReason = reason
+	if reason == keycloakv1alpha1.MutationReasonDriftRemediation {
+		user.Status.LastDriftTime = &now
+	}
+}
+
+func userReady(user *keycloakv1alpha1.KeycloakUser) bool {
+	for _, c := range user.Status.Conditions {
+		if c.Type == ConditionReady {
+			return c.Status == metav1.ConditionTrue && c.ObservedGeneration == user.Generation
+		}
+	}
+	return false
 }
 
 // notReady records a recoverable not-ready condition for an unsatisfied
@@ -664,7 +701,7 @@ func (r *UserReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return err
 	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&keycloakv1alpha1.KeycloakUser{}).
+		For(&keycloakv1alpha1.KeycloakUser{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		// Re-enqueue dependent users when their referenced KeycloakInstance changes
 		// (e.g. it transitions to Ready), so a user blocked on InstanceNotReady
 		// recovers promptly rather than only on the requeueDependency backoff.

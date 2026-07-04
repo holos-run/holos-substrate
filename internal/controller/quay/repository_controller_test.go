@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -204,6 +205,30 @@ func TestRepositoryCreatesWithInlineWebhook(t *testing.T) {
 	}
 	if repo.Status.ObservedGeneration != repo.Generation {
 		t.Errorf("observedGeneration = %d, want %d", repo.Status.ObservedGeneration, repo.Generation)
+	}
+	if repo.Status.LastValidatedTime == nil {
+		t.Errorf("lastValidatedTime not set on successful reconcile")
+	}
+	if repo.Status.LastMutatedTime == nil || repo.Status.LastMutationReason != quayv1alpha1.MutationReasonSpecChange {
+		t.Errorf("mutation status = (%v, %q), want time with %q", repo.Status.LastMutatedTime, repo.Status.LastMutationReason, quayv1alpha1.MutationReasonSpecChange)
+	}
+	firstValidated := repo.Status.LastValidatedTime.DeepCopy()
+	firstMutated := repo.Status.LastMutatedTime.DeepCopy()
+
+	time.Sleep(time.Second + 100*time.Millisecond)
+	result, err := reconcileRepo(ctx, r, key)
+	if err != nil {
+		t.Fatalf("steady reconcile: %v", err)
+	}
+	if result.RequeueAfter != quayExternalResourceResync {
+		t.Errorf("RequeueAfter = %v, want %v", result.RequeueAfter, quayExternalResourceResync)
+	}
+	repo = getRepo(ctx, t, key)
+	if !repo.Status.LastValidatedTime.After(firstValidated.Time) {
+		t.Errorf("lastValidatedTime did not advance: first=%v second=%v", firstValidated, repo.Status.LastValidatedTime)
+	}
+	if !repo.Status.LastMutatedTime.Equal(firstMutated) {
+		t.Errorf("lastMutatedTime changed on steady validation: first=%v second=%v", firstMutated, repo.Status.LastMutatedTime)
 	}
 	assertEvent(t, recorder, ReasonReconciled)
 }

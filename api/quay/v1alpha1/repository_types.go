@@ -170,6 +170,34 @@ type RepositoryStatus struct {
 	//
 	// +optional
 	QuayRepository string `json:"quayRepository,omitempty"`
+
+	// LastValidatedTime is the last time the controller successfully read Quay and
+	// confirmed or restored the declared repository state. It is not advanced on
+	// failed remote reads or failed verification, so stale values remain visible.
+	//
+	// +optional
+	LastValidatedTime *metav1.Time `json:"lastValidatedTime,omitempty"`
+
+	// LastMutatedTime is the last time the controller actually changed Quay for
+	// this repository, such as creating the repo, updating its visibility or
+	// description, or reconciling its webhook.
+	//
+	// +optional
+	LastMutatedTime *metav1.Time `json:"lastMutatedTime,omitempty"`
+
+	// LastMutationReason classifies the cause of the last remote mutation. It is
+	// written together with lastMutatedTime.
+	//
+	// +optional
+	// +kubebuilder:validation:Enum=SpecChange;DriftRemediation
+	LastMutationReason MutationReason `json:"lastMutationReason,omitempty"`
+
+	// LastDriftTime is the last time the controller remediated out-of-band drift.
+	// It is set with LastMutationReason=DriftRemediation and preserved across
+	// later spec-driven mutations.
+	//
+	// +optional
+	LastDriftTime *metav1.Time `json:"lastDriftTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -179,6 +207,7 @@ type RepositoryStatus struct {
 // +kubebuilder:printcolumn:name="Repo",type=string,JSONPath=`.spec.name`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:printcolumn:name="Validated",type=date,priority=1,JSONPath=`.status.lastValidatedTime`
 
 // Repository is the Schema for the repositories API. It is a single repository
 // within an owning Organization in the in-cluster Quay registry (ADR-19).

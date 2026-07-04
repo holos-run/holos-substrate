@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -118,7 +119,68 @@ func TestGroupReconcileCreate(t *testing.T) {
 	if len(fake.fgapResources) == 0 || len(fake.fgapPolicies) == 0 || len(fake.fgapPermissions) == 0 {
 		t.Errorf("custodian FGAP wiring incomplete: resources=%v policies=%v perms=%v", fake.fgapResources, fake.fgapPolicies, fake.fgapPermissions)
 	}
+	if got.Status.LastValidatedTime == nil {
+		t.Errorf("lastValidatedTime not set on successful reconcile")
+	}
+	if got.Status.LastMutatedTime == nil || got.Status.LastMutationReason != keycloakv1alpha1.MutationReasonSpecChange {
+		t.Errorf("mutation status = (%v, %q), want time with %q", got.Status.LastMutatedTime, got.Status.LastMutationReason, keycloakv1alpha1.MutationReasonSpecChange)
+	}
 	assertEvent(t, recorder, ReasonCreated)
+}
+
+func TestGroupSteadyStateRefreshesValidationOnly(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-group-observe"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	group := &keycloakv1alpha1.KeycloakGroup{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "viewer"},
+		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Path:        "projects/observe/roles/viewer",
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, group); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+
+	fake := newFakeKeycloakClient()
+	r, _ := newGroupReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(group)
+	_, _ = reconcileGroup(ctx, r, key) // finalizer
+	if _, err := reconcileGroup(ctx, r, key); err != nil {
+		t.Fatalf("reconcile create: %v", err)
+	}
+	first := getGroup(t, ctx, key)
+	if first.Status.LastValidatedTime == nil || first.Status.LastMutatedTime == nil {
+		t.Fatalf("initial timestamps not set: validated=%v mutated=%v", first.Status.LastValidatedTime, first.Status.LastMutatedTime)
+	}
+	firstValidated := first.Status.LastValidatedTime.DeepCopy()
+	firstMutated := first.Status.LastMutatedTime.DeepCopy()
+
+	time.Sleep(time.Second + 100*time.Millisecond)
+	result, err := reconcileGroup(ctx, r, key)
+	if err != nil {
+		t.Fatalf("steady reconcile: %v", err)
+	}
+	if result.RequeueAfter != keycloakExternalResourceResync {
+		t.Errorf("RequeueAfter = %v, want %v", result.RequeueAfter, keycloakExternalResourceResync)
+	}
+	second := getGroup(t, ctx, key)
+	if !second.Status.LastValidatedTime.After(firstValidated.Time) {
+		t.Errorf("lastValidatedTime did not advance: first=%v second=%v", firstValidated, second.Status.LastValidatedTime)
+	}
+	if !second.Status.LastMutatedTime.Equal(firstMutated) {
+		t.Errorf("lastMutatedTime changed on steady validation: first=%v second=%v", firstMutated, second.Status.LastMutatedTime)
+	}
+	if second.Status.LastMutationReason != keycloakv1alpha1.MutationReasonSpecChange {
+		t.Errorf("lastMutationReason = %q, want %q", second.Status.LastMutationReason, keycloakv1alpha1.MutationReasonSpecChange)
+	}
 }
 
 func TestGroupReconcileAdoptAndConflict(t *testing.T) {
