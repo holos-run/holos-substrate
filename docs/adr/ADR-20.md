@@ -522,7 +522,12 @@ status:
 
 - **`spec.instanceRef`** is the immutable `KeycloakInstance` reference, with the
   same cross-namespace `ReferenceGrant` authorization model all other
-  `keycloak.holos.run` Kinds use.
+  `keycloak.holos.run` Kinds use. The membership reconciler also resolves the
+  referenced `KeycloakGroup` and requires the group's `spec.instanceRef`, after
+  namespace defaulting, to match this value exactly. A mismatch is rejected
+  fail-closed (`Ready=False`, reason `InstanceMismatch`) and does not mutate
+  Keycloak; membership is never written to an instance different from the one
+  that owns the group.
 - **`spec.groupRef`** is immutable and names the `KeycloakGroup` whose Keycloak
   group membership is being managed. Its shape is `name` plus optional
   `namespace`; an empty namespace defaults to the membership CR's namespace. A
@@ -557,17 +562,21 @@ unrelated replacement group.
   `internal/controller/keycloak/user_controller.go`: members this CR added are
   tracked in `status.managedMembers`; members dropped from `spec.members[]` are
   pruned only if their stored user UUID still matches and no live peer
-  `KeycloakGroupMembership` for the same `groupRef` still declares the same email.
-  This peer check is required because Keycloak group membership has no per-binding
-  owner marker; overlapping membership CRs are allowed, but one CR may not remove a
-  member another CR still desires. Out-of-band memberships and memberships owned by
-  other CRs are left alone.
+  `KeycloakGroupMembership` has resolved ownership of the same member in the same
+  group. Peer ownership is status-based, not spec-only: the peer must target the
+  same defaulted `groupRef`, carry the same `status.groupID`, have a
+  `status.managedMembers[]` entry for the same email and user UUID, and not be
+  deleting. This peer check is required because Keycloak group membership has no
+  per-binding owner marker; overlapping membership CRs are allowed, but one CR may
+  not remove a member another reconciled CR still owns. A stale, invalid, or
+  not-yet-reconciled peer spec does not block pruning. Out-of-band memberships and
+  memberships owned by other CRs are left alone.
 - Deletion uses a finalizer to prune this CR's managed members. If the stored
   `groupID` no longer matches the current group at the same path, the finalizer
   treats the old group as gone and releases its managed set without touching the
-  replacement. If another non-deleting membership CR still declares a managed
-  member, deletion releases this CR's status entry without removing the Keycloak
-  membership.
+  replacement. If another non-deleting membership CR's status shows ownership of
+  the same group ID, email, and user UUID, deletion releases this CR's status entry
+  without removing the Keycloak membership.
 - `lastValidatedTime` advances only after a successful remote read and
   verification/remediation. `lastMutatedTime` and `lastMutationReason` are
   updated only when the controller actually adds or removes a member; unchanged
