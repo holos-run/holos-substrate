@@ -99,7 +99,7 @@ truth** and **who writes**:
 | Plane | Resources | Source of truth | Writer |
 |-------|-----------|-----------------|--------|
 | 1. Rendered scaffold | Namespaces, AppProject/Application, Kargo Project/Warehouse/Stage, Quay `Organization`, the role/custodian `KeycloakGroup` trees, the project `KeycloakClient`, the standing-owner `KeycloakUser`s and their `KeycloakGroupMembership`s, the owner RoleBinding | `holos/projects/*.cue` + `holos/apps/*.cue` in the platform repository | Platform (GitOps: render → commit → apply) |
-| 2. Owner-managed control plane | Additional `holos.run` CRs the owner creates in the bare `<name>` control namespace — first `KeycloakGroupMembership` (access grants, HOL-1453); later, policy-gated, `quay.holos.run` `Repository`, `KeycloakUser`, `KeycloakClient`, `KeycloakGroup` | The cluster (the Kubernetes API, per [ADR-2](ADR-2.md)) | Project owner (`kubectl apply`, RBAC-gated) |
+| 2. Owner-managed control plane | Additional `holos.run` CRs the owner creates in the bare `<name>` control namespace — first `KeycloakGroupMembership` (access grants, HOL-1453); later, policy-gated, `quay.holos.run` `Repository` and `Organization`, `KeycloakUser`, `KeycloakClient`, `KeycloakGroup` | The cluster (the Kubernetes API, per [ADR-2](ADR-2.md)) | Project owner (`kubectl apply`, RBAC-gated) |
 | 3. Identity-system day-2 operations | Ad-hoc group-membership approvals in the Keycloak console | Keycloak | Custodians, via FGAP v2 delegation ([ADR-20](ADR-20.md)) |
 
 **Plane 1 is platform-owned and read-only to tenants in practice.** Rendered
@@ -296,7 +296,8 @@ Read access (`view` aggregation) covers all `holos.run` Kinds immediately;
    it accrued, so a tenant delete of such a CR must be admission-denied (on
    `DELETE` the policy evaluates `oldObject.status`). These Kinds stay
    platform-rendered until the `ValidatingAdmissionPolicy`/webhook effort
-   ADR-20 Rev 7 designates enforces disjointness across the whole surface.
+   designated by ADR-20 Rev 7 enforces disjointness across the whole
+   surface.
 
 **The admission-control effort is load-bearing for plane 2 from phase 1
 onward — a prerequisite, not a follow-up** — though the membership
