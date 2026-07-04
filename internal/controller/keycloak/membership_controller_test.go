@@ -279,6 +279,65 @@ func TestMembershipPruneDeleteAndUUIDPin(t *testing.T) {
 	}
 }
 
+func TestMembershipUnauthorizedPeerDoesNotBlockPrune(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ownerNS = "kc-membership-peer-owner"
+	const peerNS = "kc-membership-peer-denied"
+	makeNamespace(t, ctx, ownerNS)
+	makeNamespace(t, ctx, peerNS)
+	createIgnoreExists(t, ctx, newCredentialSecret(ownerNS, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ownerNS, "kc")
+	readyGroup(t, ctx, ownerNS, "owner", "projects/peer/roles/owner", keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"})
+
+	owner := &keycloakv1alpha1.KeycloakGroupMembership{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ownerNS, Name: "owner-members"},
+		Spec: keycloakv1alpha1.KeycloakGroupMembershipSpec{
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			GroupRef:    keycloakv1alpha1.KeycloakGroupReference{Name: "owner"},
+			Members:     []keycloakv1alpha1.KeycloakGroupMembershipMember{{Email: "bob@example.com"}},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, owner); err != nil {
+		t.Fatalf("create owner membership: %v", err)
+	}
+	peer := &keycloakv1alpha1.KeycloakGroupMembership{
+		ObjectMeta: metav1.ObjectMeta{Namespace: peerNS, Name: "unauthorized-peer"},
+		Spec: keycloakv1alpha1.KeycloakGroupMembershipSpec{
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc", Namespace: ownerNS},
+			GroupRef:    keycloakv1alpha1.KeycloakGroupReference{Name: "owner", Namespace: ownerNS},
+			Members:     []keycloakv1alpha1.KeycloakGroupMembershipMember{{Email: "bob@example.com"}},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, peer); err != nil {
+		t.Fatalf("create peer membership: %v", err)
+	}
+
+	fake := newFakeKeycloakClient("projects/peer/roles/owner")
+	groupID := fake.groups[normPath("projects/peer/roles/owner")]
+	bobID := fake.seedUser("bob@example.com")
+	r, _ := newMembershipReconciler(fake, ownerNS)
+	key := client.ObjectKeyFromObject(owner)
+	reconcileMembershipToSteady(t, ctx, r, key)
+	if !fake.memberOf(bobID, groupID) {
+		t.Fatalf("bob should have been added before prune")
+	}
+
+	got := getMembership(t, ctx, key)
+	got.Spec.Members = nil
+	if err := shared.k8sClient.Update(ctx, got); err != nil {
+		t.Fatalf("drop owner member: %v", err)
+	}
+	if _, err := reconcileMembership(ctx, r, key); err != nil {
+		t.Fatalf("reconcile prune: %v", err)
+	}
+	if fake.memberOf(bobID, groupID) {
+		t.Errorf("ungranted peer membership blocked pruning")
+	}
+}
+
 func TestMembershipMissingMemberConvergesOthers(t *testing.T) {
 	if shared == nil {
 		t.Skip("envtest not provisioned")
@@ -337,6 +396,71 @@ func TestMembershipMissingMemberConvergesOthers(t *testing.T) {
 	status, reason, _ = conditionStatus(got.Status.Conditions, ConditionReady)
 	if status != metav1.ConditionTrue || reason != ReasonReconciled {
 		t.Errorf("Ready after seed = (%v, %v), want (True, %s)", status, reason, ReasonReconciled)
+	}
+}
+
+func TestMembershipPartialMutationFailureStampsMutation(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-membership-partial-error"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+	readyGroup(t, ctx, ns, "owner", "projects/partial/roles/owner", keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"})
+
+	membership := &keycloakv1alpha1.KeycloakGroupMembership{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "owner-members"},
+		Spec: keycloakv1alpha1.KeycloakGroupMembershipSpec{
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			GroupRef:    keycloakv1alpha1.KeycloakGroupReference{Name: "owner"},
+			Members: []keycloakv1alpha1.KeycloakGroupMembershipMember{
+				{Email: "alice@example.com"},
+				{Email: "bob@example.com"},
+			},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, membership); err != nil {
+		t.Fatalf("create membership: %v", err)
+	}
+	fake := newFakeKeycloakClient("projects/partial/roles/owner")
+	groupID := fake.groups[normPath("projects/partial/roles/owner")]
+	aliceID := fake.seedUser("alice@example.com")
+	bobID := fake.seedUser("bob@example.com")
+	fake.listUserGroupsErrFor[bobID] = errors.New("simulated later list failure")
+	r, _ := newMembershipReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(membership)
+
+	if _, err := reconcileMembership(ctx, r, key); err != nil {
+		t.Fatalf("reconcile finalizer: %v", err)
+	}
+	if _, err := reconcileMembership(ctx, r, key); err == nil {
+		t.Fatalf("expected partial reconcile error")
+	}
+
+	got := getMembership(t, ctx, key)
+	status, reason, _ := conditionStatus(got.Status.Conditions, ConditionReady)
+	if status != metav1.ConditionFalse || reason != ReasonKeycloakError {
+		t.Errorf("Ready = (%v, %v), want (False, %s)", status, reason, ReasonKeycloakError)
+	}
+	if !fake.memberOf(aliceID, groupID) {
+		t.Errorf("first member mutation did not happen before later failure")
+	}
+	if fake.memberOf(bobID, groupID) {
+		t.Errorf("failed member should not have been added")
+	}
+	if got.Status.LastMutatedTime == nil || got.Status.LastMutationReason != keycloakv1alpha1.MutationReasonSpecChange {
+		t.Errorf("partial mutation was not recorded: %+v", got.Status)
+	}
+	if got.Status.LastValidatedTime != nil {
+		t.Errorf("failed reconcile advanced validation time: %v", got.Status.LastValidatedTime)
+	}
+	if got.Status.GroupID != groupID {
+		t.Errorf("status.GroupID = %q, want %q after partial mutation", got.Status.GroupID, groupID)
+	}
+	if len(got.Status.ManagedMembers) != 1 || got.Status.ManagedMembers[0].Email != "alice@example.com" {
+		t.Errorf("managed members = %+v, want only alice after partial mutation", got.Status.ManagedMembers)
 	}
 }
 
@@ -423,7 +547,29 @@ func TestMembershipDriftTimestamps(t *testing.T) {
 		t.Errorf("LastDriftTime = %v, want retained %v", specChanged.Status.LastDriftTime, driftTime)
 	}
 
-	beforeErrorValidation := specChanged.Status.LastValidatedTime.DeepCopy()
+	delete(fake.groupMembers, aliceID+"/"+groupID)
+	fake.seedUser("carol@example.com")
+	got = getMembership(t, ctx, key)
+	got.Spec.Members = append(got.Spec.Members, keycloakv1alpha1.KeycloakGroupMembershipMember{Email: "carol@example.com"})
+	if err := shared.k8sClient.Update(ctx, got); err != nil {
+		t.Fatalf("update membership spec for mixed drift/spec change: %v", err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	if _, err := reconcileMembership(ctx, r, key); err != nil {
+		t.Fatalf("mixed drift/spec reconcile: %v", err)
+	}
+	mixed := getMembership(t, ctx, key)
+	if mixed.Status.LastMutationReason != keycloakv1alpha1.MutationReasonSpecChange {
+		t.Errorf("LastMutationReason = %q, want SpecChange for mixed reconcile", mixed.Status.LastMutationReason)
+	}
+	if mixed.Status.LastDriftTime == nil || !mixed.Status.LastDriftTime.After(driftTime.Time) {
+		t.Errorf("LastDriftTime = %v, want newer drift stamp after mixed reconcile", mixed.Status.LastDriftTime)
+	}
+	if mixed.Status.LastDriftTime == nil || mixed.Status.LastMutatedTime == nil || !mixed.Status.LastDriftTime.Equal(mixed.Status.LastMutatedTime) {
+		t.Errorf("mixed drift/spec timestamps = drift %v mutated %v, want same instant", mixed.Status.LastDriftTime, mixed.Status.LastMutatedTime)
+	}
+
+	beforeErrorValidation := mixed.Status.LastValidatedTime.DeepCopy()
 	fake.listUserGroupsErr = errors.New("simulated list failure")
 	if _, err := reconcileMembership(ctx, r, key); err == nil {
 		t.Fatalf("expected reconcile error")

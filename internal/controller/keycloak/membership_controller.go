@@ -106,33 +106,39 @@ func (r *MembershipReconciler) reconcileNormal(ctx context.Context, logger logr.
 		return r.handleCredentialError(ctx, membership, err)
 	}
 	if err := keycloak.ValidateCABundle(instance.Spec.CABundle); err != nil {
-		return r.fail(ctx, membership, err)
+		return r.fail(ctx, membership, err, false)
 	}
 
 	kc := r.NewClient(cred, instance.Spec.URL, instance.Spec.Realm, instance.Spec.CABundle)
 	remoteGroup, err := kc.GetGroupByPath(ctx, group.Spec.Path)
 	recordKeycloakAPI(opGetGroupByPath, err)
 	if err != nil {
-		return r.fail(ctx, membership, fmt.Errorf("resolving Keycloak group %q: %w", group.Spec.Path, err))
+		return r.fail(ctx, membership, fmt.Errorf("resolving Keycloak group %q: %w", group.Spec.Path, err), false)
 	}
 	beforeGroupID := membership.Status.GroupID
 
-	changed, mutated, missing, err := r.reconcileMembers(ctx, kc, membership, beforeGroupID, remoteGroup.ID)
+	changed, mutation, missing, err := r.reconcileMembers(ctx, kc, membership, beforeGroupID, remoteGroup.ID)
 	if err != nil {
-		return r.fail(ctx, membership, err)
+		if changed || mutation.Mutated {
+			membership.Status.GroupID = remoteGroup.ID
+		}
+		if mutation.Mutated {
+			r.stampMutation(membership, mutation.HealedDrift)
+		}
+		return r.fail(ctx, membership, err, changed || mutation.Mutated)
 	}
 	membership.Status.GroupID = remoteGroup.ID
 
 	if len(missing) > 0 {
-		if mutated {
-			r.stampMutation(membership)
+		if mutation.Mutated {
+			r.stampMutation(membership, mutation.HealedDrift)
 		}
 		message := fmt.Sprintf("Keycloak users not found for member email(s): %s", strings.Join(missing, ", "))
-		return r.memberNotFound(ctx, membership, message, changed || mutated || beforeGroupID != remoteGroup.ID)
+		return r.memberNotFound(ctx, membership, message, changed || mutation.Mutated || beforeGroupID != remoteGroup.ID)
 	}
 
-	if mutated {
-		r.stampMutation(membership)
+	if mutation.Mutated {
+		r.stampMutation(membership, mutation.HealedDrift)
 	}
 	now := metav1.Now()
 	membership.Status.LastValidatedTime = &now
@@ -142,7 +148,12 @@ func (r *MembershipReconciler) reconcileNormal(ctx context.Context, logger logr.
 	return r.succeed(ctx, logger, membership, ReasonReconciled, message, extraChanged)
 }
 
-func (r *MembershipReconciler) reconcileMembers(ctx context.Context, kc MembershipClient, membership *keycloakv1alpha1.KeycloakGroupMembership, previousGroupID, groupID string) (changed, mutated bool, missing []string, retErr error) {
+type membershipMutation struct {
+	Mutated     bool
+	HealedDrift bool
+}
+
+func (r *MembershipReconciler) reconcileMembers(ctx context.Context, kc MembershipClient, membership *keycloakv1alpha1.KeycloakGroupMembership, previousGroupID, groupID string) (changed bool, mutation membershipMutation, missing []string, retErr error) {
 	managed := managedMembersByEmail(membership.Status.ManagedMembers)
 	defer func() {
 		membership.Status.ManagedMembers = serializeManagedMembers(managed)
@@ -157,7 +168,7 @@ func (r *MembershipReconciler) reconcileMembers(ctx context.Context, kc Membersh
 		user, err := kc.FindUserByEmail(ctx, member.Email)
 		recordKeycloakAPI(opFindUserByEmail, err)
 		if err != nil {
-			return changed, mutated, missing, fmt.Errorf("looking up Keycloak user by email %q: %w", member.Email, err)
+			return changed, mutation, missing, fmt.Errorf("looking up Keycloak user by email %q: %w", member.Email, err)
 		}
 		if user == nil {
 			missing = append(missing, member.Email)
@@ -167,15 +178,18 @@ func (r *MembershipReconciler) reconcileMembers(ctx context.Context, kc Membersh
 		groups, err := kc.ListUserGroups(ctx, user.ID)
 		recordKeycloakAPI(opListUserGroups, err)
 		if err != nil {
-			return changed, mutated, missing, fmt.Errorf("listing Keycloak groups for user %q: %w", member.Email, err)
+			return changed, mutation, missing, fmt.Errorf("listing Keycloak groups for user %q: %w", member.Email, err)
 		}
 		if !containsGroupID(groups, groupID) {
+			if managed[member.Email] == user.ID {
+				mutation.HealedDrift = true
+			}
 			addErr := kc.AddUserToGroup(ctx, user.ID, groupID)
 			recordKeycloakAPI(opAddUserToGroup, addErr)
 			if addErr != nil {
-				return changed, mutated, missing, fmt.Errorf("adding Keycloak user %q to group %q: %w", member.Email, groupID, addErr)
+				return changed, mutation, missing, fmt.Errorf("adding Keycloak user %q to group %q: %w", member.Email, groupID, addErr)
 			}
-			mutated = true
+			mutation.Mutated = true
 		}
 		if managed[member.Email] != user.ID {
 			changed = true
@@ -205,22 +219,22 @@ func (r *MembershipReconciler) reconcileMembers(ctx context.Context, kc Membersh
 			continue
 		}
 		if err != nil {
-			return changed, mutated, missing, fmt.Errorf("listing Keycloak groups for managed user %q: %w", email, err)
+			return changed, mutation, missing, fmt.Errorf("listing Keycloak groups for managed user %q: %w", email, err)
 		}
 		if containsGroupID(groups, groupID) {
 			rmErr := kc.RemoveUserFromGroupIfMember(ctx, userID, groupID)
 			recordKeycloakAPI(opRemoveUserFromGroup, rmErr)
 			if rmErr != nil {
-				return changed, mutated, missing, fmt.Errorf("removing Keycloak user %q from group %q: %w", email, groupID, rmErr)
+				return changed, mutation, missing, fmt.Errorf("removing Keycloak user %q from group %q: %w", email, groupID, rmErr)
 			}
-			mutated = true
+			mutation.Mutated = true
 		}
 		delete(managed, email)
 		changed = true
 	}
 
 	sort.Strings(missing)
-	return changed, mutated, missing, nil
+	return changed, mutation, missing, nil
 }
 
 func (r *MembershipReconciler) reconcileDelete(ctx context.Context, logger logr.Logger, membership *keycloakv1alpha1.KeycloakGroupMembership) (ctrl.Result, error) {
@@ -425,6 +439,9 @@ func (r *MembershipReconciler) peerStillDesires(ctx context.Context, membership 
 		if !sameMembershipTarget(membership, peer) {
 			continue
 		}
+		if !r.membershipReferencesAuthorized(ctx, peer) {
+			continue
+		}
 		for _, member := range peer.Spec.Members {
 			if member.Email == email {
 				return true
@@ -447,7 +464,43 @@ func defaultedGroupRef(namespace string, ref keycloakv1alpha1.KeycloakGroupRefer
 	return ns + "/" + ref.Name
 }
 
-func (r *MembershipReconciler) stampMutation(membership *keycloakv1alpha1.KeycloakGroupMembership) {
+func (r *MembershipReconciler) membershipReferencesAuthorized(ctx context.Context, membership *keycloakv1alpha1.KeycloakGroupMembership) bool {
+	if !r.referenceAuthorized(ctx, membership.Namespace, "KeycloakInstance", defaultedInstanceNamespace(membership.Namespace, membership.Spec.InstanceRef), membership.Spec.InstanceRef.Name) {
+		return false
+	}
+	return r.referenceAuthorized(ctx, membership.Namespace, "KeycloakGroup", defaultedGroupNamespace(membership.Namespace, membership.Spec.GroupRef), membership.Spec.GroupRef.Name)
+}
+
+func (r *MembershipReconciler) referenceAuthorized(ctx context.Context, fromNamespace, toKind, toNamespace, toName string) bool {
+	if toNamespace == fromNamespace {
+		return true
+	}
+	allowed, err := referencegrant.Allowed(ctx, r.Client,
+		referencegrant.FromRef{Group: keycloakv1alpha1.GroupVersion.Group, Kind: "KeycloakGroupMembership", Namespace: fromNamespace},
+		referencegrant.ToRef{Group: keycloakv1alpha1.GroupVersion.Group, Kind: toKind, Namespace: toNamespace, Name: toName},
+	)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "checking peer KeycloakGroupMembership ReferenceGrant", "fromNamespace", fromNamespace, "toKind", toKind, "toNamespace", toNamespace, "toName", toName)
+		return false
+	}
+	return allowed
+}
+
+func defaultedInstanceNamespace(namespace string, ref keycloakv1alpha1.KeycloakInstanceReference) string {
+	if ref.Namespace != "" {
+		return ref.Namespace
+	}
+	return namespace
+}
+
+func defaultedGroupNamespace(namespace string, ref keycloakv1alpha1.KeycloakGroupReference) string {
+	if ref.Namespace != "" {
+		return ref.Namespace
+	}
+	return namespace
+}
+
+func (r *MembershipReconciler) stampMutation(membership *keycloakv1alpha1.KeycloakGroupMembership, healedDrift bool) {
 	now := metav1.Now()
 	reason := keycloakv1alpha1.MutationReasonDriftRemediation
 	if membership.Status.ObservedGeneration != membership.Generation || !membershipReady(membership) {
@@ -455,7 +508,7 @@ func (r *MembershipReconciler) stampMutation(membership *keycloakv1alpha1.Keyclo
 	}
 	membership.Status.LastMutatedTime = &now
 	membership.Status.LastMutationReason = reason
-	if reason == keycloakv1alpha1.MutationReasonDriftRemediation {
+	if reason == keycloakv1alpha1.MutationReasonDriftRemediation || healedDrift {
 		membership.Status.LastDriftTime = &now
 	}
 }
@@ -528,8 +581,9 @@ func (r *MembershipReconciler) handleCredentialError(ctx context.Context, member
 	return ctrl.Result{}, err
 }
 
-func (r *MembershipReconciler) fail(ctx context.Context, membership *keycloakv1alpha1.KeycloakGroupMembership, err error) (ctrl.Result, error) {
-	if changed := markNotReady(&membership.Status.Conditions, ReasonKeycloakError, err.Error(), membership.Generation); changed {
+func (r *MembershipReconciler) fail(ctx context.Context, membership *keycloakv1alpha1.KeycloakGroupMembership, err error, extraChanged bool) (ctrl.Result, error) {
+	changed := markNotReady(&membership.Status.Conditions, ReasonKeycloakError, err.Error(), membership.Generation)
+	if changed || extraChanged {
 		r.Recorder.Event(membership, corev1.EventTypeWarning, ReasonKeycloakError, err.Error())
 		if statusErr := r.updateStatus(ctx, membership); statusErr != nil {
 			log.FromContext(ctx).Error(statusErr, "updating status after Keycloak error")
