@@ -57,3 +57,18 @@ type SecretReference struct {
 	// +optional
 	Key string `json:"key,omitempty"`
 }
+
+// MutationReason classifies the cause of the last remote mutation an
+// external-resource reconciler performed. These string values are canonical
+// across holos.run API groups (ADR-22), but each group declares local constants
+// to avoid API-package imports.
+type MutationReason string
+
+const (
+	// MutationReasonSpecChange means the controller changed Quay to match a new
+	// desired spec generation.
+	MutationReasonSpecChange MutationReason = "SpecChange"
+	// MutationReasonDriftRemediation means the controller corrected out-of-band
+	// drift while the CR's desired spec generation was unchanged.
+	MutationReasonDriftRemediation MutationReason = "DriftRemediation"
+)

@@ -41,6 +41,12 @@ const requeueImmediately = time.Millisecond
 // dependent group promptly, and this requeue covers anything not watched.
 const requeueDependency = 30 * time.Second
 
+// keycloakExternalResourceResync is the steady-state validation cadence for
+// Keycloak-backed external-resource CRs. A Ready=True object still rechecks
+// Keycloak periodically so lastValidatedTime remains actionable and out-of-band
+// drift is eventually remediated even without a spec change.
+const keycloakExternalResourceResync = time.Hour
+
 // Condition types surfaced on keycloak.holos.run resource status. They re-export
 // the vocabulary the API package declares (keycloakv1alpha1.ConditionAccepted /
 // ConditionProgrammed / ConditionReady) so this controller package draws from one

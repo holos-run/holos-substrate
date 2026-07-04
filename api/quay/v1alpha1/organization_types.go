@@ -254,6 +254,34 @@ type OrganizationStatus struct {
 	//
 	// +optional
 	ManagedTeams []string `json:"managedTeams,omitempty"`
+
+	// LastValidatedTime is the last time the controller successfully read Quay and
+	// confirmed or restored the declared organization state. It is not advanced on
+	// failed remote reads or failed verification, so stale values remain visible.
+	//
+	// +optional
+	LastValidatedTime *metav1.Time `json:"lastValidatedTime,omitempty"`
+
+	// LastMutatedTime is the last time the controller actually changed Quay for
+	// this organization, such as creating the org, updating its email, or
+	// reconciling synced teams.
+	//
+	// +optional
+	LastMutatedTime *metav1.Time `json:"lastMutatedTime,omitempty"`
+
+	// LastMutationReason classifies the cause of the last remote mutation. It is
+	// written together with lastMutatedTime.
+	//
+	// +optional
+	// +kubebuilder:validation:Enum=SpecChange;DriftRemediation
+	LastMutationReason MutationReason `json:"lastMutationReason,omitempty"`
+
+	// LastDriftTime is the last time the controller remediated out-of-band drift.
+	// It is set with LastMutationReason=DriftRemediation and preserved across
+	// later spec-driven mutations.
+	//
+	// +optional
+	LastDriftTime *metav1.Time `json:"lastDriftTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -262,6 +290,7 @@ type OrganizationStatus struct {
 // +kubebuilder:printcolumn:name="Org",type=string,JSONPath=`.spec.name`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:printcolumn:name="Validated",type=date,priority=1,JSONPath=`.status.lastValidatedTime`
 
 // Organization is the Schema for the organizations API. It names and applies a
 // Quay organization in the in-cluster registry (ADR-19).

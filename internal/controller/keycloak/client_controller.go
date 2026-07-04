@@ -12,10 +12,12 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	keycloakv1alpha1 "github.com/holos-run/holos-paas/api/keycloak/v1alpha1"
@@ -204,7 +206,7 @@ func (r *ClientReconciler) reconcileCreate(ctx context.Context, logger logr.Logg
 	kclient.Status.Created = true
 	kclient.Status.Adopted = false
 	kclient.Status.ClientUUID = uuid
-	return r.convergeThenSucceed(ctx, logger, kc, kclient, uuid, ReasonCreated,
+	return r.convergeThenSucceed(ctx, logger, kc, kclient, uuid, nil, true, ReasonCreated,
 		fmt.Sprintf("created Keycloak client %q", kclient.Spec.ClientID))
 }
 
@@ -225,7 +227,7 @@ func (r *ClientReconciler) reconcileExisting(ctx context.Context, logger logr.Lo
 		if kclient.Status.Adopted {
 			reason = ReasonAdopted
 		}
-		return r.convergeThenSucceed(ctx, logger, kc, kclient, existing.ID, reason,
+		return r.convergeThenSucceed(ctx, logger, kc, kclient, existing.ID, existing, false, reason,
 			fmt.Sprintf("reconciled Keycloak client %q", kclient.Spec.ClientID))
 	}
 
@@ -233,7 +235,7 @@ func (r *ClientReconciler) reconcileExisting(ctx context.Context, logger logr.Lo
 		kclient.Status.Created = false
 		kclient.Status.Adopted = true
 		kclient.Status.ClientUUID = existing.ID
-		return r.convergeThenSucceed(ctx, logger, kc, kclient, existing.ID, ReasonAdopted,
+		return r.convergeThenSucceed(ctx, logger, kc, kclient, existing.ID, existing, false, ReasonAdopted,
 			fmt.Sprintf("adopted existing Keycloak client %q", kclient.Spec.ClientID))
 	}
 
@@ -244,8 +246,11 @@ func (r *ClientReconciler) reconcileExisting(ctx context.Context, logger logr.Lo
 // convergeThenSucceed converges the managed client fields, roles, mapper, and
 // confidential secret delivery (in that order), then marks Ready. It is the
 // single funnel every claim-model success path runs.
-func (r *ClientReconciler) convergeThenSucceed(ctx context.Context, logger logr.Logger, kc ClientClient, kclient *keycloakv1alpha1.KeycloakClient, clientUUID, reason, message string) (ctrl.Result, error) {
-	if err := r.updateClient(ctx, kc, kclient, clientUUID); err != nil {
+func (r *ClientReconciler) convergeThenSucceed(ctx context.Context, logger logr.Logger, kc ClientClient, kclient *keycloakv1alpha1.KeycloakClient, clientUUID string, existing *keycloak.OIDCClient, created bool, reason, message string) (ctrl.Result, error) {
+	beforeUUID := kclient.Status.ClientUUID
+
+	updated, err := r.updateClient(ctx, kc, kclient, clientUUID, existing)
+	if err != nil {
 		return r.fail(ctx, kclient, err)
 	}
 	if err := r.ensureClientRoles(ctx, kc, kclient, clientUUID); err != nil {
@@ -257,7 +262,13 @@ func (r *ClientReconciler) convergeThenSucceed(ctx context.Context, logger logr.
 	if err := r.deliverClientSecret(ctx, kc, kclient, clientUUID); err != nil {
 		return r.fail(ctx, kclient, err)
 	}
-	return r.succeed(ctx, logger, kclient, reason, message)
+	if created || updated {
+		r.stampMutation(kclient)
+	}
+	now := metav1.Now()
+	kclient.Status.LastValidatedTime = &now
+	extraChanged := beforeUUID != kclient.Status.ClientUUID
+	return r.succeed(ctx, logger, kclient, reason, message, extraChanged)
 }
 
 // recordConflict sets a terminal Conflict condition and emits a Warning, writing
@@ -305,7 +316,7 @@ func (r *ClientReconciler) desiredClient(kclient *keycloakv1alpha1.KeycloakClien
 // gets that attribute actively REMOVED so an adopted/pre-existing confidential
 // client carrying a stale S256 converges to no-PKCE (rather than keeping a stale
 // PKCE requirement the merge-only path would never clear).
-func (r *ClientReconciler) updateClient(ctx context.Context, kc ClientClient, kclient *keycloakv1alpha1.KeycloakClient, clientUUID string) error {
+func (r *ClientReconciler) updateClient(ctx context.Context, kc ClientClient, kclient *keycloakv1alpha1.KeycloakClient, clientUUID string, existing *keycloak.OIDCClient) (bool, error) {
 	enabled := true
 	public := kclient.Spec.Type == keycloakv1alpha1.KeycloakClientTypePublic
 	redirects := append([]string(nil), kclient.Spec.RedirectURIs...)
@@ -325,12 +336,50 @@ func (r *ClientReconciler) updateClient(ctx context.Context, kc ClientClient, kc
 		// adopted client that previously required PKCE converges to no-PKCE.
 		fields.RemoveAttributes = []string{keycloak.PKCECodeChallengeMethodAttr}
 	}
+	if existing != nil && clientMatchesDesired(existing, kclient) {
+		return false, nil
+	}
 	err := kc.UpdateClientFields(ctx, clientUUID, fields)
 	recordKeycloakAPI(opUpdateClient, err)
 	if err != nil {
-		return fmt.Errorf("updating Keycloak client %q: %w", kclient.Spec.ClientID, err)
+		return false, fmt.Errorf("updating Keycloak client %q: %w", kclient.Spec.ClientID, err)
 	}
-	return nil
+	return true, nil
+}
+
+func clientMatchesDesired(existing *keycloak.OIDCClient, kclient *keycloakv1alpha1.KeycloakClient) bool {
+	public := kclient.Spec.Type == keycloakv1alpha1.KeycloakClientTypePublic
+	if !existing.Enabled || existing.PublicClient != public {
+		return false
+	}
+	if existing.Description != kclient.Spec.Description {
+		return false
+	}
+	if !sameStringSet(existing.RedirectURIs, kclient.Spec.RedirectURIs) || !sameStringSet(existing.WebOrigins, kclient.Spec.WebOrigins) {
+		return false
+	}
+	if public {
+		return existing.Attributes[keycloak.PKCECodeChallengeMethodAttr] == keycloak.PKCEMethodS256
+	}
+	_, hasPKCE := existing.Attributes[keycloak.PKCECodeChallengeMethodAttr]
+	return !hasPKCE
+}
+
+func sameStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]int, len(a))
+	for _, v := range a {
+		seen[v]++
+	}
+	for _, v := range b {
+		if seen[v] == 0 {
+			return false
+		}
+		seen[v]--
+	}
+	return true
 }
 
 // ensureClientRoles ensures every client role declared in spec.clientRoles exists
@@ -580,18 +629,41 @@ func (r *ClientReconciler) resolveInstance(ctx context.Context, kclient *keycloa
 
 // succeed stamps Ready/Programmed/Accepted true, emits a Normal event, and writes
 // status only when a condition flipped or observedGeneration advanced.
-func (r *ClientReconciler) succeed(ctx context.Context, logger logr.Logger, kclient *keycloakv1alpha1.KeycloakClient, reason, message string) (ctrl.Result, error) {
+func (r *ClientReconciler) succeed(ctx context.Context, logger logr.Logger, kclient *keycloakv1alpha1.KeycloakClient, reason, message string, extraChanged bool) (ctrl.Result, error) {
+	validationChanged := true
 	changed := markReady(&kclient.Status.Conditions, reason, message, kclient.Generation)
-	changed = changed || kclient.Status.ObservedGeneration != kclient.Generation
+	changed = changed || extraChanged || validationChanged || kclient.Status.ObservedGeneration != kclient.Generation
 	if !changed {
-		return ctrl.Result{}, nil
+		return ctrl.Result{RequeueAfter: keycloakExternalResourceResync}, nil
 	}
 	r.Recorder.Event(kclient, corev1.EventTypeNormal, reason, message)
 	logger.Info("reconciled KeycloakClient", "clientId", kclient.Spec.ClientID, "reason", reason)
 	if err := r.updateStatus(ctx, kclient); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: keycloakExternalResourceResync}, nil
+}
+
+func (r *ClientReconciler) stampMutation(kclient *keycloakv1alpha1.KeycloakClient) {
+	now := metav1.Now()
+	reason := keycloakv1alpha1.MutationReasonDriftRemediation
+	if kclient.Status.ObservedGeneration != kclient.Generation || !clientReady(kclient) {
+		reason = keycloakv1alpha1.MutationReasonSpecChange
+	}
+	kclient.Status.LastMutatedTime = &now
+	kclient.Status.LastMutationReason = reason
+	if reason == keycloakv1alpha1.MutationReasonDriftRemediation {
+		kclient.Status.LastDriftTime = &now
+	}
+}
+
+func clientReady(kclient *keycloakv1alpha1.KeycloakClient) bool {
+	for _, c := range kclient.Status.Conditions {
+		if c.Type == ConditionReady {
+			return c.Status == metav1.ConditionTrue && c.ObservedGeneration == kclient.Generation
+		}
+	}
+	return false
 }
 
 // notReady records a recoverable not-ready condition for an unsatisfied
@@ -685,7 +757,7 @@ func (r *ClientReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.NewClient = NewKeycloakClientClient
 	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&keycloakv1alpha1.KeycloakClient{}).
+		For(&keycloakv1alpha1.KeycloakClient{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		// The delivered confidential-client Secret is NOT Owns-watched: the
 		// controller holds only secrets get;create (never list/watch), so it must not
 		// establish a cluster-wide Secret informer. The Secret is generate-once and

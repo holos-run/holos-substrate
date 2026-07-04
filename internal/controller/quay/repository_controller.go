@@ -14,9 +14,11 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
 	"github.com/holos-run/holos-paas/internal/quay"
@@ -205,7 +207,8 @@ func (r *RepositoryReconciler) reconcileNormal(ctx context.Context, logger logr.
 	}
 
 	// Create the repository or reconcile its visibility/description drift.
-	if err := r.ensureRepository(ctx, qc, repo, quayOrg); err != nil {
+	repoMutated, err := r.ensureRepository(ctx, qc, repo, quayOrg)
+	if err != nil {
 		return r.fail(ctx, repo, err)
 	}
 
@@ -217,10 +220,16 @@ func (r *RepositoryReconciler) reconcileNormal(ctx context.Context, logger logr.
 	// it with Ready=True. webhookChanged tells succeed() whether the
 	// WebhookConfigured condition flipped, so a webhook URL change that does not
 	// bump the generation still gets persisted.
-	handled, webhookChanged, result, err := r.reconcileWebhook(ctx, logger, qc, repo, quayOrg)
+	handled, webhookChanged, webhookMutated, result, err := r.reconcileWebhook(ctx, logger, qc, repo, quayOrg)
 	if handled {
 		return result, err
 	}
+
+	if repoMutated || webhookMutated {
+		r.stampMutation(repo)
+	}
+	now := metav1.Now()
+	repo.Status.LastValidatedTime = &now
 
 	res, err := r.succeed(ctx, logger, repo, webhookChanged)
 	if err != nil {
@@ -287,7 +296,8 @@ func (r *RepositoryReconciler) resolveQuayOrg(ctx context.Context, repo *quayv1a
 // name (Organization.spec.name). On first create it records the provisioned Quay
 // path in status so the finalizer can delete exactly it. Visibility is compared
 // against Quay's GET boolean is_public; description is compared against the spec.
-func (r *RepositoryReconciler) ensureRepository(ctx context.Context, qc RepoClient, repo *quayv1alpha1.Repository, quayOrg string) error {
+func (r *RepositoryReconciler) ensureRepository(ctx context.Context, qc RepoClient, repo *quayv1alpha1.Repository, quayOrg string) (bool, error) {
+	mutated := false
 	ns := quayOrg
 	name := repo.Spec.Name
 	visibility := string(repo.Spec.Visibility)
@@ -299,14 +309,14 @@ func (r *RepositoryReconciler) ensureRepository(ctx context.Context, qc RepoClie
 		createErr := qc.CreateRepository(ctx, ns, name, visibility, repo.Spec.Description)
 		recordQuayAPI(opCreateRepository, createErr)
 		if createErr != nil {
-			return fmt.Errorf("creating Quay repository %s/%s: %w", ns, name, createErr)
+			return mutated, fmt.Errorf("creating Quay repository %s/%s: %w", ns, name, createErr)
 		}
 		// Record the provisioned identity so deletion targets exactly this path.
 		repo.Status.QuayRepository = ns + "/" + name
-		return nil
+		return true, nil
 	}
 	if err != nil {
-		return fmt.Errorf("getting Quay repository %s/%s: %w", ns, name, err)
+		return mutated, fmt.Errorf("getting Quay repository %s/%s: %w", ns, name, err)
 	}
 	repo.Status.QuayRepository = ns + "/" + name
 
@@ -317,17 +327,19 @@ func (r *RepositoryReconciler) ensureRepository(ctx context.Context, qc RepoClie
 		err := qc.UpdateRepositoryVisibility(ctx, ns, name, visibility)
 		recordQuayAPI(opUpdateRepository, err)
 		if err != nil {
-			return fmt.Errorf("updating Quay repository %s/%s visibility: %w", ns, name, err)
+			return mutated, fmt.Errorf("updating Quay repository %s/%s visibility: %w", ns, name, err)
 		}
+		mutated = true
 	}
 	if current.Description != repo.Spec.Description {
 		err := qc.UpdateRepositoryDescription(ctx, ns, name, repo.Spec.Description)
 		recordQuayAPI(opUpdateRepository, err)
 		if err != nil {
-			return fmt.Errorf("updating Quay repository %s/%s description: %w", ns, name, err)
+			return mutated, fmt.Errorf("updating Quay repository %s/%s description: %w", ns, name, err)
 		}
+		mutated = true
 	}
-	return nil
+	return mutated, nil
 }
 
 // reconcileWebhook ensures the repository has exactly one repo_push notification
@@ -348,7 +360,7 @@ func (r *RepositoryReconciler) ensureRepository(ctx context.Context, qc RepoClie
 // changed, so succeed() persists status even when Ready and observedGeneration
 // are unchanged — e.g. a urlSecretRef value changed (Quay was updated) without a
 // generation bump, which must not leave WebhookConfigured stale.
-func (r *RepositoryReconciler) reconcileWebhook(ctx context.Context, logger logr.Logger, qc RepoClient, repo *quayv1alpha1.Repository, quayOrg string) (handled, webhookChanged bool, result ctrl.Result, err error) {
+func (r *RepositoryReconciler) reconcileWebhook(ctx context.Context, logger logr.Logger, qc RepoClient, repo *quayv1alpha1.Repository, quayOrg string) (handled, webhookChanged, webhookMutated bool, result ctrl.Result, err error) {
 	ns := quayOrg
 	name := repo.Spec.Name
 
@@ -356,12 +368,13 @@ func (r *RepositoryReconciler) reconcileWebhook(ctx context.Context, logger logr
 		// No webhook desired: drop any controller-managed repo_push notifications
 		// (e.g. spec.webhook was removed) and record the intentional absence. This
 		// is a clean state — fall through to succeed() so Ready is set.
-		if err := r.removeManagedWebhooks(ctx, qc, ns, name); err != nil {
-			return true, false, ctrl.Result{}, r.failErr(ctx, repo, err)
+		mutated, err := r.removeManagedWebhooks(ctx, qc, ns, name)
+		if err != nil {
+			return true, false, mutated, ctrl.Result{}, r.failErr(ctx, repo, err)
 		}
 		changed := setWebhookCondition(&repo.Status.Conditions, metav1.ConditionFalse,
 			ReasonWebhookNotConfigured, "no webhook configured", repo.Generation)
-		return false, changed, ctrl.Result{}, nil
+		return false, changed, mutated, ctrl.Result{}, nil
 	}
 
 	url, resolveErr := resolveWebhookURL(ctx, r.APIReader, repo.Namespace, repo.Spec.Webhook)
@@ -371,25 +384,26 @@ func (r *RepositoryReconciler) reconcileWebhook(ctx context.Context, logger logr
 			// Terminal: a spec change re-triggers reconciliation. Set a False
 			// condition and do not requeue.
 			res, e := r.handleWebhookCondition(ctx, repo, ReasonInvalidWebhook, resolveErr.Error(), false)
-			return true, false, res, e
+			return true, false, false, res, e
 		case isWebhookURLNotFound(resolveErr):
 			// Recoverable: requeue (error) so a later-created Secret takes effect.
 			res, e := r.handleWebhookCondition(ctx, repo, ReasonWebhookURLNotFound, resolveErr.Error(), true)
-			return true, false, res, e
+			return true, false, false, res, e
 		default:
 			// Transient API error reading the Secret: requeue with backoff.
-			return true, false, ctrl.Result{}, resolveErr
+			return true, false, false, ctrl.Result{}, resolveErr
 		}
 	}
 
-	if err := r.ensureWebhook(ctx, qc, ns, name, url); err != nil {
+	mutated, err := r.ensureWebhook(ctx, qc, ns, name, url)
+	if err != nil {
 		// Quay's error body for a webhook call can echo the submitted config,
 		// including the target URL. For a secret-backed URL that value is sensitive
 		// (the hard-to-guess Kargo receiver URL is held in a Secret precisely so it
 		// is not exposed), so redact it before the error reaches the status
 		// condition that failErr writes. The returned (unredacted) error still
 		// drives requeue/backoff and is logged internally.
-		return true, false, ctrl.Result{}, r.failErr(ctx, repo, redactWebhookURL(err, repo, url))
+		return true, false, mutated, ctrl.Result{}, r.failErr(ctx, repo, redactWebhookURL(err, repo, url))
 	}
 
 	// Do not put the resolved URL in the status message when it came from a
@@ -404,7 +418,7 @@ func (r *RepositoryReconciler) reconcileWebhook(ctx context.Context, logger logr
 	changed := setWebhookCondition(&repo.Status.Conditions, metav1.ConditionTrue,
 		ReasonWebhookConfigured, message, repo.Generation)
 	logger.V(1).Info("reconciled webhook", "repository", ns+"/"+name)
-	return false, changed, ctrl.Result{}, nil
+	return false, changed, mutated, ctrl.Result{}, nil
 }
 
 // redactWebhookURL scrubs a secret-backed webhook URL out of an error before it
@@ -439,11 +453,12 @@ func isManagedWebhook(n quay.Notification) bool {
 // otherwise. Only controller-owned notifications (matched by webhookTitle) are
 // deleted, so a re-run or URL change never piles up duplicates and never removes
 // a manually-created webhook on the same repository.
-func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient, ns, name, url string) error {
+func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient, ns, name, url string) (bool, error) {
+	mutated := false
 	notifications, err := qc.ListNotifications(ctx, ns, name)
 	recordQuayAPI(opListNotifications, err)
 	if err != nil {
-		return fmt.Errorf("listing Quay notifications for %s/%s: %w", ns, name, err)
+		return mutated, fmt.Errorf("listing Quay notifications for %s/%s: %w", ns, name, err)
 	}
 
 	matched := false
@@ -462,34 +477,36 @@ func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient,
 		delErr := qc.DeleteNotificationIfExists(ctx, ns, name, n.UUID)
 		recordQuayAPI(opDeleteNotification, delErr)
 		if delErr != nil {
-			return fmt.Errorf("deleting stale Quay notification %s on %s/%s: %w", n.UUID, ns, name, delErr)
+			return mutated, fmt.Errorf("deleting stale Quay notification %s on %s/%s: %w", n.UUID, ns, name, delErr)
 		}
+		mutated = true
 	}
 
 	if matched {
-		return nil
+		return mutated, nil
 	}
 	_, err = qc.CreateNotification(ctx, ns, name, url, webhookTitle)
 	recordQuayAPI(opCreateNotification, err)
 	if err != nil {
-		return fmt.Errorf("creating Quay repo_push webhook on %s/%s: %w", ns, name, err)
+		return mutated, fmt.Errorf("creating Quay repo_push webhook on %s/%s: %w", ns, name, err)
 	}
-	return nil
+	return true, nil
 }
 
 // removeManagedWebhooks deletes every controller-owned repo_push webhook
 // notification on the repository (matched by webhookTitle), leaving any
 // manually-created webhooks intact. It is used when spec.webhook is unset.
-func (r *RepositoryReconciler) removeManagedWebhooks(ctx context.Context, qc RepoClient, ns, name string) error {
+func (r *RepositoryReconciler) removeManagedWebhooks(ctx context.Context, qc RepoClient, ns, name string) (bool, error) {
+	mutated := false
 	notifications, err := qc.ListNotifications(ctx, ns, name)
 	// A repository that no longer exists has no notifications to clean up; its
 	// NotFound is an expected branch, not a Quay-API failure.
 	recordQuayAPI(opListNotifications, ignoreNotFound(err))
 	if err != nil {
 		if quay.IsNotFound(err) {
-			return nil
+			return mutated, nil
 		}
-		return fmt.Errorf("listing Quay notifications for %s/%s: %w", ns, name, err)
+		return mutated, fmt.Errorf("listing Quay notifications for %s/%s: %w", ns, name, err)
 	}
 	for _, n := range notifications {
 		if !isManagedWebhook(n) {
@@ -498,10 +515,11 @@ func (r *RepositoryReconciler) removeManagedWebhooks(ctx context.Context, qc Rep
 		delErr := qc.DeleteNotificationIfExists(ctx, ns, name, n.UUID)
 		recordQuayAPI(opDeleteNotification, delErr)
 		if delErr != nil {
-			return fmt.Errorf("deleting Quay notification %s on %s/%s: %w", n.UUID, ns, name, delErr)
+			return mutated, fmt.Errorf("deleting Quay notification %s on %s/%s: %w", n.UUID, ns, name, delErr)
 		}
+		mutated = true
 	}
-	return nil
+	return mutated, nil
 }
 
 // succeed stamps Accepted/Programmed/Ready True (reason Reconciled) and writes
@@ -516,17 +534,40 @@ func (r *RepositoryReconciler) succeed(ctx context.Context, logger logr.Logger, 
 		target = repo.Spec.OrganizationRef + "/" + repo.Spec.Name
 	}
 	message := fmt.Sprintf("reconciled Quay repository %s", target)
+	validationChanged := true
 	changed := markReady(&repo.Status.Conditions, ReasonReconciled, message, repo.Generation)
-	changed = changed || webhookChanged || repo.Status.ObservedGeneration != repo.Generation
+	changed = changed || webhookChanged || validationChanged || repo.Status.ObservedGeneration != repo.Generation
 	if !changed {
-		return ctrl.Result{}, nil
+		return ctrl.Result{RequeueAfter: quayExternalResourceResync}, nil
 	}
 	r.Recorder.Event(repo, corev1.EventTypeNormal, ReasonReconciled, message)
 	logger.Info("reconciled Repository", "repository", target)
 	if err := r.updateStatus(ctx, repo); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: quayExternalResourceResync}, nil
+}
+
+func (r *RepositoryReconciler) stampMutation(repo *quayv1alpha1.Repository) {
+	now := metav1.Now()
+	reason := quayv1alpha1.MutationReasonDriftRemediation
+	if repo.Status.ObservedGeneration != repo.Generation || !repositoryReady(repo) {
+		reason = quayv1alpha1.MutationReasonSpecChange
+	}
+	repo.Status.LastMutatedTime = &now
+	repo.Status.LastMutationReason = reason
+	if reason == quayv1alpha1.MutationReasonDriftRemediation {
+		repo.Status.LastDriftTime = &now
+	}
+}
+
+func repositoryReady(repo *quayv1alpha1.Repository) bool {
+	for _, c := range repo.Status.Conditions {
+		if c.Type == ConditionReady {
+			return c.Status == metav1.ConditionTrue && c.ObservedGeneration == repo.Generation
+		}
+	}
+	return false
 }
 
 // reconcileDelete runs the finalizer: it deletes the Quay repository (which
@@ -772,6 +813,6 @@ func (r *RepositoryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.NewClient = NewQuayRepoClient
 	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&quayv1alpha1.Repository{}).
+		For(&quayv1alpha1.Repository{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
 }

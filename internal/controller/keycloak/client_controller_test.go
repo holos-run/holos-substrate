@@ -3,6 +3,7 @@ package keycloak
 import (
 	"context"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -81,7 +82,63 @@ func TestClientReconcileCreatePublicWithRolesAndMapper(t *testing.T) {
 	if !fake.mapperEnsured(uuid) {
 		t.Errorf("client-role mapper was not ensured; calls = %v", fake.calls)
 	}
+	if got.Status.LastValidatedTime == nil {
+		t.Errorf("lastValidatedTime not set on successful reconcile")
+	}
+	if got.Status.LastMutatedTime == nil || got.Status.LastMutationReason != keycloakv1alpha1.MutationReasonSpecChange {
+		t.Errorf("mutation status = (%v, %q), want time with %q", got.Status.LastMutatedTime, got.Status.LastMutationReason, keycloakv1alpha1.MutationReasonSpecChange)
+	}
 	assertEvent(t, recorder, ReasonCreated)
+}
+
+func TestClientSteadyStateRefreshesValidationOnly(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-client-observe"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	kclient := &keycloakv1alpha1.KeycloakClient{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "observe"},
+		Spec: keycloakv1alpha1.KeycloakClientSpec{
+			ClientID:    "https://observe.holos.internal",
+			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, kclient); err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	fake := newFakeKeycloakClient()
+	r, _ := newClientReconciler(fake, ns)
+	key := client.ObjectKeyFromObject(kclient)
+	reconcileClientToSteady(t, ctx, r, key)
+	first := getKClient(t, ctx, key)
+	if first.Status.LastValidatedTime == nil || first.Status.LastMutatedTime == nil {
+		t.Fatalf("initial timestamps not set: validated=%v mutated=%v", first.Status.LastValidatedTime, first.Status.LastMutatedTime)
+	}
+	firstValidated := first.Status.LastValidatedTime.DeepCopy()
+	firstMutated := first.Status.LastMutatedTime.DeepCopy()
+
+	time.Sleep(time.Second + 100*time.Millisecond)
+	result, err := reconcileClient(ctx, r, key)
+	if err != nil {
+		t.Fatalf("steady reconcile: %v", err)
+	}
+	if result.RequeueAfter != keycloakExternalResourceResync {
+		t.Errorf("RequeueAfter = %v, want %v", result.RequeueAfter, keycloakExternalResourceResync)
+	}
+	second := getKClient(t, ctx, key)
+	if !second.Status.LastValidatedTime.After(firstValidated.Time) {
+		t.Errorf("lastValidatedTime did not advance: first=%v second=%v", firstValidated, second.Status.LastValidatedTime)
+	}
+	if !second.Status.LastMutatedTime.Equal(firstMutated) {
+		t.Errorf("lastMutatedTime changed on steady validation: first=%v second=%v", firstMutated, second.Status.LastMutatedTime)
+	}
 }
 
 func TestClientReconcileDescriptionPropagatedOnCreate(t *testing.T) {

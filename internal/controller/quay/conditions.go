@@ -27,6 +27,12 @@ import (
 // keeping the result non-zero so test helpers can detect the requeue.
 const requeueImmediately = time.Millisecond
 
+// quayExternalResourceResync is the steady-state validation cadence for
+// Quay-backed external-resource CRs. A Ready=True object still rechecks Quay
+// periodically so lastValidatedTime remains actionable and out-of-band drift is
+// eventually remediated even without a spec change.
+const quayExternalResourceResync = time.Hour
+
 // Condition types surfaced on quay.holos.run resource status. They mirror the
 // vocabulary already declared on the API types (ConditionAccepted /
 // ConditionProgrammed / ConditionReady) and follow the Gateway API convention:

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -147,6 +148,30 @@ func TestUserReconcileCreateAndLink(t *testing.T) {
 	}
 	if !fake.federated(got.Status.UserID, "corp-oidc") {
 		t.Errorf("IdP federated-identity link was not created; calls = %v", fake.calls)
+	}
+	if got.Status.LastValidatedTime == nil {
+		t.Errorf("lastValidatedTime not set on successful reconcile")
+	}
+	if got.Status.LastMutatedTime == nil || got.Status.LastMutationReason != keycloakv1alpha1.MutationReasonSpecChange {
+		t.Errorf("mutation status = (%v, %q), want time with %q", got.Status.LastMutatedTime, got.Status.LastMutationReason, keycloakv1alpha1.MutationReasonSpecChange)
+	}
+	firstValidated := got.Status.LastValidatedTime.DeepCopy()
+	firstMutated := got.Status.LastMutatedTime.DeepCopy()
+
+	time.Sleep(time.Second + 100*time.Millisecond)
+	result, err := reconcileUser(ctx, r, key)
+	if err != nil {
+		t.Fatalf("steady reconcile: %v", err)
+	}
+	if result.RequeueAfter != keycloakExternalResourceResync {
+		t.Errorf("RequeueAfter = %v, want %v", result.RequeueAfter, keycloakExternalResourceResync)
+	}
+	got = getUser(t, ctx, key)
+	if !got.Status.LastValidatedTime.After(firstValidated.Time) {
+		t.Errorf("lastValidatedTime did not advance: first=%v second=%v", firstValidated, got.Status.LastValidatedTime)
+	}
+	if !got.Status.LastMutatedTime.Equal(firstMutated) {
+		t.Errorf("lastMutatedTime changed on steady validation: first=%v second=%v", firstMutated, got.Status.LastMutatedTime)
 	}
 	assertEvent(t, recorder, ReasonCreated)
 }

@@ -59,6 +59,7 @@ const (
 	opDeleteGroup           = "delete_group"
 	opFindClientByClientID  = "find_client_by_client_id"
 	opGetClientRole         = "get_client_role"
+	opListGroupClientRoles  = "list_group_client_roles"
 	opAssignClientRole      = "assign_client_role"
 	opRemoveClientRole      = "remove_client_role"
 	opCreateGroupResource   = "create_group_resource"

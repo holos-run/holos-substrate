@@ -27,6 +27,10 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
+    - jsonPath: .status.lastValidatedTime
+      name: Validated
+      priority: 1
+      type: date
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -309,6 +313,35 @@ spec:
                   so it survives controller restarts. The finalizer deletes the Quay org
                   only when Created is true; an adopted org is released, never deleted.
                 type: boolean
+              lastDriftTime:
+                description: |-
+                  LastDriftTime is the last time the controller remediated out-of-band drift.
+                  It is set with LastMutationReason=DriftRemediation and preserved across
+                  later spec-driven mutations.
+                format: date-time
+                type: string
+              lastMutatedTime:
+                description: |-
+                  LastMutatedTime is the last time the controller actually changed Quay for
+                  this organization, such as creating the org, updating its email, or
+                  reconciling synced teams.
+                format: date-time
+                type: string
+              lastMutationReason:
+                description: |-
+                  LastMutationReason classifies the cause of the last remote mutation. It is
+                  written together with lastMutatedTime.
+                enum:
+                - SpecChange
+                - DriftRemediation
+                type: string
+              lastValidatedTime:
+                description: |-
+                  LastValidatedTime is the last time the controller successfully read Quay and
+                  confirmed or restored the declared organization state. It is not advanced on
+                  failed remote reads or failed verification, so stale values remain visible.
+                format: date-time
+                type: string
               managedTeams:
                 description: |-
                   ManagedTeams records the Quay team names this CR created and manages. It is

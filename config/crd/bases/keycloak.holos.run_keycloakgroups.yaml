@@ -30,6 +30,10 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
+    - jsonPath: .status.lastValidatedTime
+      name: Validated
+      priority: 1
+      type: date
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -299,6 +303,36 @@ spec:
                   confirms the group currently at the path still carries this UUID. A mismatch
                   means the original group was replaced by a foreign group, which is treated as
                   a Conflict (and never deleted) rather than silently seized.
+                type: string
+              lastDriftTime:
+                description: |-
+                  LastDriftTime is the last time the controller remediated out-of-band drift.
+                  It is set with LastMutationReason=DriftRemediation and preserved across
+                  later spec-driven mutations.
+                format: date-time
+                type: string
+              lastMutatedTime:
+                description: |-
+                  LastMutatedTime is the last time the controller actually changed Keycloak
+                  for this group, such as creating the group, assigning or removing a client
+                  role, or changing custodian delegation.
+                format: date-time
+                type: string
+              lastMutationReason:
+                description: |-
+                  LastMutationReason classifies the cause of the last remote mutation. It is
+                  written together with lastMutatedTime.
+                enum:
+                - SpecChange
+                - DriftRemediation
+                type: string
+              lastValidatedTime:
+                description: |-
+                  LastValidatedTime is the last time the controller successfully read
+                  Keycloak and confirmed or restored the declared group state. It is not
+                  advanced on failed remote reads or failed verification, so stale values
+                  remain visible.
+                format: date-time
                 type: string
               managedClientRoles:
                 description: |-

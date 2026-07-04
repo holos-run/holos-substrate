@@ -192,6 +192,35 @@ type KeycloakClientStatus struct {
 	//
 	// +optional
 	ClientUUID string `json:"clientUUID,omitempty"`
+
+	// LastValidatedTime is the last time the controller successfully read
+	// Keycloak and confirmed or restored the declared client state. It is not
+	// advanced on failed remote reads or failed verification, so stale values
+	// remain visible.
+	//
+	// +optional
+	LastValidatedTime *metav1.Time `json:"lastValidatedTime,omitempty"`
+
+	// LastMutatedTime is the last time the controller actually changed Keycloak
+	// for this client, such as creating/updating the client or programming its
+	// roles and mapper.
+	//
+	// +optional
+	LastMutatedTime *metav1.Time `json:"lastMutatedTime,omitempty"`
+
+	// LastMutationReason classifies the cause of the last remote mutation. It is
+	// written together with lastMutatedTime.
+	//
+	// +optional
+	// +kubebuilder:validation:Enum=SpecChange;DriftRemediation
+	LastMutationReason MutationReason `json:"lastMutationReason,omitempty"`
+
+	// LastDriftTime is the last time the controller remediated out-of-band drift.
+	// It is set with LastMutationReason=DriftRemediation and preserved across
+	// later spec-driven mutations.
+	//
+	// +optional
+	LastDriftTime *metav1.Time `json:"lastDriftTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -201,6 +230,7 @@ type KeycloakClientStatus struct {
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:printcolumn:name="Validated",type=date,priority=1,JSONPath=`.status.lastValidatedTime`
 
 // KeycloakClient is the Schema for the keycloakclients API. It manages one
 // project OIDC client named by its URL and the group→groups-claim mapping via
