@@ -125,19 +125,45 @@ spec:
     name: holos-keycloak
     namespace: keycloak
   email: alice@example.com
-  provision: ifNecessary
+  # The prescribed day-2 grant form: adopt the colleague's existing Keycloak
+  # user rather than conflicting on it. Without adopt, a pre-existing user is
+  # a terminal Conflict (the as-built claim model); with it, the CR adopts the
+  # user and manages ONLY the memberships declared below.
+  adopt: true
   groups:
     - /projects/my-project/roles/editor
 ```
 
 The owner is authorized by the owner RoleBinding, the cross-namespace
 `instanceRef` is authorized by the existing `ReferenceGrant`, the controller
-pre-creates (or finds) the user by email and joins the declared role groups,
-and membership surfaces in the OIDC `groups` claim exactly as for rendered
-users — Quay teams, Argo CD RBAC, and Kubernetes RBAC `Group` subjects all
-follow with no additional wiring. Revoking access is `kubectl delete` (or
-dropping the group from `spec.groups`): the reconciler prunes exactly the
-memberships this CR manages.
+creates the user by email — or, with `adopt: true`, adopts a pre-existing one
+— and joins the declared role groups, and membership surfaces in the OIDC
+`groups` claim exactly as for rendered users — Quay teams, Argo CD RBAC, and
+Kubernetes RBAC `Group` subjects all follow with no additional wiring.
+Adoption is per-CR (each CR tracks its own `status.managedGroups` edge), so
+two projects granting the same person each hold their own adopting CR and
+never contend.
+
+**Revocation semantics follow the created/adopted distinction**, and the ADR
+prescribes them explicitly because they are not symmetric:
+
+- **Revoking a single role**: drop the group path from `spec.groups`. The
+  reconciler prunes exactly that managed membership (UUID-pinned) and
+  touches nothing else. This is the safe, always-correct revocation.
+- **Deleting an *adopting* CR** (the prescribed grant form above): the
+  finalizer **releases** the user — it prunes the memberships and IdP link
+  this CR manages and leaves the Keycloak identity, and every membership it
+  never managed, intact. Safe.
+- **Deleting a CR that *created* the user** (`status.created: true`): the
+  finalizer **deletes the Keycloak user entirely** — the identity and all of
+  its memberships, including any accrued through other projects' CRs or
+  custodian action. This is correct for the rendered standing-owner CRs
+  (the platform provisioned the identity) but is a destructive footgun for a
+  day-2 grant. This is why the grant form prescribes `adopt: true`: when the
+  colleague does not yet exist in Keycloak, the CR falls back to creating
+  them and records `created: true` — an owner revoking such a grant should
+  prefer emptying `spec.groups` over deleting the CR unless deleting the
+  identity is intended.
 
 The rationale:
 
@@ -175,8 +201,11 @@ kind: ClusterRole
 metadata:
   name: holos-keycloakuser-admin
   labels:
+    # admin ONLY — deliberately NOT aggregate-to-edit. A membership grant is
+    # an authorization change; the owner RoleBinding grants admin, and a
+    # subject holding mere edit in the namespace must not be able to mint
+    # grants.
     rbac.authorization.k8s.io/aggregate-to-admin: "true"
-    rbac.authorization.k8s.io/aggregate-to-edit: "true"
 rules:
   - apiGroups: [keycloak.holos.run]
     resources: [keycloakusers]
@@ -195,31 +224,44 @@ rules:
 ```
 
 Write access is aggregated **per Kind, in phases**, gated on the hazard each
-Kind carries under the transparent controller ([ADR-20](ADR-20.md) Rev 7):
+Kind carries under the transparent controller ([ADR-20](ADR-20.md) Rev 7).
+Read access (`view` aggregation) covers all `holos.run` Kinds immediately;
+**no write phase ships without its admission-policy prerequisite**:
 
 1. **Phase 1 — `KeycloakUser`** (this ADR's grant path) and `quay.holos.run`
-   `Repository`. Both are bounded: a `KeycloakUser` can only join groups that
-   already exist (the rendered role trees), and a `Repository` is scoped to
-   an `organizationRef` within the project. Read access (`view` aggregation)
-   covers all `holos.run` Kinds immediately.
-2. **Phase 2 — `KeycloakClient`, `KeycloakGroup`, `Organization` — only after
-   admission control ships.** The transparent controller writes group paths,
-   client IDs, and role names verbatim; a tenant-created `KeycloakGroup`
-   could confer roles on the `argocd` client, and a tenant `KeycloakClient`
-   could claim a reserved client ID. Those Kinds stay platform-rendered until
-   the `ValidatingAdmissionPolicy`/webhook effort ADR-20 Rev 7 designates
-   enforces tenant/platform disjointness. **The admission-control effort is
-   therefore load-bearing for plane 2's expansion, not merely advisory.**
+   `Repository`, **prerequisite: the two phase-1 admission policies below.**
+2. **Phase 2 — `KeycloakClient`, `KeycloakGroup`, `Organization`,
+   prerequisite: the full tenant/platform disjointness policy set.** The
+   transparent controller writes group paths, client IDs, and role names
+   verbatim; a tenant-created `KeycloakGroup` could confer roles on the
+   `argocd` client, and a tenant `KeycloakClient` could claim a reserved
+   client ID. Those Kinds stay platform-rendered until the
+   `ValidatingAdmissionPolicy`/webhook effort ADR-20 Rev 7 designates
+   enforces disjointness across the whole surface.
 
-One boundary needs naming even in phase 1: `spec.groups` on an owner-created
-`KeycloakUser` is not confined to the owner's own project — the controller
-joins any group path that exists. Until admission control lands, the
-practical guard is that a grant only *matters* if a relying party keys on the
-resulting claim, and the phase-1 blast radius is accepted for the same reason
-the transparent-controller change accepted it: policy belongs in admission,
-not in reconcilers. An admission rule confining `spec.groups` to
-`/projects/<namespace>/…` paths is the first policy the downstream effort
-should ship.
+**The admission-control effort is therefore load-bearing for plane 2 from
+phase 1 onward — a prerequisite, not a follow-up.** `KeycloakUser` is not a
+safe Kind on its own: `spec.groups` is not confined to the owner's own
+project, the controller joins any group path that exists, and Kubernetes
+RBAC, Quay synced teams, and Argo CD all key on the resulting `groups` claim
+— an unconfined tenant `KeycloakUser` is a cross-project privilege
+escalation. Two policies are the phase-1 prerequisite, both expressible as
+`ValidatingAdmissionPolicy` CEL rules:
+
+- **Group-subtree confinement**: every entry in a `KeycloakUser.spec.groups`
+  created outside the platform's own delivery path must match
+  `/projects/<metadata.namespace>/…` — a tenant CR grants roles only within
+  its own project's subtree. (The platform's rendered CRs are exempt via the
+  ownership marker below, preserving any future platform-level grants.)
+- **Rendered-object protection**: the rendered scaffold carries a
+  platform-ownership marker label (the concrete key is settled by the
+  implementation issue; the Project component already labels its resources),
+  and the policy denies update/delete of marker-carrying objects by
+  non-platform subjects. Without this, the aggregated verbs would let an
+  owner mutate or delete the *rendered* CRs in their namespace — including
+  deleting a standing-owner `KeycloakUser` whose finalizer would delete the
+  owner's Keycloak identity. With it, "rendered resources are read-only to
+  tenants" is enforced, not aspirational.
 
 ### What the rendered `owners` map means now
 
@@ -257,13 +299,18 @@ membership edges independently.
    day-2 operations (FGAP v2 custodians, [ADR-20](ADR-20.md)).
 2. **Control-plane resources are the project owner's management surface — a
    membership grant is a control-plane resource.** A project owner grants a
-   colleague access by creating a `KeycloakUser` CR (email + role-group
-   paths) in the project's control namespace; revocation is deletion or a
-   spec edit.
-3. **Plane 2 is enabled by aggregated ClusterRoles, per Kind, in phases**:
-   `KeycloakUser` and `Repository` first (plus `view` on all `holos.run`
-   Kinds); `KeycloakClient`/`KeycloakGroup`/`Organization` only after the
-   admission-control policies of [ADR-20](ADR-20.md) Rev 7 enforce
+   colleague access by creating a `KeycloakUser` CR with `adopt: true`
+   (email + role-group paths) in the project's control namespace; revocation
+   is dropping the group from `spec.groups`, or deleting an adopting CR
+   (release semantics — the identity survives; deleting a CR that *created*
+   the user deletes the identity and is not the routine revocation path).
+3. **Plane 2 is enabled by aggregated ClusterRoles (`admin`-aggregated only,
+   never `edit`), per Kind, in phases, each phase gated on its
+   admission-policy prerequisite**: `KeycloakUser` and `Repository` first
+   (plus `view` on all `holos.run` Kinds), prerequisite the group-subtree
+   confinement and rendered-object protection policies;
+   `KeycloakClient`/`KeycloakGroup`/`Organization` only after the
+   admission-control policies of [ADR-20](ADR-20.md) Rev 7 enforce full
    tenant/platform disjointness.
 4. **Rendered resources stay platform-owned**; owner-created resources are
    additive and never collide with the rendered set. The registration's
@@ -282,10 +329,12 @@ membership edges independently.
   per phase-1 Kind plus the `view` aggregation. No change to the Project
   component's owner RoleBinding — aggregation makes the existing binding
   sufficient.
-- **Admission control becomes load-bearing.** The downstream
-  `ValidatingAdmissionPolicy` effort ([ADR-20](ADR-20.md) Rev 7) gates plane
-  2's expansion to the hazardous Kinds, and its first deliverable should
-  confine `KeycloakUser.spec.groups` to the CR's own project subtree.
+- **Admission control becomes load-bearing from phase 1.** The downstream
+  `ValidatingAdmissionPolicy` effort ([ADR-20](ADR-20.md) Rev 7) is a
+  **prerequisite** for every write phase: the group-subtree confinement and
+  rendered-object protection policies must ship before `KeycloakUser` write
+  access is aggregated, and the full disjointness set before the phase-2
+  Kinds. No tenant write access is enabled ahead of its policies.
 - **Two grant paths exist by design** (KRM and FGAP), with defined
   composition semantics; operators auditing "who has access" must consult
   Keycloak group membership as the effective state, with `KeycloakUser` CRs
