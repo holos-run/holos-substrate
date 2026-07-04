@@ -508,7 +508,9 @@ status:
   conditions: []                   # Accepted / Programmed / Ready
   observedGeneration: 0
   groupID: <keycloak group UUID>   # UUID-pins prune operations
-  managedMembers: []               # "email|userUUID" entries, +listType=set
+  managedMembers:                  # +listType=map, +listMapKey=email
+    - email: bob@example.com
+      userID: <keycloak user UUID>
   lastValidatedTime: "..."         # ADR-22 drift-observability status
   lastMutatedTime: "..."
   lastMutationReason: SpecChange   # SpecChange | DriftRemediation
@@ -537,11 +539,14 @@ status:
 **Status shape.** The Kind follows the ADR-22 status contract: standard
 `conditions[]` (`Accepted`/`Programmed`/`Ready`), `observedGeneration`, a `Ready`
 printer column, and the drift-observability fields for external-resource CRs.
-`status.groupID` stores the resolved Keycloak group UUID and `managedMembers`
-stores `"email|userUUID"` entries as a set. UUIDs make pruning safe: if a group
-is deleted and recreated at the same path with a different UUID, deletion/finalizer
-cleanup releases the old membership record untouched rather than removing members
-from an unrelated replacement group.
+`status.groupID` stores the resolved Keycloak group UUID and
+`status.managedMembers[]` is a structured map list keyed by `email`, with each
+entry carrying the resolved Keycloak `userID`. The structured list avoids
+delimiter parsing and gives prune operations both the declared identity and the
+remote UUID they must verify. UUIDs make pruning safe: if a group is deleted and
+recreated at the same path with a different UUID, deletion/finalizer cleanup
+releases the old membership record untouched rather than removing members from an
+unrelated replacement group.
 
 **Reconcile semantics.**
 
@@ -549,12 +554,18 @@ from an unrelated replacement group.
   tracked-set pattern in `reconcileMemberships` in
   `internal/controller/keycloak/user_controller.go`: members this CR added are
   tracked in `status.managedMembers`; members dropped from `spec.members[]` are
-  pruned if their stored user UUID still matches; out-of-band memberships and
-  memberships owned by other CRs are left alone.
+  pruned only if their stored user UUID still matches and no live peer
+  `KeycloakGroupMembership` for the same `groupRef` still declares the same email.
+  This peer check is required because Keycloak group membership has no per-binding
+  owner marker; overlapping membership CRs are allowed, but one CR may not remove a
+  member another CR still desires. Out-of-band memberships and memberships owned by
+  other CRs are left alone.
 - Deletion uses a finalizer to prune this CR's managed members. If the stored
   `groupID` no longer matches the current group at the same path, the finalizer
   treats the old group as gone and releases its managed set without touching the
-  replacement.
+  replacement. If another non-deleting membership CR still declares a managed
+  member, deletion releases this CR's status entry without removing the Keycloak
+  membership.
 - `lastValidatedTime` advances only after a successful remote read and
   verification/remediation. `lastMutatedTime` and `lastMutationReason` are
   updated only when the controller actually adds or removes a member; unchanged
