@@ -109,17 +109,21 @@ spec:
               email:
                 description: |-
                   Email is the organization contact email Quay stores for the namespace. It
-                  is required, has no default, and is reconciled if it drifts.
+                  is required, must look like an address with a non-empty local part and a
+                  DNS-style domain with at least two labels, has no default, and is
+                  reconciled if it drifts.
                 maxLength: 254
                 minLength: 1
+                pattern: ^[A-Za-z0-9.!#$%&'*+/=?^_{|}~-]+@[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$
                 type: string
               name:
                 description: |-
                   Name is the Quay organization name to create or adopt. It is required,
-                  immutable, and has no default; callers usually set it to metadata.name.
+                  immutable, must be between 2 and 255 characters, and has no default;
+                  callers usually set it to metadata.name.
                 maxLength: 255
-                minLength: 1
-                pattern: ^[a-z0-9]+([._-]+[a-z0-9]+)*$
+                minLength: 2
+                pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$
                 type: string
                 x-kubernetes-validations:
                 - message: name is immutable
@@ -140,10 +144,11 @@ spec:
                     name:
                       description: |-
                         Name is the Quay team name to manage inside the organization. It is
-                        required, must be unique within syncedTeams, and has no default.
+                        required, must be unique within syncedTeams, must be between 2 and 255
+                        characters, and has no default.
                       maxLength: 255
-                      minLength: 1
-                      pattern: ^[a-z0-9]+([._-]+[a-z0-9]+)*$
+                      minLength: 2
+                      pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$
                       type: string
                     oidcGroup:
                       description: |-

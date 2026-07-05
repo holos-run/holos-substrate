@@ -306,7 +306,7 @@ func (r *RepositoryReconciler) resolveQuayOrg(ctx context.Context, repo *quayv1a
 		return "", ctrl.Result{}, true, fmt.Errorf("reading Organization %q: %w", repo.Spec.OrganizationRef, getErr)
 	}
 
-	if !meta.IsStatusConditionTrue(org.Status.Conditions, ConditionReady) || org.Status.ObservedGeneration != org.Generation {
+	if !meta.IsStatusConditionTrue(org.Status.Conditions, quayv1alpha1.ConditionReady) || org.Status.ObservedGeneration != org.Generation {
 		res, e := r.handleOrgNotReady(ctx, repo,
 			fmt.Sprintf("Organization %q is not Ready yet", repo.Spec.OrganizationRef))
 		return "", res, true, e
@@ -446,7 +446,7 @@ func (r *RepositoryReconciler) reconcileWebhook(ctx context.Context, logger logr
 			return true, mutation, ctrl.Result{}, r.failErr(ctx, repo, err, combined.Mutated)
 		}
 		setWebhookCondition(&repo.Status.Conditions, metav1.ConditionFalse,
-			ReasonWebhookNotConfigured, "no webhook configured", repo.Generation)
+			quayv1alpha1.ReasonWebhookNotConfigured, "no webhook configured", repo.Generation)
 		return false, mutation, ctrl.Result{}, nil
 	}
 
@@ -459,21 +459,21 @@ func (r *RepositoryReconciler) reconcileWebhook(ctx context.Context, logger logr
 			if priorMutation.Mutated {
 				r.stampMutation(repo, priorMutation.HealedDrift)
 			}
-			res, e := r.handleWebhookCondition(ctx, repo, ReasonInvalidWebhook, resolveErr.Error(), false, priorMutation.Mutated)
+			res, e := r.handleWebhookCondition(ctx, repo, quayv1alpha1.ReasonInvalidWebhook, resolveErr.Error(), false, priorMutation.Mutated)
 			return true, quayMutation{}, res, e
 		case isWebhookURLNotFound(resolveErr):
 			// Recoverable: requeue (error) so a later-created Secret takes effect.
 			if priorMutation.Mutated {
 				r.stampMutation(repo, priorMutation.HealedDrift)
 			}
-			res, e := r.handleWebhookCondition(ctx, repo, ReasonWebhookURLNotFound, resolveErr.Error(), true, priorMutation.Mutated)
+			res, e := r.handleWebhookCondition(ctx, repo, quayv1alpha1.ReasonWebhookURLNotFound, resolveErr.Error(), true, priorMutation.Mutated)
 			return true, quayMutation{}, res, e
 		default:
 			// Transient API error reading the Secret: requeue with backoff.
 			if priorMutation.Mutated {
 				r.stampMutation(repo, priorMutation.HealedDrift)
 			}
-			res, e := r.handleWebhookCondition(ctx, repo, ReasonWebhookURLReadError, resolveErr.Error(), true, priorMutation.Mutated)
+			res, e := r.handleWebhookCondition(ctx, repo, quayv1alpha1.ReasonWebhookURLReadError, resolveErr.Error(), true, priorMutation.Mutated)
 			return true, quayMutation{}, res, e
 		}
 	}
@@ -503,7 +503,7 @@ func (r *RepositoryReconciler) reconcileWebhook(ctx context.Context, logger logr
 		message = fmt.Sprintf("repo_push webhook configured to %s", url)
 	}
 	setWebhookCondition(&repo.Status.Conditions, metav1.ConditionTrue,
-		ReasonWebhookConfigured, message, repo.Generation)
+		quayv1alpha1.ReasonWebhookConfigured, message, repo.Generation)
 	logger.V(1).Info("reconciled webhook", "repository", ns+"/"+name)
 	return false, mutation, ctrl.Result{}, nil
 }
@@ -642,10 +642,10 @@ func (r *RepositoryReconciler) succeed(ctx context.Context, logger logr.Logger, 
 	}
 	message := fmt.Sprintf("reconciled Quay repository %s", target)
 	beforeConditions := append([]metav1.Condition(nil), repo.Status.Conditions...)
-	markReady(&repo.Status.Conditions, ReasonReconciled, message, repo.Generation)
-	conditionTransitioned := conditionsTransitioned(beforeConditions, repo.Status.Conditions, ConditionAccepted, ConditionProgrammed, ConditionReady)
+	markReady(&repo.Status.Conditions, quayv1alpha1.ReasonReconciled, message, repo.Generation)
+	conditionTransitioned := conditionsTransitioned(beforeConditions, repo.Status.Conditions, quayv1alpha1.ConditionAccepted, quayv1alpha1.ConditionProgrammed, quayv1alpha1.ConditionReady)
 	if conditionTransitioned {
-		r.Recorder.Event(repo, corev1.EventTypeNormal, ReasonReconciled, message)
+		r.Recorder.Event(repo, corev1.EventTypeNormal, quayv1alpha1.ReasonReconciled, message)
 		logger.Info("reconciled Repository", "repository", target)
 	}
 	if err := r.updateStatus(ctx, repo); err != nil {
@@ -664,7 +664,7 @@ func (r *RepositoryReconciler) stampMutation(repo *quayv1alpha1.Repository, heal
 }
 
 func repositoryReady(repo *quayv1alpha1.Repository) bool {
-	return ctrlshared.GenerationReady(repo.Status.Conditions, ConditionReady, repo.Generation)
+	return ctrlshared.GenerationReady(repo.Status.Conditions, quayv1alpha1.ConditionReady, repo.Generation)
 }
 
 func repositoryStatusCreated(repo *quayv1alpha1.Repository) bool {
@@ -834,19 +834,19 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 	// either: fail (requeue) rather than build a system-trust client that does
 	// not honor the spec, keeping the finalizer until the bundle is corrected.
 	if err := quay.ValidateCABundle(repo.Spec.CABundle); err != nil {
-		r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonQuayError, err.Error())
+		r.Recorder.Event(repo, corev1.EventTypeWarning, quayv1alpha1.ReasonQuayError, err.Error())
 		return ctrl.Result{}, err
 	}
 
 	qc := r.NewClient(cred, repo.Spec.CABundle)
 	ownership, exists, err := r.repositoryRemoteOwnership(ctx, qc, repo, ns, name)
 	if err != nil {
-		r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonQuayError,
+		r.Recorder.Event(repo, corev1.EventTypeWarning, quayv1alpha1.ReasonQuayError,
 			fmt.Sprintf("verifying ownership marker for Quay repository %s/%s: %v", ns, name, err))
 		return ctrl.Result{}, fmt.Errorf("verifying ownership marker for Quay repository %s/%s: %w", ns, name, err)
 	}
 	if !exists {
-		r.Recorder.Event(repo, corev1.EventTypeNormal, ReasonReleased,
+		r.Recorder.Event(repo, corev1.EventTypeNormal, quayv1alpha1.ReasonReleased,
 			fmt.Sprintf("released Quay repository %s/%s without deleting (repository already absent)", ns, name))
 		return r.removeFinalizer(ctx, repo)
 	}
@@ -869,7 +869,7 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 					return ctrl.Result{}, statusErr
 				}
 			}
-			r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonQuayError,
+			r.Recorder.Event(repo, corev1.EventTypeWarning, quayv1alpha1.ReasonQuayError,
 				fmt.Sprintf("removing managed webhooks for Quay repository %s/%s release: %v", ns, name, err))
 			return ctrl.Result{}, fmt.Errorf("removing managed webhooks for Quay repository %s/%s release: %w", ns, name, err)
 		}
@@ -879,7 +879,7 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 				return ctrl.Result{}, err
 			}
 		}
-		r.Recorder.Event(repo, corev1.EventTypeNormal, ReasonReleased,
+		r.Recorder.Event(repo, corev1.EventTypeNormal, quayv1alpha1.ReasonReleased,
 			fmt.Sprintf("released Quay repository %s/%s without deleting (ownership marker absent or foreign)", ns, name))
 		return r.removeFinalizer(ctx, repo)
 	}
@@ -887,7 +887,7 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 	delErr := qc.DeleteRepositoryIfExists(ctx, ns, name)
 	recordQuayAPI(opDeleteRepository, delErr)
 	if delErr != nil {
-		r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonQuayError,
+		r.Recorder.Event(repo, corev1.EventTypeWarning, quayv1alpha1.ReasonQuayError,
 			fmt.Sprintf("deleting Quay repository %s/%s: %v", ns, name, delErr))
 		return ctrl.Result{}, fmt.Errorf("deleting Quay repository %s/%s: %w", ns, name, delErr)
 	}
@@ -902,12 +902,12 @@ func (r *RepositoryReconciler) releaseRepositoryWithClient(ctx context.Context, 
 	current, err := qc.GetRepository(ctx, ns, name)
 	recordQuayAPI(opGetRepository, ignoreNotFound(err))
 	if quay.IsNotFound(err) {
-		r.Recorder.Event(repo, corev1.EventTypeNormal, ReasonReleased,
+		r.Recorder.Event(repo, corev1.EventTypeNormal, quayv1alpha1.ReasonReleased,
 			fmt.Sprintf("released Quay repository %s/%s without deleting (repository already absent)", ns, name))
 		return r.removeFinalizer(ctx, repo)
 	}
 	if err != nil {
-		r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonQuayError,
+		r.Recorder.Event(repo, corev1.EventTypeWarning, quayv1alpha1.ReasonQuayError,
 			fmt.Sprintf("reading Quay repository %s/%s for release: %v", ns, name, err))
 		return ctrl.Result{}, fmt.Errorf("reading Quay repository %s/%s for release: %w", ns, name, err)
 	}
@@ -919,7 +919,7 @@ func (r *RepositoryReconciler) releaseRepositoryWithClient(ctx context.Context, 
 				return ctrl.Result{}, statusErr
 			}
 		}
-		r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonQuayError,
+		r.Recorder.Event(repo, corev1.EventTypeWarning, quayv1alpha1.ReasonQuayError,
 			fmt.Sprintf("removing managed webhooks for Quay repository %s/%s release: %v", ns, name, err))
 		return ctrl.Result{}, fmt.Errorf("removing managed webhooks for Quay repository %s/%s release: %w", ns, name, err)
 	}
@@ -934,7 +934,7 @@ func (r *RepositoryReconciler) releaseRepositoryWithClient(ctx context.Context, 
 					return ctrl.Result{}, statusErr
 				}
 			}
-			r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonQuayError,
+			r.Recorder.Event(repo, corev1.EventTypeWarning, quayv1alpha1.ReasonQuayError,
 				fmt.Sprintf("releasing ownership marker for Quay repository %s/%s: %v", ns, name, err))
 			return ctrl.Result{}, fmt.Errorf("releasing ownership marker for Quay repository %s/%s: %w", ns, name, err)
 		}
@@ -946,7 +946,7 @@ func (r *RepositoryReconciler) releaseRepositoryWithClient(ctx context.Context, 
 			return ctrl.Result{}, err
 		}
 	}
-	r.Recorder.Event(repo, corev1.EventTypeNormal, ReasonReleased,
+	r.Recorder.Event(repo, corev1.EventTypeNormal, quayv1alpha1.ReasonReleased,
 		fmt.Sprintf("released Quay repository %s/%s without deleting (adopted, not created by this resource)", ns, name))
 	return r.removeFinalizer(ctx, repo)
 }
@@ -1021,8 +1021,8 @@ func (r *RepositoryReconciler) handleCredentialError(ctx context.Context, repo *
 	if !isMissingCredential(err) {
 		return ctrl.Result{}, err
 	}
-	if changed := markNotReady(&repo.Status.Conditions, ReasonCredentialsNotFound, err.Error(), repo.Generation); changed {
-		r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonCredentialsNotFound, err.Error())
+	if changed := markNotReady(&repo.Status.Conditions, quayv1alpha1.ReasonCredentialsNotFound, err.Error(), repo.Generation); changed {
+		r.Recorder.Event(repo, corev1.EventTypeWarning, quayv1alpha1.ReasonCredentialsNotFound, err.Error())
 		if statusErr := r.updateStatus(ctx, repo); statusErr != nil {
 			return ctrl.Result{}, statusErr
 		}
@@ -1036,8 +1036,8 @@ func (r *RepositoryReconciler) handleCredentialError(ctx context.Context, repo *
 // status write and event fire only when the condition changed, and RequeueAfter
 // backstops the Organization watch.
 func (r *RepositoryReconciler) handleOrgNotReady(ctx context.Context, repo *quayv1alpha1.Repository, message string) (ctrl.Result, error) {
-	if changed := markNotReady(&repo.Status.Conditions, ReasonOrganizationNotReady, message, repo.Generation); changed {
-		r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonOrganizationNotReady, message)
+	if changed := markNotReady(&repo.Status.Conditions, quayv1alpha1.ReasonOrganizationNotReady, message, repo.Generation); changed {
+		r.Recorder.Event(repo, corev1.EventTypeWarning, quayv1alpha1.ReasonOrganizationNotReady, message)
 		if statusErr := r.updateStatus(ctx, repo); statusErr != nil {
 			return ctrl.Result{}, statusErr
 		}
@@ -1065,7 +1065,7 @@ func (r *RepositoryReconciler) handleWebhookCondition(ctx context.Context, repo 
 		}
 	}
 	if requeue {
-		if reason != ReasonWebhookURLNotFound {
+		if reason != quayv1alpha1.ReasonWebhookURLNotFound {
 			return ctrl.Result{}, fmt.Errorf("%s", message)
 		}
 		return ctrl.Result{RequeueAfter: requeueDependency}, nil
@@ -1090,7 +1090,7 @@ func (r *RepositoryReconciler) repositoryConflict(ctx context.Context, logger lo
 	if !changed {
 		return ctrl.Result{}, nil
 	}
-	r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonConflict, message)
+	r.Recorder.Event(repo, corev1.EventTypeWarning, quayv1alpha1.ReasonConflict, message)
 	logger.Info("Repository conflict", "repository", repo.Status.QuayRepository)
 	if err := r.updateStatus(ctx, repo); err != nil {
 		return ctrl.Result{}, err
@@ -1101,10 +1101,10 @@ func (r *RepositoryReconciler) repositoryConflict(ctx context.Context, logger lo
 // failErr is the error-returning core of fail: it stamps a QuayError condition
 // (when changed) and returns err for the caller to propagate as a requeue.
 func (r *RepositoryReconciler) failErr(ctx context.Context, repo *quayv1alpha1.Repository, err error, extraChanged bool) error {
-	conditionChanged := markNotReady(&repo.Status.Conditions, ReasonQuayError, err.Error(), repo.Generation)
+	conditionChanged := markNotReady(&repo.Status.Conditions, quayv1alpha1.ReasonQuayError, err.Error(), repo.Generation)
 	if conditionChanged || extraChanged {
 		if conditionChanged {
-			r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonQuayError, err.Error())
+			r.Recorder.Event(repo, corev1.EventTypeWarning, quayv1alpha1.ReasonQuayError, err.Error())
 		}
 		if statusErr := r.updateStatus(ctx, repo); statusErr != nil {
 			log.FromContext(ctx).Error(statusErr, "updating status after Quay error")

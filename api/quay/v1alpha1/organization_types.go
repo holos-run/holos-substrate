@@ -54,11 +54,12 @@ const (
 // is reported as a conflict and is not adopted.
 type SyncedTeam struct {
 	// Name is the Quay team name to manage inside the organization. It is
-	// required, must be unique within syncedTeams, and has no default.
+	// required, must be unique within syncedTeams, must be between 2 and 255
+	// characters, and has no default.
 	//
-	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MinLength=2
 	// +kubebuilder:validation:MaxLength=255
-	// +kubebuilder:validation:Pattern=`^[a-z0-9]+([._-]+[a-z0-9]+)*$`
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]+([._-][a-z0-9]+)*$`
 	Name string `json:"name"`
 
 	// OIDCGroup is the groups-claim value whose members populate this Quay team.
@@ -87,19 +88,23 @@ type SyncedTeam struct {
 // which points at a runtime Secret read by the controller.
 type OrganizationSpec struct {
 	// Name is the Quay organization name to create or adopt. It is required,
-	// immutable, and has no default; callers usually set it to metadata.name.
+	// immutable, must be between 2 and 255 characters, and has no default;
+	// callers usually set it to metadata.name.
 	//
-	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MinLength=2
 	// +kubebuilder:validation:MaxLength=255
-	// +kubebuilder:validation:Pattern=`^[a-z0-9]+([._-]+[a-z0-9]+)*$`
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]+([._-][a-z0-9]+)*$`
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="name is immutable"
 	Name string `json:"name"`
 
 	// Email is the organization contact email Quay stores for the namespace. It
-	// is required, has no default, and is reconciled if it drifts.
+	// is required, must look like an address with a non-empty local part and a
+	// DNS-style domain with at least two labels, has no default, and is
+	// reconciled if it drifts.
 	//
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=254
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9.!#$%&'*+/=?^_{|}~-]+@[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$`
 	Email string `json:"email"`
 
 	// CredentialsSecretRef selects the controller-namespace Secret containing the
