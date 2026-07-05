@@ -626,7 +626,7 @@ func TestReconcileHealsLostCreatedMarkerWithoutReleasing(t *testing.T) {
 	r, _ := newReconciler(fake, ns)
 
 	org := getOrg(ctx, t, key)
-	org.Status.Created = boolPtr(true)
+	setStatusCreated(org, true)
 	if err := shared.k8sClient.Status().Update(ctx, org); err != nil {
 		t.Fatalf("seeding status.Created: %v", err)
 	}
@@ -1317,6 +1317,19 @@ func TestReconcileSyncedTeamsRecoversAfterPostUpsertFailure(t *testing.T) {
 	}
 	if !containsString(org.Status.ManagedTeams, "team") {
 		t.Errorf("ManagedTeams = %v, want the recovered team recorded", org.Status.ManagedTeams)
+	}
+}
+
+func TestNormalizeManagedTeamsSortsAndDeduplicates(t *testing.T) {
+	got := normalizeManagedTeams([]string{"beta", "alpha", "beta", "", "alpha"})
+	want := []string{"alpha", "beta"}
+	if len(got) != len(want) {
+		t.Fatalf("normalizeManagedTeams length = %d, want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("normalizeManagedTeams = %v, want %v", got, want)
+		}
 	}
 }
 

@@ -75,9 +75,9 @@ type RepositorySpec struct {
 	// Name is the repository name within the resolved Quay organization. It is
 	// required, immutable, and has no default.
 	//
-	// +kubebuilder:validation:MinLength=2
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=255
-	// +kubebuilder:validation:Pattern=`^[a-z0-9]+([._-][a-z0-9]+)*$`
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]+([._-]+[a-z0-9]+)*$`
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="name is immutable"
 	Name string `json:"name"`
 
@@ -113,7 +113,8 @@ type RepositorySpec struct {
 	// CABundle carries PEM-encoded x509 CA certificates the controller trusts
 	// in addition to its system store when reaching the Quay API. The API server
 	// serializes this byte slice as one base64 string. When omitted or empty, the
-	// controller uses only its system trust store.
+	// controller uses only its system trust store. The maximum length applies to
+	// the base64-encoded API representation.
 	//
 	// +optional
 	// +kubebuilder:validation:MaxLength=1048576

@@ -349,8 +349,30 @@ func (r *OrganizationReconciler) writeManagedTeams(org *quayv1alpha1.Organizatio
 	for name := range managed {
 		names = append(names, name)
 	}
-	sort.Strings(names)
-	org.Status.ManagedTeams = names
+	org.Status.ManagedTeams = normalizeManagedTeams(names)
+}
+
+// normalizeManagedTeams returns a sorted set of managed team names. It protects
+// status writes from stale duplicate entries that would be rejected by the CRD's
+// set semantics.
+func normalizeManagedTeams(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(names))
+	normalized := make([]string, 0, len(names))
+	for _, name := range names {
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		normalized = append(normalized, name)
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	sort.Strings(normalized)
+	return normalized
 }
 
 // findTeamPrototype returns the prototype delegating to the named team (kind team),

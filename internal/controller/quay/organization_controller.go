@@ -10,6 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
+	k8sptr "k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -38,16 +39,12 @@ const organizationFinalizer = "organization.quay.holos.run/finalizer"
 // org.
 const ownerRobotShortname = "holos-owner"
 
-func boolPtr(v bool) *bool {
-	return &v
-}
-
 func statusCreated(org *quayv1alpha1.Organization) bool {
 	return org.Status.Created != nil && *org.Status.Created
 }
 
 func setStatusCreated(org *quayv1alpha1.Organization, created bool) {
-	org.Status.Created = boolPtr(created)
+	org.Status.Created = k8sptr.To(created)
 }
 
 // ownerToken returns the opaque, controller-managed ownership token stamped into
@@ -750,6 +747,7 @@ func (r *OrganizationReconciler) fail(ctx context.Context, org *quayv1alpha1.Org
 // (the CR was deleted concurrently) is ignored — there is nothing left to update.
 func (r *OrganizationReconciler) updateStatus(ctx context.Context, org *quayv1alpha1.Organization) error {
 	org.Status.ObservedGeneration = org.Generation
+	org.Status.ManagedTeams = normalizeManagedTeams(org.Status.ManagedTeams)
 	desired := org.Status.DeepCopy()
 
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {

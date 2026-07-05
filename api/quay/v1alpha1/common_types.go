@@ -58,4 +58,7 @@ const (
 	ConditionProgrammed = "Programmed"
 	// ConditionReady reports whether the Quay resource is provisioned and usable.
 	ConditionReady = "Ready"
+	// ConditionWebhookConfigured reports whether a Repository's repo_push webhook
+	// reflects the desired URL source.
+	ConditionWebhookConfigured = "WebhookConfigured"
 )

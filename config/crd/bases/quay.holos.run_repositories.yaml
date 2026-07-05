@@ -70,7 +70,8 @@ spec:
                   CABundle carries PEM-encoded x509 CA certificates the controller trusts
                   in addition to its system store when reaching the Quay API. The API server
                   serializes this byte slice as one base64 string. When omitted or empty, the
-                  controller uses only its system trust store.
+                  controller uses only its system trust store. The maximum length applies to
+                  the base64-encoded API representation.
                 format: byte
                 maxLength: 1048576
                 type: string
@@ -112,8 +113,8 @@ spec:
                   Name is the repository name within the resolved Quay organization. It is
                   required, immutable, and has no default.
                 maxLength: 255
-                minLength: 2
-                pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$
+                minLength: 1
+                pattern: ^[a-z0-9]+([._-]+[a-z0-9]+)*$
                 type: string
                 x-kubernetes-validations:
                 - message: name is immutable

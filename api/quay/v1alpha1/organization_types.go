@@ -56,9 +56,9 @@ type SyncedTeam struct {
 	// Name is the Quay team name to manage inside the organization. It is
 	// required, must be unique within syncedTeams, and has no default.
 	//
-	// +kubebuilder:validation:MinLength=2
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=255
-	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]+([._-]+[a-z0-9]+)*$`
 	Name string `json:"name"`
 
 	// OIDCGroup is the groups-claim value whose members populate this Quay team.
@@ -89,9 +89,9 @@ type OrganizationSpec struct {
 	// Name is the Quay organization name to create or adopt. It is required,
 	// immutable, and has no default; callers usually set it to metadata.name.
 	//
-	// +kubebuilder:validation:MinLength=2
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=255
-	// +kubebuilder:validation:Pattern=`^[a-z0-9]+([._-][a-z0-9]+)*$`
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]+([._-]+[a-z0-9]+)*$`
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="name is immutable"
 	Name string `json:"name"`
 
@@ -100,7 +100,6 @@ type OrganizationSpec struct {
 	//
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=254
-	// +kubebuilder:validation:Pattern=`^[^@\s]+@[^@\s]+\.[^@\s]+$`
 	Email string `json:"email"`
 
 	// CredentialsSecretRef selects the controller-namespace Secret containing the
@@ -123,7 +122,8 @@ type OrganizationSpec struct {
 	// CABundle carries PEM-encoded x509 CA certificates the controller trusts
 	// in addition to its system store when reaching the Quay API. The API server
 	// serializes this byte slice as one base64 string. When omitted or empty, the
-	// controller uses only its system trust store.
+	// controller uses only its system trust store. The maximum length applies to
+	// the base64-encoded API representation.
 	//
 	// +optional
 	// +kubebuilder:validation:MaxLength=1048576
@@ -135,7 +135,6 @@ type OrganizationSpec struct {
 	// teams are managed.
 	//
 	// +optional
-	// +kubebuilder:validation:MaxItems=64
 	// +listType=map
 	// +listMapKey=name
 	SyncedTeams []SyncedTeam `json:"syncedTeams,omitempty"`
@@ -172,7 +171,7 @@ type OrganizationStatus struct {
 	// ManagedTeams records the Quay team names this resource created and owns.
 	// The controller uses it to delete only teams it owns and to report a
 	// conflict when spec.syncedTeams names an existing foreign team. It is omitted
-	// until no managed teams have been recorded.
+	// when no managed teams have been recorded.
 	//
 	// +optional
 	// +listType=set

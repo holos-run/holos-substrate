@@ -120,7 +120,7 @@ func makeReadyOrg(ctx context.Context, t *testing.T, ns, orgName string) string 
 		Message:            "ready for test",
 		ObservedGeneration: org.Generation,
 	})
-	org.Status.Created = boolPtr(true)
+	setStatusCreated(org, true)
 	if err := shared.k8sClient.Status().Update(ctx, org); err != nil {
 		t.Fatalf("setting Organization Ready: %v", err)
 	}

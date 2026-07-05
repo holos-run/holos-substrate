@@ -57,7 +57,7 @@ const (
 	// Repository-only condition surfaced distinctly from Ready so an operator can
 	// tell a provisioned-but-webhookless repository (e.g. its urlSecretRef Secret
 	// has not been created yet) from a fully-wired one (AC #5/#8).
-	ConditionWebhookConfigured = "WebhookConfigured"
+	ConditionWebhookConfigured = quayv1alpha1.ConditionWebhookConfigured
 )
 
 // Condition reasons. Reasons are stable, CamelCase machine-readable tokens

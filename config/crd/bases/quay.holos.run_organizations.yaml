@@ -74,7 +74,8 @@ spec:
                   CABundle carries PEM-encoded x509 CA certificates the controller trusts
                   in addition to its system store when reaching the Quay API. The API server
                   serializes this byte slice as one base64 string. When omitted or empty, the
-                  controller uses only its system trust store.
+                  controller uses only its system trust store. The maximum length applies to
+                  the base64-encoded API representation.
                 format: byte
                 maxLength: 1048576
                 type: string
@@ -111,15 +112,14 @@ spec:
                   is required, has no default, and is reconciled if it drifts.
                 maxLength: 254
                 minLength: 1
-                pattern: ^[^@\s]+@[^@\s]+\.[^@\s]+$
                 type: string
               name:
                 description: |-
                   Name is the Quay organization name to create or adopt. It is required,
                   immutable, and has no default; callers usually set it to metadata.name.
                 maxLength: 255
-                minLength: 2
-                pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$
+                minLength: 1
+                pattern: ^[a-z0-9]+([._-]+[a-z0-9]+)*$
                 type: string
                 x-kubernetes-validations:
                 - message: name is immutable
@@ -142,8 +142,8 @@ spec:
                         Name is the Quay team name to manage inside the organization. It is
                         required, must be unique within syncedTeams, and has no default.
                       maxLength: 255
-                      minLength: 2
-                      pattern: ^[a-z][a-z0-9]*(-[a-z0-9]+)*$
+                      minLength: 1
+                      pattern: ^[a-z0-9]+([._-]+[a-z0-9]+)*$
                       type: string
                     oidcGroup:
                       description: |-
@@ -177,7 +177,6 @@ spec:
                   - oidcGroup
                   - role
                   type: object
-                maxItems: 64
                 type: array
                 x-kubernetes-list-map-keys:
                 - name
@@ -295,7 +294,7 @@ spec:
                   ManagedTeams records the Quay team names this resource created and owns.
                   The controller uses it to delete only teams it owns and to report a
                   conflict when spec.syncedTeams names an existing foreign team. It is omitted
-                  until no managed teams have been recorded.
+                  when no managed teams have been recorded.
                 items:
                   type: string
                 type: array
