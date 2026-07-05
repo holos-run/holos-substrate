@@ -32,11 +32,11 @@ func managedTeamMarker(org *quayv1alpha1.Organization) string {
 // Quay team this resource did not create. It is a sentinel the caller branches on
 // to set the TeamConflict condition (a non-Ready outcome) rather than a generic
 // Quay error: adoption of a pre-existing team is deliberately a reconcile-time
-// error, never a silent takeover (AC #6, mirroring the org-level claim model).
+// error, never a silent takeover, mirroring the org-level claim model.
 //
 // Adoption is an error in the reconciler only — no API field forbids it. A future
 // optional per-team `adopt bool` on SyncedTeam can flip this conflict path to
-// adoption without an API break (AC #6 forward-compatibility).
+// adoption without an API break.
 type teamConflictError struct {
 	team string
 }
@@ -53,23 +53,23 @@ func isTeamConflict(err error) bool {
 
 // reconcileSyncedTeams drives spec.syncedTeams into the Quay org org owns. It is
 // called only after the org itself is provisioned (Created or Adopted), so teams
-// are never touched on an org this CR does not own (AC #1).
+// are never touched on an org this CR does not own.
 //
-// Management is non-exclusive (AC #5): the controller manages exactly the teams it
-// created — those recorded in status.managedTeams plus those it creates this pass
-// — and ignores every other team in the org. A team that is neither in the spec
-// nor in status.managedTeams is left untouched.
+// Management is non-exclusive: the controller manages exactly the teams it created
+// — those recorded in status.managedTeams plus those it creates this pass — and
+// ignores every other team in the org. A team that is neither in the spec nor in
+// status.managedTeams is left untouched.
 //
-// Ownership and the heal rule (AC #4): a desired team is owned when it is recorded
-// in status.managedTeams. To survive a lost status write after a create (the
-// team-level analog of the org marker's heal), a Quay team whose description
-// carries this CR's managedTeamMarker (the controller prefix plus ownerToken — the
-// CR UID) is also treated as controller-managed and healed back into
-// status.managedTeams. The marker is the durable, server-side owner record that
-// stands in for the lost status, mirroring ADR-19's holos-owner robot: because it
-// embeds the CR UID it is unforgeable, so a team that exists but lacks this CR's
-// marker is a conflict (teamConflictError), never adopted — even if it happens to
-// be bound to the desired oidcGroup.
+// Ownership and the heal rule: a desired team is owned when it is recorded in
+// status.managedTeams. To survive a lost status write after a create (the team-level
+// analog of the org marker's heal), a Quay team whose description carries this CR's
+// managedTeamMarker (the controller prefix plus ownerToken — the CR UID) is also
+// treated as controller-managed and healed back into status.managedTeams. The marker
+// is the durable, server-side owner record that stands in for the lost status,
+// mirroring the holos-owner robot: because it embeds the CR UID it is unforgeable,
+// so a team that exists but lacks this CR's marker is a conflict
+// (teamConflictError), never adopted — even if it happens to be bound to the desired
+// oidcGroup.
 //
 // On success it rewrites org.Status.ManagedTeams to exactly the set of teams the
 // controller now manages (sorted for a stable status). On the first conflict it
@@ -105,8 +105,8 @@ func (r *OrganizationReconciler) reconcileSyncedTeams(ctx context.Context, qc Or
 
 	// De-provision: a team recorded as managed but dropped from the spec is fully
 	// removed (disable sync, delete its default-permission prototype, delete the
-	// team) and dropped from the managed set (AC #3). Teams that are neither
-	// desired nor managed are ignored entirely (non-exclusive, AC #5).
+	// team) and dropped from the managed set. Teams that are neither desired nor
+	// managed are ignored entirely.
 	for name := range managed {
 		if _, stillDesired := desired[name]; stillDesired {
 			continue
@@ -137,9 +137,9 @@ func (r *OrganizationReconciler) reconcileSyncedTeams(ctx context.Context, qc Or
 			// ownership marker — managedTeamMarker(org), the team-level analog of the
 			// org's holos-owner robot stamped with ownerToken (the CR UID). The
 			// marker alone is sufficient proof this exact CR created the team (a lost
-			// status write after our own create, AC #4): it cannot be forged, so a
+			// status write after our own create): it cannot be forged, so a
 			// hand-created team lacks it and is NOT adopted — it is a conflict,
-			// preserving the no-adoption / non-exclusive model (AC #5/#6). Relying on
+			// preserving the no-adoption / non-exclusive model. Relying on
 			// the marker (not the sync binding) also makes recovery robust: a team
 			// created last pass whose sync/prototype step then failed still carries
 			// the marker, so this pass heals it rather than wedging into a false
@@ -215,7 +215,7 @@ func (r *OrganizationReconciler) ensureTeamSyncAndPrototype(ctx context.Context,
 	// Bind (or re-bind) the team's membership to the desired OIDC group.
 	// EnableTeamSyncIfNotSynced no-ops when already bound to t.OIDCGroup; when bound
 	// to a different group it surfaces the drift, which we correct by disabling and
-	// re-enabling so the binding always tracks the spec (AC #2 oidcGroup re-bind).
+	// re-enabling so the binding always tracks the spec.
 	syncMutation, err := r.bindTeamSync(ctx, qc, orgName, t.Name, t.OIDCGroup, ownedBefore, canMarkDrift)
 	if err != nil {
 		return syncMutation, err
@@ -229,7 +229,7 @@ func (r *OrganizationReconciler) ensureTeamSyncAndPrototype(ctx context.Context,
 
 // bindTeamSync ensures the team's sync binding names oidcGroup, re-binding
 // (disable then enable) when it is currently bound to a different group so an
-// oidcGroup change in the spec takes effect (AC #2).
+// oidcGroup change in the spec takes effect.
 func (r *OrganizationReconciler) bindTeamSync(ctx context.Context, qc OrgClient, orgName, team, oidcGroup string, ownedBefore, canMarkDrift bool) (quayMutation, error) {
 	mutation := quayMutation{}
 	members, err := qc.GetTeamMembers(ctx, orgName, team)
@@ -311,8 +311,8 @@ func (r *OrganizationReconciler) reconcileTeamPrototype(ctx context.Context, qc 
 
 // deprovisionTeam fully removes a controller-managed team that was dropped from
 // the spec: it deletes the team's default-permission prototype (if any), disables
-// its sync binding, and deletes the team (AC #3). Each step is idempotent so a
-// retry after a partial failure converges.
+// its sync binding, and deletes the team. Each step is idempotent so a retry after
+// a partial failure converges.
 func (r *OrganizationReconciler) deprovisionTeam(ctx context.Context, qc OrgClient, orgName, team string, teamPresent bool) (quayMutation, error) {
 	mutation := quayMutation{}
 	prototypes, err := qc.ListPrototypes(ctx, orgName)

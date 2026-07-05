@@ -13,9 +13,9 @@ import (
 )
 
 // TestResolveWebhookURL is a fast unit test for the inline-vs-secretRef webhook
-// resolution (AC #8). It uses the controller-runtime fake client as the reader,
-// so it runs without envtest — unlike the reconciler tests, it does not need a
-// real API server.
+// resolution. It uses the controller-runtime fake client as the reader, so it runs
+// without envtest — unlike the reconciler tests, it does not need a real API
+// server.
 func TestResolveWebhookURL(t *testing.T) {
 	const ns = "tenant"
 	secret := &corev1.Secret{

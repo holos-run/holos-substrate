@@ -218,6 +218,9 @@ func TestRepositoryCreatesWithInlineWebhook(t *testing.T) {
 	}
 
 	repo := getRepo(ctx, t, key)
+	if repo.Status.WebhookNotificationUUID == "" {
+		t.Fatal("status.webhookNotificationUUID is empty, want recorded controller webhook UUID")
+	}
 	if got := repoConditionStatus(repo, ConditionReady); got != metav1.ConditionTrue {
 		t.Errorf("Ready = %q, want True", got)
 	}
@@ -819,15 +822,18 @@ func TestRepositoryWebhookURLChangeReplacesNotification(t *testing.T) {
 	})
 
 	fake := newFakeRepoClient()
-	// Pre-create the repo with a stale controller-owned repo_push webhook pointing
-	// elsewhere (same webhookTitle, so the reconciler owns and replaces it) plus a
-	// manually-created webhook with a different title that must be preserved.
+	// Pre-create the repo with a stale recorded repo_push webhook pointing
+	// elsewhere plus a manually-created webhook with a different title that must be
+	// preserved.
 	repo := getRepo(ctx, t, key)
 	fake.repos[repoKey("acme", "rehook")] = &fakeRepoStore{
 		description:   repositoryOwnerMarker(repo, true),
 		notifications: map[string]quay.Notification{},
 	}
-	fake.seedNotification("acme", "rehook", webhookTitle, "https://old.example.test/stale")
+	repo.Status.WebhookNotificationUUID = fake.seedNotification("acme", "rehook", repositoryWebhookTitle(repo), "https://old.example.test/stale")
+	if err := shared.k8sClient.Status().Update(ctx, repo); err != nil {
+		t.Fatalf("recording stale webhook UUID in status: %v", err)
+	}
 	fake.seedNotification("acme", "rehook", "manual webhook", "https://manual.example.test/keep")
 
 	r, _ := newRepoReconciler(fake, ns)
@@ -846,6 +852,83 @@ func TestRepositoryWebhookURLChangeReplacesNotification(t *testing.T) {
 	}
 	if !containsString(urls, "https://manual.example.test/keep") {
 		t.Errorf("manually-created webhook must be preserved; URLs = %v", urls)
+	}
+}
+
+func TestRepositoryWebhookStatusLossRecoversUUIDWithoutDuplicate(t *testing.T) {
+	ctx := t.Context()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	const hook = "https://kargo.example.test/webhook/recover"
+	key := makeRepo(ctx, t, ns, "acme", "recoverhook", repoOpts{
+		webhook: &quayv1alpha1.RepositoryWebhook{URL: ptr(hook)},
+	})
+
+	fake := newFakeRepoClient()
+	r, _ := newRepoReconciler(fake, ns)
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("initial reconcile: %v", err)
+	}
+	repo := getRepo(ctx, t, key)
+	if repo.Status.WebhookNotificationUUID == "" {
+		t.Fatal("status.webhookNotificationUUID is empty after initial reconcile")
+	}
+
+	repo.Status.WebhookNotificationUUID = ""
+	if err := shared.k8sClient.Status().Update(ctx, repo); err != nil {
+		t.Fatalf("clearing webhook UUID status: %v", err)
+	}
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile after status loss: %v", err)
+	}
+
+	repo = getRepo(ctx, t, key)
+	if repo.Status.WebhookNotificationUUID == "" {
+		t.Fatal("status.webhookNotificationUUID was not recovered")
+	}
+	if urls := fake.webhookURLs("acme", "recoverhook"); len(urls) != 1 || urls[0] != hook {
+		t.Errorf("webhook URLs after status recovery = %v, want exactly [%s]", urls, hook)
+	}
+}
+
+func TestRepositoryWebhookDuplicateCleanupKeepsRecordedUUID(t *testing.T) {
+	ctx := t.Context()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	const hook = "https://kargo.example.test/webhook/dedupe"
+	key := makeRepo(ctx, t, ns, "acme", "dedupehook", repoOpts{
+		webhook: &quayv1alpha1.RepositoryWebhook{URL: ptr(hook)},
+	})
+
+	fake := newFakeRepoClient()
+	repo := getRepo(ctx, t, key)
+	fake.repos[repoKey("acme", "dedupehook")] = &fakeRepoStore{
+		description:   repositoryOwnerMarker(repo, true),
+		notifications: map[string]quay.Notification{},
+	}
+	keptUUID := fake.seedNotification("acme", "dedupehook", repositoryWebhookTitle(repo), hook)
+	duplicateUUID := fake.seedNotification("acme", "dedupehook", repositoryWebhookTitle(repo), hook)
+
+	r, _ := newRepoReconciler(fake, ns)
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile duplicate cleanup: %v", err)
+	}
+
+	repo = getRepo(ctx, t, key)
+	if got := repo.Status.WebhookNotificationUUID; got != keptUUID {
+		t.Fatalf("status.webhookNotificationUUID = %q, want kept UUID %q", got, keptUUID)
+	}
+	if urls := fake.webhookURLs("acme", "dedupehook"); len(urls) != 1 || urls[0] != hook {
+		t.Errorf("webhook URLs after duplicate cleanup = %v, want exactly [%s]", urls, hook)
+	}
+	if !fake.callsContain("DeleteNotification:acme/dedupehook:" + duplicateUUID) {
+		t.Errorf("expected duplicate webhook %q to be deleted; calls were %v", duplicateUUID, fake.calls)
 	}
 }
 
@@ -931,8 +1014,8 @@ func TestRepositoryOrganizationNotReadyRequeues(t *testing.T) {
 		t.Fatalf("RequeueAfter = %v, want %v", result.RequeueAfter, requeueDependency)
 	}
 
-	// No repository was created (AC #9: the reconciler never creates the org and
-	// must not create a repo before the org exists).
+	// No repository was created: the reconciler never creates the org and must not
+	// create a repo before the org exists.
 	if fake.callsContain("CreateRepository:missing-org/web") {
 		t.Errorf("must not create a repo before the org exists; calls were %v", fake.calls)
 	}
@@ -1044,9 +1127,12 @@ func TestRepositoryDeleteReleasesAdoptedRepositoryWithoutDeleting(t *testing.T) 
 		t.Fatalf("creating credential secret: %v", err)
 	}
 	makeReadyOrg(ctx, t, ns, "acme")
+	const adoptedHook = "https://kargo.example.test/webhook/adopted"
+	const manualHook = "https://example.test/manual"
 	key := makeRepo(ctx, t, ns, "acme", "adoptdelete", repoOpts{
 		adopt:       true,
 		description: "survives",
+		webhook:     &quayv1alpha1.RepositoryWebhook{URL: ptr(adoptedHook)},
 	})
 
 	fake := newFakeRepoClient()
@@ -1062,6 +1148,13 @@ func TestRepositoryDeleteReleasesAdoptedRepositoryWithoutDeleting(t *testing.T) 
 	repo := getRepo(ctx, t, key)
 	if repo.Status.Created == nil || *repo.Status.Created {
 		t.Fatalf("status.created = %v, want false after adopt", repo.Status.Created)
+	}
+	if repo.Status.WebhookNotificationUUID == "" {
+		t.Fatal("status.webhookNotificationUUID is empty, want recorded controller webhook UUID")
+	}
+	fake.seedNotification("acme", "adoptdelete", webhookTitlePrefix, manualHook)
+	if urls := fake.webhookURLs("acme", "adoptdelete"); len(urls) != 2 || !containsString(urls, adoptedHook) || !containsString(urls, manualHook) {
+		t.Fatalf("webhook URLs before delete = %v, want controller and manual hooks", urls)
 	}
 
 	if err := shared.k8sClient.Delete(ctx, repo); err != nil {
@@ -1083,6 +1176,64 @@ func TestRepositoryDeleteReleasesAdoptedRepositoryWithoutDeleting(t *testing.T) 
 	}
 	if st.description != "survives" {
 		t.Errorf("description after release = %q, want survives", st.description)
+	}
+	if urls := fake.webhookURLs("acme", "adoptdelete"); len(urls) != 1 || urls[0] != manualHook {
+		t.Errorf("webhook URLs after release = %v, want only manual hook", urls)
+	}
+	assertEvent(t, recorder, ReasonReleased)
+}
+
+func TestRepositoryDeleteWithForeignMarkerRemovesManagedWebhook(t *testing.T) {
+	ctx := t.Context()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	const managedHook = "https://kargo.example.test/webhook/managed"
+	const manualHook = "https://example.test/manual"
+	key := makeRepo(ctx, t, ns, "acme", "foreignmarker", repoOpts{
+		webhook: &quayv1alpha1.RepositoryWebhook{URL: ptr(managedHook)},
+	})
+
+	fake := newFakeRepoClient()
+	r, recorder := newRepoReconciler(fake, ns)
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile create: %v", err)
+	}
+	repo := getRepo(ctx, t, key)
+	managedUUID := repo.Status.WebhookNotificationUUID
+	if managedUUID == "" {
+		t.Fatal("status.webhookNotificationUUID is empty, want recorded controller webhook UUID")
+	}
+	foreignDescription := "taken over\n\n" + repositoryOwnerMarkerPrefix + repositoryOwnerMarkerCreated + ":foreign-token"
+	fake.repos[repoKey("acme", "foreignmarker")].description = foreignDescription
+	fake.seedNotification("acme", "foreignmarker", webhookTitlePrefix, manualHook)
+	if urls := fake.webhookURLs("acme", "foreignmarker"); len(urls) != 2 || !containsString(urls, managedHook) || !containsString(urls, manualHook) {
+		t.Fatalf("webhook URLs before delete = %v, want controller and manual hooks", urls)
+	}
+
+	if err := shared.k8sClient.Delete(ctx, repo); err != nil {
+		t.Fatalf("deleting Repository: %v", err)
+	}
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile delete: %v", err)
+	}
+
+	if fake.callsContain("DeleteRepository:acme/foreignmarker") {
+		t.Errorf("foreign-owned repository must be released, not deleted; calls were %v", fake.calls)
+	}
+	if !fake.repoExists("acme", "foreignmarker") {
+		t.Fatal("expected foreign-owned repository to remain in Quay")
+	}
+	if !fake.callsContain("DeleteNotification:acme/foreignmarker:" + managedUUID) {
+		t.Errorf("expected managed webhook %q to be deleted; calls were %v", managedUUID, fake.calls)
+	}
+	if urls := fake.webhookURLs("acme", "foreignmarker"); len(urls) != 1 || urls[0] != manualHook {
+		t.Errorf("webhook URLs after release = %v, want only manual hook", urls)
+	}
+	if got := fake.repos[repoKey("acme", "foreignmarker")].description; got != foreignDescription {
+		t.Errorf("description after release = %q, want foreign marker preserved as %q", got, foreignDescription)
 	}
 	assertEvent(t, recorder, ReasonReleased)
 }

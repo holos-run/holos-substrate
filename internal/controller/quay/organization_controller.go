@@ -30,13 +30,11 @@ const organizationFinalizer = "organization.quay.holos.run/finalizer"
 
 // ownerRobotShortname is the short name of the dedicated robot account the
 // controller creates on every org it owns as a durable, server-side ownership
-// marker (ADR-19, "Ownership and the claim model"). The robot's full username is
-// "<org>+holos-owner"; its description carries the opaque ownership token. Keying
-// create/adopt/delete on this server-side marker (not solely on the CR's
-// status.created) closes the two races HOL-1311 deferred: a create whose
-// status-write failed is no longer mis-released, and a delete that races a
-// foreign recreate of the same global org name no longer destroys the recreated
-// org.
+// marker. The robot's full username is "<org>+holos-owner"; its description
+// carries the opaque ownership token. Keying create/adopt/delete on this
+// server-side marker (not solely on the CR's status.created) prevents a create
+// whose status write failed from being mis-released and prevents a delete racing a
+// foreign recreate of the same global org name from destroying the recreated org.
 const ownerRobotShortname = "holos-owner"
 
 func statusCreated(org *quayv1alpha1.Organization) bool {
@@ -159,7 +157,7 @@ type OrganizationReconciler struct {
 	// on Secrets, never list/watch).
 	APIReader client.Reader
 	// Recorder emits Kubernetes Events for created/adopted/failed/deleted
-	// transitions (AC #2).
+	// transitions.
 	Recorder record.EventRecorder
 	// Namespace is the controller's own namespace, where credential Secrets are
 	// resolved. Defaults to DefaultControllerNamespace via controllerNamespace().
@@ -185,10 +183,10 @@ func (r *OrganizationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	logger := log.FromContext(ctx)
 
 	// Record the reconcile outcome (success/error) per kind for the custom
-	// holos_controller_reconcile_total metric (AC #4), alongside
-	// controller-runtime's built-in reconcile metrics. retErr is the named
-	// return, so the deferred record observes whatever error the reconcile
-	// ultimately returns regardless of which path produced it.
+	// holos_controller_reconcile_total metric, alongside controller-runtime's
+	// built-in reconcile metrics. retErr is the named return, so the deferred record
+	// observes whatever error the reconcile ultimately returns regardless of which
+	// path produced it.
 	defer func() { recordReconcile(kindOrganization, retErr) }()
 
 	org := &quayv1alpha1.Organization{}
@@ -241,15 +239,15 @@ func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger log
 
 	qc := r.NewClient(cred, org.Spec.CABundle)
 
-	// ADR-19 claim model. Quay orgs are a single global namespace and the
-	// controller credential carries FEATURE_SUPERUSERS_FULL_ACCESS, so a naive
-	// "adopt any existing org" rule would let a namespaced CR seize another
-	// tenant's org. Ownership is recorded by a durable, server-side marker — a
-	// dedicated "<org>+holos-owner" robot whose description is this CR's UID
-	// (ownerToken) — backed by the CR's status.Created. The marker is the
-	// authority for the delete decision (so a delete that races a foreign
-	// recreate cannot destroy the recreated org) and heals status.Created when a
-	// prior create's status-write was lost.
+	// Claim model. Quay orgs are a single global namespace and the controller
+	// credential carries FEATURE_SUPERUSERS_FULL_ACCESS, so a naive "adopt any
+	// existing org" rule would let a namespaced CR seize another tenant's org.
+	// Ownership is recorded by a durable, server-side marker — a dedicated
+	// "<org>+holos-owner" robot whose description is this CR's UID (ownerToken) —
+	// backed by the CR's status.Created. The marker is the authority for the
+	// delete decision (so a delete that races a foreign recreate cannot destroy
+	// the recreated org) and heals status.Created when a prior create's
+	// status-write was lost.
 	//
 	// GET the org and branch on the claim-model cases. A NotFound is an expected
 	// branch (create path), not a Quay-API failure, so it records as success.
@@ -275,7 +273,7 @@ func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger log
 			// marker-stamp failure cannot strand the just-created org: the next
 			// reconcile sees an existing org with status.Created=true and no marker
 			// and takes the heal path (re-stamp), rather than mistaking its own
-			// org for a foreign one and releasing it (Codex round 1).
+			// org for a foreign one and releasing it.
 			setStatusCreated(org, true)
 			if markerErr := r.ensureOwnerMarker(ctx, qc, org); markerErr != nil {
 				r.stampMutation(org, false)
@@ -306,7 +304,7 @@ func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger log
 
 // reconcileExisting handles a Quay org that already exists. It resolves
 // ownership from the durable server-side marker (the holos-owner robot) and
-// branches per the ADR-19 claim model:
+// branches per the claim model:
 //
 //   - marker present and matching this CR's token → owned: heal status.Created,
 //     apply mutable spec drift, mark Ready (Created).
@@ -335,7 +333,7 @@ func (r *OrganizationReconciler) reconcileExisting(ctx context.Context, logger l
 
 	case quay.IsNotFound(markerErr):
 		// No marker. If this CR is already recorded as the creator, the marker
-		// write was lost after a successful create (HOL-1311 race a) — re-stamp
+		// write was lost after a successful create — re-stamp
 		// it and continue as owned rather than mis-releasing the org.
 		if statusCreated(org) {
 			if err := r.ensureOwnerMarker(ctx, qc, org); err != nil {
@@ -450,11 +448,11 @@ func (r *OrganizationReconciler) reconcileExistingUnowned(ctx context.Context, l
 // reconcileTeamsThenSucceed reconciles spec.syncedTeams into the now-owned (or
 // adopted) Quay org, then marks the resource Ready. It is the single funnel every
 // success path runs so teams are reconciled only after the org itself is
-// provisioned (AC #1). A team conflict (a spec team pre-exists and was not created
-// by this resource) is surfaced as a TeamConflict condition (a non-Ready outcome)
-// rather than a generic Quay error; any other Quay error fails the reconcile and
-// requeues. The status write that succeed()/teamConflict() performs also persists
-// the status.managedTeams set reconcileSyncedTeams computed.
+// provisioned. A team conflict (a spec team pre-exists and was not created by this
+// resource) is surfaced as a TeamConflict condition (a non-Ready outcome) rather
+// than a generic Quay error; any other Quay error fails the reconcile and requeues.
+// The status write that succeed()/teamConflict() performs also persists the
+// status.managedTeams set reconcileSyncedTeams computed.
 func (r *OrganizationReconciler) reconcileTeamsThenSucceed(ctx context.Context, logger logr.Logger, qc OrgClient, org *quayv1alpha1.Organization, mutation quayMutation, reason, message string) (ctrl.Result, error) {
 	// Snapshot the managed-team set so a change to status.managedTeams (e.g. a team
 	// added, removed, or healed in) is persisted even when Ready and
@@ -549,26 +547,25 @@ func organizationReady(org *quayv1alpha1.Organization) bool {
 	return ctrlshared.GenerationReady(org.Status.Conditions, ConditionReady, org.Generation)
 }
 
-// reconcileDelete runs the finalizer. Per ADR-19's claim model the Quay org is
-// deleted only when this CR created it (status.Created); an adopted org is
-// released (the finalizer drops without deleting), so removing a CR that merely
-// claimed a pre-existing org never destroys it. After cleanup the finalizer is
-// removed so the CR is deleted. A Quay error during delete fails the reconcile
-// and requeues, so the finalizer is not removed until cleanup succeeds.
+// reconcileDelete runs the finalizer. Per the claim model the Quay org is deleted
+// only when this CR created it (status.Created); an adopted org is released (the
+// finalizer drops without deleting), so removing a CR that merely claimed a
+// pre-existing org never destroys it. After cleanup the finalizer is removed so the
+// CR is deleted. A Quay error during delete fails the reconcile and requeues, so
+// the finalizer is not removed until cleanup succeeds.
 //
-// Synced teams need no separate finalizer (AC #7): deleting the Quay org cascades
-// its teams (and their default-permission prototypes), so the existing org delete
-// is sufficient cleanup for a created org. Adopted-org edge case: when the org is
+// Synced teams need no separate finalizer: deleting the Quay org cascades its
+// teams (and their default-permission prototypes), so the existing org delete is
+// sufficient cleanup for a created org. Adopted-org edge case: when the org is
 // released rather than deleted (status.Created false), the synced teams this
 // controller created inside it are intentionally NOT individually deleted — the
 // platform did not create the org and non-destructive release is the contract
 // (mirroring the org-level claim model: an adopted org is never mutated on
-// release), so the teams remain on the surviving org. This is a deliberate
-// tradeoff mandated by AC #7: it can leave controller-created teams (OIDC-synced,
-// possibly with default repository permissions) behind on an adopted org, i.e.
-// stale access grants an operator must clean up out of band. The alternative —
-// deprovisioning status.managedTeams before releasing — would mutate an org the
-// platform does not own, which AC #7 deliberately forbids. (Dropping a team from
+// release), so the teams remain on the surviving org. This deliberate tradeoff can
+// leave controller-created teams (OIDC-synced, possibly with default repository
+// permissions) behind on an adopted org, i.e. stale access grants an operator must
+// clean up out of band. The alternative — deprovisioning status.managedTeams before
+// releasing — would mutate an org the platform does not own. (Dropping a team from
 // spec.syncedTeams while the CR lives still de-provisions that team via
 // reconcileSyncedTeams; this note is only about the whole-CR delete of an adopted
 // org.)
@@ -607,11 +604,11 @@ func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *quayv
 	qc := r.NewClient(cred, org.Spec.CABundle)
 
 	// Verify the durable server-side marker still names this CR before deleting.
-	// This closes HOL-1311 race (b): if a prior delete succeeded but finalizer
-	// removal failed, and another actor recreated the same global org name in the
-	// gap, status.Created is still true but the recreated org carries no (or a
-	// foreign) marker — deleting it would destroy a stranger's org. When the
-	// marker no longer matches, release instead of delete.
+	// If a prior delete succeeded but finalizer removal failed, and another actor
+	// recreated the same global org name in the gap, status.Created is still true
+	// but the recreated org carries no (or a foreign) marker — deleting it would
+	// destroy a stranger's org. When the marker no longer matches, release instead
+	// of delete.
 	owns, err := r.ownsViaMarker(ctx, qc, org)
 	if err != nil {
 		r.Recorder.Event(org, corev1.EventTypeWarning, ReasonQuayError,
@@ -624,14 +621,14 @@ func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *quayv
 		return r.removeFinalizer(ctx, org)
 	}
 
-	// Delete the org BEFORE the marker. Ordering matters for retry safety
-	// (Codex round 1): if the marker were removed first and the org delete then
-	// failed, the next retry would see no marker, classify the org as no longer
-	// ours, and release the finalizer — leaking the platform-created org. By
-	// deleting the org first, a failed org delete leaves the marker intact so the
-	// retry still verifies ownership and re-attempts the delete. Deleting the org
-	// also removes its robots, so the explicit marker cleanup below is a
-	// best-effort tidy-up of an already-gone robot.
+	// Delete the org BEFORE the marker. Ordering matters for retry safety: if the
+	// marker were removed first and the org delete then failed, the next retry would
+	// see no marker, classify the org as no longer ours, and release the finalizer
+	// — leaking the platform-created org. By deleting the org first, a failed org
+	// delete leaves the marker intact so the retry still verifies ownership and
+	// re-attempts the delete. Deleting the org also removes its robots, so the
+	// explicit marker cleanup below is a best-effort tidy-up of an already-gone
+	// robot.
 	delErr := qc.DeleteOrganizationIfExists(ctx, org.Spec.Name)
 	recordQuayAPI(opDeleteOrganization, delErr)
 	if delErr != nil {

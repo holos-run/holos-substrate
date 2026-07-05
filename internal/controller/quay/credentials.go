@@ -11,16 +11,12 @@ import (
 
 // Credential Secret keys. The Quay superuser OAuth-Application credential Secret
 // carries the API URL and Bearer token, plus an optional username for diagnostic
-// logging. The reconciler authenticates to Quay solely through this credential
-// (ADR-19, AC #7).
+// logging. The reconciler authenticates to Quay solely through this credential.
 //
 // This shape — Secret holos-controller-quay-creds in the holos-controller
-// namespace, keys url + token (+ optional username) — is the contract this
-// reconciler's phase (HOL-1311) mandates and the deployment provisions (HOL-1313).
-// It supersedes the older single-key quay/quay-resource-controller token Secret
-// the credentials runbook documents for manual API calls; reconciling that
-// runbook to this controller contract is HOL-1314's scope. The token may also be
-// pointed at a non-default key via SecretReference.Key (honored below).
+// namespace, keys url + token (+ optional username) — is the controller contract.
+// The token may also be pointed at a non-default key via SecretReference.Key
+// (honored below).
 const (
 	// credentialKeyURL is the Secret key holding the Quay API URL.
 	credentialKeyURL = "url"
@@ -32,8 +28,8 @@ const (
 )
 
 // DefaultControllerNamespace is the namespace the controller resolves credential
-// Secrets from when POD_NAMESPACE is unset (ADR-18). It matches the namespace the
-// kustomize deployment installs into (HOL-1313).
+// Secrets from when POD_NAMESPACE is unset. It matches the namespace the kustomize
+// deployment installs into.
 const DefaultControllerNamespace = ctrlshared.DefaultControllerNamespace
 
 // quayCredential is the resolved Quay API credential: the base URL and Bearer
@@ -50,7 +46,7 @@ type quayCredential struct {
 
 // missingCredentialError reports that the credential Secret, or a required key
 // within it, could not be resolved. The reconciler maps it to a False condition
-// with reason CredentialsNotFound and requeues rather than crashing (AC #3).
+// with reason CredentialsNotFound and requeues rather than crashing.
 // isMissingCredential reports whether err is a missingCredentialError.
 func isMissingCredential(err error) bool {
 	return ctrlshared.IsMissingCredential(err)
@@ -58,10 +54,10 @@ func isMissingCredential(err error) bool {
 
 // controllerNamespace returns the namespace the controller resolves credential
 // Secrets from: the POD_NAMESPACE env (set via the downward API in the
-// deployment, HOL-1313) when present, otherwise DefaultControllerNamespace. The
-// credential Secret always lives in the controller's own namespace, never the
-// resource's namespace — the resource's credentialsSecretRef names only the
-// Secret, not a namespace (ADR-19).
+// deployment) when present, otherwise DefaultControllerNamespace. The credential
+// Secret always lives in the controller's own namespace, never the resource's
+// namespace — the resource's credentialsSecretRef names only the Secret, not a
+// namespace.
 func controllerNamespace() string {
 	return ctrlshared.ControllerNamespace()
 }

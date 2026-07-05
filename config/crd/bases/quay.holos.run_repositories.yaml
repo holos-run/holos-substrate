@@ -311,6 +311,15 @@ spec:
                   Organization resource is later unavailable. It is omitted until a repository
                   has been provisioned.
                 type: string
+              webhookNotificationUUID:
+                description: |-
+                  WebhookNotificationUUID is the Quay UUID of the repo_push webhook
+                  notification this resource created. It is omitted when this resource has not
+                  created a webhook. The controller records it as the primary deletion gate and
+                  can recover it from the webhook's resource-specific title if a status write is
+                  lost.
+                maxLength: 128
+                type: string
             type: object
         type: object
     served: true

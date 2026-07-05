@@ -663,10 +663,9 @@ func TestReconcileStampsEmailMutationWhenTeamsFail(t *testing.T) {
 }
 
 func TestReconcileHealsLostCreatedMarkerWithoutReleasing(t *testing.T) {
-	// HOL-1311 race (a): a successful create whose status write was lost leaves
-	// status.Created true but, if the marker write was also lost, the org carries
-	// no marker. The reconciler must re-stamp the marker and keep ownership, never
-	// mis-classify the org as foreign and release it.
+	// A successful create whose marker write was lost leaves status.Created true but
+	// no marker on the org. The reconciler must re-stamp the marker and keep
+	// ownership, never mis-classify the org as foreign and release it.
 	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
@@ -702,10 +701,10 @@ func TestReconcileHealsLostCreatedMarkerWithoutReleasing(t *testing.T) {
 }
 
 func TestReconcileMarkerStampFailureAfterCreatePersistsCreatedAndHeals(t *testing.T) {
-	// Codex round 1: a clean create whose marker stamp then fails must still
-	// persist status.Created=true (so the org is not later mistaken for foreign),
-	// and a subsequent reconcile must re-stamp the marker (heal) rather than
-	// release the org.
+	// A clean create whose marker stamp then fails must still persist
+	// status.Created=true (so the org is not later mistaken for foreign), and a
+	// subsequent reconcile must re-stamp the marker (heal) rather than release the
+	// org.
 	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
@@ -751,8 +750,8 @@ func TestReconcileMarkerStampFailureAfterCreatePersistsCreatedAndHeals(t *testin
 }
 
 func TestReconcileDeleteSucceedsBeforeMarkerCleanup(t *testing.T) {
-	// Codex round 1: the org must be deleted before the marker, so a failed org
-	// delete leaves the marker intact for the retry to re-verify ownership.
+	// The org must be deleted before the marker, so a failed org delete leaves the
+	// marker intact for the retry to re-verify ownership.
 	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
@@ -824,10 +823,10 @@ func TestReconcileConflictWhenMarkerHoldsForeignToken(t *testing.T) {
 }
 
 func TestReconcileDeleteReleasesWhenMarkerForeignAfterRecreate(t *testing.T) {
-	// HOL-1311 race (b): this CR created and owns the org (status.Created true),
-	// but in the delete gap another actor recreated the same global org name with
-	// a foreign (or absent) marker. The retried delete must NOT destroy the
-	// recreated org — it releases instead.
+	// This CR created and owns the org (status.Created true), but in the delete gap
+	// another actor recreated the same global org name with a foreign (or absent)
+	// marker. The retried delete must NOT destroy the recreated org — it releases
+	// instead.
 	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
@@ -1222,9 +1221,9 @@ func TestReconcileSyncedTeamsUnmanagedOutsideSpecIsIgnored(t *testing.T) {
 }
 
 func TestReconcileSyncedTeamsHealsLostStatus(t *testing.T) {
-	// AC #4: a team that pre-exists and carries this CR's managedTeamMarker (a lost
-	// status write after our own create) is healed into ownership via the marker
-	// alone — even when unsynced — rather than treated as an adoption conflict.
+	// A team that pre-exists and carries this CR's managedTeamMarker (a lost status
+	// write after our own create) is healed into ownership via the marker alone —
+	// even when unsynced — rather than treated as an adoption conflict.
 	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
@@ -1259,10 +1258,10 @@ func TestReconcileSyncedTeamsHealsLostStatus(t *testing.T) {
 }
 
 func TestReconcileSyncedTeamsBoundButUnmarkedIsConflict(t *testing.T) {
-	// Codex round 1 (CRITICAL): a hand-created team that merely happens to be bound
-	// to the desired oidcGroup but lacks the controller's ownership-marker
-	// description must NOT be healed/adopted — it is a TeamConflict. The heal rule
-	// requires the durable description marker, not just a coincidental group match.
+	// A hand-created team that merely happens to be bound to the desired oidcGroup
+	// but lacks the controller's ownership-marker description must NOT be
+	// healed/adopted — it is a TeamConflict. The heal rule requires the durable
+	// description marker, not just a coincidental group match.
 	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
@@ -1291,10 +1290,9 @@ func TestReconcileSyncedTeamsBoundButUnmarkedIsConflict(t *testing.T) {
 }
 
 func TestReconcileSyncedTeamsForeignMarkerIsConflict(t *testing.T) {
-	// Codex round 2 (CRITICAL): the ownership marker embeds the CR UID, so a team
-	// carrying a DIFFERENT CR's marker (or any non-matching description) must not be
-	// healed — it is a conflict. This is the team-level analog of the org's
-	// foreign-marker conflict.
+	// The ownership marker embeds the CR UID, so a team carrying a DIFFERENT CR's
+	// marker (or any non-matching description) must not be healed — it is a conflict.
+	// This is the team-level analog of the org's foreign-marker conflict.
 	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
@@ -1324,10 +1322,9 @@ func TestReconcileSyncedTeamsForeignMarkerIsConflict(t *testing.T) {
 }
 
 func TestReconcileSyncedTeamsRecoversAfterPostUpsertFailure(t *testing.T) {
-	// Codex round 2 (CRITICAL): if UpsertTeam succeeds but the following sync step
-	// fails, the team carries this CR's marker. The next reconcile must heal it back
-	// into ownership (via the marker) and complete — never wedge into a false
-	// TeamConflict.
+	// If UpsertTeam succeeds but the following sync step fails, the team carries this
+	// CR's marker. The next reconcile must heal it back into ownership (via the
+	// marker) and complete — never wedge into a false TeamConflict.
 	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {

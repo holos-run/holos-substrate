@@ -8,8 +8,8 @@ import (
 	"github.com/holos-run/holos-paas/internal/quay"
 )
 
-// Custom controller metrics (AC #4). These supplement controller-runtime's
-// built-in per-controller reconcile metrics (controller_runtime_reconcile_total,
+// Custom controller metrics supplement controller-runtime's built-in
+// per-controller reconcile metrics (controller_runtime_reconcile_total,
 // _errors_total, _time_seconds, workqueue depth/latency, …) with a few
 // domain-specific collectors so an operator can see reconcile and Quay-API
 // outcomes per resource kind on the same Prometheus /metrics endpoint the

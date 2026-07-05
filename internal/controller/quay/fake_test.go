@@ -79,7 +79,7 @@ type fakeOrgClient struct {
 
 	// gotCABundle records the caBundle the reconciler's ClientFactory was last
 	// invoked with, so a test asserts the spec's CABundle is threaded through to
-	// the client factory (HOL-1320).
+	// the client factory.
 	gotCABundle []byte
 }
 
@@ -397,7 +397,7 @@ func (f *fakeOrgClient) DeletePrototypeIfExists(ctx context.Context, org, protot
 // seedTeam pre-populates a team (optionally synced to oidcGroup, "" for unsynced)
 // with an empty description, simulating a foreign (not controller-created) team.
 // Use seedTeamWithDescription to stamp this CR's ownership marker (the heal
-// candidate, AC #4).
+// candidate).
 func (f *fakeOrgClient) seedTeam(org, team, role, oidcGroup string) {
 	f.seedTeamWithDescription(org, team, role, "", oidcGroup)
 }

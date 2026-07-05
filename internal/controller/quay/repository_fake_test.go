@@ -3,6 +3,7 @@ package quay
 import (
 	"context"
 	"net/http"
+	"sort"
 	"sync"
 
 	"github.com/holos-run/holos-paas/internal/quay"
@@ -53,7 +54,7 @@ type fakeRepoClient struct {
 
 	// gotCABundle records the caBundle the reconciler's RepoClientFactory was
 	// last invoked with, so a test asserts the spec's CABundle is threaded
-	// through to the client factory (HOL-1320).
+	// through to the client factory.
 	gotCABundle []byte
 }
 
@@ -178,6 +179,9 @@ func (f *fakeRepoClient) ListNotifications(ctx context.Context, ns, repo string)
 	for _, n := range st.notifications {
 		out = append(out, n)
 	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].UUID < out[j].UUID
+	})
 	return out, nil
 }
 
@@ -259,8 +263,8 @@ func (f *fakeRepoClient) webhookURLs(ns, repo string) []string {
 // seedNotification injects a pre-existing repo_push webhook notification on
 // ns/repo with the given title and url so tests can exercise the
 // URL-change-replaces-notification path and the manual-webhook-preservation path
-// (title != webhookTitle).
-func (f *fakeRepoClient) seedNotification(ns, repo, title, url string) {
+// (title without this resource's UID-bearing marker).
+func (f *fakeRepoClient) seedNotification(ns, repo, title, url string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	st, ok := f.repos[repoKey(ns, repo)]
@@ -277,6 +281,7 @@ func (f *fakeRepoClient) seedNotification(ns, repo, title, url string) {
 		Title:  title,
 		Config: quay.NotificationConfig{URL: url},
 	}
+	return uuid
 }
 
 // compile-time assertion that the fake satisfies the reconciler's seam.

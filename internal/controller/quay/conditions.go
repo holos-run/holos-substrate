@@ -1,15 +1,13 @@
 // Package quay holds the controller-runtime reconcilers for the quay.holos.run
-// API group (ADR-19): the Organization reconciler (HOL-1311) and, in a later
-// phase, the Repository reconciler (HOL-1312). The reconcilers drive the
-// in-cluster Quay registry through the internal/quay REST client, authenticating
-// with the superuser OAuth-Application credential named by a resource's
-// credentialsSecretRef.
+// API group. The reconcilers drive the in-cluster Quay registry through the
+// internal/quay REST client, authenticating with the superuser OAuth-Application
+// credential named by a resource's credentialsSecretRef.
 //
-// This file is the home of AC #2's status convention: the Gateway-API-style
-// condition types and reasons, and the small helpers both reconcilers use to set
-// them with apimachinery/pkg/api/meta.SetStatusCondition. Keeping the vocabulary
-// in one place means the Repository reconciler reuses exactly the same condition
-// types and reasons the Organization reconciler establishes here.
+// This file is the home of the Gateway-API-style condition types and reasons,
+// and the small helpers both reconcilers use to set them with
+// apimachinery/pkg/api/meta.SetStatusCondition. Keeping the vocabulary in one
+// place means the Repository reconciler reuses exactly the same condition types
+// and reasons the Organization reconciler establishes here.
 package quay
 
 import (
@@ -62,7 +60,7 @@ const (
 	// webhook notification reflects the desired target URL. It is a
 	// Repository-only condition surfaced distinctly from Ready so an operator can
 	// tell a provisioned-but-webhookless repository (e.g. its urlSecretRef Secret
-	// has not been created yet) from a fully-wired one (AC #5/#8).
+	// has not been created yet) from a fully-wired one.
 	ConditionWebhookConfigured = quayv1alpha1.ConditionWebhookConfigured
 )
 
@@ -96,14 +94,14 @@ const (
 	// description does not carry this CR's managedTeamMarker (the unforgeable,
 	// UID-bearing ownership marker). The team is never silently seized — adoption of
 	// a pre-existing team is a reconcile error, mirroring the org-level claim model
-	// (ADR-19), even when the team happens to be bound to the entry's oidcGroup. It
-	// is distinct from ReasonConflict so an operator can tell an org-name conflict
-	// from a team conflict.
+	// even when the team happens to be bound to the entry's oidcGroup. It is
+	// distinct from ReasonConflict so an operator can tell an org-name conflict from
+	// a team conflict.
 	ReasonTeamConflict = quayv1alpha1.ReasonTeamConflict
 	// ReasonOrganizationNotReady marks a Repository's conditions False because the
 	// Quay organization named by spec.organizationRef does not yet exist. The
-	// Repository reconciler never creates the org (AC #9); it requeues until the
-	// Organization reconciler provisions it.
+	// Repository reconciler never creates the org; it requeues until the Organization
+	// reconciler provisions it.
 	ReasonOrganizationNotReady = quayv1alpha1.ReasonOrganizationNotReady
 	// ReasonWebhookURLNotFound marks the WebhookConfigured condition False because
 	// the webhook urlSecretRef Secret (or its key) could not be resolved. This is

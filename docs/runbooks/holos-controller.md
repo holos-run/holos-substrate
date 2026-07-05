@@ -11,18 +11,18 @@ namespace and is built/deployed with the isolated `controller-*` make targets
 (`Makefile.controller`), separate from `scripts/apply`, `scripts/render`, and the
 `holos-paas` image.
 
-This runbook covers the **AC #3** assumption — *a superuser-account OAuth
+This runbook covers the superuser-token assumption — *a superuser-account OAuth
 Application token authenticates all controller-managed Quay operations* — and how
 to satisfy it. The credential itself is minted by the companion
 [Quay Resource Controller credentials runbook](quay-resource-controller-credentials.md);
 this runbook is the consumer side: where that token lands and how the controller
 reads it.
 
-## The superuser-token assumption (AC #3)
+## The superuser-token assumption
 
 Every Quay operation the controller performs — create/adopt an Organization,
-create a Repository, register a `repo_push` webhook — is authenticated with **one
-OAuth-Application token that acts as a Quay superuser**, the
+create/adopt a Repository, register a `repo_push` webhook — is authenticated with
+**one OAuth-Application token that acts as a Quay superuser**, the
 `svc-quay-resource-controller` realm user ([ADR-15](../adr/ADR-15.md) Revisions
 4–5). This is a deliberate design assumption, not an incidental one:
 
@@ -38,7 +38,9 @@ OAuth-Application token that acts as a Quay superuser**, the
   **ownership/claim model** (ADR-19): it never silently seizes a pre-existing,
   externally-created org — adoption is an explicit `spec.adopt: true` opt-in, and
   the durable `status.created` marker records whether the controller created
-  (deletes on removal) or adopted (releases on removal) each org.
+  (deletes on removal) or adopted (releases on removal) each org. Repository
+  resources use the same claim/adopt/release shape for pre-existing repositories,
+  with an ownership marker in the Quay repository description.
 
 There is **one** credential for the whole controller, resolved from its own
 namespace; resources do not each carry distinct credentials (they may *name* a
@@ -198,7 +200,7 @@ kubectl -n holos-controller get deploy,pod
 kubectl -n holos-controller get secret holos-controller-quay-creds \
   -o jsonpath='{.data}' | tr ',' '\n'   # expect url, token (username optional)
 
-# Metrics are scrapable (AC #4):
+# Metrics are scrapable:
 kubectl -n holos-controller get svc        # holos-controller-manager-metrics-service:8080
 # controller-runtime reconcile metrics plus the custom collectors:
 #   holos_controller_reconcile_total{group,kind,outcome}
@@ -344,11 +346,11 @@ the bundle never contains trust material.
 ## See also
 
 - [ADR-18 — The Holos Controller](../adr/ADR-18.md) — the controller, its
-  `holos-controller` namespace, and the AC #7 API-group dependency boundary.
+  `holos-controller` namespace, and the API-group dependency boundary.
 - [ADR-19 — Quay API Group (`quay.holos.run`) CRDs](../adr/ADR-19.md) — the
   Organization/Repository schemas, the `credentialsSecretRef` design, the
-  `url`/`urlSecretRef` webhook (AC #8), the repos-only-via-Repository rule
-  (AC #9), and the conditions/reasons.
+  `url`/`urlSecretRef` webhook, the repos-only-via-Repository rule, and the
+  conditions/reasons.
 - [Quay Resource Controller credentials runbook](quay-resource-controller-credentials.md)
   — minting the superuser OAuth-Application token this controller consumes.
 - [Quay↔Keycloak OIDC runbook](quay-keycloak-oidc.md) — the SSO/superuser model.
