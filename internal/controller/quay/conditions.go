@@ -15,6 +15,7 @@ package quay
 import (
 	"time"
 
+	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -44,21 +45,19 @@ const quayExternalResourceResync = time.Hour
 // Reusing the same string values the API package defines keeps the printer
 // columns (which match on type=="Ready") and any client tooling consistent.
 const (
-	// ConditionAccepted reports whether the spec was accepted as valid and
-	// claimed by this resource (Gateway-API Accepted).
-	ConditionAccepted = "Accepted"
-	// ConditionProgrammed reports whether the desired state has been programmed
-	// into Quay (Gateway-API Programmed).
-	ConditionProgrammed = "Programmed"
-	// ConditionReady reports whether the resource has been fully provisioned in
-	// Quay (Gateway-API Ready).
-	ConditionReady = "Ready"
+	// ConditionAccepted reports whether the spec was accepted for reconciliation.
+	ConditionAccepted = quayv1alpha1.ConditionAccepted
+	// ConditionProgrammed reports whether the desired state has been written into
+	// Quay.
+	ConditionProgrammed = quayv1alpha1.ConditionProgrammed
+	// ConditionReady reports whether the resource is provisioned and usable.
+	ConditionReady = quayv1alpha1.ConditionReady
 	// ConditionWebhookConfigured reports whether the Repository's repo_push
 	// webhook notification reflects the desired target URL. It is a
 	// Repository-only condition surfaced distinctly from Ready so an operator can
 	// tell a provisioned-but-webhookless repository (e.g. its urlSecretRef Secret
 	// has not been created yet) from a fully-wired one (AC #5/#8).
-	ConditionWebhookConfigured = "WebhookConfigured"
+	ConditionWebhookConfigured = quayv1alpha1.ConditionWebhookConfigured
 )
 
 // Condition reasons. Reasons are stable, CamelCase machine-readable tokens

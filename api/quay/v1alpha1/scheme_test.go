@@ -45,18 +45,18 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 			OrganizationRef: "my-project",
 			Name:            "my-project-config",
 			Visibility:      RepositoryVisibilityPrivate,
-			Webhook:         &RepositoryWebhook{Url: &url},
+			Webhook:         &RepositoryWebhook{URL: &url},
 		},
 	}
 	clone := repo.DeepCopy()
 	if clone.Spec.Webhook == repo.Spec.Webhook {
 		t.Error("DeepCopy did not clone the Webhook pointer")
 	}
-	if clone.Spec.Webhook.Url == repo.Spec.Webhook.Url {
-		t.Error("DeepCopy did not clone the Webhook.Url pointer")
+	if clone.Spec.Webhook.URL == repo.Spec.Webhook.URL {
+		t.Error("DeepCopy did not clone the Webhook.URL pointer")
 	}
-	if *clone.Spec.Webhook.Url != url {
-		t.Errorf("cloned Webhook.Url = %q, want %q", *clone.Spec.Webhook.Url, url)
+	if *clone.Spec.Webhook.URL != url {
+		t.Errorf("cloned Webhook.URL = %q, want %q", *clone.Spec.Webhook.URL, url)
 	}
 
 	perm := RepositoryRoleWrite

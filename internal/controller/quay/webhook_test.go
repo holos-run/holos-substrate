@@ -41,42 +41,42 @@ func TestResolveWebhookURL(t *testing.T) {
 	}{
 		{
 			name:    "inline url",
-			webhook: &quayv1alpha1.RepositoryWebhook{Url: &inline},
+			webhook: &quayv1alpha1.RepositoryWebhook{URL: &inline},
 			wantURL: inline,
 		},
 		{
 			name: "secretRef resolves",
 			webhook: &quayv1alpha1.RepositoryWebhook{
-				UrlSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "kargo-receiver", Key: "url"},
+				URLSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "kargo-receiver", Key: "url"},
 			},
 			wantURL: "https://kargo.example.test/webhook/zzz",
 		},
 		{
 			name: "secretRef missing secret",
 			webhook: &quayv1alpha1.RepositoryWebhook{
-				UrlSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "absent", Key: "url"},
+				URLSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "absent", Key: "url"},
 			},
 			wantErr: isWebhookURLNotFound,
 		},
 		{
 			name: "secretRef missing key",
 			webhook: &quayv1alpha1.RepositoryWebhook{
-				UrlSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "kargo-receiver", Key: "absent"},
+				URLSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "kargo-receiver", Key: "absent"},
 			},
 			wantErr: isWebhookURLNotFound,
 		},
 		{
 			name: "secretRef empty value",
 			webhook: &quayv1alpha1.RepositoryWebhook{
-				UrlSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "empty-key", Key: "url"},
+				URLSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "empty-key", Key: "url"},
 			},
 			wantErr: isWebhookURLNotFound,
 		},
 		{
 			name: "both set is invalid",
 			webhook: &quayv1alpha1.RepositoryWebhook{
-				Url:          &inline,
-				UrlSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "kargo-receiver", Key: "url"},
+				URL:          &inline,
+				URLSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "kargo-receiver", Key: "url"},
 			},
 			wantErr: isInvalidWebhook,
 		},

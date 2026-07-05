@@ -10,6 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
+	k8sptr "k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -37,6 +38,14 @@ const organizationFinalizer = "organization.quay.holos.run/finalizer"
 // foreign recreate of the same global org name no longer destroys the recreated
 // org.
 const ownerRobotShortname = "holos-owner"
+
+func statusCreated(org *quayv1alpha1.Organization) bool {
+	return org.Status.Created != nil && *org.Status.Created
+}
+
+func setStatusCreated(org *quayv1alpha1.Organization, created bool) {
+	org.Status.Created = k8sptr.To(created)
+}
 
 // ownerToken returns the opaque, controller-managed ownership token stamped into
 // the marker robot's description for org. It is the Organization CR's UID: stable
@@ -263,7 +272,7 @@ func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger log
 			// reconcile sees an existing org with status.Created=true and no marker
 			// and takes the heal path (re-stamp), rather than mistaking its own
 			// org for a foreign one and releasing it (Codex round 1).
-			org.Status.Created = true
+			setStatusCreated(org, true)
 			if markerErr := r.ensureOwnerMarker(ctx, qc, org); markerErr != nil {
 				// fail() persists status (carrying Created=true) and requeues, so
 				// the heal path recovers the marker on the next reconcile.
@@ -323,7 +332,7 @@ func (r *OrganizationReconciler) reconcileExisting(ctx context.Context, logger l
 		// No marker. If this CR is already recorded as the creator, the marker
 		// write was lost after a successful create (HOL-1311 race a) — re-stamp
 		// it and continue as owned rather than mis-releasing the org.
-		if org.Status.Created {
+		if statusCreated(org) {
 			if err := r.ensureOwnerMarker(ctx, qc, org); err != nil {
 				return r.fail(ctx, org, err)
 			}
@@ -343,7 +352,7 @@ func (r *OrganizationReconciler) reconcileExisting(ctx context.Context, logger l
 // marks Ready. It never errors on an org we own beyond a genuine Quay-API failure.
 func (r *OrganizationReconciler) reconcileOwned(ctx context.Context, logger logr.Logger, qc OrgClient, org *quayv1alpha1.Organization, actual *quay.Organization, markerMutated ...bool) (ctrl.Result, error) {
 	mutated := len(markerMutated) > 0 && markerMutated[0]
-	org.Status.Created = true
+	setStatusCreated(org, true)
 
 	// Apply mutable spec drift before marking Ready. Quay 3.17.3 organizations
 	// expose only the contact email as a mutable, programmable field on this
@@ -423,7 +432,7 @@ func (r *OrganizationReconciler) conflict(ctx context.Context, logger logr.Logge
 // terminal Conflict condition (no requeue storm — a spec change re-triggers).
 func (r *OrganizationReconciler) reconcileExistingUnowned(ctx context.Context, logger logr.Logger, qc OrgClient, org *quayv1alpha1.Organization) (ctrl.Result, error) {
 	if org.Spec.Adopt {
-		org.Status.Created = false
+		setStatusCreated(org, false)
 		return r.reconcileTeamsThenSucceed(ctx, logger, qc, org, false, ReasonAdopted,
 			fmt.Sprintf("adopted existing Quay organization %q", org.Spec.Name))
 	}
@@ -592,7 +601,7 @@ func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *quayv
 	// Adopted org (or one never created by this CR) → release, do not delete.
 	// No credential is needed: the controller does not touch Quay, it only
 	// relinquishes its claim.
-	if !org.Status.Created {
+	if !statusCreated(org) {
 		r.Recorder.Event(org, corev1.EventTypeNormal, ReasonReleased,
 			fmt.Sprintf("released Quay organization %q without deleting (adopted, not created by this resource)", org.Spec.Name))
 		return r.removeFinalizer(ctx, org)
@@ -738,6 +747,7 @@ func (r *OrganizationReconciler) fail(ctx context.Context, org *quayv1alpha1.Org
 // (the CR was deleted concurrently) is ignored — there is nothing left to update.
 func (r *OrganizationReconciler) updateStatus(ctx context.Context, org *quayv1alpha1.Organization) error {
 	org.Status.ObservedGeneration = org.Generation
+	org.Status.ManagedTeams = normalizeManagedTeams(org.Status.ManagedTeams)
 	desired := org.Status.DeepCopy()
 
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {

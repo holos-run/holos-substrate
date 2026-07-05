@@ -120,7 +120,7 @@ func makeReadyOrg(ctx context.Context, t *testing.T, ns, orgName string) string 
 		Message:            "ready for test",
 		ObservedGeneration: org.Generation,
 	})
-	org.Status.Created = true
+	setStatusCreated(org, true)
 	if err := shared.k8sClient.Status().Update(ctx, org); err != nil {
 		t.Fatalf("setting Organization Ready: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestRepositoryCreatesWithInlineWebhook(t *testing.T) {
 	makeReadyOrg(ctx, t, ns, "acme")
 	const hook = "https://kargo.example.test/webhook/abc"
 	key := makeRepo(ctx, t, ns, "acme", "web", repoOpts{
-		webhook: &quayv1alpha1.RepositoryWebhook{Url: ptr(hook)},
+		webhook: &quayv1alpha1.RepositoryWebhook{URL: ptr(hook)},
 	})
 
 	fake := newFakeRepoClient()
@@ -300,7 +300,7 @@ func TestRepositoryCreatesWithSecretRefWebhook(t *testing.T) {
 	makeReadyOrg(ctx, t, ns, "acme")
 	key := makeRepo(ctx, t, ns, "acme", "api", repoOpts{
 		webhook: &quayv1alpha1.RepositoryWebhook{
-			UrlSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "kargo-receiver", Key: "url"},
+			URLSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "kargo-receiver", Key: "url"},
 		},
 	})
 
@@ -351,7 +351,7 @@ func TestRepositorySecretRefWebhookErrorDoesNotLeakURL(t *testing.T) {
 	makeReadyOrg(ctx, t, ns, "acme")
 	key := makeRepo(ctx, t, ns, "acme", "leaky", repoOpts{
 		webhook: &quayv1alpha1.RepositoryWebhook{
-			UrlSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "kargo-receiver", Key: "url"},
+			URLSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "kargo-receiver", Key: "url"},
 		},
 	})
 
@@ -397,7 +397,7 @@ func TestRepositorySecretRefMissingKeySetsConditionAndRequeues(t *testing.T) {
 	makeReadyOrg(ctx, t, ns, "acme")
 	key := makeRepo(ctx, t, ns, "acme", "missingkey", repoOpts{
 		webhook: &quayv1alpha1.RepositoryWebhook{
-			UrlSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "kargo-receiver", Key: "url"},
+			URLSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "kargo-receiver", Key: "url"},
 		},
 	})
 
@@ -482,7 +482,7 @@ func TestRepositoryWebhookURLChangeReplacesNotification(t *testing.T) {
 	makeReadyOrg(ctx, t, ns, "acme")
 	const newHook = "https://kargo.example.test/webhook/new"
 	key := makeRepo(ctx, t, ns, "acme", "rehook", repoOpts{
-		webhook: &quayv1alpha1.RepositoryWebhook{Url: ptr(newHook)},
+		webhook: &quayv1alpha1.RepositoryWebhook{URL: ptr(newHook)},
 	})
 
 	fake := newFakeRepoClient()
@@ -608,7 +608,7 @@ func TestRepositoryDeleteRemovesFinalizerAfterQuayDelete(t *testing.T) {
 	}
 	makeReadyOrg(ctx, t, ns, "acme")
 	key := makeRepo(ctx, t, ns, "acme", "doomed", repoOpts{
-		webhook: &quayv1alpha1.RepositoryWebhook{Url: ptr("https://kargo.example.test/webhook/x")},
+		webhook: &quayv1alpha1.RepositoryWebhook{URL: ptr("https://kargo.example.test/webhook/x")},
 	})
 
 	fake := newFakeRepoClient()
