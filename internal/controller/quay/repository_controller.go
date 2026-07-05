@@ -34,10 +34,11 @@ import (
 // the finalizer before the CR is removed from the API server.
 const repositoryFinalizer = "repository.quay.holos.run/finalizer"
 
-// webhookTitle labels the repo_push notification this controller manages so a
-// human reading the Quay UI can tell it apart from manually-created webhooks, and
-// so the reconciler only deletes notifications it owns.
-const webhookTitle = "holos-controller repo_push"
+// webhookTitlePrefix starts the repo_push notification title this controller
+// manages. The actual title also includes the Repository UID so the title is a
+// durable server-side ownership marker when status.webhookNotificationUUID is
+// lost after a successful Quay create.
+const webhookTitlePrefix = "holos-controller repo_push"
 
 // webhookSecretResyncInterval is how often a Repository whose webhook URL comes
 // from a urlSecretRef is re-reconciled, so a change to the referenced Secret's
@@ -532,17 +533,23 @@ func redactWebhookURL(err error, repo *quayv1alpha1.Repository, url string) erro
 	return fmt.Errorf("%s", redacted)
 }
 
-// isManagedWebhook reports whether a notification has the shape this controller
-// creates: a repo_push webhook with the controller title. Destructive cleanup is
-// gated by status.WebhookNotificationUUID, not by this public title alone.
-func isManagedWebhook(n quay.Notification) bool {
-	return n.Event == quay.EventRepoPush && n.Method == quay.MethodWebhook && n.Title == webhookTitle
+// repositoryWebhookTitle is the durable server-side marker for the webhook this
+// Repository owns.
+func repositoryWebhookTitle(repo *quayv1alpha1.Repository) string {
+	return webhookTitlePrefix + " " + repositoryOwnerToken(repo)
+}
+
+// isManagedWebhook reports whether a notification has the shape and UID-bearing
+// title this Repository creates.
+func isManagedWebhook(repo *quayv1alpha1.Repository, n quay.Notification) bool {
+	return n.Event == quay.EventRepoPush && n.Method == quay.MethodWebhook && n.Title == repositoryWebhookTitle(repo)
 }
 
 // ensureWebhook makes the controller-managed repo_push webhook notifications
 // converge on exactly one recorded notification delivering to url. Deletion is
-// gated by status.WebhookNotificationUUID, so a manually-created webhook with the
-// same public title is not treated as owned by this resource.
+// gated by the Repository's UID-bearing title and recorded UUID, so a
+// manually-created webhook with the public prefix is not treated as owned by this
+// resource.
 func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient, repo *quayv1alpha1.Repository, ns, name, url string, repositoryPreviouslyReady bool) (quayMutation, error) {
 	mutation := quayMutation{}
 	notifications, err := qc.ListNotifications(ctx, ns, name)
@@ -552,17 +559,23 @@ func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient,
 	}
 
 	recordedUUID := repo.Status.WebhookNotificationUUID
+	matched := false
 	for _, n := range notifications {
-		if recordedUUID == "" || n.UUID != recordedUUID {
-			// Not recorded as ours. It may even have the same public title; without the
-			// UUID in status, treat it as foreign.
+		if !isManagedWebhook(repo, n) && n.UUID != recordedUUID {
+			// Not recorded as ours and does not carry this resource's UID-bearing
+			// title. Treat it as foreign.
 			continue
 		}
-		if n.Config.URL == url && isManagedWebhook(n) {
-			return mutation, nil
+		if !matched && n.Config.URL == url && isManagedWebhook(repo, n) {
+			// Keep exactly one correct notification. If status lost the UUID, recover it
+			// from the UID-bearing title.
+			repo.Status.WebhookNotificationUUID = n.UUID
+			matched = true
+			continue
 		}
-		// The recorded notification is stale or no longer has the shape this
-		// controller creates. Delete it before creating the desired webhook.
+		// The recorded notification is stale, lacks this resource's UID-bearing title,
+		// or is a duplicate owner-marked notification. Delete it before creating or
+		// keeping the desired webhook.
 		delErr := qc.DeleteNotificationIfExists(ctx, ns, name, n.UUID)
 		recordQuayAPI(opDeleteNotification, delErr)
 		if delErr != nil {
@@ -570,10 +583,12 @@ func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient,
 		}
 		repo.Status.WebhookNotificationUUID = ""
 		mutation = mutation.or(quayMutation{Mutated: true, HealedDrift: repositoryPreviouslyReady})
-		break
+	}
+	if matched {
+		return mutation, nil
 	}
 
-	created, err := qc.CreateNotification(ctx, ns, name, url, webhookTitle)
+	created, err := qc.CreateNotification(ctx, ns, name, url, repositoryWebhookTitle(repo))
 	recordQuayAPI(opCreateNotification, err)
 	if err != nil {
 		return mutation, fmt.Errorf("creating Quay repo_push webhook on %s/%s: %w", ns, name, err)
@@ -583,15 +598,12 @@ func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient,
 }
 
 // removeRecordedWebhook deletes the repo_push webhook notification recorded in
-// status, leaving unrecorded notifications intact even if they have the same
-// public title. It is used when spec.webhook is unset and when an adopted
-// repository is released.
+// status, and also deletes notifications carrying this Repository's UID-bearing
+// title in case the UUID status write was lost. It leaves foreign notifications
+// intact.
 func (r *RepositoryReconciler) removeRecordedWebhook(ctx context.Context, qc RepoClient, repo *quayv1alpha1.Repository, ns, name string) (quayMutation, error) {
 	mutation := quayMutation{}
 	recordedUUID := repo.Status.WebhookNotificationUUID
-	if recordedUUID == "" {
-		return mutation, nil
-	}
 	notifications, err := qc.ListNotifications(ctx, ns, name)
 	// A repository that no longer exists has no notifications to clean up; its
 	// NotFound is an expected branch, not a Quay-API failure.
@@ -603,17 +615,15 @@ func (r *RepositoryReconciler) removeRecordedWebhook(ctx context.Context, qc Rep
 		return mutation, fmt.Errorf("listing Quay notifications for %s/%s: %w", ns, name, err)
 	}
 	for _, n := range notifications {
-		if n.UUID != recordedUUID {
+		if n.UUID != recordedUUID && !isManagedWebhook(repo, n) {
 			continue
 		}
-		delErr := qc.DeleteNotificationIfExists(ctx, ns, name, recordedUUID)
+		delErr := qc.DeleteNotificationIfExists(ctx, ns, name, n.UUID)
 		recordQuayAPI(opDeleteNotification, delErr)
 		if delErr != nil {
-			return mutation, fmt.Errorf("deleting Quay notification %s on %s/%s: %w", recordedUUID, ns, name, delErr)
+			return mutation, fmt.Errorf("deleting Quay notification %s on %s/%s: %w", n.UUID, ns, name, delErr)
 		}
-		repo.Status.WebhookNotificationUUID = ""
 		mutation = mutation.or(quayMutation{Mutated: true})
-		return mutation, nil
 	}
 	repo.Status.WebhookNotificationUUID = ""
 	return mutation, nil

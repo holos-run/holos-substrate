@@ -172,10 +172,11 @@ type RepositoryStatus struct {
 	// +optional
 	Created *bool `json:"created,omitempty"`
 
-	// WebhookNotificationUUID is the Quay UUID of the repo_push webhook notification
-	// this resource created. It is omitted when this resource has not created a
-	// webhook. The controller uses it as the deletion gate so release and cleanup
-	// remove only the notification this resource recorded.
+	// WebhookNotificationUUID is the Quay UUID of the repo_push webhook
+	// notification this resource created. It is omitted when this resource has not
+	// created a webhook. The controller records it as the primary deletion gate and
+	// can recover it from the webhook's resource-specific title if a status write is
+	// lost.
 	//
 	// +optional
 	// +kubebuilder:validation:MaxLength=128

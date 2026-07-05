@@ -830,7 +830,7 @@ func TestRepositoryWebhookURLChangeReplacesNotification(t *testing.T) {
 		description:   repositoryOwnerMarker(repo, true),
 		notifications: map[string]quay.Notification{},
 	}
-	repo.Status.WebhookNotificationUUID = fake.seedNotification("acme", "rehook", webhookTitle, "https://old.example.test/stale")
+	repo.Status.WebhookNotificationUUID = fake.seedNotification("acme", "rehook", repositoryWebhookTitle(repo), "https://old.example.test/stale")
 	if err := shared.k8sClient.Status().Update(ctx, repo); err != nil {
 		t.Fatalf("recording stale webhook UUID in status: %v", err)
 	}
@@ -852,6 +852,45 @@ func TestRepositoryWebhookURLChangeReplacesNotification(t *testing.T) {
 	}
 	if !containsString(urls, "https://manual.example.test/keep") {
 		t.Errorf("manually-created webhook must be preserved; URLs = %v", urls)
+	}
+}
+
+func TestRepositoryWebhookStatusLossRecoversUUIDWithoutDuplicate(t *testing.T) {
+	ctx := t.Context()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	const hook = "https://kargo.example.test/webhook/recover"
+	key := makeRepo(ctx, t, ns, "acme", "recoverhook", repoOpts{
+		webhook: &quayv1alpha1.RepositoryWebhook{URL: ptr(hook)},
+	})
+
+	fake := newFakeRepoClient()
+	r, _ := newRepoReconciler(fake, ns)
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("initial reconcile: %v", err)
+	}
+	repo := getRepo(ctx, t, key)
+	if repo.Status.WebhookNotificationUUID == "" {
+		t.Fatal("status.webhookNotificationUUID is empty after initial reconcile")
+	}
+
+	repo.Status.WebhookNotificationUUID = ""
+	if err := shared.k8sClient.Status().Update(ctx, repo); err != nil {
+		t.Fatalf("clearing webhook UUID status: %v", err)
+	}
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile after status loss: %v", err)
+	}
+
+	repo = getRepo(ctx, t, key)
+	if repo.Status.WebhookNotificationUUID == "" {
+		t.Fatal("status.webhookNotificationUUID was not recovered")
+	}
+	if urls := fake.webhookURLs("acme", "recoverhook"); len(urls) != 1 || urls[0] != hook {
+		t.Errorf("webhook URLs after status recovery = %v, want exactly [%s]", urls, hook)
 	}
 }
 
@@ -1075,7 +1114,7 @@ func TestRepositoryDeleteReleasesAdoptedRepositoryWithoutDeleting(t *testing.T) 
 	if repo.Status.WebhookNotificationUUID == "" {
 		t.Fatal("status.webhookNotificationUUID is empty, want recorded controller webhook UUID")
 	}
-	fake.seedNotification("acme", "adoptdelete", webhookTitle, manualHook)
+	fake.seedNotification("acme", "adoptdelete", webhookTitlePrefix, manualHook)
 	if urls := fake.webhookURLs("acme", "adoptdelete"); len(urls) != 2 || !containsString(urls, adoptedHook) || !containsString(urls, manualHook) {
 		t.Fatalf("webhook URLs before delete = %v, want controller and manual hooks", urls)
 	}

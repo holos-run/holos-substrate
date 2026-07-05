@@ -479,7 +479,7 @@ status:
   # adopted an existing repository and finalization releases it without deleting.
   created: true
   # UUID of the repo_push notification this resource created, when a webhook is
-  # configured. Used as the deletion gate for webhook cleanup.
+  # configured. Used as the primary deletion gate for webhook cleanup.
   webhookNotificationUUID: 7d2f...
   lastValidatedTime: "2026-07-05T20:00:00Z"
   lastMutatedTime: "2026-07-05T20:00:00Z"
@@ -515,7 +515,7 @@ status:
 | `observedGeneration` | last `spec` generation reconciled. |
 | `quayRepository` | the resolved `<org>/<repo>` path, recorded after provisioning or claiming the repository. |
 | `created` | the durable ownership marker of the Repository claim model: `true` if this CR created the Quay repository, `false` if it adopted one. The finalizer deletes the Quay repository only when `created: true`; adopted repositories are released. |
-| `webhookNotificationUUID` | the Quay UUID of the `repo_push` webhook notification this CR created. Webhook cleanup deletes only this recorded UUID, so a manually-created notification with the same public title is not treated as owned by the CR. |
+| `webhookNotificationUUID` | the Quay UUID of the `repo_push` webhook notification this CR created. Webhook cleanup uses this recorded UUID plus the resource-specific webhook title, so a manually-created notification with only the public title prefix is not treated as owned by the CR. |
 | `lastValidatedTime` / `lastMutatedTime` / `lastMutationReason` / `lastDriftTime` | drift-observability timestamps and mutation classification shared with Organization. |
 | `conditions[]` | Gateway-API `Accepted`/`Programmed`/`Ready` plus the Repository-only `WebhookConfigured` (see below). |
 
@@ -686,11 +686,12 @@ new orgs and adopt orgs other identities created.
   CR (requeuing with `OrganizationNotReady` until the org is provisioned),
   create-or-adopts `<org>/<name>` at `visibility`, applies `description`, and —
   when `webhook` is set — resolves the URL (inline or from `urlSecretRef`) and
-  upserts the Quay `repo_push` notification, recording the created notification's
-  UUID in status and setting `WebhookConfigured`. A finalizer deletes created
-  repositories at the resolved `status.quayRepository` path and releases adopted
-  repositories without deleting them; release removes only the recorded webhook
-  notification UUID.
+  upserts the Quay `repo_push` notification with a UID-bearing title, recording
+  the created notification's UUID in status and setting `WebhookConfigured`. A
+  finalizer deletes created repositories at the resolved `status.quayRepository`
+  path and releases adopted repositories without deleting them; release removes
+  only the recorded webhook notification UUID or a notification carrying this
+  resource's UID-bearing title.
 
 ## Decision
 

@@ -259,7 +259,7 @@ func (f *fakeRepoClient) webhookURLs(ns, repo string) []string {
 // seedNotification injects a pre-existing repo_push webhook notification on
 // ns/repo with the given title and url so tests can exercise the
 // URL-change-replaces-notification path and the manual-webhook-preservation path
-// (title != webhookTitle).
+// (title without this resource's UID-bearing marker).
 func (f *fakeRepoClient) seedNotification(ns, repo, title, url string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
