@@ -98,11 +98,23 @@ func (c *Client) DeleteNotification(ctx context.Context, ns, repo, uuid string) 
 //
 // Quay's delete-notification handler does not consistently use 404 for an
 // unknown UUID: when the notification was already removed out of band it can
-// respond 400 InvalidRequest. Both a 404 and that absent-UUID 400 mean the
-// notification is gone, so both are treated as success.
+// respond 400 InvalidRequest. Because that 400 is generic, the wrapper confirms
+// the UUID is absent with ListNotifications before treating it as success.
 func (c *Client) DeleteNotificationIfExists(ctx context.Context, ns, repo, uuid string) error {
 	err := c.DeleteNotification(ctx, ns, repo, uuid)
-	if IsNotFound(err) || isAbsentNotification(err) {
+	if IsNotFound(err) {
+		return nil
+	}
+	if isAmbiguousNotificationDelete(err) {
+		notifications, listErr := c.ListNotifications(ctx, ns, repo)
+		if listErr != nil {
+			return err
+		}
+		for _, notification := range notifications {
+			if notification.UUID == uuid {
+				return err
+			}
+		}
 		return nil
 	}
 	return err

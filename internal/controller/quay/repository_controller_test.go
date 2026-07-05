@@ -192,7 +192,7 @@ func containsString(xs []string, want string) bool {
 }
 
 func TestRepositoryCreatesWithInlineWebhook(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -262,7 +262,7 @@ func TestRepositoryCreatesWithInlineWebhook(t *testing.T) {
 }
 
 func TestRepositoryThreadsCABundleToClientFactory(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -284,7 +284,7 @@ func TestRepositoryThreadsCABundleToClientFactory(t *testing.T) {
 }
 
 func TestRepositoryInvalidCABundleFailsWithoutQuayCall(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -312,7 +312,7 @@ func TestRepositoryInvalidCABundleFailsWithoutQuayCall(t *testing.T) {
 }
 
 func TestRepositoryDescriptionValidationReservesOwnershipMarkerLength(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 
 	accepted := &quayv1alpha1.Repository{
@@ -361,7 +361,7 @@ func TestRepositoryMarkedDescriptionMaxLengthFitsQuay(t *testing.T) {
 }
 
 func TestRepositoryCreatesWithSecretRefWebhook(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -412,7 +412,7 @@ func TestRepositoryCreatesWithSecretRefWebhook(t *testing.T) {
 }
 
 func TestRepositorySecretRefWebhookErrorDoesNotLeakURL(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -458,7 +458,7 @@ func TestRepositorySecretRefWebhookErrorDoesNotLeakURL(t *testing.T) {
 }
 
 func TestRepositoryWebhookSecretReadErrorPersistsPriorMutation(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -508,7 +508,7 @@ func TestRepositoryWebhookSecretReadErrorPersistsPriorMutation(t *testing.T) {
 }
 
 func TestRepositorySecretRefMissingKeySetsConditionAndRequeues(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -563,7 +563,7 @@ func TestRepositorySecretRefMissingKeySetsConditionAndRequeues(t *testing.T) {
 }
 
 func TestRepositoryCorrectsVisibilityAndDescriptionDrift(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -605,7 +605,7 @@ func TestRepositoryCorrectsVisibilityAndDescriptionDrift(t *testing.T) {
 }
 
 func TestRepositoryExistingUnclaimedWithoutAdoptIsConflict(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -639,7 +639,7 @@ func TestRepositoryExistingUnclaimedWithoutAdoptIsConflict(t *testing.T) {
 }
 
 func TestRepositoryAdoptsExistingRepository(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -682,7 +682,7 @@ func TestRepositoryAdoptsExistingRepository(t *testing.T) {
 }
 
 func TestRepositoryAdoptStatusLossDoesNotBecomeCreated(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -733,7 +733,7 @@ func TestRepositoryAdoptStatusLossDoesNotBecomeCreated(t *testing.T) {
 }
 
 func TestRepositoryStampsPartialMutationWhenDescriptionUpdateFails(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -784,7 +784,7 @@ func TestRepositoryStampsPartialMutationWhenDescriptionUpdateFails(t *testing.T)
 }
 
 func TestRepositoryWebhookURLChangeReplacesNotification(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -827,7 +827,7 @@ func TestRepositoryWebhookURLChangeReplacesNotification(t *testing.T) {
 }
 
 func TestRepositoryStampsWebhookDeleteBeforeFailedCreate(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -887,7 +887,7 @@ func TestRepositoryStampsWebhookDeleteBeforeFailedCreate(t *testing.T) {
 }
 
 func TestRepositoryOrganizationNotReadyRequeues(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -921,7 +921,7 @@ func TestRepositoryOrganizationNotReadyRequeues(t *testing.T) {
 }
 
 func TestRepositoryMissingCredentialSetsConditionAndNoQuayCall(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	// Deliberately do NOT create the credential Secret. The credential is
 	// resolved before the org, so no Organization CR is needed here.
@@ -949,7 +949,7 @@ func TestRepositoryMissingCredentialSetsConditionAndNoQuayCall(t *testing.T) {
 }
 
 func TestRepositoryNoWebhookIsWebhookless(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -976,7 +976,7 @@ func TestRepositoryNoWebhookIsWebhookless(t *testing.T) {
 }
 
 func TestRepositoryDeleteRemovesFinalizerAfterQuayDelete(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -1015,7 +1015,7 @@ func TestRepositoryDeleteRemovesFinalizerAfterQuayDelete(t *testing.T) {
 }
 
 func TestRepositoryDeleteReleasesAdoptedRepositoryWithoutDeleting(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -1065,7 +1065,7 @@ func TestRepositoryDeleteReleasesAdoptedRepositoryWithoutDeleting(t *testing.T) 
 }
 
 func TestRepositoryCreateRaceConfirmedByGet(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -1090,7 +1090,7 @@ func TestRepositoryCreateRaceConfirmedByGet(t *testing.T) {
 }
 
 func TestRepositoryResolvesQuayOrgThroughOrganizationSpecName(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -1137,7 +1137,7 @@ func TestRepositoryResolvesQuayOrgThroughOrganizationSpecName(t *testing.T) {
 }
 
 func TestRepositoryOrganizationExistsButNotReadyRequeues(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -1176,7 +1176,7 @@ func TestRepositoryOrganizationExistsButNotReadyRequeues(t *testing.T) {
 }
 
 func TestRepositoryOrganizationReadyMustBeCurrentGeneration(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -1211,7 +1211,7 @@ func TestRepositoryOrganizationReadyMustBeCurrentGeneration(t *testing.T) {
 }
 
 func TestRepositoriesForOrganizationMapsDependents(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	matching := makeRepo(ctx, t, ns, "mapped-org", "web", repoOpts{})
 	other := makeRepo(ctx, t, ns, "other-org", "api", repoOpts{})
@@ -1229,7 +1229,7 @@ func TestRepositoriesForOrganizationMapsDependents(t *testing.T) {
 }
 
 func TestRepositoryDeleteUsesCreatedMarkerWhenStatusEmpty(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)

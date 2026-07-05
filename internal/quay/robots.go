@@ -32,7 +32,7 @@ type createOrganizationRobotRequest struct {
 // /api/v1/organization/{orgname}/robots/{shortname} path with each segment
 // escaped.
 func organizationRobotPath(org, shortname string) string {
-	return "/api/v1/organization/" + url.PathEscape(org) + "/robots/" + url.PathEscape(shortname)
+	return organizationPath(org) + "/robots/" + url.PathEscape(shortname)
 }
 
 // GetOrganizationRobot fetches the org robot {org}+{shortname} via
@@ -73,9 +73,5 @@ func (c *Client) DeleteOrganizationRobot(ctx context.Context, org, shortname str
 // DeleteOrganizationRobotIfExists deletes the org robot and returns nil when it
 // is already absent, so the call is idempotent.
 func (c *Client) DeleteOrganizationRobotIfExists(ctx context.Context, org, shortname string) error {
-	err := c.DeleteOrganizationRobot(ctx, org, shortname)
-	if IsNotFound(err) {
-		return nil
-	}
-	return err
+	return ignoreNotFound(c.DeleteOrganizationRobot(ctx, org, shortname))
 }

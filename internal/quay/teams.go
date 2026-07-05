@@ -45,10 +45,6 @@ type Team struct {
 type TeamMembers struct {
 	// Name is the team name.
 	Name string `json:"name"`
-	// CanSync describes the available sync service when the team is not yet
-	// synced; it is null/absent once a binding exists. Quay populates it with
-	// the service metadata (e.g. the configured authentication service name).
-	CanSync map[string]any `json:"can_sync,omitempty"`
 	// Synced is the active sync binding, present only when the team is synced.
 	// It is nil when the team has no binding.
 	Synced *TeamSync `json:"synced,omitempty"`
@@ -107,7 +103,7 @@ type enableTeamSyncRequest struct {
 // teamPath builds the /api/v1/organization/{orgname}/team/{teamname} path with
 // each segment escaped.
 func teamPath(org, team string) string {
-	return "/api/v1/organization/" + url.PathEscape(org) + "/team/" + url.PathEscape(team)
+	return organizationPath(org) + "/team/" + url.PathEscape(team)
 }
 
 // ListTeams returns the organization's teams keyed by team name, derived from
@@ -119,8 +115,7 @@ func (c *Client) ListTeams(ctx context.Context, org string) (map[string]Team, er
 	var out struct {
 		Teams map[string]Team `json:"teams"`
 	}
-	path := "/api/v1/organization/" + url.PathEscape(org)
-	if err := c.doJSON(ctx, http.MethodGet, path, nil, &out); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, organizationPath(org), nil, &out); err != nil {
 		return nil, err
 	}
 	// Backfill each entry's Name from its map key, since a caller that ranges
@@ -197,11 +192,10 @@ func (c *Client) EnableTeamSyncIfNotSynced(ctx context.Context, org, team, oidcG
 		if members.GroupName() == oidcGroup {
 			return nil
 		}
-		// Already synced to a different group; surface the conflict from a real
-		// enable attempt so the reconciler treats it as drift to correct rather
-		// than reconciled.
-		return c.EnableTeamSync(ctx, org, team, oidcGroup)
 	}
+	// Already synced to a different group; surface the conflict from a real
+	// enable attempt so the reconciler treats it as drift to correct rather
+	// than reconciled.
 	return c.EnableTeamSync(ctx, org, team, oidcGroup)
 }
 
@@ -216,11 +210,7 @@ func (c *Client) DisableTeamSync(ctx context.Context, org, team string) error {
 // DisableTeamSyncIfSynced disables sync and returns nil when the team is already
 // not synced, so the call is idempotent.
 func (c *Client) DisableTeamSyncIfSynced(ctx context.Context, org, team string) error {
-	err := c.DisableTeamSync(ctx, org, team)
-	if IsNotFound(err) {
-		return nil
-	}
-	return err
+	return ignoreNotFound(c.DisableTeamSync(ctx, org, team))
 }
 
 // DeleteTeam deletes the org team via
@@ -244,7 +234,7 @@ func (c *Client) DeleteTeam(ctx context.Context, org, team string) error {
 // DeleteNotificationIfExists's 404-plus-absent-400 handling.
 func (c *Client) DeleteTeamIfExists(ctx context.Context, org, team string) error {
 	err := c.DeleteTeam(ctx, org, team)
-	if IsNotFound(err) || isAbsentTeam(err) {
+	if ignoreNotFound(err) == nil || isAbsentTeam(err) {
 		return nil
 	}
 	return err

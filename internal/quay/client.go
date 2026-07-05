@@ -13,6 +13,9 @@
 // This package deliberately imports neither controller-runtime nor the
 // quay.holos.run API types: it is a plain HTTP client so it stays unit-testable
 // without a cluster, and the single seam both reconcilers call.
+//
+// The client does not retry requests; the controller reconciler requeue is the
+// retry loop.
 package quay
 
 import (
@@ -24,16 +27,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"time"
-)
-
-// Repository visibility values accepted by the Quay API.
-const (
-	// VisibilityPublic makes a repository world-readable.
-	VisibilityPublic = "public"
-	// VisibilityPrivate restricts a repository to authorized users.
-	VisibilityPrivate = "private"
 )
 
 // defaultTimeout bounds requests made by the client constructed with a nil
@@ -41,6 +37,12 @@ const (
 // reconciler worker indefinitely even when a caller forgets to set a context
 // deadline.
 const defaultTimeout = 30 * time.Second
+
+const (
+	maxResponseBodyBytes = 1 << 20
+	maxAPIErrorBodyBytes = 4 << 10
+	truncationMarker     = "...[truncated]"
+)
 
 // apiPathPrefix is the Quay REST API root. Every operation path the client
 // builds already starts with it, so a base URL that already ends in it is
@@ -62,6 +64,9 @@ type Client struct {
 // NewClient returns a Client targeting baseURL, authenticating every request
 // with the given OAuth-Application Bearer token.
 //
+// Credential resolution owns validation of empty baseURL and token values;
+// NewClient only normalizes and stores the supplied values.
+//
 // baseURL may be either the Quay instance root (https://host) or the API root
 // (https://host/api/v1) — the conventional value of the credential Secret's url
 // key. NewClient normalizes both to the instance root by trimming a trailing
@@ -76,7 +81,7 @@ func NewClient(baseURL, token string, httpClient *http.Client) *Client {
 		httpClient = &http.Client{Timeout: defaultTimeout}
 	}
 	base := strings.TrimRight(baseURL, "/")
-	base = strings.TrimSuffix(base, apiPathPrefix)
+	base, _ = strings.CutSuffix(base, apiPathPrefix)
 	base = strings.TrimRight(base, "/")
 	return &Client{
 		baseURL:    base,
@@ -167,14 +172,14 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body, out any)
 	if hasBody {
 		buf, err := json.Marshal(body)
 		if err != nil {
-			return fmt.Errorf("quay: marshaling request body for %s %s: %w", method, path, err)
+			return fmt.Errorf("quay %s: marshaling request body for %s %s: %w", c.host(), method, path, err)
 		}
 		reqBody = bytes.NewReader(buf)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reqBody)
 	if err != nil {
-		return fmt.Errorf("quay: building request %s %s: %w", method, path, err)
+		return fmt.Errorf("quay %s: building request %s %s: %w", c.host(), method, path, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/json")
@@ -184,22 +189,22 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body, out any)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("quay: %s %s: %w", method, path, err)
+		return fmt.Errorf("quay %s: %s %s: %w", c.host(), method, path, err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
 	if err != nil {
-		return fmt.Errorf("quay: reading response body for %s %s: %w", method, path, err)
+		return fmt.Errorf("quay %s: reading response body for %s %s: %w", c.host(), method, path, err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return newAPIError(method, path, resp.StatusCode, respBody)
+		return newAPIError(c.host(), method, path, resp.StatusCode, respBody)
 	}
 
 	if out != nil && len(bytes.TrimSpace(respBody)) > 0 {
 		if err := json.Unmarshal(respBody, out); err != nil {
-			return fmt.Errorf("quay: decoding response body for %s %s: %w", method, path, err)
+			return fmt.Errorf("quay %s: decoding response body for %s %s: %w", c.host(), method, path, err)
 		}
 	}
 	return nil
@@ -209,12 +214,13 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body, out any)
 // human-readable message from the body when it parses as JSON. Quay error
 // bodies vary by endpoint; it reports an error_message, message, error, or
 // detail field, whichever is present.
-func newAPIError(method, path string, status int, body []byte) *APIError {
+func newAPIError(host, method, path string, status int, body []byte) *APIError {
 	e := &APIError{
 		StatusCode: status,
+		Host:       host,
 		Method:     method,
 		Path:       path,
-		Body:       string(body),
+		Body:       truncateString(string(body), maxAPIErrorBodyBytes),
 	}
 	var parsed struct {
 		ErrorMessage string `json:"error_message"`
@@ -225,14 +231,25 @@ func newAPIError(method, path string, status int, body []byte) *APIError {
 	if err := json.Unmarshal(body, &parsed); err == nil {
 		switch {
 		case parsed.ErrorMessage != "":
-			e.Message = parsed.ErrorMessage
+			e.Message = truncateString(parsed.ErrorMessage, maxAPIErrorBodyBytes)
 		case parsed.Message != "":
-			e.Message = parsed.Message
+			e.Message = truncateString(parsed.Message, maxAPIErrorBodyBytes)
 		case parsed.Error != "":
-			e.Message = parsed.Error
+			e.Message = truncateString(parsed.Error, maxAPIErrorBodyBytes)
 		case parsed.Detail != "":
-			e.Message = parsed.Detail
+			e.Message = truncateString(parsed.Detail, maxAPIErrorBodyBytes)
 		}
 	}
 	return e
+}
+
+func (c *Client) host() string {
+	u, err := neturl.Parse(c.baseURL)
+	if err == nil && u.Host != "" {
+		return u.Host
+	}
+	if c.baseURL != "" {
+		return c.baseURL
+	}
+	return "<empty-host>"
 }

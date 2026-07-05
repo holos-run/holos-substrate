@@ -1,7 +1,6 @@
 package quay
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,7 +12,7 @@ func TestUpsertTeam(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodPut, wantPath: "/api/v1/organization/acme/team/devs", status: http.StatusOK}
 	c, _ := newTestClient(t, h)
 
-	if err := c.UpsertTeam(context.Background(), "acme", "devs", TeamRoleMember, "the dev team"); err != nil {
+	if err := c.UpsertTeam(t.Context(), "acme", "devs", TeamRoleMember, "the dev team"); err != nil {
 		t.Fatalf("UpsertTeam: %v", err)
 	}
 	assertCommonRequest(t, h, true)
@@ -32,7 +31,7 @@ func TestUpsertTeamSendsEmptyDescription(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodPut, wantPath: "/api/v1/organization/acme/team/devs", status: http.StatusOK}
 	c, _ := newTestClient(t, h)
 
-	if err := c.UpsertTeam(context.Background(), "acme", "devs", TeamRoleAdmin, ""); err != nil {
+	if err := c.UpsertTeam(t.Context(), "acme", "devs", TeamRoleAdmin, ""); err != nil {
 		t.Fatalf("UpsertTeam: %v", err)
 	}
 	assertCommonRequest(t, h, true)
@@ -56,7 +55,7 @@ func TestListTeams(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	teams, err := c.ListTeams(context.Background(), "acme")
+	teams, err := c.ListTeams(t.Context(), "acme")
 	if err != nil {
 		t.Fatalf("ListTeams: %v", err)
 	}
@@ -83,7 +82,7 @@ func TestListTeamsNotFound(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	if _, err := c.ListTeams(context.Background(), "missing"); !IsNotFound(err) {
+	if _, err := c.ListTeams(t.Context(), "missing"); !IsNotFound(err) {
 		t.Fatalf("expected IsNotFound, got %v", err)
 	}
 }
@@ -96,7 +95,7 @@ func TestGetTeamMembersSynced(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	m, err := c.GetTeamMembers(context.Background(), "acme", "devs")
+	m, err := c.GetTeamMembers(t.Context(), "acme", "devs")
 	if err != nil {
 		t.Fatalf("GetTeamMembers: %v", err)
 	}
@@ -120,7 +119,7 @@ func TestGetTeamMembersNotSynced(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	m, err := c.GetTeamMembers(context.Background(), "acme", "devs")
+	m, err := c.GetTeamMembers(t.Context(), "acme", "devs")
 	if err != nil {
 		t.Fatalf("GetTeamMembers: %v", err)
 	}
@@ -129,9 +128,6 @@ func TestGetTeamMembersNotSynced(t *testing.T) {
 	}
 	if got := m.GroupName(); got != "" {
 		t.Errorf("GroupName() = %q, want empty for an unsynced team", got)
-	}
-	if m.CanSync["service"] != "oidc" {
-		t.Errorf("can_sync = %+v, want service oidc", m.CanSync)
 	}
 }
 
@@ -143,7 +139,7 @@ func TestGetTeamMembersBackfillsName(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	m, err := c.GetTeamMembers(context.Background(), "acme", "devs")
+	m, err := c.GetTeamMembers(t.Context(), "acme", "devs")
 	if err != nil {
 		t.Fatalf("GetTeamMembers: %v", err)
 	}
@@ -163,7 +159,7 @@ func TestEnableTeamSync(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodPost, wantPath: "/api/v1/organization/acme/team/devs/syncing", status: http.StatusOK}
 	c, _ := newTestClient(t, h)
 
-	if err := c.EnableTeamSync(context.Background(), "acme", "devs", "platform-devs"); err != nil {
+	if err := c.EnableTeamSync(t.Context(), "acme", "devs", "platform-devs"); err != nil {
 		t.Fatalf("EnableTeamSync: %v", err)
 	}
 	assertCommonRequest(t, h, true)
@@ -182,7 +178,7 @@ func TestEnableTeamSyncAlreadySyncedIsConflict(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	err := c.EnableTeamSync(context.Background(), "acme", "devs", "platform-devs")
+	err := c.EnableTeamSync(t.Context(), "acme", "devs", "platform-devs")
 	if !IsConflict(err) {
 		t.Fatalf("expected IsConflict for already-synced team, got %v", err)
 	}
@@ -200,7 +196,7 @@ func TestEnableTeamSyncIfNotSyncedSameGroupNoOps(t *testing.T) {
 	}}
 	c, _ := newTestClient(t, m)
 
-	if err := c.EnableTeamSyncIfNotSynced(context.Background(), "acme", "devs", "platform-devs"); err != nil {
+	if err := c.EnableTeamSyncIfNotSynced(t.Context(), "acme", "devs", "platform-devs"); err != nil {
 		t.Fatalf("EnableTeamSyncIfNotSynced should no-op when already synced to the same group, got %v", err)
 	}
 }
@@ -223,7 +219,7 @@ func TestEnableTeamSyncIfNotSyncedWrongGroupSurfacesError(t *testing.T) {
 	}}
 	c, _ := newTestClient(t, m)
 
-	err := c.EnableTeamSyncIfNotSynced(context.Background(), "acme", "devs", "platform-devs")
+	err := c.EnableTeamSyncIfNotSynced(t.Context(), "acme", "devs", "platform-devs")
 	if err == nil {
 		t.Fatal("expected an error for a wrong-group binding, got nil")
 	}
@@ -243,7 +239,7 @@ func TestEnableTeamSyncIfNotSyncedSurfacesMembersReadError(t *testing.T) {
 	}}
 	c, _ := newTestClient(t, m)
 
-	err := c.EnableTeamSyncIfNotSynced(context.Background(), "acme", "devs", "platform-devs")
+	err := c.EnableTeamSyncIfNotSynced(t.Context(), "acme", "devs", "platform-devs")
 	var ae *APIError
 	if !errors.As(err, &ae) || ae.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("expected the members read error to surface, got %v", err)
@@ -271,7 +267,7 @@ func TestEnableTeamSyncIfNotSyncedFirstEnableSucceeds(t *testing.T) {
 	}}
 	c, _ := newTestClient(t, m)
 
-	if err := c.EnableTeamSyncIfNotSynced(context.Background(), "acme", "devs", "platform-devs"); err != nil {
+	if err := c.EnableTeamSyncIfNotSynced(t.Context(), "acme", "devs", "platform-devs"); err != nil {
 		t.Fatalf("EnableTeamSyncIfNotSynced should succeed on a fresh enable, got %v", err)
 	}
 	if !postHit {
@@ -286,7 +282,7 @@ func TestDisableTeamSync(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: "/api/v1/organization/acme/team/devs/syncing", status: http.StatusOK}
 	c, _ := newTestClient(t, h)
 
-	if err := c.DisableTeamSync(context.Background(), "acme", "devs"); err != nil {
+	if err := c.DisableTeamSync(t.Context(), "acme", "devs"); err != nil {
 		t.Fatalf("DisableTeamSync: %v", err)
 	}
 	assertCommonRequest(t, h, false)
@@ -296,7 +292,7 @@ func TestDisableTeamSyncIfSyncedSwallowsNotFound(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: "/api/v1/organization/acme/team/devs/syncing", status: http.StatusNotFound}
 	c, _ := newTestClient(t, h)
 
-	if err := c.DisableTeamSyncIfSynced(context.Background(), "acme", "devs"); err != nil {
+	if err := c.DisableTeamSyncIfSynced(t.Context(), "acme", "devs"); err != nil {
 		t.Fatalf("DisableTeamSyncIfSynced should swallow 404, got %v", err)
 	}
 }
@@ -305,7 +301,7 @@ func TestDeleteTeam(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: "/api/v1/organization/acme/team/devs", status: http.StatusNoContent}
 	c, _ := newTestClient(t, h)
 
-	if err := c.DeleteTeam(context.Background(), "acme", "devs"); err != nil {
+	if err := c.DeleteTeam(t.Context(), "acme", "devs"); err != nil {
 		t.Fatalf("DeleteTeam: %v", err)
 	}
 	assertCommonRequest(t, h, false)
@@ -315,7 +311,7 @@ func TestDeleteTeamIfExistsSwallowsNotFound(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: "/api/v1/organization/acme/team/gone", status: http.StatusNotFound}
 	c, _ := newTestClient(t, h)
 
-	if err := c.DeleteTeamIfExists(context.Background(), "acme", "gone"); err != nil {
+	if err := c.DeleteTeamIfExists(t.Context(), "acme", "gone"); err != nil {
 		t.Fatalf("DeleteTeamIfExists should swallow 404, got %v", err)
 	}
 }
@@ -331,7 +327,7 @@ func TestDeleteTeamIfExistsSwallowsAbsentTeam400(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	if err := c.DeleteTeamIfExists(context.Background(), "acme", "gone"); err != nil {
+	if err := c.DeleteTeamIfExists(t.Context(), "acme", "gone"); err != nil {
 		t.Fatalf("DeleteTeamIfExists should swallow an absent-team 400, got %v", err)
 	}
 }
@@ -347,7 +343,7 @@ func TestDeleteTeamIfExistsSurfacesOtherError(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	err := c.DeleteTeamIfExists(context.Background(), "acme", "devs")
+	err := c.DeleteTeamIfExists(t.Context(), "acme", "devs")
 	var ae *APIError
 	if !errors.As(err, &ae) || ae.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("expected the 500 delete error to surface, got %v", err)
@@ -363,7 +359,7 @@ func TestDeleteTeamIfExistsSurfacesUnrelated400(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	if err := c.DeleteTeamIfExists(context.Background(), "acme", "devs"); err == nil {
+	if err := c.DeleteTeamIfExists(t.Context(), "acme", "devs"); err == nil {
 		t.Fatal("expected an unrelated 400 to surface, got nil")
 	}
 }
@@ -372,7 +368,7 @@ func TestTeamPathEscaping(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: "/api/v1/organization/a b/team/c d", status: http.StatusNoContent}
 	c, _ := newTestClient(t, h)
 
-	if err := c.DeleteTeam(context.Background(), "a b", "c d"); err != nil {
+	if err := c.DeleteTeam(t.Context(), "a b", "c d"); err != nil {
 		t.Fatalf("DeleteTeam with spaces: %v", err)
 	}
 	if h.gotEscaped != "/api/v1/organization/a%20b/team/c%20d" {

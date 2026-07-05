@@ -1,7 +1,6 @@
 package quay
 
 import (
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -71,7 +70,7 @@ func TestNewClientWithCABundleTrustsSuppliedPEM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClientWithCABundle: %v", err)
 	}
-	if _, err := c.GetOrganization(context.Background(), "acme"); err != nil {
+	if _, err := c.GetOrganization(t.Context(), "acme"); err != nil {
 		t.Fatalf("GetOrganization with trusted CA bundle should succeed, got %v", err)
 	}
 }
@@ -86,7 +85,7 @@ func TestNewClientWithCABundleRejectsUnrelatedCA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClientWithCABundle: %v", err)
 	}
-	_, err = c.GetOrganization(context.Background(), "acme")
+	_, err = c.GetOrganization(t.Context(), "acme")
 	if err == nil {
 		t.Fatal("expected a TLS trust error when the CA bundle does not include the server cert")
 	}

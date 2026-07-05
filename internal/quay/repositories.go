@@ -126,11 +126,7 @@ func (c *Client) DeleteRepository(ctx context.Context, ns, repo string) error {
 // DeleteRepositoryIfExists deletes the repository and returns nil when it is
 // already absent, so the call is idempotent.
 func (c *Client) DeleteRepositoryIfExists(ctx context.Context, ns, repo string) error {
-	err := c.DeleteRepository(ctx, ns, repo)
-	if IsNotFound(err) {
-		return nil
-	}
-	return err
+	return ignoreNotFound(c.DeleteRepository(ctx, ns, repo))
 }
 
 // repositoryPath builds the /api/v1/repository/{ns}/{repo} path with each

@@ -1,7 +1,6 @@
 package quay
 
 import (
-	"context"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -89,7 +88,7 @@ func TestResolveWebhookURL(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			url, err := resolveWebhookURL(context.Background(), reader, ns, tc.webhook)
+			url, err := resolveWebhookURL(t.Context(), reader, ns, tc.webhook)
 			if tc.wantErr != nil {
 				if err == nil {
 					t.Fatalf("expected an error, got url %q", url)
