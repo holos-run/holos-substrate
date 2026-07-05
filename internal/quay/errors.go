@@ -118,7 +118,10 @@ func isAmbiguousNotificationDelete(err error) bool {
 	}
 	hay := strings.ToLower(ae.Message + " " + ae.Body)
 	return strings.Contains(hay, "invalidrequest") ||
-		strings.Contains(hay, "invalid request")
+		strings.Contains(hay, "invalid request") ||
+		strings.Contains(hay, "no notification") ||
+		strings.Contains(hay, "notification not found") ||
+		strings.Contains(hay, "could not find notification")
 }
 
 // isAbsentTeam reports whether err is an *APIError describing a Quay

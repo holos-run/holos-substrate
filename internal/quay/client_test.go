@@ -615,6 +615,41 @@ func TestDeleteNotificationIfExistsSwallows400InvalidRequestWhenListConfirmsAbse
 	}
 }
 
+func TestDeleteNotificationIfExistsConfirmsSpecificAbsentNotification400s(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{name: "no notification", body: `{"error_message":"No notification exists for UUID gone"}`},
+		{name: "notification not found", body: `{"error_message":"notification not found"}`},
+		{name: "could not find notification", body: `{"error_message":"could not find notification"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			listHit := false
+			m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+				"DELETE /api/v1/repository/acme/web/notification/gone": func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = io.WriteString(w, tc.body)
+				},
+				"GET /api/v1/repository/acme/web/notification/": func(w http.ResponseWriter, _ *http.Request) {
+					listHit = true
+					w.WriteHeader(http.StatusOK)
+					_, _ = io.WriteString(w, `{"notifications":[]}`)
+				},
+			}}
+			c, _ := newTestClient(t, m)
+
+			if err := c.DeleteNotificationIfExists(t.Context(), "acme", "web", "gone"); err != nil {
+				t.Fatalf("DeleteNotificationIfExists should swallow confirmed-absent 400, got %v", err)
+			}
+			if !listHit {
+				t.Fatal("expected ListNotifications to confirm absence after specific absent-notification 400")
+			}
+		})
+	}
+}
+
 func TestDeleteNotificationIfExistsSurfacesAmbiguous400WhenNotificationStillPresent(t *testing.T) {
 	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
 		"DELETE /api/v1/repository/acme/web/notification/u1": func(w http.ResponseWriter, _ *http.Request) {

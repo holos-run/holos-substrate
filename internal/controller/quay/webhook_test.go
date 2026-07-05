@@ -1,6 +1,7 @@
 package quay
 
 import (
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -25,9 +26,13 @@ func TestResolveWebhookURL(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "empty-key"},
 		Data:       map[string][]byte{"url": []byte("")},
 	}
+	tooLongSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "too-long"},
+		Data:       map[string][]byte{"url": []byte(strings.Repeat("x", maxWebhookURLLength+1))},
+	}
 	reader := fake.NewClientBuilder().
 		WithScheme(scheme.Scheme).
-		WithObjects(secret, emptyKeySecret).
+		WithObjects(secret, emptyKeySecret, tooLongSecret).
 		Build()
 
 	inline := "https://inline.example.test/webhook/abc"
@@ -68,6 +73,13 @@ func TestResolveWebhookURL(t *testing.T) {
 			name: "secretRef empty value",
 			webhook: &quayv1alpha1.RepositoryWebhook{
 				URLSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "empty-key", Key: "url"},
+			},
+			wantErr: isWebhookURLNotFound,
+		},
+		{
+			name: "secretRef value too long",
+			webhook: &quayv1alpha1.RepositoryWebhook{
+				URLSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "too-long", Key: "url"},
 			},
 			wantErr: isWebhookURLNotFound,
 		},
