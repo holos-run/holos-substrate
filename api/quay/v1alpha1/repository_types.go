@@ -4,6 +4,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// RepositoryDescriptionMaxLength reserves space for the controller's appended
+// ownership marker so the rendered Quay description never exceeds Quay's 4096
+// character limit. The marker is "\n\nholos-owner: created:<uuid>" or
+// "\n\nholos-owner: adopted:<uuid>".
+const RepositoryDescriptionMaxLength = 4037
+
 // RepositoryVisibility is the visibility of a Quay repository.
 //
 // +kubebuilder:validation:Enum=public;private
@@ -92,7 +98,7 @@ type RepositorySpec struct {
 	// optional, has no default, and does not affect access.
 	//
 	// +optional
-	// +kubebuilder:validation:MaxLength=4096
+	// +kubebuilder:validation:MaxLength=4037
 	Description string `json:"description,omitempty"`
 
 	// Adopt opts in to claiming a pre-existing Quay repository with the same

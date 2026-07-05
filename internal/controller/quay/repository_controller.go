@@ -44,7 +44,11 @@ const webhookTitle = "holos-controller repo_push"
 // cadence used elsewhere in the platform.
 const webhookSecretResyncInterval = 30 * time.Minute
 
-const repositoryOwnerMarkerPrefix = "holos-owner: "
+const (
+	repositoryOwnerMarkerPrefix  = "holos-owner: "
+	repositoryOwnerMarkerCreated = "created"
+	repositoryOwnerMarkerAdopted = "adopted"
+)
 
 // RepoClient is the seam the Repository reconciler drives Quay through: the
 // subset of internal/quay.Client's organization-existence, repository, and
@@ -314,13 +318,13 @@ func (r *RepositoryReconciler) ensureRepository(ctx context.Context, qc RepoClie
 	ns := quayOrg
 	name := repo.Spec.Name
 	visibility := string(repo.Spec.Visibility)
-	desiredDescription := repositoryMarkedDescription(repo)
+	createdDescription := repositoryMarkedDescription(repo, true)
 
 	current, err := qc.GetRepository(ctx, ns, name)
 	// A NotFound is an expected branch (the create path), not a Quay-API failure.
 	recordQuayAPI(opGetRepository, ignoreNotFound(err))
 	if quay.IsNotFound(err) {
-		createErr := qc.CreateRepositoryIfNotExists(ctx, ns, name, visibility, desiredDescription)
+		createErr := qc.CreateRepositoryIfNotExists(ctx, ns, name, visibility, createdDescription)
 		recordQuayAPI(opCreateRepository, createErr)
 		if createErr != nil {
 			return mutation, fmt.Errorf("creating Quay repository %s/%s: %w", ns, name, createErr)
@@ -330,7 +334,7 @@ func (r *RepositoryReconciler) ensureRepository(ctx context.Context, qc RepoClie
 		if err != nil {
 			return quayMutation{Mutated: true}, fmt.Errorf("getting Quay repository %s/%s after create: %w", ns, name, err)
 		}
-		if repositoryDescriptionOwner(current.Description) == repositoryOwnerToken(repo) {
+		if ownership, ok := repositoryDescriptionOwnership(current.Description); ok && ownership.Token == repositoryOwnerToken(repo) && ownership.Created {
 			repo.Status.QuayRepository = ns + "/" + name
 			setRepositoryStatusCreated(repo, true)
 			return quayMutation{Mutated: true}, nil
@@ -343,34 +347,45 @@ func (r *RepositoryReconciler) ensureRepository(ctx context.Context, qc RepoClie
 		return mutation, fmt.Errorf("getting Quay repository %s/%s: %w", ns, name, err)
 	}
 	repo.Status.QuayRepository = ns + "/" + name
-	token := repositoryDescriptionOwner(current.Description)
+	ownership, hasOwnership := repositoryDescriptionOwnership(current.Description)
 	switch {
-	case token == repositoryOwnerToken(repo):
-		if repo.Status.Created == nil {
-			setRepositoryStatusCreated(repo, true)
+	case hasOwnership && ownership.Token == repositoryOwnerToken(repo):
+		if repo.Status.Created == nil || *repo.Status.Created != ownership.Created {
+			setRepositoryStatusCreated(repo, ownership.Created)
 		}
-	case token != "":
+	case hasOwnership:
 		return mutation, newRepositoryConflictError(ns, name, "ownership marker mismatch")
 	case repositoryStatusCreated(repo):
-		err := qc.UpdateRepositoryDescription(ctx, ns, name, desiredDescription)
+		err := qc.UpdateRepositoryDescription(ctx, ns, name, createdDescription)
 		recordQuayAPI(opUpdateRepository, err)
 		if err != nil {
 			return mutation, fmt.Errorf("stamping ownership marker on Quay repository %s/%s: %w", ns, name, err)
 		}
-		current.Description = desiredDescription
+		current.Description = createdDescription
+		mutation = mutation.or(quayMutation{Mutated: true})
+	case repo.Status.Created != nil && !*repo.Status.Created:
+		adoptedDescription := repositoryMarkedDescription(repo, false)
+		err := qc.UpdateRepositoryDescription(ctx, ns, name, adoptedDescription)
+		recordQuayAPI(opUpdateRepository, err)
+		if err != nil {
+			return mutation, fmt.Errorf("restoring adopted ownership marker on Quay repository %s/%s: %w", ns, name, err)
+		}
+		current.Description = adoptedDescription
 		mutation = mutation.or(quayMutation{Mutated: true})
 	case repo.Spec.Adopt:
 		setRepositoryStatusCreated(repo, false)
-		err := qc.UpdateRepositoryDescription(ctx, ns, name, desiredDescription)
+		adoptedDescription := repositoryMarkedDescription(repo, false)
+		err := qc.UpdateRepositoryDescription(ctx, ns, name, adoptedDescription)
 		recordQuayAPI(opUpdateRepository, err)
 		if err != nil {
 			return mutation, fmt.Errorf("claiming existing Quay repository %s/%s: %w", ns, name, err)
 		}
-		current.Description = desiredDescription
+		current.Description = adoptedDescription
 		mutation = mutation.or(quayMutation{Mutated: true})
 	default:
 		return mutation, newRepositoryConflictError(ns, name, "already exists and was not created by this resource; set spec.adopt to claim it")
 	}
+	desiredDescription := repositoryMarkedDescription(repo, repositoryStatusCreated(repo))
 
 	// Repository exists: correct drift. Quay returns visibility as the boolean
 	// is_public on GET, so map the desired public/private to that to compare.
@@ -644,42 +659,89 @@ func repositoryOwnerToken(repo *quayv1alpha1.Repository) string {
 	return string(repo.UID)
 }
 
-func repositoryMarkedDescription(repo *quayv1alpha1.Repository) string {
-	marker := repositoryOwnerMarkerPrefix + repositoryOwnerToken(repo)
+func repositoryMarkedDescription(repo *quayv1alpha1.Repository, created bool) string {
+	marker := repositoryOwnerMarker(repo, created)
 	if repo.Spec.Description == "" {
 		return marker
 	}
 	return repo.Spec.Description + "\n\n" + marker
 }
 
+func repositoryOwnerMarker(repo *quayv1alpha1.Repository, created bool) string {
+	kind := repositoryOwnerMarkerAdopted
+	if created {
+		kind = repositoryOwnerMarkerCreated
+	}
+	return repositoryOwnerMarkerPrefix + kind + ":" + repositoryOwnerToken(repo)
+}
+
+type repositoryOwnership struct {
+	Token   string
+	Created bool
+}
+
+func repositoryDescriptionOwnership(description string) (repositoryOwnership, bool) {
+	marker, ok := repositoryDescriptionMarker(description)
+	if !ok {
+		return repositoryOwnership{}, false
+	}
+	return parseRepositoryOwnerMarker(marker)
+}
+
 func repositoryDescriptionOwner(description string) string {
-	if strings.HasPrefix(description, repositoryOwnerMarkerPrefix) && !strings.Contains(description, "\n") {
-		return strings.TrimPrefix(description, repositoryOwnerMarkerPrefix)
-	}
-	idx := strings.LastIndex(description, "\n\n"+repositoryOwnerMarkerPrefix)
-	if idx < 0 || idx+2+len(repositoryOwnerMarkerPrefix) >= len(description) {
+	ownership, ok := repositoryDescriptionOwnership(description)
+	if !ok {
 		return ""
 	}
-	token := description[idx+2+len(repositoryOwnerMarkerPrefix):]
-	if strings.Contains(token, "\n") {
-		return ""
-	}
-	return token
+	return ownership.Token
 }
 
 func repositoryDescriptionWithoutOwner(description string) string {
-	if strings.HasPrefix(description, repositoryOwnerMarkerPrefix) && !strings.Contains(description, "\n") {
+	if _, ok := repositoryDescriptionOwnership(description); ok && strings.HasPrefix(description, repositoryOwnerMarkerPrefix) && !strings.Contains(description, "\n") {
 		return ""
 	}
 	idx := strings.LastIndex(description, "\n\n"+repositoryOwnerMarkerPrefix)
 	if idx < 0 {
 		return description
 	}
-	token := description[idx+2+len(repositoryOwnerMarkerPrefix):]
-	if strings.Contains(token, "\n") {
+	if _, ok := parseRepositoryOwnerMarker(description[idx+2:]); !ok {
 		return description
 	}
 	return description[:idx]
+}
+
+func repositoryDescriptionMarker(description string) (string, bool) {
+	if strings.HasPrefix(description, repositoryOwnerMarkerPrefix) && !strings.Contains(description, "\n") {
+		return description, true
+	}
+	idx := strings.LastIndex(description, "\n\n"+repositoryOwnerMarkerPrefix)
+	if idx < 0 {
+		return "", false
+	}
+	marker := description[idx+2:]
+	if strings.Contains(marker, "\n") {
+		return "", false
+	}
+	return marker, true
+}
+
+func parseRepositoryOwnerMarker(marker string) (repositoryOwnership, bool) {
+	if !strings.HasPrefix(marker, repositoryOwnerMarkerPrefix) {
+		return repositoryOwnership{}, false
+	}
+	payload := strings.TrimPrefix(marker, repositoryOwnerMarkerPrefix)
+	kind, token, ok := strings.Cut(payload, ":")
+	if !ok || token == "" || strings.Contains(token, "\n") {
+		return repositoryOwnership{}, false
+	}
+	switch kind {
+	case repositoryOwnerMarkerCreated:
+		return repositoryOwnership{Token: token, Created: true}, true
+	case repositoryOwnerMarkerAdopted:
+		return repositoryOwnership{Token: token, Created: false}, true
+	default:
+		return repositoryOwnership{}, false
+	}
 }
 
 type repositoryConflictError struct {
@@ -741,10 +803,6 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 		ns, name = resolvedNs, resolvedName
 	}
 
-	if !repositoryStatusCreated(repo) {
-		return r.releaseRepository(ctx, repo, ns, name)
-	}
-
 	cred, err := resolveCredential(ctx, r.APIReader, r.Namespace, repo.Spec.CredentialsSecretRef)
 	if err != nil {
 		return r.handleCredentialError(ctx, repo, err)
@@ -759,13 +817,28 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 	}
 
 	qc := r.NewClient(cred, repo.Spec.CABundle)
-	owns, err := r.ownsRepositoryViaMarker(ctx, qc, repo, ns, name)
+	ownership, exists, err := r.repositoryRemoteOwnership(ctx, qc, repo, ns, name)
 	if err != nil {
 		r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonQuayError,
 			fmt.Sprintf("verifying ownership marker for Quay repository %s/%s: %v", ns, name, err))
 		return ctrl.Result{}, fmt.Errorf("verifying ownership marker for Quay repository %s/%s: %w", ns, name, err)
 	}
-	if !owns {
+	if !exists {
+		r.Recorder.Event(repo, corev1.EventTypeNormal, ReasonReleased,
+			fmt.Sprintf("released Quay repository %s/%s without deleting (repository already absent)", ns, name))
+		return r.removeFinalizer(ctx, repo)
+	}
+	owns := ownership.Token == repositoryOwnerToken(repo)
+	created := false
+	if repo.Status.Created != nil {
+		created = *repo.Status.Created && owns && ownership.Created
+	} else {
+		created = owns && ownership.Created
+	}
+	if !created {
+		if owns {
+			return r.releaseRepositoryWithClient(ctx, repo, qc, ns, name)
+		}
 		r.Recorder.Event(repo, corev1.EventTypeNormal, ReasonReleased,
 			fmt.Sprintf("released Quay repository %s/%s without deleting (ownership marker absent or foreign)", ns, name))
 		return r.removeFinalizer(ctx, repo)
@@ -785,16 +858,7 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 	return r.removeFinalizer(ctx, repo)
 }
 
-func (r *RepositoryReconciler) releaseRepository(ctx context.Context, repo *quayv1alpha1.Repository, ns, name string) (ctrl.Result, error) {
-	cred, err := resolveCredential(ctx, r.APIReader, r.Namespace, repo.Spec.CredentialsSecretRef)
-	if err != nil {
-		return r.handleCredentialError(ctx, repo, err)
-	}
-	if err := quay.ValidateCABundle(repo.Spec.CABundle); err != nil {
-		r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonQuayError, err.Error())
-		return ctrl.Result{}, err
-	}
-	qc := r.NewClient(cred, repo.Spec.CABundle)
+func (r *RepositoryReconciler) releaseRepositoryWithClient(ctx context.Context, repo *quayv1alpha1.Repository, qc RepoClient, ns, name string) (ctrl.Result, error) {
 	current, err := qc.GetRepository(ctx, ns, name)
 	recordQuayAPI(opGetRepository, ignoreNotFound(err))
 	if quay.IsNotFound(err) {
@@ -826,16 +890,17 @@ func (r *RepositoryReconciler) releaseRepository(ctx context.Context, repo *quay
 	return r.removeFinalizer(ctx, repo)
 }
 
-func (r *RepositoryReconciler) ownsRepositoryViaMarker(ctx context.Context, qc RepoClient, repo *quayv1alpha1.Repository, ns, name string) (bool, error) {
+func (r *RepositoryReconciler) repositoryRemoteOwnership(ctx context.Context, qc RepoClient, repo *quayv1alpha1.Repository, ns, name string) (repositoryOwnership, bool, error) {
 	current, err := qc.GetRepository(ctx, ns, name)
 	recordQuayAPI(opGetRepository, ignoreNotFound(err))
 	if quay.IsNotFound(err) {
-		return false, nil
+		return repositoryOwnership{}, false, nil
 	}
 	if err != nil {
-		return false, err
+		return repositoryOwnership{}, false, err
 	}
-	return repositoryDescriptionOwner(current.Description) == repositoryOwnerToken(repo), nil
+	ownership, _ := repositoryDescriptionOwnership(current.Description)
+	return ownership, true, nil
 }
 
 // resolveDeleteIdentity reconstructs the Quay <org>/<repo> path for a Repository

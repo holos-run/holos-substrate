@@ -307,6 +307,55 @@ func TestRepositoryInvalidCABundleFailsWithoutQuayCall(t *testing.T) {
 	}
 }
 
+func TestRepositoryDescriptionValidationReservesOwnershipMarkerLength(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	accepted := &quayv1alpha1.Repository{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "accepted-description"},
+		Spec: quayv1alpha1.RepositorySpec{
+			OrganizationRef: "acme",
+			Name:            "accepted-description",
+			Description:     strings.Repeat("x", quayv1alpha1.RepositoryDescriptionMaxLength),
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, accepted); err != nil {
+		t.Fatalf("creating Repository with max reserved description length: %v", err)
+	}
+
+	rejected := &quayv1alpha1.Repository{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "rejected-description"},
+		Spec: quayv1alpha1.RepositorySpec{
+			OrganizationRef: "acme",
+			Name:            "rejected-description",
+			Description:     strings.Repeat("x", quayv1alpha1.RepositoryDescriptionMaxLength+1),
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, rejected); err == nil {
+		t.Fatalf("expected Repository description longer than %d chars to be rejected", quayv1alpha1.RepositoryDescriptionMaxLength)
+	} else if !apierrors.IsInvalid(err) {
+		t.Fatalf("creating over-length Repository returned %T %v, want Invalid", err, err)
+	}
+}
+
+func TestRepositoryMarkedDescriptionMaxLengthFitsQuay(t *testing.T) {
+	repo := &quayv1alpha1.Repository{
+		ObjectMeta: metav1.ObjectMeta{
+			UID: "123e4567-e89b-12d3-a456-426614174000",
+		},
+		Spec: quayv1alpha1.RepositorySpec{
+			Description: strings.Repeat("x", quayv1alpha1.RepositoryDescriptionMaxLength),
+		},
+	}
+
+	if got := len(repositoryMarkedDescription(repo, true)); got != 4096 {
+		t.Errorf("created marked description length = %d, want Quay limit 4096", got)
+	}
+	if got := len(repositoryMarkedDescription(repo, false)); got != 4096 {
+		t.Errorf("adopted marked description length = %d, want Quay limit 4096", got)
+	}
+}
+
 func TestRepositoryCreatesWithSecretRefWebhook(t *testing.T) {
 	ctx := context.Background()
 	ns := makeNamespace(ctx, t)
@@ -526,7 +575,7 @@ func TestRepositoryCorrectsVisibilityAndDescriptionDrift(t *testing.T) {
 	fake.mu.Lock()
 	st := fake.repos[repoKey("acme", "drift")]
 	st.isPublic = false
-	st.description = "stale description\n\n" + repositoryOwnerMarkerPrefix + repositoryOwnerToken(getRepo(ctx, t, key))
+	st.description = "stale description\n\n" + repositoryOwnerMarker(getRepo(ctx, t, key), true)
 	fake.mu.Unlock()
 
 	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
@@ -617,8 +666,62 @@ func TestRepositoryAdoptsExistingRepository(t *testing.T) {
 	if got := repositoryDescriptionOwner(st.description); got != repositoryOwnerToken(repo) {
 		t.Errorf("owner marker = %q, want this Repository UID %q", got, repositoryOwnerToken(repo))
 	}
+	if ownership, ok := repositoryDescriptionOwnership(st.description); !ok || ownership.Created {
+		t.Errorf("ownership marker = (%+v, %v), want adopted marker", ownership, ok)
+	}
 	if got := repositoryDescriptionWithoutOwner(st.description); got != "managed description" {
 		t.Errorf("description without marker = %q, want managed description", got)
+	}
+}
+
+func TestRepositoryAdoptStatusLossDoesNotBecomeCreated(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	key := makeRepo(ctx, t, ns, "acme", "adoptlost", repoOpts{
+		adopt:       true,
+		description: "survives",
+	})
+
+	fake := newFakeRepoClient()
+	fake.repos[repoKey("acme", "adoptlost")] = &fakeRepoStore{
+		isPublic:      false,
+		description:   "pre-existing",
+		notifications: map[string]quay.Notification{},
+	}
+	r, _ := newRepoReconciler(fake, ns)
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile adopt: %v", err)
+	}
+
+	repo := getRepo(ctx, t, key)
+	repo.Status = quayv1alpha1.RepositoryStatus{}
+	if err := shared.k8sClient.Status().Update(ctx, repo); err != nil {
+		t.Fatalf("clearing status after adopt: %v", err)
+	}
+
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile after lost status: %v", err)
+	}
+	repo = getRepo(ctx, t, key)
+	if repo.Status.Created == nil || *repo.Status.Created {
+		t.Fatalf("status.created = %v, want false restored from adopted marker", repo.Status.Created)
+	}
+
+	if err := shared.k8sClient.Delete(ctx, repo); err != nil {
+		t.Fatalf("deleting Repository: %v", err)
+	}
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile delete: %v", err)
+	}
+	if fake.callsContain("DeleteRepository:acme/adoptlost") {
+		t.Errorf("adopted repository with lost status must be released, not deleted; calls were %v", fake.calls)
+	}
+	if !fake.repoExists("acme", "adoptlost") {
+		t.Fatal("expected adopted repository to remain in Quay")
 	}
 }
 
@@ -647,7 +750,7 @@ func TestRepositoryStampsPartialMutationWhenDescriptionUpdateFails(t *testing.T)
 	fake.mu.Lock()
 	st := fake.repos[repoKey("acme", "partial")]
 	st.isPublic = true
-	st.description = "remote drift\n\n" + repositoryOwnerMarkerPrefix + repositoryOwnerToken(getRepo(ctx, t, key))
+	st.description = "remote drift\n\n" + repositoryOwnerMarker(getRepo(ctx, t, key), true)
 	fake.updateDescriptionErr = &quay.APIError{StatusCode: http.StatusInternalServerError, Message: "description boom"}
 	fake.mu.Unlock()
 
@@ -691,7 +794,7 @@ func TestRepositoryWebhookURLChangeReplacesNotification(t *testing.T) {
 	// manually-created webhook with a different title that must be preserved.
 	repo := getRepo(ctx, t, key)
 	fake.repos[repoKey("acme", "rehook")] = &fakeRepoStore{
-		description:   repositoryOwnerMarkerPrefix + repositoryOwnerToken(repo),
+		description:   repositoryOwnerMarker(repo, true),
 		notifications: map[string]quay.Notification{},
 	}
 	fake.seedNotification("acme", "rehook", webhookTitle, "https://old.example.test/stale")
@@ -1055,7 +1158,7 @@ func TestRepositoryOrganizationExistsButNotReadyRequeues(t *testing.T) {
 	}
 }
 
-func TestRepositoryDeleteFallsBackToSpecWhenStatusEmpty(t *testing.T) {
+func TestRepositoryDeleteUsesCreatedMarkerWhenStatusEmpty(t *testing.T) {
 	ctx := context.Background()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
@@ -1073,13 +1176,14 @@ func TestRepositoryDeleteFallsBackToSpecWhenStatusEmpty(t *testing.T) {
 		t.Fatal("expected acme/orphan to exist before delete")
 	}
 
-	// Simulate a crash that created the Quay repo but never persisted
-	// status.QuayRepository: clear it so the finalizer must fall back to the spec +
-	// Organization CR to find the repo to delete.
+	// Simulate a crash that created the Quay repo but never persisted status:
+	// clear status.QuayRepository and status.created so the finalizer must fall
+	// back to the spec + Organization CR for the path and the remote marker for
+	// created-vs-adopted ownership.
 	repo := getRepo(ctx, t, key)
-	repo.Status.QuayRepository = ""
+	repo.Status = quayv1alpha1.RepositoryStatus{}
 	if err := shared.k8sClient.Status().Update(ctx, repo); err != nil {
-		t.Fatalf("clearing status.QuayRepository: %v", err)
+		t.Fatalf("clearing status: %v", err)
 	}
 
 	repo = getRepo(ctx, t, key)

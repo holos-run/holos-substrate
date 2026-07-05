@@ -113,7 +113,7 @@ spec:
                 description: |-
                   Description is a human-readable repository description shown by Quay. It is
                   optional, has no default, and does not affect access.
-                maxLength: 4096
+                maxLength: 4037
                 type: string
               name:
                 description: |-
