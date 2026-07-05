@@ -95,6 +95,14 @@ type RepositorySpec struct {
 	// +kubebuilder:validation:MaxLength=4096
 	Description string `json:"description,omitempty"`
 
+	// Adopt opts in to claiming a pre-existing Quay repository with the same
+	// name. It defaults to false; without this opt-in, an unowned existing
+	// repository is reported as a conflict and is never silently managed. An
+	// adopted repository is released, not deleted, when this resource is removed.
+	//
+	// +optional
+	Adopt bool `json:"adopt,omitempty"`
+
 	// CredentialsSecretRef selects the controller-namespace Secret containing the
 	// Quay API URL and OAuth token. When omitted, the controller uses
 	// holos-controller-quay-creds. This is separate from webhook.urlSecretRef,
@@ -149,6 +157,14 @@ type RepositoryStatus struct {
 	//
 	// +optional
 	QuayRepository string `json:"quayRepository,omitempty"`
+
+	// Created records whether this resource created the Quay repository. True
+	// means finalization may delete the repository. False means the resource
+	// adopted an existing repository and finalization only releases it. When
+	// omitted, the controller has not recorded ownership yet.
+	//
+	// +optional
+	Created *bool `json:"created,omitempty"`
 
 	// LastValidatedTime is the last time the controller successfully read Quay and
 	// confirmed or restored the declared repository state. It is omitted until

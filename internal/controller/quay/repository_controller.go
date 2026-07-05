@@ -2,6 +2,7 @@ package quay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
+	k8sptr "k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -42,6 +44,8 @@ const webhookTitle = "holos-controller repo_push"
 // cadence used elsewhere in the platform.
 const webhookSecretResyncInterval = 30 * time.Minute
 
+const repositoryOwnerMarkerPrefix = "holos-owner: "
+
 // RepoClient is the seam the Repository reconciler drives Quay through: the
 // subset of internal/quay.Client's organization-existence, repository, and
 // notification operations the reconciler needs. Naming it an interface lets
@@ -53,6 +57,9 @@ type RepoClient interface {
 	// CreateRepository creates an image repository with the given visibility and
 	// description.
 	CreateRepository(ctx context.Context, ns, repo, visibility, description string) error
+	// CreateRepositoryIfNotExists creates an image repository and treats an
+	// already-present repository as success after a GET-confirmed race check.
+	CreateRepositoryIfNotExists(ctx context.Context, ns, repo, visibility, description string) error
 	// UpdateRepositoryVisibility sets the repository visibility.
 	UpdateRepositoryVisibility(ctx context.Context, ns, repo, visibility string) error
 	// UpdateRepositoryDescription sets the repository description.
@@ -209,6 +216,9 @@ func (r *RepositoryReconciler) reconcileNormal(ctx context.Context, logger logr.
 	// Create the repository or reconcile its visibility/description drift.
 	repoMutation, err := r.ensureRepository(ctx, qc, repo, quayOrg)
 	if err != nil {
+		if isRepositoryConflict(err) {
+			return r.repositoryConflict(ctx, logger, repo, err.Error(), repoMutation.Mutated)
+		}
 		if repoMutation.Mutated {
 			r.stampMutation(repo, repoMutation.HealedDrift)
 		}
@@ -304,24 +314,63 @@ func (r *RepositoryReconciler) ensureRepository(ctx context.Context, qc RepoClie
 	ns := quayOrg
 	name := repo.Spec.Name
 	visibility := string(repo.Spec.Visibility)
+	desiredDescription := repositoryMarkedDescription(repo)
 
 	current, err := qc.GetRepository(ctx, ns, name)
 	// A NotFound is an expected branch (the create path), not a Quay-API failure.
 	recordQuayAPI(opGetRepository, ignoreNotFound(err))
 	if quay.IsNotFound(err) {
-		createErr := qc.CreateRepository(ctx, ns, name, visibility, repo.Spec.Description)
+		createErr := qc.CreateRepositoryIfNotExists(ctx, ns, name, visibility, desiredDescription)
 		recordQuayAPI(opCreateRepository, createErr)
 		if createErr != nil {
 			return mutation, fmt.Errorf("creating Quay repository %s/%s: %w", ns, name, createErr)
 		}
-		// Record the provisioned identity so deletion targets exactly this path.
-		repo.Status.QuayRepository = ns + "/" + name
-		return quayMutation{Mutated: true}, nil
+		current, err = qc.GetRepository(ctx, ns, name)
+		recordQuayAPI(opGetRepository, err)
+		if err != nil {
+			return quayMutation{Mutated: true}, fmt.Errorf("getting Quay repository %s/%s after create: %w", ns, name, err)
+		}
+		if repositoryDescriptionOwner(current.Description) == repositoryOwnerToken(repo) {
+			repo.Status.QuayRepository = ns + "/" + name
+			setRepositoryStatusCreated(repo, true)
+			return quayMutation{Mutated: true}, nil
+		}
+		// CreateRepositoryIfNotExists may have confirmed a concurrent winner. Run
+		// the same claim decision as any other pre-existing repository.
+		mutation = quayMutation{}
 	}
 	if err != nil {
 		return mutation, fmt.Errorf("getting Quay repository %s/%s: %w", ns, name, err)
 	}
 	repo.Status.QuayRepository = ns + "/" + name
+	token := repositoryDescriptionOwner(current.Description)
+	switch {
+	case token == repositoryOwnerToken(repo):
+		if repo.Status.Created == nil {
+			setRepositoryStatusCreated(repo, true)
+		}
+	case token != "":
+		return mutation, newRepositoryConflictError(ns, name, "ownership marker mismatch")
+	case repositoryStatusCreated(repo):
+		err := qc.UpdateRepositoryDescription(ctx, ns, name, desiredDescription)
+		recordQuayAPI(opUpdateRepository, err)
+		if err != nil {
+			return mutation, fmt.Errorf("stamping ownership marker on Quay repository %s/%s: %w", ns, name, err)
+		}
+		current.Description = desiredDescription
+		mutation = mutation.or(quayMutation{Mutated: true})
+	case repo.Spec.Adopt:
+		setRepositoryStatusCreated(repo, false)
+		err := qc.UpdateRepositoryDescription(ctx, ns, name, desiredDescription)
+		recordQuayAPI(opUpdateRepository, err)
+		if err != nil {
+			return mutation, fmt.Errorf("claiming existing Quay repository %s/%s: %w", ns, name, err)
+		}
+		current.Description = desiredDescription
+		mutation = mutation.or(quayMutation{Mutated: true})
+	default:
+		return mutation, newRepositoryConflictError(ns, name, "already exists and was not created by this resource; set spec.adopt to claim it")
+	}
 
 	// Repository exists: correct drift. Quay returns visibility as the boolean
 	// is_public on GET, so map the desired public/private to that to compare.
@@ -334,8 +383,8 @@ func (r *RepositoryReconciler) ensureRepository(ctx context.Context, qc RepoClie
 		}
 		mutation = mutation.or(quayMutation{Mutated: true, HealedDrift: repositoryReady(repo)})
 	}
-	if current.Description != repo.Spec.Description {
-		err := qc.UpdateRepositoryDescription(ctx, ns, name, repo.Spec.Description)
+	if current.Description != desiredDescription {
+		err := qc.UpdateRepositoryDescription(ctx, ns, name, desiredDescription)
 		recordQuayAPI(opUpdateRepository, err)
 		if err != nil {
 			return mutation, fmt.Errorf("updating Quay repository %s/%s description: %w", ns, name, err)
@@ -583,6 +632,73 @@ func repositoryReady(repo *quayv1alpha1.Repository) bool {
 	return false
 }
 
+func repositoryStatusCreated(repo *quayv1alpha1.Repository) bool {
+	return repo.Status.Created != nil && *repo.Status.Created
+}
+
+func setRepositoryStatusCreated(repo *quayv1alpha1.Repository, created bool) {
+	repo.Status.Created = k8sptr.To(created)
+}
+
+func repositoryOwnerToken(repo *quayv1alpha1.Repository) string {
+	return string(repo.UID)
+}
+
+func repositoryMarkedDescription(repo *quayv1alpha1.Repository) string {
+	marker := repositoryOwnerMarkerPrefix + repositoryOwnerToken(repo)
+	if repo.Spec.Description == "" {
+		return marker
+	}
+	return repo.Spec.Description + "\n\n" + marker
+}
+
+func repositoryDescriptionOwner(description string) string {
+	if strings.HasPrefix(description, repositoryOwnerMarkerPrefix) && !strings.Contains(description, "\n") {
+		return strings.TrimPrefix(description, repositoryOwnerMarkerPrefix)
+	}
+	idx := strings.LastIndex(description, "\n\n"+repositoryOwnerMarkerPrefix)
+	if idx < 0 || idx+2+len(repositoryOwnerMarkerPrefix) >= len(description) {
+		return ""
+	}
+	token := description[idx+2+len(repositoryOwnerMarkerPrefix):]
+	if strings.Contains(token, "\n") {
+		return ""
+	}
+	return token
+}
+
+func repositoryDescriptionWithoutOwner(description string) string {
+	if strings.HasPrefix(description, repositoryOwnerMarkerPrefix) && !strings.Contains(description, "\n") {
+		return ""
+	}
+	idx := strings.LastIndex(description, "\n\n"+repositoryOwnerMarkerPrefix)
+	if idx < 0 {
+		return description
+	}
+	token := description[idx+2+len(repositoryOwnerMarkerPrefix):]
+	if strings.Contains(token, "\n") {
+		return description
+	}
+	return description[:idx]
+}
+
+type repositoryConflictError struct {
+	ns, name, detail string
+}
+
+func (e repositoryConflictError) Error() string {
+	return fmt.Sprintf("Quay repository %s/%s %s", e.ns, e.name, e.detail)
+}
+
+func newRepositoryConflictError(ns, name, detail string) error {
+	return repositoryConflictError{ns: ns, name: name, detail: detail}
+}
+
+func isRepositoryConflict(err error) bool {
+	var conflict repositoryConflictError
+	return errors.As(err, &conflict)
+}
+
 // reconcileDelete runs the finalizer: it deletes the Quay repository (which
 // removes its notifications) then drops the finalizer so the CR is removed.
 //
@@ -625,6 +741,10 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 		ns, name = resolvedNs, resolvedName
 	}
 
+	if !repositoryStatusCreated(repo) {
+		return r.releaseRepository(ctx, repo, ns, name)
+	}
+
 	cred, err := resolveCredential(ctx, r.APIReader, r.Namespace, repo.Spec.CredentialsSecretRef)
 	if err != nil {
 		return r.handleCredentialError(ctx, repo, err)
@@ -639,6 +759,18 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 	}
 
 	qc := r.NewClient(cred, repo.Spec.CABundle)
+	owns, err := r.ownsRepositoryViaMarker(ctx, qc, repo, ns, name)
+	if err != nil {
+		r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonQuayError,
+			fmt.Sprintf("verifying ownership marker for Quay repository %s/%s: %v", ns, name, err))
+		return ctrl.Result{}, fmt.Errorf("verifying ownership marker for Quay repository %s/%s: %w", ns, name, err)
+	}
+	if !owns {
+		r.Recorder.Event(repo, corev1.EventTypeNormal, ReasonReleased,
+			fmt.Sprintf("released Quay repository %s/%s without deleting (ownership marker absent or foreign)", ns, name))
+		return r.removeFinalizer(ctx, repo)
+	}
+
 	delErr := qc.DeleteRepositoryIfExists(ctx, ns, name)
 	recordQuayAPI(opDeleteRepository, delErr)
 	if err := delErr; err != nil {
@@ -651,6 +783,59 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 		fmt.Sprintf("deleted Quay repository %s/%s", ns, name))
 
 	return r.removeFinalizer(ctx, repo)
+}
+
+func (r *RepositoryReconciler) releaseRepository(ctx context.Context, repo *quayv1alpha1.Repository, ns, name string) (ctrl.Result, error) {
+	cred, err := resolveCredential(ctx, r.APIReader, r.Namespace, repo.Spec.CredentialsSecretRef)
+	if err != nil {
+		return r.handleCredentialError(ctx, repo, err)
+	}
+	if err := quay.ValidateCABundle(repo.Spec.CABundle); err != nil {
+		r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonQuayError, err.Error())
+		return ctrl.Result{}, err
+	}
+	qc := r.NewClient(cred, repo.Spec.CABundle)
+	current, err := qc.GetRepository(ctx, ns, name)
+	recordQuayAPI(opGetRepository, ignoreNotFound(err))
+	if quay.IsNotFound(err) {
+		r.Recorder.Event(repo, corev1.EventTypeNormal, ReasonReleased,
+			fmt.Sprintf("released Quay repository %s/%s without deleting (repository already absent)", ns, name))
+		return r.removeFinalizer(ctx, repo)
+	}
+	if err != nil {
+		r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonQuayError,
+			fmt.Sprintf("reading Quay repository %s/%s for release: %v", ns, name, err))
+		return ctrl.Result{}, fmt.Errorf("reading Quay repository %s/%s for release: %w", ns, name, err)
+	}
+	if repositoryDescriptionOwner(current.Description) == repositoryOwnerToken(repo) {
+		releasedDescription := repositoryDescriptionWithoutOwner(current.Description)
+		err := qc.UpdateRepositoryDescription(ctx, ns, name, releasedDescription)
+		recordQuayAPI(opUpdateRepository, err)
+		if err != nil {
+			r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonQuayError,
+				fmt.Sprintf("releasing ownership marker for Quay repository %s/%s: %v", ns, name, err))
+			return ctrl.Result{}, fmt.Errorf("releasing ownership marker for Quay repository %s/%s: %w", ns, name, err)
+		}
+		r.stampMutation(repo, false)
+		if err := r.updateStatus(ctx, repo); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	r.Recorder.Event(repo, corev1.EventTypeNormal, ReasonReleased,
+		fmt.Sprintf("released Quay repository %s/%s without deleting (adopted, not created by this resource)", ns, name))
+	return r.removeFinalizer(ctx, repo)
+}
+
+func (r *RepositoryReconciler) ownsRepositoryViaMarker(ctx context.Context, qc RepoClient, repo *quayv1alpha1.Repository, ns, name string) (bool, error) {
+	current, err := qc.GetRepository(ctx, ns, name)
+	recordQuayAPI(opGetRepository, ignoreNotFound(err))
+	if quay.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return repositoryDescriptionOwner(current.Description) == repositoryOwnerToken(repo), nil
 }
 
 // resolveDeleteIdentity reconstructs the Quay <org>/<repo> path for a Repository
@@ -764,6 +949,24 @@ func (r *RepositoryReconciler) handleWebhookCondition(ctx context.Context, repo 
 // emitted only when the condition changed.
 func (r *RepositoryReconciler) fail(ctx context.Context, repo *quayv1alpha1.Repository, err error, extraChanged bool) (ctrl.Result, error) {
 	return ctrl.Result{}, r.failErr(ctx, repo, err, extraChanged)
+}
+
+// repositoryConflict records a terminal Conflict condition for a pre-existing
+// repository this resource cannot claim. The conflict is not returned as an
+// error, so the object waits for an operator-visible spec change instead of
+// requeueing forever.
+func (r *RepositoryReconciler) repositoryConflict(ctx context.Context, logger logr.Logger, repo *quayv1alpha1.Repository, message string, extraChanged bool) (ctrl.Result, error) {
+	changed := setConflict(&repo.Status.Conditions, message, repo.Generation)
+	changed = changed || extraChanged || repo.Status.ObservedGeneration != repo.Generation
+	if !changed {
+		return ctrl.Result{}, nil
+	}
+	r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonConflict, message)
+	logger.Info("Repository conflict", "repository", repo.Status.QuayRepository)
+	if err := r.updateStatus(ctx, repo); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
 }
 
 // failErr is the error-returning core of fail: it stamps a QuayError condition
