@@ -253,7 +253,7 @@ func (r *RepositoryReconciler) reconcileNormal(ctx context.Context, logger logr.
 // usesWebhookSecretRef reports whether the Repository's webhook draws its URL
 // from a urlSecretRef (rather than an inline url or no webhook at all).
 func usesWebhookSecretRef(repo *quayv1alpha1.Repository) bool {
-	return repo.Spec.Webhook != nil && repo.Spec.Webhook.UrlSecretRef != nil
+	return repo.Spec.Webhook != nil && repo.Spec.Webhook.URLSecretRef != nil
 }
 
 // resolveQuayOrg resolves the Quay organization name the Repository writes into

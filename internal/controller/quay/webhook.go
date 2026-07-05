@@ -70,8 +70,8 @@ func isInvalidWebhook(err error) bool {
 // A transient API error reading the Secret is returned as-is so the reconciler
 // requeues with backoff without stamping a misleading reason.
 func resolveWebhookURL(ctx context.Context, reader client.Reader, namespace string, webhook *quayv1alpha1.RepositoryWebhook) (string, error) {
-	hasInline := webhook.Url != nil && *webhook.Url != ""
-	hasRef := webhook.UrlSecretRef != nil
+	hasInline := webhook.URL != nil && *webhook.URL != ""
+	hasRef := webhook.URLSecretRef != nil
 
 	switch {
 	case hasInline && hasRef:
@@ -83,12 +83,12 @@ func resolveWebhookURL(ctx context.Context, reader client.Reader, namespace stri
 			msg: "spec.webhook sets neither url nor urlSecretRef; exactly one must be set",
 		}
 	case hasInline:
-		return *webhook.Url, nil
+		return *webhook.URL, nil
 	}
 
 	// urlSecretRef path: read the named key from the Secret in the Repository's
 	// namespace.
-	ref := webhook.UrlSecretRef
+	ref := webhook.URLSecretRef
 	secret := &corev1.Secret{}
 	key := types.NamespacedName{Namespace: namespace, Name: ref.Name}
 	if err := reader.Get(ctx, key, secret); err != nil {

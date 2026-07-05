@@ -48,173 +48,105 @@ const (
 	RepositoryRoleAdmin RepositoryRole = "admin"
 )
 
-// SyncedTeam declares a Quay team whose membership is OIDC-synced from a group.
-// The reconciler upserts the named team, binds it to the OIDC group, sets its
-// org role, and (optionally) grants it an org default repository permission.
-//
-// OIDC group reference, not a Keycloak coupling: OIDCGroup is a plain
-// group-name string — the value of the OIDC groups claim. The quay.holos.run
-// API group deliberately does not depend on Keycloak (or any other identity
-// provider) type or import (ADR-19 dependency boundary, AC #2/#7): the group is
-// referenced only by name, so the team binding works against whatever OIDC
-// provider Quay is configured with, not specifically Keycloak.
-//
-// Adoption boundary (forward-compatibility): adoption of a pre-existing Quay
-// team this CR did not create is currently unsupported and is surfaced as a
-// reconcile error rather than a silent takeover (mirroring the Organization
-// claim model). Per-team adoption is reserved for a future optional Adopt bool
-// field on this struct; the schema is intentionally free of any required field
-// or validation that would have to change to add it backwards-compatibly
-// (AC #6).
+// SyncedTeam declares a Quay team whose membership is synchronized from an OIDC
+// group. The controller manages the team role, optional default repository
+// permission, and sync binding. A pre-existing team not created by this resource
+// is reported as a conflict and is not adopted.
 type SyncedTeam struct {
-	// Name is the Quay team name to create and manage within the organization.
-	// It is the +listMapKey for the spec.syncedTeams list, so it is unique per
-	// Organization.
+	// Name is the Quay team name to manage inside the organization. It is
+	// required, must be unique within syncedTeams, and has no default.
 	//
-	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MinLength=2
+	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`
 	Name string `json:"name"`
 
-	// OIDCGroup is the OIDC groups-claim value this team's membership is synced
-	// from. It is a plain group-name reference: the quay.holos.run group does
-	// not depend on Keycloak (or any IdP) type or import — the group is named by
-	// string only (ADR-19 dependency boundary, AC #2). The reconciler enables
-	// Quay team syncing bound to this group so membership tracks the claim.
+	// OIDCGroup is the groups-claim value whose members populate this Quay team.
+	// It is required, has no default, and is a plain string so the API can work
+	// with any OIDC provider Quay is configured to trust.
 	//
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=512
 	OIDCGroup string `json:"oidcGroup"`
 
-	// Role is the team's org-level Quay role. It is required with no default so
-	// the intent (admin vs. creator vs. member) is always explicit rather than
-	// inherited from a default.
+	// Role is the team's organization-level Quay role. It is required with no
+	// default so administrative intent is explicit.
 	Role OrganizationTeamRole `json:"role"`
 
-	// RepositoryPermission optionally grants this team an organization default
-	// repository permission (a Quay prototype): a repo role applied across all
-	// repositories in the organization. A nil pointer means no default
-	// permission is managed for this team. When set, the reconciler maintains an
-	// org default-permission prototype delegating the given repo role to this
-	// team.
+	// RepositoryPermission grants an organization default repository permission
+	// to this team. When omitted, the controller manages no default repository
+	// permission for the team.
 	//
 	// +optional
 	RepositoryPermission *RepositoryRole `json:"repositoryPermission,omitempty"`
 }
 
-// OrganizationSpec defines the desired state of a Quay Organization.
-//
-// The reconciler creates (or, per the ADR-19 claim model, adopts) the named
-// Quay organization. The spec deliberately carries no repository list — a
-// Repository is its own resource (ADR-19, AC #9) — and no Kargo/Argo CD
-// coupling; the only external dependency is the Quay credential in
-// CredentialsSecretRef.
-//
-// Scope note: this spec carries name, email, credentialsSecretRef, and adopt
-// (the claim-model opt-in the HOL-1311 reconciler enforces). The
-// remaining ADR-19 illustrative schema (access[] group→team bindings,
-// allowRepositoryCreation, and the explicit organizationName-vs-metadata.name
-// split) is deferred to the ADR-reconciliation phase (HOL-1314); adding it here
-// would be unused surface ahead of the logic that consumes it. New fields are
-// additive to this type, so deferring them causes no API break.
+// OrganizationSpec describes the Quay organization the platform controller
+// creates, adopts, and keeps in sync. Repositories are declared separately with
+// Repository resources. The only authentication input is credentialsSecretRef,
+// which points at a runtime Secret read by the controller.
 type OrganizationSpec struct {
-	// Name is the Quay organization name to create or adopt. It is immutable:
-	// once set, the Quay org it binds to does not change. It is required —
-	// callers conventionally set it to the resource's metadata.name, but the
-	// controller does not default it (no defaulting webhook in this scaffold).
+	// Name is the Quay organization name to create or adopt. It is required,
+	// immutable, and has no default; callers usually set it to metadata.name.
 	//
-	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MinLength=2
+	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]+([._-][a-z0-9]+)*$`
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="name is immutable"
 	Name string `json:"name"`
 
-	// Email is the organization contact email. Quay requires every namespace
-	// (user or organization) to have a unique email address. It is mutable and
-	// is reconciled to Quay on drift.
+	// Email is the organization contact email Quay stores for the namespace. It
+	// is required, has no default, and is reconciled if it drifts.
 	//
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=254
+	// +kubebuilder:validation:Pattern=`^[^@\s]+@[^@\s]+\.[^@\s]+$`
 	Email string `json:"email"`
 
-	// CredentialsSecretRef names the Secret holding the Quay superuser OAuth
-	// Application credential the reconciler authenticates to Quay with. A
-	// Secret named holos-controller-quay-creds in the holos-controller
-	// namespace is the suggested convention, and the field defaults to that
-	// name when omitted. The Secret carries the Quay API URL and token (keys
-	// url, token, optional username). This is the resource's only
-	// authentication dependency (AC #7); its material is created at runtime
-	// and never committed (secret-handling guardrail).
+	// CredentialsSecretRef selects the controller-namespace Secret containing the
+	// Quay API URL and OAuth token. When omitted, the controller uses
+	// holos-controller-quay-creds. The Secret material is created at runtime and
+	// is not stored in this resource.
 	//
 	// +optional
 	// +kubebuilder:default={name: "holos-controller-quay-creds"}
-	CredentialsSecretRef SecretReference `json:"credentialsSecretRef,omitempty"`
+	CredentialsSecretRef *SecretReference `json:"credentialsSecretRef,omitempty"`
 
-	// Adopt opts in to taking ownership of a pre-existing, externally-created
-	// Quay organization of the same name (ADR-19's claim model). Default false:
-	// an org this CR did not create and does not already own is a Conflict
-	// (Ready=False, reason Conflict) and is never silently seized — the
-	// controller's credential carries FEATURE_SUPERUSERS_FULL_ACCESS, so without
-	// this guard a namespaced CR could take over another tenant's global Quay
-	// org. Set adopt: true to deliberately claim such an org.
-	//
-	// An adopted org is released (the finalizer drops without deleting) rather
-	// than deleted on CR removal, so adoption is non-destructive to a resource
-	// the platform did not create.
+	// Adopt opts in to claiming a pre-existing Quay organization with the same
+	// name. It defaults to false; without this opt-in, an unowned existing
+	// organization is reported as a conflict. An adopted organization is released,
+	// not deleted, when this resource is removed.
 	//
 	// +optional
 	Adopt bool `json:"adopt,omitempty"`
 
 	// CABundle carries PEM-encoded x509 CA certificates the controller trusts
-	// in addition to its system store when reaching the Quay API. Its semantics
-	// and serialization are the shared "CABundle convention" documented once in
-	// common_types.go: it follows the upstream Kubernetes caBundle convention
-	// (PEM certs serialized as a single base64 string) and an empty value uses
-	// the controller pod's system trust store unchanged. It is the trust anchor
-	// for the in-cluster Quay registry signed by the platform's local CA.
+	// in addition to its system store when reaching the Quay API. The API server
+	// serializes this byte slice as one base64 string. When omitted or empty, the
+	// controller uses only its system trust store.
 	//
 	// +optional
+	// +kubebuilder:validation:MaxLength=1048576
 	CABundle []byte `json:"caBundle,omitempty"`
 
-	// SyncedTeams declares the Quay teams whose membership is OIDC-synced from a
-	// group, each with an org role and an optional org default repository
-	// permission. Zero or more entries; an empty or omitted list means the
-	// organization manages no synced teams. It is a keyed list (listMapKey
-	// name), so server-side apply merges entries by team name and the reconciler
-	// can add, update, or remove individual teams without clobbering peers.
-	//
-	// Management is non-exclusive: the controller manages only the teams it
-	// creates (tracked in status.managedTeams) and leaves teams created by other
-	// identities alone — adopting a pre-existing team is a reconcile error, not a
-	// takeover (see SyncedTeam).
-	//
-	// Phase note: this field is the API surface only. The reconciler that
-	// consumes it — creating/syncing Quay teams and org default permissions and
-	// recording them in status.managedTeams — lands in a later phase, so setting
-	// it has no effect until then. The field is additive and backward-compatible,
-	// so declaring it ahead of the reconciler does not change existing behavior.
+	// SyncedTeams is the set of Quay teams the controller manages for this
+	// organization. Each entry binds team membership to an OIDC group and may add
+	// an organization default repository permission. When omitted or empty, no
+	// teams are managed.
 	//
 	// +optional
+	// +kubebuilder:validation:MaxItems=64
 	// +listType=map
 	// +listMapKey=name
 	SyncedTeams []SyncedTeam `json:"syncedTeams,omitempty"`
 }
 
-// Condition types surfaced on Organization and Repository status. The vocabulary
-// follows the Gateway API convention; condition semantics are built out by the
-// reconcilers in later phases (HOL-1311, HOL-1312).
-const (
-	// ConditionReady reports whether the resource has been fully provisioned
-	// in Quay.
-	ConditionReady = "Ready"
-	// ConditionAccepted reports whether the spec was accepted as valid and
-	// claimed by this resource (Gateway-API Accepted).
-	ConditionAccepted = "Accepted"
-	// ConditionProgrammed reports whether the desired state has been
-	// programmed into Quay (Gateway-API Programmed).
-	ConditionProgrammed = "Programmed"
-)
-
-// OrganizationStatus defines the observed state of an Organization. It follows
-// the Gateway-API status convention: a slice of standard metav1.Conditions plus
-// the observedGeneration the controller last reconciled.
+// OrganizationStatus reports what the controller most recently observed and
+// changed in Quay for an Organization.
 type OrganizationStatus struct {
-	// Conditions represent the latest available observations of the
-	// organization's state.
+	// Conditions are the current Accepted, Programmed, and Ready observations for
+	// the organization. They are omitted until the controller has reconciled the
+	// resource.
 	//
 	// +optional
 	// +listType=map
@@ -223,62 +155,52 @@ type OrganizationStatus struct {
 	// +patchMergeKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
-	// ObservedGeneration is the most recent generation observed for this
-	// Organization by the controller.
+	// ObservedGeneration is the latest metadata.generation the controller has
+	// reconciled. It is omitted until the first status write.
 	//
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Created is the durable ownership marker of ADR-19's claim model: it
-	// records whether this CR created the Quay organization (true) versus
-	// adopted a pre-existing one (false). It is the controller-managed owner
-	// record the claim model requires, persisted on the resource's own status
-	// so it survives controller restarts. The finalizer deletes the Quay org
-	// only when Created is true; an adopted org is released, never deleted.
+	// Created records whether this resource created the Quay organization. True
+	// means finalization may delete the organization. False means the resource
+	// adopted an existing organization and finalization only releases it. When
+	// omitted, the controller has not recorded ownership yet.
 	//
 	// +optional
-	Created bool `json:"created,omitempty"`
+	Created *bool `json:"created,omitempty"`
 
-	// ManagedTeams records the Quay team names this CR created and manages. It is
-	// the controller-managed owner record for synced teams, the team-level analog
-	// of Created: it lists only the teams this resource provisioned, never teams
-	// created by other identities.
-	//
-	// It underpins two reconcile behaviors. Non-exclusive management (AC #5): the
-	// reconciler manages exactly these teams and ignores the rest, so a team
-	// dropped from spec.syncedTeams is deleted only if it appears here (this CR
-	// created it), never a foreign team of the same name. Adoption-is-an-error
-	// (AC #6): a spec team that already exists in Quay but is absent from this
-	// list was not created by this CR, so the reconciler reports a conflict
-	// rather than silently adopting it.
+	// ManagedTeams records the Quay team names this resource created and owns.
+	// The controller uses it to delete only teams it owns and to report a
+	// conflict when spec.syncedTeams names an existing foreign team. It is omitted
+	// until no managed teams have been recorded.
 	//
 	// +optional
+	// +listType=set
 	ManagedTeams []string `json:"managedTeams,omitempty"`
 
 	// LastValidatedTime is the last time the controller successfully read Quay and
-	// confirmed or restored the declared organization state. It is not advanced on
-	// failed remote reads or failed verification, so stale values remain visible.
+	// confirmed or restored the declared organization state. It is omitted until
+	// the first successful validation.
 	//
 	// +optional
 	LastValidatedTime *metav1.Time `json:"lastValidatedTime,omitempty"`
 
 	// LastMutatedTime is the last time the controller actually changed Quay for
 	// this organization, such as creating the org, updating its email, or
-	// reconciling synced teams.
+	// reconciling synced teams. It is omitted until the first remote mutation.
 	//
 	// +optional
 	LastMutatedTime *metav1.Time `json:"lastMutatedTime,omitempty"`
 
-	// LastMutationReason classifies the cause of the last remote mutation. It is
-	// written together with lastMutatedTime.
+	// LastMutationReason classifies why the last remote mutation happened. It is
+	// written with lastMutatedTime and omitted when no mutation has been recorded.
 	//
 	// +optional
-	// +kubebuilder:validation:Enum=SpecChange;DriftRemediation
 	LastMutationReason MutationReason `json:"lastMutationReason,omitempty"`
 
 	// LastDriftTime is the last time the controller remediated out-of-band drift.
-	// It is set with LastMutationReason=DriftRemediation and preserved across
-	// later spec-driven mutations.
+	// It is omitted until drift remediation occurs and is preserved across later
+	// spec-driven mutations.
 	//
 	// +optional
 	LastDriftTime *metav1.Time `json:"lastDriftTime,omitempty"`
@@ -292,8 +214,8 @@ type OrganizationStatus struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +kubebuilder:printcolumn:name="Validated",type=date,priority=1,JSONPath=`.status.lastValidatedTime`
 
-// Organization is the Schema for the organizations API. It names and applies a
-// Quay organization in the in-cluster registry (ADR-19).
+// Organization declares a Quay organization in the platform registry, created
+// and kept in sync by the platform controller.
 type Organization struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

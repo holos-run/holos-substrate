@@ -93,8 +93,11 @@ func controllerNamespace() string {
 // A missing Secret, or a missing/empty url or token key, returns a
 // *missingCredentialError so the reconciler sets a False condition and requeues
 // rather than crashing.
-func resolveCredential(ctx context.Context, reader client.Reader, namespace string, ref quayv1alpha1.SecretReference) (*quayCredential, error) {
-	name := ref.Name
+func resolveCredential(ctx context.Context, reader client.Reader, namespace string, ref *quayv1alpha1.SecretReference) (*quayCredential, error) {
+	name := ""
+	if ref != nil {
+		name = ref.Name
+	}
 	if name == "" {
 		name = quayv1alpha1.DefaultCredentialsSecretName
 	}
@@ -119,7 +122,7 @@ func resolveCredential(ctx context.Context, reader client.Reader, namespace stri
 	// rather than silently ignored. url and username always use their
 	// conventional keys.
 	tokenKey := credentialKeyToken
-	if ref.Key != "" {
+	if ref != nil && ref.Key != "" {
 		tokenKey = ref.Key
 	}
 

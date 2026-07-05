@@ -1,14 +1,13 @@
-// Package v1alpha1 contains the API types for the quay.holos.run API group,
-// version v1alpha1.
+// Package v1alpha1 contains the API types for quay.holos.run/v1alpha1.
 //
 // The group models the in-cluster Quay registry data plane the Holos PaaS
-// provisions on a project's behalf — Organizations and Repositories — as
-// Kubernetes custom resources reconciled by the holos-controller (ADR-18,
-// ADR-19). The resources express their only external coupling to Quay as a
-// credential secretRef (see SecretReference); reaching Quay is a runtime
-// concern of the reconciler, never an API-type import. Consequently this
-// package depends only on k8s.io/api*, k8s.io/apimachinery, and
-// sigs.k8s.io/controller-runtime — never on Kargo or Argo CD types.
+// provisions on a project's behalf as Kubernetes custom resources reconciled by
+// the holos-controller. The API currently exposes Organizations and
+// Repositories. Resources express their only external coupling to Quay through a
+// credential Secret reference; reaching Quay is a runtime concern of the
+// controller, not an API-type import. Consequently this package depends only on
+// k8s.io/api*, k8s.io/apimachinery, and sigs.k8s.io/controller-runtime, never on
+// Kargo or Argo CD types.
 //
 // +kubebuilder:object:generate=true
 // +groupName=quay.holos.run

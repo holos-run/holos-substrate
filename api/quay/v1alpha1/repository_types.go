@@ -17,136 +17,115 @@ const (
 	RepositoryVisibilityPrivate RepositoryVisibility = "private"
 )
 
-// RepositoryWebhook configures a repo_push webhook on the Quay repository so a
-// push notifies a downstream receiver (the Kargo Warehouse, ADR-16). The target
-// URL is provided exactly one of two ways — inline via Url, or indirectly via
-// UrlSecretRef when the URL is hard-to-guess and must not be committed. Exactly
-// one of the two must be set.
-//
-// UrlSecretRef is distinct from the spec-level credentialsSecretRef: it points
-// at a Secret in the resource's own namespace holding the webhook target URL,
-// not the Quay API credential.
+// RepositoryWebhook configures a repo_push notification on the Quay repository.
+// The target URL is provided either inline or from a Secret in the Repository
+// namespace. Exactly one source must be set.
 //
 // +kubebuilder:validation:XValidation:rule="(has(self.url) ? 1 : 0) + (has(self.urlSecretRef) ? 1 : 0) == 1",message="exactly one of url or urlSecretRef must be set"
 type RepositoryWebhook struct {
-	// Url is the inline webhook target URL. Mutually exclusive with
-	// UrlSecretRef; set exactly one. Must be non-empty when present so an
-	// empty string is rejected at admission rather than failing later during
-	// Quay webhook registration.
+	// URL is the inline webhook target URL. It is optional, has no default, and
+	// must be set only when urlSecretRef is omitted.
 	//
 	// +optional
 	// +kubebuilder:validation:MinLength=1
-	Url *string `json:"url,omitempty"`
+	// +kubebuilder:validation:MaxLength=2048
+	URL *string `json:"url,omitempty"`
 
-	// UrlSecretRef points at a Secret in the resource's namespace holding the
-	// webhook target URL. Use it when the URL is hard-to-guess (e.g. the Kargo
-	// receiver URL) and must not be committed. Mutually exclusive with Url; set
-	// exactly one.
+	// URLSecretRef selects a Secret key in the Repository namespace that contains
+	// the webhook target URL. It is optional, has no default, and must be set only
+	// when url is omitted.
 	//
 	// +optional
-	UrlSecretRef *WebhookURLSecretRef `json:"urlSecretRef,omitempty"`
+	URLSecretRef *WebhookURLSecretRef `json:"urlSecretRef,omitempty"`
 }
 
 // WebhookURLSecretRef references a Secret key in the resource's namespace that
 // holds a webhook target URL.
 type WebhookURLSecretRef struct {
-	// Name of the Secret in the resource's namespace.
+	// Name is the Secret name in the Repository namespace. It is required and has
+	// no default.
 	//
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
 
-	// Key within the Secret holding the URL value.
+	// Key is the Secret data key containing the URL. It is required and has no
+	// default.
 	//
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
 	Key string `json:"key"`
 }
 
-// RepositorySpec defines the desired state of a Quay Repository within an owning
-// Organization. As with Organization, the spec's only external coupling is the
-// Quay credential in CredentialsSecretRef plus the optional webhook URL — never
-// a Kargo/Argo CD type import (AC #7).
-//
-// Scope note (HOL-1309, the scaffold phase): the webhook is modeled as the
-// HOL-1309-prescribed RepositoryWebhook with a mutually-exclusive inline url or
-// urlSecretRef (AC #8) — deliberately decoupled from Kargo. ADR-19's
-// illustrative pushWebhook.kargoProjectConfigRef form (reading the receiver URL
-// from a ProjectConfig.status) would import a Kargo coupling into the API group,
-// which AC #7 forbids; the reconciler instead resolves the receiver URL at
-// runtime and the CR carries it via urlSecretRef. ADR-19's retention and
-// robot-credential fields are likewise deferred to the reconciler/ADR phases
-// (HOL-1312, HOL-1314). New fields are additive, so deferring them is not an API
-// break.
+// RepositorySpec describes a Quay repository inside an Organization managed by
+// this API group. The controller resolves the owning Quay organization through
+// organizationRef and keeps repository visibility, description, and optional
+// webhook configuration in sync.
 type RepositorySpec struct {
-	// OrganizationRef is the name of the owning Organization CR in this
-	// Repository's own namespace. The reconciler resolves that CR and uses its
-	// spec.name as the Quay organization, so a Repository can only target a Quay
-	// org a same-namespace Organization resource has claimed — it never names a
-	// Quay org directly by string (which, with the controller's superuser
-	// credential, would bypass the Organization claim/adopt guardrail). The full
-	// Quay path is <Organization.spec.name>/<name>.
-	//
-	// It is immutable: the (organizationRef, name) pair is the repository's
-	// durable identity, so the finalizer always deletes exactly the Quay
-	// repository this CR provisioned even if other fields change.
+	// OrganizationRef is the name of the owning Organization resource in this
+	// namespace. It is required, immutable, and has no default. The controller
+	// uses that Organization's spec.name as the Quay namespace instead of letting
+	// this resource name any Quay organization directly.
 	//
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="organizationRef is immutable"
 	OrganizationRef string `json:"organizationRef"`
 
-	// Name is the repository name within the organization. It is immutable: the
-	// (organizationRef, name) pair is the repository's durable identity, so the
-	// finalizer always deletes exactly the Quay repository this CR provisioned.
+	// Name is the repository name within the resolved Quay organization. It is
+	// required, immutable, and has no default.
 	//
-	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MinLength=2
+	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]+([._-][a-z0-9]+)*$`
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="name is immutable"
 	Name string `json:"name"`
 
-	// Visibility is the repository visibility, public or private.
+	// Visibility controls whether anonymous users may pull from the repository.
+	// It is optional and defaults to private.
 	//
+	// +optional
 	// +kubebuilder:default=private
 	Visibility RepositoryVisibility `json:"visibility,omitempty"`
 
-	// Description is an optional human-friendly repository description.
+	// Description is a human-readable repository description shown by Quay. It is
+	// optional, has no default, and does not affect access.
 	//
 	// +optional
+	// +kubebuilder:validation:MaxLength=4096
 	Description string `json:"description,omitempty"`
 
-	// CredentialsSecretRef names the Secret holding the Quay superuser OAuth
-	// Application credential the reconciler authenticates to Quay with. A
-	// Secret named holos-controller-quay-creds in the holos-controller
-	// namespace is the suggested convention, and the field defaults to that
-	// name when omitted. The Secret carries the Quay API URL and token (keys
-	// url, token, optional username). This is the resource's only
-	// authentication dependency (AC #7) and is distinct from the webhook
-	// urlSecretRef; its material is created at runtime and never committed
-	// (secret-handling guardrail).
+	// CredentialsSecretRef selects the controller-namespace Secret containing the
+	// Quay API URL and OAuth token. When omitted, the controller uses
+	// holos-controller-quay-creds. This is separate from webhook.urlSecretRef,
+	// which points at a Secret in the Repository namespace.
 	//
 	// +optional
 	// +kubebuilder:default={name: "holos-controller-quay-creds"}
-	CredentialsSecretRef SecretReference `json:"credentialsSecretRef,omitempty"`
+	CredentialsSecretRef *SecretReference `json:"credentialsSecretRef,omitempty"`
 
-	// Webhook optionally configures a repo_push webhook on the repository.
+	// Webhook configures an optional repo_push notification on the repository.
+	// When omitted, the controller removes any webhook notification it owns.
 	//
 	// +optional
 	Webhook *RepositoryWebhook `json:"webhook,omitempty"`
 
 	// CABundle carries PEM-encoded x509 CA certificates the controller trusts
-	// in addition to its system store when reaching the Quay API. Its semantics
-	// and serialization are the shared "CABundle convention" documented once in
-	// common_types.go: it follows the upstream Kubernetes caBundle convention
-	// (PEM certs serialized as a single base64 string) and an empty value uses
-	// the controller pod's system trust store unchanged. It is the trust anchor
-	// for the in-cluster Quay registry signed by the platform's local CA.
+	// in addition to its system store when reaching the Quay API. The API server
+	// serializes this byte slice as one base64 string. When omitted or empty, the
+	// controller uses only its system trust store.
 	//
 	// +optional
+	// +kubebuilder:validation:MaxLength=1048576
 	CABundle []byte `json:"caBundle,omitempty"`
 }
 
-// RepositoryStatus defines the observed state of a Repository, following the
-// same Gateway-API status convention as Organization.
+// RepositoryStatus reports what the controller most recently observed and
+// changed in Quay for a Repository.
 type RepositoryStatus struct {
-	// Conditions represent the latest available observations of the
-	// repository's state.
+	// Conditions are the current Accepted, Programmed, Ready, and
+	// WebhookConfigured observations for the repository. They are omitted until
+	// the controller has reconciled the resource.
 	//
 	// +optional
 	// +listType=map
@@ -155,46 +134,45 @@ type RepositoryStatus struct {
 	// +patchMergeKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
-	// ObservedGeneration is the most recent generation observed for this
-	// Repository by the controller.
+	// ObservedGeneration is the latest metadata.generation the controller has
+	// reconciled. It is omitted until the first status write.
 	//
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// QuayRepository is the resolved Quay repository path
-	// (<Organization.spec.name>/<spec.name>) this CR provisioned. It is recorded
-	// when the repository is first created so the finalizer deletes exactly that
-	// path on CR removal, even if the owning Organization CR has since been
-	// deleted (its spec.name no longer resolvable). Empty until the repository is
-	// provisioned.
+	// QuayRepository is the resolved Quay repository path in the form
+	// organization/name. The controller records it after provisioning so
+	// finalization can delete the same remote repository even if the owning
+	// Organization resource is later unavailable. It is omitted until a repository
+	// has been provisioned.
 	//
 	// +optional
 	QuayRepository string `json:"quayRepository,omitempty"`
 
 	// LastValidatedTime is the last time the controller successfully read Quay and
-	// confirmed or restored the declared repository state. It is not advanced on
-	// failed remote reads or failed verification, so stale values remain visible.
+	// confirmed or restored the declared repository state. It is omitted until
+	// the first successful validation.
 	//
 	// +optional
 	LastValidatedTime *metav1.Time `json:"lastValidatedTime,omitempty"`
 
 	// LastMutatedTime is the last time the controller actually changed Quay for
 	// this repository, such as creating the repo, updating its visibility or
-	// description, or reconciling its webhook.
+	// description, or reconciling its webhook. It is omitted until the first
+	// remote mutation.
 	//
 	// +optional
 	LastMutatedTime *metav1.Time `json:"lastMutatedTime,omitempty"`
 
-	// LastMutationReason classifies the cause of the last remote mutation. It is
-	// written together with lastMutatedTime.
+	// LastMutationReason classifies why the last remote mutation happened. It is
+	// written with lastMutatedTime and omitted when no mutation has been recorded.
 	//
 	// +optional
-	// +kubebuilder:validation:Enum=SpecChange;DriftRemediation
 	LastMutationReason MutationReason `json:"lastMutationReason,omitempty"`
 
 	// LastDriftTime is the last time the controller remediated out-of-band drift.
-	// It is set with LastMutationReason=DriftRemediation and preserved across
-	// later spec-driven mutations.
+	// It is omitted until drift remediation occurs and is preserved across later
+	// spec-driven mutations.
 	//
 	// +optional
 	LastDriftTime *metav1.Time `json:"lastDriftTime,omitempty"`
@@ -209,8 +187,8 @@ type RepositoryStatus struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +kubebuilder:printcolumn:name="Validated",type=date,priority=1,JSONPath=`.status.lastValidatedTime`
 
-// Repository is the Schema for the repositories API. It is a single repository
-// within an owning Organization in the in-cluster Quay registry (ADR-19).
+// Repository declares a Quay repository in a managed Organization, created and
+// kept in sync by the platform controller.
 type Repository struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

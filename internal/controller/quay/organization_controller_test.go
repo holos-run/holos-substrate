@@ -49,7 +49,7 @@ func makeOrg(ctx context.Context, t *testing.T, ns, orgName, credSecret string, 
 		},
 	}
 	if credSecret != "" {
-		org.Spec.CredentialsSecretRef = quayv1alpha1.SecretReference{Name: credSecret}
+		org.Spec.CredentialsSecretRef = &quayv1alpha1.SecretReference{Name: credSecret}
 	}
 	if err := shared.k8sClient.Create(ctx, org); err != nil {
 		t.Fatalf("creating Organization: %v", err)
@@ -136,7 +136,7 @@ func TestReconcileCreatesOrganization(t *testing.T) {
 	if got := conditionReason(org, ConditionReady); got != ReasonCreated {
 		t.Errorf("Ready reason = %q, want %q", got, ReasonCreated)
 	}
-	if !org.Status.Created {
+	if !statusCreated(org) {
 		t.Error("expected status.Created = true after creating the org")
 	}
 	if org.Status.ObservedGeneration != org.Generation {
@@ -269,7 +269,7 @@ func TestReconcileAdoptsExistingOrganization(t *testing.T) {
 	if got := conditionReason(org, ConditionReady); got != ReasonAdopted {
 		t.Errorf("Ready reason = %q, want %q", got, ReasonAdopted)
 	}
-	if org.Status.Created {
+	if statusCreated(org) {
 		t.Error("expected status.Created = false for an adopted (not created) org")
 	}
 	assertEvent(t, recorder, ReasonAdopted)
@@ -410,7 +410,7 @@ func TestReconcileConflictWhenExistingOrgNotAdopted(t *testing.T) {
 	if got := conditionReason(org, ConditionReady); got != ReasonConflict {
 		t.Errorf("Ready reason = %q, want %q", got, ReasonConflict)
 	}
-	if org.Status.Created {
+	if statusCreated(org) {
 		t.Error("expected status.Created = false on a conflict")
 	}
 	assertEvent(t, recorder, ReasonConflict)
@@ -435,7 +435,7 @@ func TestReconcileCreateRaceDoesNotClaimOwnership(t *testing.T) {
 	}
 
 	org := getOrg(ctx, t, key)
-	if org.Status.Created {
+	if statusCreated(org) {
 		t.Error("status.Created must be false after losing a create race — the org was not created by this CR")
 	}
 	// Without adopt, a raced-in org is a Conflict, not a silent claim.
@@ -459,7 +459,7 @@ func TestReconcileDeleteReleasesAdoptedOrgWithoutDeleting(t *testing.T) {
 	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
 		t.Fatalf("reconcile adopt: %v", err)
 	}
-	if getOrg(ctx, t, key).Status.Created {
+	if statusCreated(getOrg(ctx, t, key)) {
 		t.Fatal("expected adopted org status.Created = false")
 	}
 
@@ -505,7 +505,7 @@ func TestReconcileHonorsCredentialSecretRefKey(t *testing.T) {
 		Spec: quayv1alpha1.OrganizationSpec{
 			Name:                 "keyed",
 			Email:                "keyed@example.test",
-			CredentialsSecretRef: quayv1alpha1.SecretReference{Key: "oauth"},
+			CredentialsSecretRef: &quayv1alpha1.SecretReference{Key: "oauth"},
 		},
 	}
 	if err := shared.k8sClient.Create(ctx, org); err != nil {
@@ -555,7 +555,7 @@ func TestReconcileStampsOwnershipMarkerOnCreate(t *testing.T) {
 	if desc != string(org.UID) {
 		t.Errorf("marker description = %q, want CR UID %q", desc, org.UID)
 	}
-	if !org.Status.Created {
+	if !statusCreated(org) {
 		t.Error("expected status.Created = true after a marked create")
 	}
 }
@@ -626,7 +626,7 @@ func TestReconcileHealsLostCreatedMarkerWithoutReleasing(t *testing.T) {
 	r, _ := newReconciler(fake, ns)
 
 	org := getOrg(ctx, t, key)
-	org.Status.Created = true
+	org.Status.Created = boolPtr(true)
 	if err := shared.k8sClient.Status().Update(ctx, org); err != nil {
 		t.Fatalf("seeding status.Created: %v", err)
 	}
@@ -639,7 +639,7 @@ func TestReconcileHealsLostCreatedMarkerWithoutReleasing(t *testing.T) {
 	if got := conditionReason(org, ConditionReady); got != ReasonCreated {
 		t.Errorf("Ready reason = %q, want %q (must heal, not conflict/release)", got, ReasonCreated)
 	}
-	if !org.Status.Created {
+	if !statusCreated(org) {
 		t.Error("status.Created must remain true after healing")
 	}
 	if desc := fake.markers["healme"]; desc != string(org.UID) {
@@ -677,7 +677,7 @@ func TestReconcileMarkerStampFailureAfterCreatePersistsCreatedAndHeals(t *testin
 	if !fake.orgExists("stampfail") {
 		t.Fatal("expected the org to be created")
 	}
-	if !getOrg(ctx, t, key).Status.Created {
+	if !statusCreated(getOrg(ctx, t, key)) {
 		t.Error("status.Created must be persisted true even though the marker stamp failed")
 	}
 
@@ -763,7 +763,7 @@ func TestReconcileConflictWhenMarkerHoldsForeignToken(t *testing.T) {
 	if got := conditionReason(org, ConditionReady); got != ReasonConflict {
 		t.Errorf("Ready reason = %q, want %q", got, ReasonConflict)
 	}
-	if org.Status.Created {
+	if statusCreated(org) {
 		t.Error("status.Created must stay false on a foreign-marker conflict")
 	}
 	assertEvent(t, recorder, ReasonConflict)

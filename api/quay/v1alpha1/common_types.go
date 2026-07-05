@@ -1,67 +1,41 @@
 package v1alpha1
 
-// CABundle convention (shared across all quay.holos.run Kinds).
-//
-// Every Kind in this API group (Organization, Repository) carries a CABundle
-// []byte spec field with JSON tag `caBundle,omitempty`. Its semantics and
-// serialization are standardized here, once, and each spec's field godoc refers
-// back to this block rather than re-describing the format — so the field is
-// generally re-used across Kinds.
-//
-// CABundle is a PEM-encoded set of x509 CA certificates the controller trusts
-// in addition to its system store when establishing TLS to the Quay API. It
-// follows the upstream Kubernetes caBundle convention: one or more PEM blocks
-// concatenated, serialized as a single base64 string in JSON (the Go `[]byte`
-// type marshals to a base64 string, and the generated CRD property is
-// `type: string, format: byte`). An empty CABundle means use the controller
-// pod's system trust store unchanged — the historical behavior — so the field
-// is purely additive.
-//
-// It is the trust anchor for the in-cluster Quay registry, whose serving
-// certificate is signed by the platform's local CA rather than a public root:
-// without it the reconcilers hit `x509: certificate signed by unknown
-// authority`. The bundle is configuration carried on the spec, not a
-// credential — the Quay API token lives in the credential Secret
-// (CredentialsSecretRef), the CA bundle does not.
-
 // DefaultCredentialsSecretName is the suggested and default name of the Secret
 // holding the Quay superuser OAuth Application credential. When a spec's
 // credentialsSecretRef is omitted, the controller resolves a Secret of this
 // name in its own holos-controller namespace.
 const DefaultCredentialsSecretName = "holos-controller-quay-creds"
 
-// SecretReference names the Secret holding the Quay superuser OAuth Application
-// credential (keys url, token, optional username). The controller resolves it
-// in its own holos-controller namespace. Suggested/default name:
-// holos-controller-quay-creds.
-//
-// This is the resource's only authentication dependency (ADR-19, AC #7): the
-// custom resources reach Quay solely through the credential this Secret holds,
-// never by importing a Quay (or Kargo/Argo CD) client type into the API group.
-// It is distinct from the Repository webhook urlSecretRef, which points at a
-// Secret holding a webhook target URL in the resource's own namespace.
+// SecretReference selects the Secret the controller uses to authenticate to
+// Quay. The Secret is resolved in the controller namespace and normally contains
+// url, token, and optional username entries. When the whole reference is
+// omitted, the controller uses holos-controller-quay-creds.
 type SecretReference struct {
-	// Name of the Secret holding the Quay superuser OAuth credential. When
-	// omitted it defaults to holos-controller-quay-creds, resolved in the
-	// controller's holos-controller namespace.
+	// Name is the Secret name in the controller namespace. When omitted, it
+	// defaults to holos-controller-quay-creds, the platform credential Secret
+	// created at runtime.
 	//
 	// +optional
 	// +kubebuilder:default=holos-controller-quay-creds
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name,omitempty"`
 
-	// Key within the Secret to read the credential from. The Secret carries
-	// the Quay API URL and token under keys url, token, and an optional
-	// username; key narrows resolution to a specific entry when set. When
-	// omitted the controller reads the conventional url/token/username keys.
+	// Key overrides which Secret entry contains the Quay OAuth token. When
+	// omitted, the controller reads token. The url and optional username entries
+	// are always read from keys named url and username.
 	//
 	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
 	Key string `json:"key,omitempty"`
 }
 
-// MutationReason classifies the cause of the last remote mutation an
-// external-resource reconciler performed. These string values are canonical
-// across holos.run API groups (ADR-22), but each group declares local constants
-// to avoid API-package imports.
+// MutationReason explains why the controller last changed Quay. It is optional
+// on status because a resource may have been validated without any remote
+// mutation.
+//
+// +kubebuilder:validation:Enum=SpecChange;DriftRemediation
 type MutationReason string
 
 const (
@@ -71,4 +45,17 @@ const (
 	// MutationReasonDriftRemediation means the controller corrected out-of-band
 	// drift while the CR's desired spec generation was unchanged.
 	MutationReasonDriftRemediation MutationReason = "DriftRemediation"
+)
+
+// Condition types used by quay.holos.run resources. They follow the
+// Gateway-API vocabulary so operators can interpret all resources consistently.
+const (
+	// ConditionAccepted reports whether the controller accepted the spec for
+	// reconciliation.
+	ConditionAccepted = "Accepted"
+	// ConditionProgrammed reports whether the requested Quay state has been
+	// written.
+	ConditionProgrammed = "Programmed"
+	// ConditionReady reports whether the Quay resource is provisioned and usable.
+	ConditionReady = "Ready"
 )
