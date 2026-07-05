@@ -2,15 +2,11 @@ package quay
 
 import (
 	"context"
-	"fmt"
-	"os"
 
-	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
+	ctrlshared "github.com/holos-run/holos-paas/internal/controller/shared"
 )
 
 // Credential Secret keys. The Quay superuser OAuth-Application credential Secret
@@ -38,7 +34,7 @@ const (
 // DefaultControllerNamespace is the namespace the controller resolves credential
 // Secrets from when POD_NAMESPACE is unset (ADR-18). It matches the namespace the
 // kustomize deployment installs into (HOL-1313).
-const DefaultControllerNamespace = "holos-controller"
+const DefaultControllerNamespace = ctrlshared.DefaultControllerNamespace
 
 // quayCredential is the resolved Quay API credential: the base URL and Bearer
 // token the internal/quay client is built from, plus the optional username for
@@ -55,17 +51,9 @@ type quayCredential struct {
 // missingCredentialError reports that the credential Secret, or a required key
 // within it, could not be resolved. The reconciler maps it to a False condition
 // with reason CredentialsNotFound and requeues rather than crashing (AC #3).
-type missingCredentialError struct {
-	// msg is the human-readable explanation surfaced on the status condition.
-	msg string
-}
-
-func (e *missingCredentialError) Error() string { return e.msg }
-
 // isMissingCredential reports whether err is a missingCredentialError.
 func isMissingCredential(err error) bool {
-	_, ok := err.(*missingCredentialError)
-	return ok
+	return ctrlshared.IsMissingCredential(err)
 }
 
 // controllerNamespace returns the namespace the controller resolves credential
@@ -75,10 +63,7 @@ func isMissingCredential(err error) bool {
 // resource's namespace — the resource's credentialsSecretRef names only the
 // Secret, not a namespace (ADR-19).
 func controllerNamespace() string {
-	if ns := os.Getenv("POD_NAMESPACE"); ns != "" {
-		return ns
-	}
-	return DefaultControllerNamespace
+	return ctrlshared.ControllerNamespace()
 }
 
 // resolveCredential reads the Quay credential Secret named by ref (defaulting to
@@ -102,18 +87,9 @@ func resolveCredential(ctx context.Context, reader client.Reader, namespace stri
 		name = quayv1alpha1.DefaultCredentialsSecretName
 	}
 
-	secret := &corev1.Secret{}
-	key := types.NamespacedName{Namespace: namespace, Name: name}
-	if err := reader.Get(ctx, key, secret); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, &missingCredentialError{
-				msg: fmt.Sprintf("credential Secret %s/%s not found", namespace, name),
-			}
-		}
-		// A transient API error (e.g. timeout) is not a missing-credential
-		// condition — return it as-is so the reconciler requeues with backoff
-		// and does not stamp a misleading CredentialsNotFound reason.
-		return nil, fmt.Errorf("reading credential Secret %s/%s: %w", namespace, name, err)
+	secret, err := ctrlshared.ResolveCredentialSecret(ctx, reader, namespace, name)
+	if err != nil {
+		return nil, err
 	}
 
 	// The token key is the conventional "token" unless the ref narrows it with
@@ -126,17 +102,13 @@ func resolveCredential(ctx context.Context, reader client.Reader, namespace stri
 		tokenKey = ref.Key
 	}
 
-	url := string(secret.Data[credentialKeyURL])
-	token := string(secret.Data[tokenKey])
-	if url == "" {
-		return nil, &missingCredentialError{
-			msg: fmt.Sprintf("credential Secret %s/%s is missing the %q key", namespace, name, credentialKeyURL),
-		}
+	url, err := ctrlshared.RequiredSecretValue(secret, namespace, name, credentialKeyURL)
+	if err != nil {
+		return nil, err
 	}
-	if token == "" {
-		return nil, &missingCredentialError{
-			msg: fmt.Sprintf("credential Secret %s/%s is missing the %q key", namespace, name, tokenKey),
-		}
+	token, err := ctrlshared.RequiredSecretValue(secret, namespace, name, tokenKey)
+	if err != nil {
+		return nil, err
 	}
 
 	return &quayCredential{

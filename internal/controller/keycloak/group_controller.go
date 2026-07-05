@@ -12,7 +12,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -20,9 +19,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	keycloakv1alpha1 "github.com/holos-run/holos-paas/api/keycloak/v1alpha1"
+	ctrlshared "github.com/holos-run/holos-paas/internal/controller/shared"
 	"github.com/holos-run/holos-paas/internal/keycloak"
 	"github.com/holos-run/holos-paas/internal/referencegrant"
 )
@@ -354,15 +354,7 @@ func (r *GroupReconciler) reconcileMembershipThenSucceed(ctx context.Context, lo
 
 // equalStrings reports whether two string slices are element-wise equal.
 func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+	return ctrlshared.StringSlicesEqual(a, b)
 }
 
 // stringSet is a small ordered-output set used to track managed-side-effect status
@@ -1164,12 +1156,7 @@ func (r *GroupReconciler) resolveInstance(ctx context.Context, group *keycloakv1
 // (left over from an older spec whose new URL/realm/credential has not been
 // accepted yet) from letting a group reconcile against an unverified instance.
 func instanceReady(instance *keycloakv1alpha1.KeycloakInstance) bool {
-	for _, c := range instance.Status.Conditions {
-		if c.Type == ConditionReady {
-			return c.Status == "True" && c.ObservedGeneration == instance.Generation
-		}
-	}
-	return false
+	return ctrlshared.GenerationReady(instance.Status.Conditions, ConditionReady, instance.Generation)
 }
 
 // succeed stamps Ready/Programmed/Accepted true, emits a Normal event, and writes
@@ -1195,14 +1182,10 @@ func (r *GroupReconciler) succeed(ctx context.Context, logger logr.Logger, group
 }
 
 func (r *GroupReconciler) stampMutation(group *keycloakv1alpha1.KeycloakGroup) {
-	now := metav1.Now()
-	reason := keycloakv1alpha1.MutationReasonDriftRemediation
-	if group.Status.ObservedGeneration != group.Generation || !groupReady(group) {
-		reason = keycloakv1alpha1.MutationReasonSpecChange
-	}
+	now, reason, drift := ctrlshared.MutationStamp(group.Status.ObservedGeneration, group.Generation, groupReady(group), false)
 	group.Status.LastMutatedTime = &now
-	group.Status.LastMutationReason = reason
-	if reason == keycloakv1alpha1.MutationReasonDriftRemediation {
+	group.Status.LastMutationReason = keycloakv1alpha1.MutationReason(reason)
+	if drift {
 		group.Status.LastDriftTime = &now
 	}
 }
@@ -1263,34 +1246,12 @@ func (r *GroupReconciler) removeFinalizer(ctx context.Context, group *keycloakv1
 	return ctrl.Result{}, nil
 }
 
-// updateStatus stamps observedGeneration and writes the status subresource,
-// retrying on conflict. The retry is load-bearing for the ownership marker
-// (status.Created/Adopted): a create side effect already happened in Keycloak, so
-// the marker MUST persist. On conflict it refetches the latest object and
-// re-applies the computed status before retrying.
+// updateStatus stamps observedGeneration and patches the status subresource from
+// a live merge base.
 func (r *GroupReconciler) updateStatus(ctx context.Context, group *keycloakv1alpha1.KeycloakGroup) error {
+	base := group.DeepCopy()
 	group.Status.ObservedGeneration = group.Generation
-	desired := group.Status.DeepCopy()
-
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		if updateErr := r.Status().Update(ctx, group); updateErr != nil {
-			if apierrors.IsConflict(updateErr) {
-				if getErr := r.Get(ctx, client.ObjectKeyFromObject(group), group); getErr != nil {
-					return getErr
-				}
-				desired.DeepCopyInto(&group.Status)
-			}
-			return updateErr
-		}
-		return nil
-	})
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("updating KeycloakGroup status: %w", err)
-	}
-	return nil
+	return ctrlshared.PatchStatus(ctx, r.Client, base, group, "KeycloakGroup")
 }
 
 // SetupWithManager wires the reconciler into the manager.
@@ -1324,7 +1285,7 @@ func (r *GroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // in its own namespace (instanceRef.namespace empty) or cross-namespace
 // (instanceRef.namespace set to the instance's namespace), so both forms are
 // matched by name + effective namespace.
-func (r *GroupReconciler) groupsForInstance(ctx context.Context, obj client.Object) []reconcile.Request {
+func (r *GroupReconciler) groupsForInstance(ctx context.Context, obj client.Object) []ctrlreconcile.Request {
 	instance, ok := obj.(*keycloakv1alpha1.KeycloakInstance)
 	if !ok {
 		return nil
@@ -1334,7 +1295,7 @@ func (r *GroupReconciler) groupsForInstance(ctx context.Context, obj client.Obje
 		log.FromContext(ctx).Error(err, "listing KeycloakGroups to map a KeycloakInstance change")
 		return nil
 	}
-	var requests []reconcile.Request
+	var requests []ctrlreconcile.Request
 	for i := range groups.Items {
 		g := &groups.Items[i]
 		refNamespace := g.Spec.InstanceRef.Namespace
@@ -1342,7 +1303,7 @@ func (r *GroupReconciler) groupsForInstance(ctx context.Context, obj client.Obje
 			refNamespace = g.Namespace
 		}
 		if g.Spec.InstanceRef.Name == instance.Name && refNamespace == instance.Namespace {
-			requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: g.Namespace, Name: g.Name}})
+			requests = append(requests, ctrlreconcile.Request{NamespacedName: types.NamespacedName{Namespace: g.Namespace, Name: g.Name}})
 		}
 	}
 	return requests

@@ -4,7 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 
 	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
 	"github.com/holos-run/holos-paas/internal/quay"
@@ -364,10 +365,7 @@ func (r *OrganizationReconciler) writeManagedTeams(org *quayv1alpha1.Organizatio
 		org.Status.ManagedTeams = nil
 		return
 	}
-	names := make([]string, 0, len(managed))
-	for name := range managed {
-		names = append(names, name)
-	}
+	names := slices.Sorted(maps.Keys(managed))
 	org.Status.ManagedTeams = normalizeManagedTeams(names)
 }
 
@@ -390,7 +388,7 @@ func normalizeManagedTeams(names []string) []string {
 	if len(normalized) == 0 {
 		return nil
 	}
-	sort.Strings(normalized)
+	slices.Sort(normalized)
 	return normalized
 }
 

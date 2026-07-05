@@ -2,6 +2,7 @@ package quay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -26,8 +27,8 @@ func (e *webhookURLNotFoundError) Error() string { return e.msg }
 
 // isWebhookURLNotFound reports whether err is a webhookURLNotFoundError.
 func isWebhookURLNotFound(err error) bool {
-	_, ok := err.(*webhookURLNotFoundError)
-	return ok
+	var notFound *webhookURLNotFoundError
+	return errors.As(err, &notFound)
 }
 
 // invalidWebhookError reports that spec.webhook violated the mutual-exclusion
@@ -44,8 +45,8 @@ func (e *invalidWebhookError) Error() string { return e.msg }
 
 // isInvalidWebhook reports whether err is an invalidWebhookError.
 func isInvalidWebhook(err error) bool {
-	_, ok := err.(*invalidWebhookError)
-	return ok
+	var invalid *invalidWebhookError
+	return errors.As(err, &invalid)
 }
 
 // resolveWebhookURL resolves a Repository's repo_push webhook target URL from

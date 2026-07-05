@@ -117,6 +117,9 @@ func makeReadyOrg(ctx context.Context, t *testing.T, ns, orgName string) string 
 	if err := shared.k8sClient.Create(ctx, org); err != nil {
 		t.Fatalf("creating Organization: %v", err)
 	}
+	if err := shared.k8sClient.Get(ctx, client.ObjectKeyFromObject(org), org); err != nil {
+		t.Fatalf("getting created Organization: %v", err)
+	}
 	meta.SetStatusCondition(&org.Status.Conditions, metav1.Condition{
 		Type:               ConditionReady,
 		Status:             metav1.ConditionTrue,
@@ -124,6 +127,7 @@ func makeReadyOrg(ctx context.Context, t *testing.T, ns, orgName string) string 
 		Message:            "ready for test",
 		ObservedGeneration: org.Generation,
 	})
+	org.Status.ObservedGeneration = org.Generation
 	setStatusCreated(org, true)
 	if err := shared.k8sClient.Status().Update(ctx, org); err != nil {
 		t.Fatalf("setting Organization Ready: %v", err)
@@ -531,9 +535,12 @@ func TestRepositorySecretRefMissingKeySetsConditionAndRequeues(t *testing.T) {
 	if _, err := reconcileRepo(ctx, r, key); err != nil {
 		t.Fatalf("first reconcile (finalizer): %v", err)
 	}
-	_, err := reconcileRepo(ctx, r, key)
-	if err == nil {
-		t.Fatal("expected reconcile to return an error so it requeues for the missing key")
+	result, err := reconcileRepo(ctx, r, key)
+	if err != nil {
+		t.Fatalf("expected nil error while waiting for webhook URL Secret key, got %v", err)
+	}
+	if result.RequeueAfter != requeueDependency {
+		t.Fatalf("RequeueAfter = %v, want %v", result.RequeueAfter, requeueDependency)
 	}
 
 	// The repo was created (org + GetRepository + CreateRepository ran) but the
@@ -893,9 +900,12 @@ func TestRepositoryOrganizationNotReadyRequeues(t *testing.T) {
 	if _, err := reconcileRepo(ctx, r, key); err != nil {
 		t.Fatalf("first reconcile (finalizer): %v", err)
 	}
-	_, err := reconcileRepo(ctx, r, key)
-	if err == nil {
-		t.Fatal("expected reconcile to requeue while the org is not ready")
+	result, err := reconcileRepo(ctx, r, key)
+	if err != nil {
+		t.Fatalf("expected nil error while waiting for Organization, got %v", err)
+	}
+	if result.RequeueAfter != requeueDependency {
+		t.Fatalf("RequeueAfter = %v, want %v", result.RequeueAfter, requeueDependency)
 	}
 
 	// No repository was created (AC #9: the reconciler never creates the org and
@@ -1095,9 +1105,13 @@ func TestRepositoryResolvesQuayOrgThroughOrganizationSpecName(t *testing.T) {
 	if err := shared.k8sClient.Create(ctx, org); err != nil {
 		t.Fatalf("creating Organization: %v", err)
 	}
+	if err := shared.k8sClient.Get(ctx, client.ObjectKeyFromObject(org), org); err != nil {
+		t.Fatalf("getting created Organization: %v", err)
+	}
 	meta.SetStatusCondition(&org.Status.Conditions, metav1.Condition{
-		Type: ConditionReady, Status: metav1.ConditionTrue, Reason: ReasonCreated, Message: "ready",
+		Type: ConditionReady, Status: metav1.ConditionTrue, Reason: ReasonCreated, Message: "ready", ObservedGeneration: org.Generation,
 	})
+	org.Status.ObservedGeneration = org.Generation
 	if err := shared.k8sClient.Status().Update(ctx, org); err != nil {
 		t.Fatalf("setting Organization Ready: %v", err)
 	}
@@ -1144,9 +1158,12 @@ func TestRepositoryOrganizationExistsButNotReadyRequeues(t *testing.T) {
 	if _, err := reconcileRepo(ctx, r, key); err != nil {
 		t.Fatalf("first reconcile (finalizer): %v", err)
 	}
-	_, err := reconcileRepo(ctx, r, key)
-	if err == nil {
-		t.Fatal("expected reconcile to requeue while the org is not Ready")
+	result, err := reconcileRepo(ctx, r, key)
+	if err != nil {
+		t.Fatalf("expected nil error while waiting for Organization readiness, got %v", err)
+	}
+	if result.RequeueAfter != requeueDependency {
+		t.Fatalf("RequeueAfter = %v, want %v", result.RequeueAfter, requeueDependency)
 	}
 
 	if len(fake.calls) != 0 {
@@ -1155,6 +1172,59 @@ func TestRepositoryOrganizationExistsButNotReadyRequeues(t *testing.T) {
 	repo := getRepo(ctx, t, key)
 	if got := repoConditionReason(repo, ConditionReady); got != ReasonOrganizationNotReady {
 		t.Errorf("Ready reason = %q, want %q", got, ReasonOrganizationNotReady)
+	}
+}
+
+func TestRepositoryOrganizationReadyMustBeCurrentGeneration(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	orgName := makeReadyOrg(ctx, t, ns, "stale-org")
+	org := &quayv1alpha1.Organization{}
+	if err := shared.k8sClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "stale-org"}, org); err != nil {
+		t.Fatalf("getting Organization: %v", err)
+	}
+	org.Spec.Email = "new@example.test"
+	if err := shared.k8sClient.Update(ctx, org); err != nil {
+		t.Fatalf("updating Organization spec: %v", err)
+	}
+	key := makeRepo(ctx, t, ns, "stale-org", "web", repoOpts{})
+
+	fake := newFakeRepoClient()
+	r, _ := newRepoReconciler(fake, ns)
+
+	if _, err := reconcileRepo(ctx, r, key); err != nil {
+		t.Fatalf("first reconcile (finalizer): %v", err)
+	}
+	result, err := reconcileRepo(ctx, r, key)
+	if err != nil {
+		t.Fatalf("expected nil error for stale Organization Ready wait, got %v", err)
+	}
+	if result.RequeueAfter != requeueDependency {
+		t.Fatalf("RequeueAfter = %v, want %v", result.RequeueAfter, requeueDependency)
+	}
+	if fake.repoExists(orgName, "web") {
+		t.Fatalf("must not create a Repository while Organization Ready is stale; calls were %v", fake.calls)
+	}
+}
+
+func TestRepositoriesForOrganizationMapsDependents(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	matching := makeRepo(ctx, t, ns, "mapped-org", "web", repoOpts{})
+	other := makeRepo(ctx, t, ns, "other-org", "api", repoOpts{})
+	_ = other
+	org := &quayv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "mapped-org"}}
+	r, _ := newRepoReconciler(newFakeRepoClient(), ns)
+
+	requests := r.repositoriesForOrganization(ctx, org)
+	if len(requests) != 1 {
+		t.Fatalf("mapped requests = %v, want one request", requests)
+	}
+	if requests[0].NamespacedName != matching {
+		t.Fatalf("mapped request = %s, want %s", requests[0].NamespacedName, matching)
 	}
 }
 

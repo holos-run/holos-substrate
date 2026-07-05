@@ -201,7 +201,7 @@ kubectl -n holos-controller get secret holos-controller-quay-creds \
 # Metrics are scrapable (AC #4):
 kubectl -n holos-controller get svc        # holos-controller-manager-metrics-service:8080
 # controller-runtime reconcile metrics plus the custom collectors:
-#   holos_controller_reconcile_total{kind,outcome}
+#   holos_controller_reconcile_total{group,kind,outcome}
 #   holos_controller_quay_api_requests_total{operation,outcome}
 ```
 

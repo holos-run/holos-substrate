@@ -49,10 +49,10 @@ func TestRecordReconcile(t *testing.T) {
 	recordReconcile(kindOrganization, nil)
 	recordReconcile(kindRepository, errors.New("boom"))
 
-	if got := testutil.ToFloat64(reconcileTotal.WithLabelValues(kindOrganization, outcomeSuccess)); got != 2 {
+	if got := testutil.ToFloat64(reconcileTotal.WithLabelValues("quay", kindOrganization, outcomeSuccess)); got != 2 {
 		t.Errorf("organization success reconciles = %v, want 2", got)
 	}
-	if got := testutil.ToFloat64(reconcileTotal.WithLabelValues(kindRepository, outcomeError)); got != 1 {
+	if got := testutil.ToFloat64(reconcileTotal.WithLabelValues("quay", kindRepository, outcomeError)); got != 1 {
 		t.Errorf("repository error reconciles = %v, want 1", got)
 	}
 }

@@ -62,3 +62,23 @@ const (
 	// reflects the desired URL source.
 	ConditionWebhookConfigured = "WebhookConfigured"
 )
+
+// Condition reasons used by quay.holos.run resources. Reasons are stable,
+// CamelCase machine-readable tokens describing why a condition holds its current
+// status.
+const (
+	ReasonCreated              = "Created"
+	ReasonAdopted              = "Adopted"
+	ReasonConflict             = "Conflict"
+	ReasonReleased             = "Released"
+	ReasonCredentialsNotFound  = "CredentialsNotFound"
+	ReasonQuayError            = "QuayError"
+	ReasonReconciled           = "Reconciled"
+	ReasonTeamConflict         = "TeamConflict"
+	ReasonOrganizationNotReady = "OrganizationNotReady"
+	ReasonWebhookURLNotFound   = "WebhookURLNotFound"
+	ReasonWebhookURLReadError  = "WebhookURLReadError"
+	ReasonInvalidWebhook       = "InvalidWebhook"
+	ReasonWebhookConfigured    = "WebhookConfigured"
+	ReasonWebhookNotConfigured = "WebhookNotConfigured"
+)
