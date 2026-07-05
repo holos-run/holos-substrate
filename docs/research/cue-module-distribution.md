@@ -490,10 +490,12 @@ pipeline and the runtime-secret guardrail (`holos/docs/secret-handling.md`).
   plain-YAML artifacts ([user guide](https://argo-cd.readthedocs.io/en/latest/user-guide/oci/)).
   Default accepted layer media types are
   `application/vnd.oci.image.layer.v1.tar+gzip` and the Helm chart type,
-  extensible via `ARGOCD_REPO_SERVER_OCI_LAYER_MEDIA_TYPES`; v3.2 loosened the
-  single-layer restriction. Auth is registry credentials
-  (`argocd repo add --type oci`). Argo CD has **no built-in signature
-  verification of OCI sources yet**.
+  extensible via `ARGOCD_REPO_SERVER_OCI_LAYER_MEDIA_TYPES`; the current docs
+  expect the artifact to contain a **single layer** — a packaging constraint
+  the distribution's bundle format must respect (note Timoni's two-layer
+  vendor/content split, §2.5, is therefore not directly consumable by
+  Argo CD). Auth is registry credentials (`argocd repo add --type oci`).
+  Argo CD has **no built-in signature verification of OCI sources yet**.
 - **Flux OCIRepository** is GA since 2.6 (May 2025) with `flux push artifact`,
   semver tag tracking, and **built-in cosign/notation verification**
   (`spec.verify` — failed verification blocks the fetch). Flux is roughly
