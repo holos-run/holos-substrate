@@ -510,7 +510,7 @@ status:
 | Status field | Purpose |
 | --- | --- |
 | `observedGeneration` | last `spec` generation reconciled. |
-| `quayRepository` | the resolved `<org>/<repo>` path, recorded on first create. |
+| `quayRepository` | the resolved `<org>/<repo>` path, recorded after provisioning or claiming the repository. |
 | `created` | the durable ownership marker of the Repository claim model: `true` if this CR created the Quay repository, `false` if it adopted one. The finalizer deletes the Quay repository only when `created: true`; adopted repositories are released. |
 | `lastValidatedTime` / `lastMutatedTime` / `lastMutationReason` / `lastDriftTime` | drift-observability timestamps and mutation classification shared with Organization. |
 | `conditions[]` | Gateway-API `Accepted`/`Programmed`/`Ready` plus the Repository-only `WebhookConfigured` (see below). |
@@ -710,12 +710,12 @@ new orgs and adopt orgs other identities created.
    treating a pre-existing externally-created team named in the spec as a
    `TeamConflict` rather than adopting it.
 4. **Repository** carries `organizationRef` (immutable; the owning Organization CR
-   by name — repos are provisioned **only** here, never inlined, AC #9), `name`
-   (immutable), `visibility`, `description`, `credentialsSecretRef`, and an
-   optional `webhook` with **exactly one** of inline `url` or `urlSecretRef`
-   (AC #8, CEL-enforced). Status carries `observedGeneration`, the resolved
-   `quayRepository` path, and `Accepted`/`Programmed`/`Ready`/`WebhookConfigured`
-   conditions.
+   by name — repos are provisioned **only** here, never inlined), `name`
+   (immutable), `visibility`, `description`, `adopt`, `credentialsSecretRef`, and
+   an optional `webhook` with **exactly one** of inline `url` or `urlSecretRef`
+   (CEL-enforced). Status carries `observedGeneration`, the resolved
+   `quayRepository` path, the `created` ownership marker, drift-observability
+   timestamps, and `Accepted`/`Programmed`/`Ready`/`WebhookConfigured` conditions.
 5. The reconcilers call the **Quay REST API** with the superuser OAuth-Application
    token from `credentialsSecretRef` (defaulting to `holos-controller-quay-creds`
    in `holos-controller`, keys `url`/`token`/optional `username`), are
