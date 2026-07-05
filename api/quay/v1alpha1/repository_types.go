@@ -4,6 +4,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// RepositoryDescriptionMaxLength reserves space for the controller's appended
+// ownership marker so the rendered Quay description never exceeds Quay's 4096
+// character limit. The marker is "\n\nholos-owner: created:<uuid>" or
+// "\n\nholos-owner: adopted:<uuid>".
+const RepositoryDescriptionMaxLength = 4037
+
 // RepositoryVisibility is the visibility of a Quay repository.
 //
 // +kubebuilder:validation:Enum=public;private
@@ -92,8 +98,16 @@ type RepositorySpec struct {
 	// optional, has no default, and does not affect access.
 	//
 	// +optional
-	// +kubebuilder:validation:MaxLength=4096
+	// +kubebuilder:validation:MaxLength=4037
 	Description string `json:"description,omitempty"`
+
+	// Adopt opts in to claiming a pre-existing Quay repository with the same
+	// name. It defaults to false; without this opt-in, an unowned existing
+	// repository is reported as a conflict and is never silently managed. An
+	// adopted repository is released, not deleted, when this resource is removed.
+	//
+	// +optional
+	Adopt bool `json:"adopt,omitempty"`
 
 	// CredentialsSecretRef selects the controller-namespace Secret containing the
 	// Quay API URL and OAuth token. When omitted, the controller uses
@@ -149,6 +163,14 @@ type RepositoryStatus struct {
 	//
 	// +optional
 	QuayRepository string `json:"quayRepository,omitempty"`
+
+	// Created records whether this resource created the Quay repository. True
+	// means finalization may delete the repository. False means the resource
+	// adopted an existing repository and finalization only releases it. When
+	// omitted, the controller has not recorded ownership yet.
+	//
+	// +optional
+	Created *bool `json:"created,omitempty"`
 
 	// LastValidatedTime is the last time the controller successfully read Quay and
 	// confirmed or restored the declared repository state. It is omitted until

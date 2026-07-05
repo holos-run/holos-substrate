@@ -65,6 +65,13 @@ spec:
               organizationRef and keeps repository visibility, description, and optional
               webhook configuration in sync.
             properties:
+              adopt:
+                description: |-
+                  Adopt opts in to claiming a pre-existing Quay repository with the same
+                  name. It defaults to false; without this opt-in, an unowned existing
+                  repository is reported as a conflict and is never silently managed. An
+                  adopted repository is released, not deleted, when this resource is removed.
+                type: boolean
               caBundle:
                 description: |-
                   CABundle carries PEM-encoded x509 CA certificates the controller trusts
@@ -106,7 +113,7 @@ spec:
                 description: |-
                   Description is a human-readable repository description shown by Quay. It is
                   optional, has no default, and does not affect access.
-                maxLength: 4096
+                maxLength: 4037
                 type: string
               name:
                 description: |-
@@ -253,6 +260,13 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              created:
+                description: |-
+                  Created records whether this resource created the Quay repository. True
+                  means finalization may delete the repository. False means the resource
+                  adopted an existing repository and finalization only releases it. When
+                  omitted, the controller has not recorded ownership yet.
+                type: boolean
               lastDriftTime:
                 description: |-
                   LastDriftTime is the last time the controller remediated out-of-band drift.

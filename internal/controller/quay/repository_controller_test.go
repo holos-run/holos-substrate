@@ -70,6 +70,7 @@ func reconcileRepoUntilStable(ctx context.Context, t *testing.T, r *RepositoryRe
 type repoOpts struct {
 	visibility  quayv1alpha1.RepositoryVisibility
 	description string
+	adopt       bool
 	webhook     *quayv1alpha1.RepositoryWebhook
 	caBundle    []byte
 }
@@ -89,6 +90,7 @@ func makeRepo(ctx context.Context, t *testing.T, ns, orgRef, repoName string, op
 			Name:            repoName,
 			Visibility:      vis,
 			Description:     opts.description,
+			Adopt:           opts.adopt,
 			Webhook:         opts.webhook,
 			CABundle:        opts.caBundle,
 		},
@@ -230,6 +232,9 @@ func TestRepositoryCreatesWithInlineWebhook(t *testing.T) {
 	if repo.Status.LastMutatedTime == nil || repo.Status.LastMutationReason != quayv1alpha1.MutationReasonSpecChange {
 		t.Errorf("mutation status = (%v, %q), want time with %q", repo.Status.LastMutatedTime, repo.Status.LastMutationReason, quayv1alpha1.MutationReasonSpecChange)
 	}
+	if repo.Status.Created == nil || !*repo.Status.Created {
+		t.Errorf("status.created = %v, want true for a created repository", repo.Status.Created)
+	}
 	firstValidated := repo.Status.LastValidatedTime.DeepCopy()
 	firstMutated := repo.Status.LastMutatedTime.DeepCopy()
 	assertEvent(t, recorder, ReasonReconciled)
@@ -299,6 +304,55 @@ func TestRepositoryInvalidCABundleFailsWithoutQuayCall(t *testing.T) {
 	}
 	if reason := repoConditionReason(got, ConditionReady); reason != ReasonQuayError {
 		t.Errorf("Ready reason = %q, want %q", reason, ReasonQuayError)
+	}
+}
+
+func TestRepositoryDescriptionValidationReservesOwnershipMarkerLength(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	accepted := &quayv1alpha1.Repository{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "accepted-description"},
+		Spec: quayv1alpha1.RepositorySpec{
+			OrganizationRef: "acme",
+			Name:            "accepted-description",
+			Description:     strings.Repeat("x", quayv1alpha1.RepositoryDescriptionMaxLength),
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, accepted); err != nil {
+		t.Fatalf("creating Repository with max reserved description length: %v", err)
+	}
+
+	rejected := &quayv1alpha1.Repository{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "rejected-description"},
+		Spec: quayv1alpha1.RepositorySpec{
+			OrganizationRef: "acme",
+			Name:            "rejected-description",
+			Description:     strings.Repeat("x", quayv1alpha1.RepositoryDescriptionMaxLength+1),
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, rejected); err == nil {
+		t.Fatalf("expected Repository description longer than %d chars to be rejected", quayv1alpha1.RepositoryDescriptionMaxLength)
+	} else if !apierrors.IsInvalid(err) {
+		t.Fatalf("creating over-length Repository returned %T %v, want Invalid", err, err)
+	}
+}
+
+func TestRepositoryMarkedDescriptionMaxLengthFitsQuay(t *testing.T) {
+	repo := &quayv1alpha1.Repository{
+		ObjectMeta: metav1.ObjectMeta{
+			UID: "123e4567-e89b-12d3-a456-426614174000",
+		},
+		Spec: quayv1alpha1.RepositorySpec{
+			Description: strings.Repeat("x", quayv1alpha1.RepositoryDescriptionMaxLength),
+		},
+	}
+
+	if got := len(repositoryMarkedDescription(repo, true)); got != 4096 {
+		t.Errorf("created marked description length = %d, want Quay limit 4096", got)
+	}
+	if got := len(repositoryMarkedDescription(repo, false)); got != 4096 {
+		t.Errorf("adopted marked description length = %d, want Quay limit 4096", got)
 	}
 }
 
@@ -514,15 +568,16 @@ func TestRepositoryCorrectsVisibilityAndDescriptionDrift(t *testing.T) {
 	})
 
 	fake := newFakeRepoClient()
-	// Pre-create the repo with the WRONG visibility and description, so reconcile
-	// must correct both.
-	fake.repos[repoKey("acme", "drift")] = &fakeRepoStore{
-		isPublic:      false,
-		description:   "stale description",
-		notifications: map[string]quay.Notification{},
-	}
-
 	r, _ := newRepoReconciler(fake, ns)
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("initial reconcile: %v", err)
+	}
+	fake.mu.Lock()
+	st := fake.repos[repoKey("acme", "drift")]
+	st.isPublic = false
+	st.description = "stale description\n\n" + repositoryOwnerMarker(getRepo(ctx, t, key), true)
+	fake.mu.Unlock()
+
 	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -533,12 +588,140 @@ func TestRepositoryCorrectsVisibilityAndDescriptionDrift(t *testing.T) {
 	if !fake.callsContain("UpdateRepositoryDescription:acme/drift") {
 		t.Errorf("expected a description update, calls were %v", fake.calls)
 	}
-	st := fake.repos[repoKey("acme", "drift")]
+	st = fake.repos[repoKey("acme", "drift")]
 	if !st.isPublic {
 		t.Error("expected visibility corrected to public")
 	}
-	if st.description != "the desired description" {
+	if got := repositoryDescriptionWithoutOwner(st.description); got != "the desired description" {
 		t.Errorf("description = %q, want corrected", st.description)
+	}
+}
+
+func TestRepositoryExistingUnclaimedWithoutAdoptIsConflict(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	key := makeRepo(ctx, t, ns, "acme", "foreign", repoOpts{})
+
+	fake := newFakeRepoClient()
+	fake.repos[repoKey("acme", "foreign")] = &fakeRepoStore{
+		isPublic:      false,
+		description:   "human repo",
+		notifications: map[string]quay.Notification{},
+	}
+	r, recorder := newRepoReconciler(fake, ns)
+
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("conflict reconcile should not requeue as an error: %v", err)
+	}
+
+	repo := getRepo(ctx, t, key)
+	if got := repoConditionReason(repo, ConditionReady); got != ReasonConflict {
+		t.Errorf("Ready reason = %q, want %q", got, ReasonConflict)
+	}
+	if repo.Status.Created != nil && *repo.Status.Created {
+		t.Errorf("status.created = %v, want unset/false on conflict", repo.Status.Created)
+	}
+	if st := fake.repos[repoKey("acme", "foreign")]; st.description != "human repo" {
+		t.Errorf("description mutated on conflict: %q", st.description)
+	}
+	assertEvent(t, recorder, ReasonConflict)
+}
+
+func TestRepositoryAdoptsExistingRepository(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	key := makeRepo(ctx, t, ns, "acme", "adopted", repoOpts{
+		adopt:       true,
+		description: "managed description",
+	})
+
+	fake := newFakeRepoClient()
+	fake.repos[repoKey("acme", "adopted")] = &fakeRepoStore{
+		isPublic:      false,
+		description:   "human repo",
+		notifications: map[string]quay.Notification{},
+	}
+	r, _ := newRepoReconciler(fake, ns)
+
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	repo := getRepo(ctx, t, key)
+	if repo.Status.Created == nil || *repo.Status.Created {
+		t.Errorf("status.created = %v, want false for adopted repository", repo.Status.Created)
+	}
+	if repo.Status.LastMutatedTime == nil || repo.Status.LastMutationReason != quayv1alpha1.MutationReasonSpecChange {
+		t.Errorf("mutation status = (%v, %q), want adoption mutation stamped", repo.Status.LastMutatedTime, repo.Status.LastMutationReason)
+	}
+	st := fake.repos[repoKey("acme", "adopted")]
+	if got := repositoryDescriptionOwner(st.description); got != repositoryOwnerToken(repo) {
+		t.Errorf("owner marker = %q, want this Repository UID %q", got, repositoryOwnerToken(repo))
+	}
+	if ownership, ok := repositoryDescriptionOwnership(st.description); !ok || ownership.Created {
+		t.Errorf("ownership marker = (%+v, %v), want adopted marker", ownership, ok)
+	}
+	if got := repositoryDescriptionWithoutOwner(st.description); got != "managed description" {
+		t.Errorf("description without marker = %q, want managed description", got)
+	}
+}
+
+func TestRepositoryAdoptStatusLossDoesNotBecomeCreated(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	key := makeRepo(ctx, t, ns, "acme", "adoptlost", repoOpts{
+		adopt:       true,
+		description: "survives",
+	})
+
+	fake := newFakeRepoClient()
+	fake.repos[repoKey("acme", "adoptlost")] = &fakeRepoStore{
+		isPublic:      false,
+		description:   "pre-existing",
+		notifications: map[string]quay.Notification{},
+	}
+	r, _ := newRepoReconciler(fake, ns)
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile adopt: %v", err)
+	}
+
+	repo := getRepo(ctx, t, key)
+	repo.Status = quayv1alpha1.RepositoryStatus{}
+	if err := shared.k8sClient.Status().Update(ctx, repo); err != nil {
+		t.Fatalf("clearing status after adopt: %v", err)
+	}
+
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile after lost status: %v", err)
+	}
+	repo = getRepo(ctx, t, key)
+	if repo.Status.Created == nil || *repo.Status.Created {
+		t.Fatalf("status.created = %v, want false restored from adopted marker", repo.Status.Created)
+	}
+
+	if err := shared.k8sClient.Delete(ctx, repo); err != nil {
+		t.Fatalf("deleting Repository: %v", err)
+	}
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile delete: %v", err)
+	}
+	if fake.callsContain("DeleteRepository:acme/adoptlost") {
+		t.Errorf("adopted repository with lost status must be released, not deleted; calls were %v", fake.calls)
+	}
+	if !fake.repoExists("acme", "adoptlost") {
+		t.Fatal("expected adopted repository to remain in Quay")
 	}
 }
 
@@ -567,7 +750,7 @@ func TestRepositoryStampsPartialMutationWhenDescriptionUpdateFails(t *testing.T)
 	fake.mu.Lock()
 	st := fake.repos[repoKey("acme", "partial")]
 	st.isPublic = true
-	st.description = "remote drift"
+	st.description = "remote drift\n\n" + repositoryOwnerMarker(getRepo(ctx, t, key), true)
 	fake.updateDescriptionErr = &quay.APIError{StatusCode: http.StatusInternalServerError, Message: "description boom"}
 	fake.mu.Unlock()
 
@@ -609,7 +792,9 @@ func TestRepositoryWebhookURLChangeReplacesNotification(t *testing.T) {
 	// Pre-create the repo with a stale controller-owned repo_push webhook pointing
 	// elsewhere (same webhookTitle, so the reconciler owns and replaces it) plus a
 	// manually-created webhook with a different title that must be preserved.
+	repo := getRepo(ctx, t, key)
 	fake.repos[repoKey("acme", "rehook")] = &fakeRepoStore{
+		description:   repositoryOwnerMarker(repo, true),
 		notifications: map[string]quay.Notification{},
 	}
 	fake.seedNotification("acme", "rehook", webhookTitle, "https://old.example.test/stale")
@@ -819,6 +1004,81 @@ func TestRepositoryDeleteRemovesFinalizerAfterQuayDelete(t *testing.T) {
 	}
 }
 
+func TestRepositoryDeleteReleasesAdoptedRepositoryWithoutDeleting(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	key := makeRepo(ctx, t, ns, "acme", "adoptdelete", repoOpts{
+		adopt:       true,
+		description: "survives",
+	})
+
+	fake := newFakeRepoClient()
+	fake.repos[repoKey("acme", "adoptdelete")] = &fakeRepoStore{
+		isPublic:      false,
+		description:   "pre-existing",
+		notifications: map[string]quay.Notification{},
+	}
+	r, recorder := newRepoReconciler(fake, ns)
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile adopt: %v", err)
+	}
+	repo := getRepo(ctx, t, key)
+	if repo.Status.Created == nil || *repo.Status.Created {
+		t.Fatalf("status.created = %v, want false after adopt", repo.Status.Created)
+	}
+
+	if err := shared.k8sClient.Delete(ctx, repo); err != nil {
+		t.Fatalf("deleting Repository: %v", err)
+	}
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile delete: %v", err)
+	}
+
+	if fake.callsContain("DeleteRepository:acme/adoptdelete") {
+		t.Errorf("adopted repository must be released, not deleted; calls were %v", fake.calls)
+	}
+	if !fake.repoExists("acme", "adoptdelete") {
+		t.Fatal("expected adopted repository to remain in Quay")
+	}
+	st := fake.repos[repoKey("acme", "adoptdelete")]
+	if owner := repositoryDescriptionOwner(st.description); owner != "" {
+		t.Errorf("owner marker = %q, want cleared on release", owner)
+	}
+	if st.description != "survives" {
+		t.Errorf("description after release = %q, want survives", st.description)
+	}
+	assertEvent(t, recorder, ReasonReleased)
+}
+
+func TestRepositoryCreateRaceConfirmedByGet(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	key := makeRepo(ctx, t, ns, "acme", "race", repoOpts{})
+
+	fake := newFakeRepoClient()
+	fake.createRepoRace = true
+	r, _ := newRepoReconciler(fake, ns)
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	repo := getRepo(ctx, t, key)
+	if repo.Status.Created == nil || !*repo.Status.Created {
+		t.Errorf("status.created = %v, want true when GET confirms our create", repo.Status.Created)
+	}
+	if got := repoConditionStatus(repo, ConditionReady); got != metav1.ConditionTrue {
+		t.Errorf("Ready = %q, want True after confirmed create race", got)
+	}
+}
+
 func TestRepositoryResolvesQuayOrgThroughOrganizationSpecName(t *testing.T) {
 	ctx := context.Background()
 	ns := makeNamespace(ctx, t)
@@ -898,7 +1158,7 @@ func TestRepositoryOrganizationExistsButNotReadyRequeues(t *testing.T) {
 	}
 }
 
-func TestRepositoryDeleteFallsBackToSpecWhenStatusEmpty(t *testing.T) {
+func TestRepositoryDeleteUsesCreatedMarkerWhenStatusEmpty(t *testing.T) {
 	ctx := context.Background()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
@@ -916,13 +1176,14 @@ func TestRepositoryDeleteFallsBackToSpecWhenStatusEmpty(t *testing.T) {
 		t.Fatal("expected acme/orphan to exist before delete")
 	}
 
-	// Simulate a crash that created the Quay repo but never persisted
-	// status.QuayRepository: clear it so the finalizer must fall back to the spec +
-	// Organization CR to find the repo to delete.
+	// Simulate a crash that created the Quay repo but never persisted status:
+	// clear status.QuayRepository and status.created so the finalizer must fall
+	// back to the spec + Organization CR for the path and the remote marker for
+	// created-vs-adopted ownership.
 	repo := getRepo(ctx, t, key)
-	repo.Status.QuayRepository = ""
+	repo.Status = quayv1alpha1.RepositoryStatus{}
 	if err := shared.k8sClient.Status().Update(ctx, repo); err != nil {
-		t.Fatalf("clearing status.QuayRepository: %v", err)
+		t.Fatalf("clearing status: %v", err)
 	}
 
 	repo = getRepo(ctx, t, key)

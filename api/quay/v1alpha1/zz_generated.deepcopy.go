@@ -246,6 +246,11 @@ func (in *RepositoryStatus) DeepCopyInto(out *RepositoryStatus) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
+	if in.Created != nil {
+		in, out := &in.Created, &out.Created
+		*out = new(bool)
+		**out = **in
+	}
 	if in.LastValidatedTime != nil {
 		in, out := &in.LastValidatedTime, &out.LastValidatedTime
 		*out = (*in).DeepCopy()

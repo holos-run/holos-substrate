@@ -34,6 +34,10 @@ type fakeRepoClient struct {
 
 	// createRepoErr, when non-nil, is returned by CreateRepository.
 	createRepoErr error
+	// createRepoRace, when true, makes CreateRepository simulate a duplicate
+	// response after materializing the repository, exercising
+	// CreateRepositoryIfNotExists's GET-confirmed success path.
+	createRepoRace bool
 	// updateVisibilityErr/updateDescriptionErr, when non-nil, are returned by
 	// the corresponding repository update operation.
 	updateVisibilityErr  error
@@ -71,6 +75,15 @@ func notFoundRepoError(ns, repo string) error {
 	}
 }
 
+func conflictRepoError(ns, repo string) error {
+	return &quay.APIError{
+		StatusCode: http.StatusConflict,
+		Method:     http.MethodPost,
+		Path:       "/api/v1/repository",
+		Message:    "repository " + ns + "/" + repo + " already exists",
+	}
+}
+
 func (f *fakeRepoClient) GetRepository(ctx context.Context, ns, repo string) (*quay.Repository, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -94,12 +107,29 @@ func (f *fakeRepoClient) CreateRepository(ctx context.Context, ns, repo, visibil
 	if f.createRepoErr != nil {
 		return f.createRepoErr
 	}
+	if _, ok := f.repos[repoKey(ns, repo)]; ok {
+		return conflictRepoError(ns, repo)
+	}
 	f.repos[repoKey(ns, repo)] = &fakeRepoStore{
 		isPublic:      visibility == "public",
 		description:   description,
 		notifications: map[string]quay.Notification{},
 	}
+	if f.createRepoRace {
+		return &quay.APIError{StatusCode: http.StatusBadRequest, Method: http.MethodPost, Path: "/api/v1/repository", Message: "Could not create repository"}
+	}
 	return nil
+}
+
+func (f *fakeRepoClient) CreateRepositoryIfNotExists(ctx context.Context, ns, repo, visibility, description string) error {
+	err := f.CreateRepository(ctx, ns, repo, visibility, description)
+	if err == nil || quay.IsConflict(err) {
+		return nil
+	}
+	if _, getErr := f.GetRepository(ctx, ns, repo); getErr == nil {
+		return nil
+	}
+	return err
 }
 
 func (f *fakeRepoClient) UpdateRepositoryVisibility(ctx context.Context, ns, repo, visibility string) error {
