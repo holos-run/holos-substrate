@@ -861,6 +861,24 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 		if owns {
 			return r.releaseRepositoryWithClient(ctx, repo, qc, ns, name)
 		}
+		mutation, err := r.removeRecordedWebhook(ctx, qc, repo, ns, name)
+		if err != nil {
+			if mutation.Mutated {
+				r.stampMutation(repo, false)
+				if statusErr := r.updateStatus(ctx, repo); statusErr != nil {
+					return ctrl.Result{}, statusErr
+				}
+			}
+			r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonQuayError,
+				fmt.Sprintf("removing managed webhooks for Quay repository %s/%s release: %v", ns, name, err))
+			return ctrl.Result{}, fmt.Errorf("removing managed webhooks for Quay repository %s/%s release: %w", ns, name, err)
+		}
+		if mutation.Mutated {
+			r.stampMutation(repo, false)
+			if err := r.updateStatus(ctx, repo); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 		r.Recorder.Event(repo, corev1.EventTypeNormal, ReasonReleased,
 			fmt.Sprintf("released Quay repository %s/%s without deleting (ownership marker absent or foreign)", ns, name))
 		return r.removeFinalizer(ctx, repo)

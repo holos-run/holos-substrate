@@ -1183,6 +1183,61 @@ func TestRepositoryDeleteReleasesAdoptedRepositoryWithoutDeleting(t *testing.T) 
 	assertEvent(t, recorder, ReasonReleased)
 }
 
+func TestRepositoryDeleteWithForeignMarkerRemovesManagedWebhook(t *testing.T) {
+	ctx := t.Context()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	const managedHook = "https://kargo.example.test/webhook/managed"
+	const manualHook = "https://example.test/manual"
+	key := makeRepo(ctx, t, ns, "acme", "foreignmarker", repoOpts{
+		webhook: &quayv1alpha1.RepositoryWebhook{URL: ptr(managedHook)},
+	})
+
+	fake := newFakeRepoClient()
+	r, recorder := newRepoReconciler(fake, ns)
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile create: %v", err)
+	}
+	repo := getRepo(ctx, t, key)
+	managedUUID := repo.Status.WebhookNotificationUUID
+	if managedUUID == "" {
+		t.Fatal("status.webhookNotificationUUID is empty, want recorded controller webhook UUID")
+	}
+	foreignDescription := "taken over\n\n" + repositoryOwnerMarkerPrefix + repositoryOwnerMarkerCreated + ":foreign-token"
+	fake.repos[repoKey("acme", "foreignmarker")].description = foreignDescription
+	fake.seedNotification("acme", "foreignmarker", webhookTitlePrefix, manualHook)
+	if urls := fake.webhookURLs("acme", "foreignmarker"); len(urls) != 2 || !containsString(urls, managedHook) || !containsString(urls, manualHook) {
+		t.Fatalf("webhook URLs before delete = %v, want controller and manual hooks", urls)
+	}
+
+	if err := shared.k8sClient.Delete(ctx, repo); err != nil {
+		t.Fatalf("deleting Repository: %v", err)
+	}
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile delete: %v", err)
+	}
+
+	if fake.callsContain("DeleteRepository:acme/foreignmarker") {
+		t.Errorf("foreign-owned repository must be released, not deleted; calls were %v", fake.calls)
+	}
+	if !fake.repoExists("acme", "foreignmarker") {
+		t.Fatal("expected foreign-owned repository to remain in Quay")
+	}
+	if !fake.callsContain("DeleteNotification:acme/foreignmarker:" + managedUUID) {
+		t.Errorf("expected managed webhook %q to be deleted; calls were %v", managedUUID, fake.calls)
+	}
+	if urls := fake.webhookURLs("acme", "foreignmarker"); len(urls) != 1 || urls[0] != manualHook {
+		t.Errorf("webhook URLs after release = %v, want only manual hook", urls)
+	}
+	if got := fake.repos[repoKey("acme", "foreignmarker")].description; got != foreignDescription {
+		t.Errorf("description after release = %q, want foreign marker preserved as %q", got, foreignDescription)
+	}
+	assertEvent(t, recorder, ReasonReleased)
+}
+
 func TestRepositoryCreateRaceConfirmedByGet(t *testing.T) {
 	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
