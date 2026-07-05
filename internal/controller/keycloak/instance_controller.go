@@ -5,10 +5,8 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -16,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	keycloakv1alpha1 "github.com/holos-run/holos-paas/api/keycloak/v1alpha1"
+	ctrlshared "github.com/holos-run/holos-paas/internal/controller/shared"
 	"github.com/holos-run/holos-paas/internal/keycloak"
 )
 
@@ -97,7 +96,7 @@ type InstanceReconciler struct {
 
 // Reconcile drives a KeycloakInstance toward its desired state: fetch CR →
 // resolve credential → validate caBundle → build client → GetRealm reachability
-// probe → mark Ready with observedGeneration → Status().Update. Credential and
+// probe → mark Ready with observedGeneration → Status().Patch. Credential and
 // Keycloak errors map to a False condition with an actionable reason and a
 // Warning event, and return an error so the request requeues with backoff.
 func (r *InstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, retErr error) {
@@ -195,33 +194,12 @@ func (r *InstanceReconciler) fail(ctx context.Context, instance *keycloakv1alpha
 	return ctrl.Result{}, err
 }
 
-// updateStatus stamps observedGeneration and writes the status subresource,
-// retrying on conflict. On conflict it refetches the latest object and re-applies
-// the computed status onto it before retrying. A NotFound (the CR was deleted
-// concurrently) is ignored — there is nothing left to update.
+// updateStatus stamps observedGeneration and patches the status subresource from
+// a live merge base. A NotFound (the CR was deleted concurrently) is ignored.
 func (r *InstanceReconciler) updateStatus(ctx context.Context, instance *keycloakv1alpha1.KeycloakInstance) error {
+	base := instance.DeepCopy()
 	instance.Status.ObservedGeneration = instance.Generation
-	desired := instance.Status.DeepCopy()
-
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		if updateErr := r.Status().Update(ctx, instance); updateErr != nil {
-			if apierrors.IsConflict(updateErr) {
-				if getErr := r.Get(ctx, client.ObjectKeyFromObject(instance), instance); getErr != nil {
-					return getErr
-				}
-				desired.DeepCopyInto(&instance.Status)
-			}
-			return updateErr
-		}
-		return nil
-	})
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("updating KeycloakInstance status: %w", err)
-	}
-	return nil
+	return ctrlshared.PatchStatus(ctx, r.Client, base, instance, "KeycloakInstance")
 }
 
 // SetupWithManager wires the reconciler into the manager: it watches

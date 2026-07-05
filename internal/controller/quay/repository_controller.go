@@ -12,17 +12,20 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/client-go/util/retry"
 	k8sptr "k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
+	ctrlshared "github.com/holos-run/holos-paas/internal/controller/shared"
 	"github.com/holos-run/holos-paas/internal/quay"
 )
 
@@ -149,7 +152,7 @@ type RepositoryReconciler struct {
 // else resolve credential → confirm the owning Quay org exists (never create it,
 // AC #9) → GetRepository (404 ⇒ create, else reconcile visibility/description) →
 // resolve and reconcile the repo_push webhook → mark Ready/WebhookConfigured with
-// observedGeneration → Status().Update. Credential, org-not-ready, webhook, and
+// observedGeneration → Status().Patch. Credential, org-not-ready, webhook, and
 // Quay errors map to a False condition with an actionable reason; recoverable
 // ones (missing credential/webhook Secret, org not yet ready) requeue.
 func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, retErr error) {
@@ -200,7 +203,11 @@ func (r *RepositoryReconciler) reconcileNormal(ctx context.Context, logger logr.
 	// a failed reconcile (Ready=False) rather than silently falling back to
 	// system trust and possibly reporting Ready=True for an unhonored spec.
 	if err := quay.ValidateCABundle(repo.Spec.CABundle); err != nil {
-		return r.fail(ctx, repo, err, false)
+		res, failErr := r.fail(ctx, repo, err, false)
+		if failErr != nil {
+			return res, ctrlreconcile.TerminalError(failErr)
+		}
+		return res, nil
 	}
 
 	qc := r.NewClient(cred, repo.Spec.CABundle)
@@ -299,7 +306,7 @@ func (r *RepositoryReconciler) resolveQuayOrg(ctx context.Context, repo *quayv1a
 		return "", ctrl.Result{}, true, fmt.Errorf("reading Organization %q: %w", repo.Spec.OrganizationRef, getErr)
 	}
 
-	if !meta.IsStatusConditionTrue(org.Status.Conditions, ConditionReady) {
+	if !meta.IsStatusConditionTrue(org.Status.Conditions, ConditionReady) || org.Status.ObservedGeneration != org.Generation {
 		res, e := r.handleOrgNotReady(ctx, repo,
 			fmt.Sprintf("Organization %q is not Ready yet", repo.Spec.OrganizationRef))
 		return "", res, true, e
@@ -421,7 +428,7 @@ func (r *RepositoryReconciler) ensureRepository(ctx context.Context, qc RepoClie
 // returns immediately without running the success path that would overwrite the
 // status it just wrote. On a clean configuration (webhook programmed, or no
 // webhook desired) it returns handled=false, leaving the WebhookConfigured
-// condition staged for the caller's single Status().Update via succeed().
+// condition staged for the caller's single Status().Patch via succeed().
 func (r *RepositoryReconciler) reconcileWebhook(ctx context.Context, logger logr.Logger, qc RepoClient, repo *quayv1alpha1.Repository, quayOrg string, priorMutation quayMutation) (handled bool, webhookMutation quayMutation, result ctrl.Result, err error) {
 	ns := quayOrg
 	name := repo.Spec.Name
@@ -626,25 +633,16 @@ func (r *RepositoryReconciler) succeed(ctx context.Context, logger logr.Logger, 
 }
 
 func (r *RepositoryReconciler) stampMutation(repo *quayv1alpha1.Repository, healedDrift bool) {
-	now := metav1.Now()
-	reason := quayv1alpha1.MutationReasonDriftRemediation
-	if repo.Status.ObservedGeneration != repo.Generation || !repositoryReady(repo) {
-		reason = quayv1alpha1.MutationReasonSpecChange
-	}
+	now, reason, drift := ctrlshared.MutationStamp(repo.Status.ObservedGeneration, repo.Generation, repositoryReady(repo), healedDrift)
 	repo.Status.LastMutatedTime = &now
-	repo.Status.LastMutationReason = reason
-	if reason == quayv1alpha1.MutationReasonDriftRemediation || healedDrift {
+	repo.Status.LastMutationReason = quayv1alpha1.MutationReason(reason)
+	if drift {
 		repo.Status.LastDriftTime = &now
 	}
 }
 
 func repositoryReady(repo *quayv1alpha1.Repository) bool {
-	for _, c := range repo.Status.Conditions {
-		if c.Type == ConditionReady {
-			return c.Status == metav1.ConditionTrue && c.ObservedGeneration == repo.Generation
-		}
-	}
-	return false
+	return ctrlshared.GenerationReady(repo.Status.Conditions, ConditionReady, repo.Generation)
 }
 
 func repositoryStatusCreated(repo *quayv1alpha1.Repository) bool {
@@ -846,10 +844,10 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 
 	delErr := qc.DeleteRepositoryIfExists(ctx, ns, name)
 	recordQuayAPI(opDeleteRepository, delErr)
-	if err := delErr; err != nil {
+	if delErr != nil {
 		r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonQuayError,
-			fmt.Sprintf("deleting Quay repository %s/%s: %v", ns, name, err))
-		return ctrl.Result{}, fmt.Errorf("deleting Quay repository %s/%s: %w", ns, name, err)
+			fmt.Sprintf("deleting Quay repository %s/%s: %v", ns, name, delErr))
+		return ctrl.Result{}, fmt.Errorf("deleting Quay repository %s/%s: %w", ns, name, delErr)
 	}
 
 	r.Recorder.Event(repo, corev1.EventTypeNormal, "Deleted",
@@ -973,7 +971,7 @@ func (r *RepositoryReconciler) handleCredentialError(ctx context.Context, repo *
 // spec.organizationRef) is not resolvable/Ready and requeues. The Repository
 // reconciler never creates the org (AC #9); it waits for the Organization
 // reconciler. The status write and event fire only when the condition changed,
-// and the returned error drives the requeue with backoff.
+// and RequeueAfter backstops the Organization watch.
 func (r *RepositoryReconciler) handleOrgNotReady(ctx context.Context, repo *quayv1alpha1.Repository, message string) (ctrl.Result, error) {
 	if changed := markNotReady(&repo.Status.Conditions, ReasonOrganizationNotReady, message, repo.Generation); changed {
 		r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonOrganizationNotReady, message)
@@ -981,14 +979,14 @@ func (r *RepositoryReconciler) handleOrgNotReady(ctx context.Context, repo *quay
 			return ctrl.Result{}, statusErr
 		}
 	}
-	return ctrl.Result{}, fmt.Errorf("%s", message)
+	return ctrl.Result{RequeueAfter: requeueDependency}, nil
 }
 
 // handleWebhookCondition sets the WebhookConfigured condition False with the
 // given reason and message and writes status when it changed. requeue selects
-// whether the reconcile retries: a recoverable WebhookURLNotFound requeues (so a
-// later-created Secret takes effect) by returning an error; a terminal
-// InvalidWebhook does not.
+// whether the reconcile retries: a recoverable WebhookURLNotFound returns a
+// nil-error dependency requeue so a later-created Secret takes effect; a terminal
+// InvalidWebhook does not requeue.
 func (r *RepositoryReconciler) handleWebhookCondition(ctx context.Context, repo *quayv1alpha1.Repository, reason, message string, requeue, extraChanged bool) (ctrl.Result, error) {
 	webhookChanged := setWebhookCondition(&repo.Status.Conditions, metav1.ConditionFalse, reason, message, repo.Generation)
 	readyChanged := markNotReady(&repo.Status.Conditions, reason, message, repo.Generation)
@@ -1004,7 +1002,10 @@ func (r *RepositoryReconciler) handleWebhookCondition(ctx context.Context, repo 
 		}
 	}
 	if requeue {
-		return ctrl.Result{}, fmt.Errorf("%s", message)
+		if reason != ReasonWebhookURLNotFound {
+			return ctrl.Result{}, fmt.Errorf("%s", message)
+		}
+		return ctrl.Result{RequeueAfter: requeueDependency}, nil
 	}
 	return ctrl.Result{}, nil
 }
@@ -1049,32 +1050,12 @@ func (r *RepositoryReconciler) failErr(ctx context.Context, repo *quayv1alpha1.R
 	return err
 }
 
-// updateStatus stamps observedGeneration and writes the status subresource,
-// retrying on conflict by refetching and re-applying the computed status onto the
-// fresh object. A NotFound (the CR was deleted concurrently) is ignored.
+// updateStatus stamps observedGeneration and patches the status subresource from
+// a live merge base. A NotFound (the CR was deleted concurrently) is ignored.
 func (r *RepositoryReconciler) updateStatus(ctx context.Context, repo *quayv1alpha1.Repository) error {
+	base := repo.DeepCopy()
 	repo.Status.ObservedGeneration = repo.Generation
-	desired := repo.Status.DeepCopy()
-
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		if updateErr := r.Status().Update(ctx, repo); updateErr != nil {
-			if apierrors.IsConflict(updateErr) {
-				if getErr := r.Get(ctx, client.ObjectKeyFromObject(repo), repo); getErr != nil {
-					return getErr
-				}
-				desired.DeepCopyInto(&repo.Status)
-			}
-			return updateErr
-		}
-		return nil
-	})
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("updating Repository status: %w", err)
-	}
-	return nil
+	return ctrlshared.PatchStatus(ctx, r.Client, base, repo, "Repository")
 }
 
 // SetupWithManager wires the reconciler into the manager: it watches Repository
@@ -1102,5 +1083,34 @@ func (r *RepositoryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&quayv1alpha1.Repository{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		// Re-enqueue repositories when their referenced Organization changes
+		// (e.g. it transitions to Ready), so an OrganizationNotReady wait recovers
+		// promptly rather than only on the dependency backoff.
+		Watches(
+			&quayv1alpha1.Organization{},
+			handler.EnqueueRequestsFromMapFunc(r.repositoriesForOrganization),
+		).
 		Complete(r)
+}
+
+// repositoriesForOrganization maps a changed Organization to reconcile requests
+// for every Repository in the same namespace that references it.
+func (r *RepositoryReconciler) repositoriesForOrganization(ctx context.Context, obj client.Object) []ctrlreconcile.Request {
+	org, ok := obj.(*quayv1alpha1.Organization)
+	if !ok {
+		return nil
+	}
+	var repos quayv1alpha1.RepositoryList
+	if err := r.List(ctx, &repos, client.InNamespace(org.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "listing Repositories to map an Organization change")
+		return nil
+	}
+	var requests []ctrlreconcile.Request
+	for i := range repos.Items {
+		repo := &repos.Items[i]
+		if repo.Spec.OrganizationRef == org.Name {
+			requests = append(requests, ctrlreconcile.Request{NamespacedName: types.NamespacedName{Namespace: repo.Namespace, Name: repo.Name}})
+		}
+	}
+	return requests
 }

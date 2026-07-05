@@ -13,7 +13,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -21,9 +20,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	keycloakv1alpha1 "github.com/holos-run/holos-paas/api/keycloak/v1alpha1"
+	ctrlshared "github.com/holos-run/holos-paas/internal/controller/shared"
 	"github.com/holos-run/holos-paas/internal/keycloak"
 	"github.com/holos-run/holos-paas/internal/referencegrant"
 )
@@ -366,12 +366,7 @@ func (r *MembershipReconciler) resolveGroup(ctx context.Context, membership *key
 }
 
 func groupReady(group *keycloakv1alpha1.KeycloakGroup) bool {
-	for _, c := range group.Status.Conditions {
-		if c.Type == ConditionReady {
-			return c.Status == "True" && c.ObservedGeneration == group.Generation
-		}
-	}
-	return false
+	return ctrlshared.GenerationReady(group.Status.Conditions, ConditionReady, group.Generation)
 }
 
 func sameInstanceRef(leftNS string, left keycloakv1alpha1.KeycloakInstanceReference, rightNS string, right keycloakv1alpha1.KeycloakInstanceReference) bool {
@@ -501,25 +496,16 @@ func defaultedGroupNamespace(namespace string, ref keycloakv1alpha1.KeycloakGrou
 }
 
 func (r *MembershipReconciler) stampMutation(membership *keycloakv1alpha1.KeycloakGroupMembership, healedDrift bool) {
-	now := metav1.Now()
-	reason := keycloakv1alpha1.MutationReasonDriftRemediation
-	if membership.Status.ObservedGeneration != membership.Generation || !membershipReady(membership) {
-		reason = keycloakv1alpha1.MutationReasonSpecChange
-	}
+	now, reason, drift := ctrlshared.MutationStamp(membership.Status.ObservedGeneration, membership.Generation, membershipReady(membership), healedDrift)
 	membership.Status.LastMutatedTime = &now
-	membership.Status.LastMutationReason = reason
-	if reason == keycloakv1alpha1.MutationReasonDriftRemediation || healedDrift {
+	membership.Status.LastMutationReason = keycloakv1alpha1.MutationReason(reason)
+	if drift {
 		membership.Status.LastDriftTime = &now
 	}
 }
 
 func membershipReady(membership *keycloakv1alpha1.KeycloakGroupMembership) bool {
-	for _, c := range membership.Status.Conditions {
-		if c.Type == ConditionReady {
-			return c.Status == metav1.ConditionTrue && c.ObservedGeneration == membership.Generation
-		}
-	}
-	return false
+	return ctrlshared.GenerationReady(membership.Status.Conditions, ConditionReady, membership.Generation)
 }
 
 func (r *MembershipReconciler) succeed(ctx context.Context, logger logr.Logger, membership *keycloakv1alpha1.KeycloakGroupMembership, reason, message string, extraChanged bool) (ctrl.Result, error) {
@@ -601,28 +587,9 @@ func (r *MembershipReconciler) removeFinalizer(ctx context.Context, membership *
 }
 
 func (r *MembershipReconciler) updateStatus(ctx context.Context, membership *keycloakv1alpha1.KeycloakGroupMembership) error {
+	base := membership.DeepCopy()
 	membership.Status.ObservedGeneration = membership.Generation
-	desired := membership.Status.DeepCopy()
-
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		if updateErr := r.Status().Update(ctx, membership); updateErr != nil {
-			if apierrors.IsConflict(updateErr) {
-				if getErr := r.Get(ctx, client.ObjectKeyFromObject(membership), membership); getErr != nil {
-					return getErr
-				}
-				desired.DeepCopyInto(&membership.Status)
-			}
-			return updateErr
-		}
-		return nil
-	})
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("updating KeycloakGroupMembership status: %w", err)
-	}
-	return nil
+	return ctrlshared.PatchStatus(ctx, r.Client, base, membership, "KeycloakGroupMembership")
 }
 
 func (r *MembershipReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -645,7 +612,7 @@ func (r *MembershipReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *MembershipReconciler) membershipsForInstance(ctx context.Context, obj client.Object) []reconcile.Request {
+func (r *MembershipReconciler) membershipsForInstance(ctx context.Context, obj client.Object) []ctrlreconcile.Request {
 	instance, ok := obj.(*keycloakv1alpha1.KeycloakInstance)
 	if !ok {
 		return nil
@@ -655,7 +622,7 @@ func (r *MembershipReconciler) membershipsForInstance(ctx context.Context, obj c
 		log.FromContext(ctx).Error(err, "listing KeycloakGroupMemberships to map a KeycloakInstance change")
 		return nil
 	}
-	var requests []reconcile.Request
+	var requests []ctrlreconcile.Request
 	for i := range memberships.Items {
 		m := &memberships.Items[i]
 		refNamespace := m.Spec.InstanceRef.Namespace
@@ -663,13 +630,13 @@ func (r *MembershipReconciler) membershipsForInstance(ctx context.Context, obj c
 			refNamespace = m.Namespace
 		}
 		if m.Spec.InstanceRef.Name == instance.Name && refNamespace == instance.Namespace {
-			requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: m.Namespace, Name: m.Name}})
+			requests = append(requests, ctrlreconcile.Request{NamespacedName: types.NamespacedName{Namespace: m.Namespace, Name: m.Name}})
 		}
 	}
 	return requests
 }
 
-func (r *MembershipReconciler) membershipsForGroup(ctx context.Context, obj client.Object) []reconcile.Request {
+func (r *MembershipReconciler) membershipsForGroup(ctx context.Context, obj client.Object) []ctrlreconcile.Request {
 	group, ok := obj.(*keycloakv1alpha1.KeycloakGroup)
 	if !ok {
 		return nil
@@ -679,7 +646,7 @@ func (r *MembershipReconciler) membershipsForGroup(ctx context.Context, obj clie
 		log.FromContext(ctx).Error(err, "listing KeycloakGroupMemberships to map a KeycloakGroup change")
 		return nil
 	}
-	var requests []reconcile.Request
+	var requests []ctrlreconcile.Request
 	for i := range memberships.Items {
 		m := &memberships.Items[i]
 		refNamespace := m.Spec.GroupRef.Namespace
@@ -687,7 +654,7 @@ func (r *MembershipReconciler) membershipsForGroup(ctx context.Context, obj clie
 			refNamespace = m.Namespace
 		}
 		if m.Spec.GroupRef.Name == group.Name && refNamespace == group.Namespace {
-			requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: m.Namespace, Name: m.Name}})
+			requests = append(requests, ctrlreconcile.Request{NamespacedName: types.NamespacedName{Namespace: m.Namespace, Name: m.Name}})
 		}
 	}
 	return requests

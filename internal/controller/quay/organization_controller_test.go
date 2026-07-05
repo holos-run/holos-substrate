@@ -688,8 +688,8 @@ func TestReconcileHealsLostCreatedMarkerWithoutReleasing(t *testing.T) {
 	}
 
 	org = getOrg(ctx, t, key)
-	if got := conditionReason(org, ConditionReady); got != ReasonCreated {
-		t.Errorf("Ready reason = %q, want %q (must heal, not conflict/release)", got, ReasonCreated)
+	if got := conditionReason(org, ConditionReady); got != ReasonReconciled {
+		t.Errorf("Ready reason = %q, want %q (must heal, not conflict/release)", got, ReasonReconciled)
 	}
 	if !statusCreated(org) {
 		t.Error("status.Created must remain true after healing")
@@ -740,8 +740,8 @@ func TestReconcileMarkerStampFailureAfterCreatePersistsCreatedAndHeals(t *testin
 	}
 
 	org := getOrg(ctx, t, key)
-	if got := conditionReason(org, ConditionReady); got != ReasonCreated {
-		t.Errorf("Ready reason = %q, want %q after heal", got, ReasonCreated)
+	if got := conditionReason(org, ConditionReady); got != ReasonReconciled {
+		t.Errorf("Ready reason = %q, want %q after heal", got, ReasonReconciled)
 	}
 	if desc := fake.markers["stampfail"]; desc != string(org.UID) {
 		t.Errorf("marker = %q, want re-stamped CR UID %q", desc, org.UID)
@@ -1369,8 +1369,8 @@ func TestReconcileSyncedTeamsRecoversAfterPostUpsertFailure(t *testing.T) {
 	}
 
 	org := getOrg(ctx, t, key)
-	if got := conditionReason(org, ConditionReady); got != ReasonCreated {
-		t.Errorf("Ready reason = %q, want %q (healed, not TeamConflict)", got, ReasonCreated)
+	if got := conditionReason(org, ConditionReady); got != ReasonReconciled {
+		t.Errorf("Ready reason = %q, want %q (healed, not TeamConflict)", got, ReasonReconciled)
 	}
 	if group, ok := fake.teamGroup("recover", "team"); !ok || group != "g" {
 		t.Errorf("team sync = %q (synced=%v), want bound to g after recovery", group, ok)

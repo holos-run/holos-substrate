@@ -2,15 +2,11 @@ package keycloak
 
 import (
 	"context"
-	"fmt"
-	"os"
 
-	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	keycloakv1alpha1 "github.com/holos-run/holos-paas/api/keycloak/v1alpha1"
+	ctrlshared "github.com/holos-run/holos-paas/internal/controller/shared"
 )
 
 // Credential Secret keys. The Keycloak admin credential Secret carries the
@@ -41,7 +37,7 @@ const (
 // DefaultControllerNamespace is the namespace the controller resolves credential
 // Secrets from when POD_NAMESPACE is unset (ADR-18). It matches the namespace the
 // kustomize deployment installs into and mirrors the quay reconciler's default.
-const DefaultControllerNamespace = "holos-controller"
+const DefaultControllerNamespace = ctrlshared.DefaultControllerNamespace
 
 // keycloakCredential is the resolved Keycloak admin credential: the OAuth2
 // client_credentials grant material the internal/keycloak client is built from.
@@ -59,17 +55,9 @@ type keycloakCredential struct {
 // within it, could not be resolved. The reconciler maps it to a False condition
 // with reason CredentialsNotFound and requeues rather than crashing — the
 // credential is created at runtime and may not yet exist.
-type missingCredentialError struct {
-	// msg is the human-readable explanation surfaced on the status condition.
-	msg string
-}
-
-func (e *missingCredentialError) Error() string { return e.msg }
-
 // isMissingCredential reports whether err is a missingCredentialError.
 func isMissingCredential(err error) bool {
-	_, ok := err.(*missingCredentialError)
-	return ok
+	return ctrlshared.IsMissingCredential(err)
 }
 
 // controllerNamespace returns the namespace the controller resolves credential
@@ -79,10 +67,7 @@ func isMissingCredential(err error) bool {
 // namespace — the KeycloakInstance's credentialsSecretRef names only the Secret,
 // not a namespace (ADR-20).
 func controllerNamespace() string {
-	if ns := os.Getenv("POD_NAMESPACE"); ns != "" {
-		return ns
-	}
-	return DefaultControllerNamespace
+	return ctrlshared.ControllerNamespace()
 }
 
 // resolveCredential reads the Keycloak admin credential Secret named by ref
@@ -103,18 +88,9 @@ func resolveCredential(ctx context.Context, reader client.Reader, namespace stri
 		name = keycloakv1alpha1.DefaultCredentialsSecretName
 	}
 
-	secret := &corev1.Secret{}
-	key := types.NamespacedName{Namespace: namespace, Name: name}
-	if err := reader.Get(ctx, key, secret); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, &missingCredentialError{
-				msg: fmt.Sprintf("credential Secret %s/%s not found", namespace, name),
-			}
-		}
-		// A transient API error (e.g. timeout) is not a missing-credential
-		// condition — return it as-is so the reconciler requeues with backoff and
-		// does not stamp a misleading CredentialsNotFound reason.
-		return nil, fmt.Errorf("reading credential Secret %s/%s: %w", namespace, name, err)
+	secret, err := ctrlshared.ResolveCredentialSecret(ctx, reader, namespace, name)
+	if err != nil {
+		return nil, err
 	}
 
 	// The client-secret key is the conventional "clientSecret" unless the ref
@@ -127,17 +103,13 @@ func resolveCredential(ctx context.Context, reader client.Reader, namespace stri
 		secretKey = ref.Key
 	}
 
-	clientID := string(secret.Data[credentialKeyClientID])
-	clientSecret := string(secret.Data[secretKey])
-	if clientID == "" {
-		return nil, &missingCredentialError{
-			msg: fmt.Sprintf("credential Secret %s/%s is missing the %q key", namespace, name, credentialKeyClientID),
-		}
+	clientID, err := ctrlshared.RequiredSecretValue(secret, namespace, name, credentialKeyClientID)
+	if err != nil {
+		return nil, err
 	}
-	if clientSecret == "" {
-		return nil, &missingCredentialError{
-			msg: fmt.Sprintf("credential Secret %s/%s is missing the %q key", namespace, name, secretKey),
-		}
+	clientSecret, err := ctrlshared.RequiredSecretValue(secret, namespace, name, secretKey)
+	if err != nil {
+		return nil, err
 	}
 
 	return &keycloakCredential{

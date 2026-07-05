@@ -10,7 +10,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -18,9 +17,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	keycloakv1alpha1 "github.com/holos-run/holos-paas/api/keycloak/v1alpha1"
+	ctrlshared "github.com/holos-run/holos-paas/internal/controller/shared"
 	"github.com/holos-run/holos-paas/internal/keycloak"
 	"github.com/holos-run/holos-paas/internal/referencegrant"
 )
@@ -645,25 +645,16 @@ func (r *ClientReconciler) succeed(ctx context.Context, logger logr.Logger, kcli
 }
 
 func (r *ClientReconciler) stampMutation(kclient *keycloakv1alpha1.KeycloakClient) {
-	now := metav1.Now()
-	reason := keycloakv1alpha1.MutationReasonDriftRemediation
-	if kclient.Status.ObservedGeneration != kclient.Generation || !clientReady(kclient) {
-		reason = keycloakv1alpha1.MutationReasonSpecChange
-	}
+	now, reason, drift := ctrlshared.MutationStamp(kclient.Status.ObservedGeneration, kclient.Generation, clientReady(kclient), false)
 	kclient.Status.LastMutatedTime = &now
-	kclient.Status.LastMutationReason = reason
-	if reason == keycloakv1alpha1.MutationReasonDriftRemediation {
+	kclient.Status.LastMutationReason = keycloakv1alpha1.MutationReason(reason)
+	if drift {
 		kclient.Status.LastDriftTime = &now
 	}
 }
 
 func clientReady(kclient *keycloakv1alpha1.KeycloakClient) bool {
-	for _, c := range kclient.Status.Conditions {
-		if c.Type == ConditionReady {
-			return c.Status == metav1.ConditionTrue && c.ObservedGeneration == kclient.Generation
-		}
-	}
-	return false
+	return ctrlshared.GenerationReady(kclient.Status.Conditions, ConditionReady, kclient.Generation)
 }
 
 // notReady records a recoverable not-ready condition for an unsatisfied
@@ -715,31 +706,12 @@ func (r *ClientReconciler) removeFinalizer(ctx context.Context, kclient *keycloa
 	return ctrl.Result{}, nil
 }
 
-// updateStatus stamps observedGeneration and writes the status subresource,
-// retrying on conflict by refetching and re-applying the computed status.
+// updateStatus stamps observedGeneration and patches the status subresource from
+// a live merge base.
 func (r *ClientReconciler) updateStatus(ctx context.Context, kclient *keycloakv1alpha1.KeycloakClient) error {
+	base := kclient.DeepCopy()
 	kclient.Status.ObservedGeneration = kclient.Generation
-	desired := kclient.Status.DeepCopy()
-
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		if updateErr := r.Status().Update(ctx, kclient); updateErr != nil {
-			if apierrors.IsConflict(updateErr) {
-				if getErr := r.Get(ctx, client.ObjectKeyFromObject(kclient), kclient); getErr != nil {
-					return getErr
-				}
-				desired.DeepCopyInto(&kclient.Status)
-			}
-			return updateErr
-		}
-		return nil
-	})
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("updating KeycloakClient status: %w", err)
-	}
-	return nil
+	return ctrlshared.PatchStatus(ctx, r.Client, base, kclient, "KeycloakClient")
 }
 
 // SetupWithManager wires the reconciler into the manager.
@@ -772,7 +744,7 @@ func (r *ClientReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // clientsForInstance maps a changed KeycloakInstance to reconcile requests for
 // every KeycloakClient that references it (in its own namespace or cross-namespace).
-func (r *ClientReconciler) clientsForInstance(ctx context.Context, obj client.Object) []reconcile.Request {
+func (r *ClientReconciler) clientsForInstance(ctx context.Context, obj client.Object) []ctrlreconcile.Request {
 	instance, ok := obj.(*keycloakv1alpha1.KeycloakInstance)
 	if !ok {
 		return nil
@@ -782,7 +754,7 @@ func (r *ClientReconciler) clientsForInstance(ctx context.Context, obj client.Ob
 		log.FromContext(ctx).Error(err, "listing KeycloakClients to map a KeycloakInstance change")
 		return nil
 	}
-	var requests []reconcile.Request
+	var requests []ctrlreconcile.Request
 	for i := range clients.Items {
 		c := &clients.Items[i]
 		refNamespace := c.Spec.InstanceRef.Namespace
@@ -790,7 +762,7 @@ func (r *ClientReconciler) clientsForInstance(ctx context.Context, obj client.Ob
 			refNamespace = c.Namespace
 		}
 		if c.Spec.InstanceRef.Name == instance.Name && refNamespace == instance.Namespace {
-			requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: c.Namespace, Name: c.Name}})
+			requests = append(requests, ctrlreconcile.Request{NamespacedName: types.NamespacedName{Namespace: c.Namespace, Name: c.Name}})
 		}
 	}
 	return requests

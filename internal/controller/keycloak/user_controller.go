@@ -13,7 +13,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -21,9 +20,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	keycloakv1alpha1 "github.com/holos-run/holos-paas/api/keycloak/v1alpha1"
+	ctrlshared "github.com/holos-run/holos-paas/internal/controller/shared"
 	"github.com/holos-run/holos-paas/internal/keycloak"
 	"github.com/holos-run/holos-paas/internal/referencegrant"
 )
@@ -580,25 +580,16 @@ func (r *UserReconciler) succeed(ctx context.Context, logger logr.Logger, user *
 }
 
 func (r *UserReconciler) stampMutation(user *keycloakv1alpha1.KeycloakUser) {
-	now := metav1.Now()
-	reason := keycloakv1alpha1.MutationReasonDriftRemediation
-	if user.Status.ObservedGeneration != user.Generation || !userReady(user) {
-		reason = keycloakv1alpha1.MutationReasonSpecChange
-	}
+	now, reason, drift := ctrlshared.MutationStamp(user.Status.ObservedGeneration, user.Generation, userReady(user), false)
 	user.Status.LastMutatedTime = &now
-	user.Status.LastMutationReason = reason
-	if reason == keycloakv1alpha1.MutationReasonDriftRemediation {
+	user.Status.LastMutationReason = keycloakv1alpha1.MutationReason(reason)
+	if drift {
 		user.Status.LastDriftTime = &now
 	}
 }
 
 func userReady(user *keycloakv1alpha1.KeycloakUser) bool {
-	for _, c := range user.Status.Conditions {
-		if c.Type == ConditionReady {
-			return c.Status == metav1.ConditionTrue && c.ObservedGeneration == user.Generation
-		}
-	}
-	return false
+	return ctrlshared.GenerationReady(user.Status.Conditions, ConditionReady, user.Generation)
 }
 
 // notReady records a recoverable not-ready condition for an unsatisfied
@@ -653,34 +644,12 @@ func (r *UserReconciler) removeFinalizer(ctx context.Context, user *keycloakv1al
 	return ctrl.Result{}, nil
 }
 
-// updateStatus stamps observedGeneration and writes the status subresource,
-// retrying on conflict. The retry is load-bearing for the ownership marker
-// (status.Created/Adopted/UserID): a create side effect already happened in
-// Keycloak, so the marker MUST persist. On conflict it refetches and re-applies
-// the computed status before retrying.
+// updateStatus stamps observedGeneration and patches the status subresource from
+// a live merge base.
 func (r *UserReconciler) updateStatus(ctx context.Context, user *keycloakv1alpha1.KeycloakUser) error {
+	base := user.DeepCopy()
 	user.Status.ObservedGeneration = user.Generation
-	desired := user.Status.DeepCopy()
-
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		if updateErr := r.Status().Update(ctx, user); updateErr != nil {
-			if apierrors.IsConflict(updateErr) {
-				if getErr := r.Get(ctx, client.ObjectKeyFromObject(user), user); getErr != nil {
-					return getErr
-				}
-				desired.DeepCopyInto(&user.Status)
-			}
-			return updateErr
-		}
-		return nil
-	})
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("updating KeycloakUser status: %w", err)
-	}
-	return nil
+	return ctrlshared.PatchStatus(ctx, r.Client, base, user, "KeycloakUser")
 }
 
 // SetupWithManager wires the reconciler into the manager.
@@ -744,7 +713,7 @@ func checkNoLegacyUserManagedGroups(ctx context.Context, reader client.Reader) e
 
 // usersForInstance maps a changed KeycloakInstance to reconcile requests for
 // every KeycloakUser that references it (in its own namespace or cross-namespace).
-func (r *UserReconciler) usersForInstance(ctx context.Context, obj client.Object) []reconcile.Request {
+func (r *UserReconciler) usersForInstance(ctx context.Context, obj client.Object) []ctrlreconcile.Request {
 	instance, ok := obj.(*keycloakv1alpha1.KeycloakInstance)
 	if !ok {
 		return nil
@@ -754,7 +723,7 @@ func (r *UserReconciler) usersForInstance(ctx context.Context, obj client.Object
 		log.FromContext(ctx).Error(err, "listing KeycloakUsers to map a KeycloakInstance change")
 		return nil
 	}
-	var requests []reconcile.Request
+	var requests []ctrlreconcile.Request
 	for i := range users.Items {
 		u := &users.Items[i]
 		refNamespace := u.Spec.InstanceRef.Namespace
@@ -762,7 +731,7 @@ func (r *UserReconciler) usersForInstance(ctx context.Context, obj client.Object
 			refNamespace = u.Namespace
 		}
 		if u.Spec.InstanceRef.Name == instance.Name && refNamespace == instance.Namespace {
-			requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: u.Namespace, Name: u.Name}})
+			requests = append(requests, ctrlreconcile.Request{NamespacedName: types.NamespacedName{Namespace: u.Namespace, Name: u.Name}})
 		}
 	}
 	return requests

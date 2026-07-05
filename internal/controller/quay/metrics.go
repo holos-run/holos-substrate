@@ -4,6 +4,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
+	ctrlshared "github.com/holos-run/holos-paas/internal/controller/shared"
 	"github.com/holos-run/holos-paas/internal/quay"
 )
 
@@ -19,10 +20,10 @@ import (
 // package — which both reconcilers in it already do — is enough to expose them;
 // there is no separate wiring step in main.go.
 //
-// Label cardinality is kept bounded on purpose: kind is one of a small fixed set
-// ("organization"/"repository"), outcome is "success"/"error", and operation is
-// a fixed set of Quay client verbs. None are derived from user input, so these
-// counters cannot blow up the time-series count.
+// Label cardinality is kept bounded on purpose: group/kind/outcome values and
+// operation names are fixed strings, never derived from user input. The shared
+// reconcile counter lives in internal/controller/shared with a group label; this
+// package owns only the Quay API counter.
 
 // metricsNamespace prefixes every custom collector so they sort together and do
 // not collide with controller-runtime's controller_runtime_* series.
@@ -36,11 +37,12 @@ const (
 	kindRepository   = "repository"
 )
 
-// Outcome label values shared by the reconcile and Quay-API counters.
 const (
-	outcomeSuccess = "success"
-	outcomeError   = "error"
+	outcomeSuccess = ctrlshared.OutcomeSuccess
+	outcomeError   = ctrlshared.OutcomeError
 )
+
+var reconcileTotal = ctrlshared.ReconcileTotal
 
 // Quay-API operation label values. One per logical client operation the
 // reconcilers drive, so an operator can see which Quay calls fail.
@@ -72,19 +74,6 @@ const (
 )
 
 var (
-	// reconcileTotal counts completed reconciles per resource kind and outcome
-	// (success vs error). It complements controller-runtime's reconcile_total by
-	// splitting on the quay.holos.run kind, which the built-in metric labels only
-	// by controller name.
-	reconcileTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: metricsNamespace,
-			Name:      "reconcile_total",
-			Help:      "Total number of reconciles completed, labeled by resource kind and outcome.",
-		},
-		[]string{"kind", "outcome"},
-	)
-
 	// quayAPIRequestsTotal counts Quay REST API requests the reconcilers issue,
 	// labeled by logical operation and outcome, so Quay-side failures (auth,
 	// 5xx, conflicts) are observable distinctly from reconcile failures.
@@ -104,21 +93,18 @@ var (
 // error (registering the same collector twice), so failing loudly at startup is
 // correct.
 func init() {
-	metrics.Registry.MustRegister(reconcileTotal, quayAPIRequestsTotal)
+	metrics.Registry.MustRegister(quayAPIRequestsTotal)
 }
 
 // outcomeLabel maps an error to the shared success/error outcome label value.
 func outcomeLabel(err error) string {
-	if err != nil {
-		return outcomeError
-	}
-	return outcomeSuccess
+	return ctrlshared.OutcomeLabel(err)
 }
 
 // recordReconcile increments the reconcile counter for a resource kind with the
 // outcome derived from err (nil ⇒ success).
 func recordReconcile(kind string, err error) {
-	reconcileTotal.WithLabelValues(kind, outcomeLabel(err)).Inc()
+	ctrlshared.RecordReconcile("quay", kind, err)
 }
 
 // recordQuayAPI increments the Quay-API request counter for an operation with
@@ -131,10 +117,7 @@ func recordQuayAPI(operation string, err error) {
 // expected control-flow branch (the create path) records as a successful Quay
 // request rather than an error. Any other error passes through unchanged.
 func ignoreNotFound(err error) error {
-	if quay.IsNotFound(err) {
-		return nil
-	}
-	return err
+	return ctrlshared.IgnoreMatching(err, quay.IsNotFound)
 }
 
 // ignoreConflict maps a Quay Conflict error to nil so a create whose 409 is an
@@ -142,8 +125,5 @@ func ignoreNotFound(err error) error {
 // successful Quay request rather than an error. Any other error passes through
 // unchanged.
 func ignoreConflict(err error) error {
-	if quay.IsConflict(err) {
-		return nil
-	}
-	return err
+	return ctrlshared.IgnoreMatching(err, quay.IsConflict)
 }
