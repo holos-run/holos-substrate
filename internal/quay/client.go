@@ -191,7 +191,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body, out any)
 	if err != nil {
 		return fmt.Errorf("quay %s: %s %s: %w", c.host(), method, path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, oversized, err := readBounded(resp.Body, maxResponseBodyBytes)
 	if err != nil {
