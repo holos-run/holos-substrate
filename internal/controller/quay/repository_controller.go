@@ -512,17 +512,25 @@ func (r *RepositoryReconciler) reconcileWebhook(ctx context.Context, logger logr
 // is written into a status condition. When the Repository's webhook URL came from
 // a urlSecretRef, any occurrence of url in err's message is replaced with
 // "[redacted]" so a Quay error body that echoes the submitted config cannot leak
-// the hard-to-guess receiver URL into status (which is broadly readable). For an
-// inline URL — already present in the spec — the error is returned unchanged.
+// the hard-to-guess receiver URL into status (which is broadly readable). It also
+// redacts long URL prefixes because APIError bounds response bodies before this
+// controller-level redaction runs, so a truncated Quay echo can contain only the
+// front of the secret URL. For an inline URL — already present in the spec — the
+// error is returned unchanged.
 func redactWebhookURL(err error, repo *quayv1alpha1.Repository, url string) error {
 	if err == nil || url == "" || !usesWebhookSecretRef(repo) {
 		return err
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, url) {
+	redacted := strings.ReplaceAll(msg, url, "[redacted]")
+	for prefixLen := len(url) - 1; prefixLen >= 16; prefixLen-- {
+		prefix := url[:prefixLen]
+		redacted = strings.ReplaceAll(redacted, prefix, "[redacted]")
+	}
+	if redacted == msg {
 		return err
 	}
-	return fmt.Errorf("%s", strings.ReplaceAll(msg, url, "[redacted]"))
+	return fmt.Errorf("%s", redacted)
 }
 
 // isManagedWebhook reports whether a notification is one this controller owns:

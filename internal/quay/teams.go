@@ -193,9 +193,8 @@ func (c *Client) EnableTeamSyncIfNotSynced(ctx context.Context, org, team, oidcG
 			return nil
 		}
 	}
-	// Already synced to a different group; surface the conflict from a real
-	// enable attempt so the reconciler treats it as drift to correct rather
-	// than reconciled.
+	// Not synced yet, or synced to a different group; make a real enable
+	// attempt so Quay either binds it or surfaces drift to correct.
 	return c.EnableTeamSync(ctx, org, team, oidcGroup)
 }
 

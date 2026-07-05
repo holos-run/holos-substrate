@@ -457,6 +457,29 @@ func TestRepositorySecretRefWebhookErrorDoesNotLeakURL(t *testing.T) {
 	}
 }
 
+func TestRedactWebhookURLRedactsTruncatedSecretURLPrefix(t *testing.T) {
+	const secretURL = "https://kargo.example.test/webhook/super-secret-token"
+	repo := &quayv1alpha1.Repository{
+		Spec: quayv1alpha1.RepositorySpec{
+			Webhook: &quayv1alpha1.RepositoryWebhook{
+				URLSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "kargo-receiver", Key: "url"},
+			},
+		},
+	}
+	partialURL := secretURL[:len(secretURL)-6]
+	err := redactWebhookURL(
+		errors.New("invalid webhook config for url "+partialURL+"...[truncated]"),
+		repo,
+		secretURL,
+	)
+	if strings.Contains(err.Error(), partialURL) {
+		t.Fatalf("redacted error leaked partial secret URL: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "[redacted]") {
+		t.Fatalf("redacted error = %q, want redaction marker", err.Error())
+	}
+}
+
 func TestRepositoryWebhookSecretReadErrorPersistsPriorMutation(t *testing.T) {
 	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
