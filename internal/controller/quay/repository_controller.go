@@ -118,11 +118,11 @@ var _ RepoClient = (*quay.Client)(nil)
 // RepositoryReconciler reconciles a quay.holos.run Repository against the
 // in-cluster Quay registry: it creates or updates the named repository inside an
 // existing Organization, configures a repo_push webhook from spec.webhook (an
-// inline url or a urlSecretRef), and on delete runs a finalizer that deletes the
-// repository. Repository creation/configuration happens solely here; the
-// Organization reconciler never touches repositories. Status follows the same
-// Gateway-API convention as Organization (see conditions.go) and meaningful
-// transitions emit Events.
+// inline url or a urlSecretRef), and on delete runs a finalizer that deletes
+// created repositories or releases adopted repositories. Repository
+// creation/configuration happens solely here; the Organization reconciler never
+// touches repositories. Status follows the same Gateway-API convention as
+// Organization (see conditions.go) and meaningful transitions emit Events.
 type RepositoryReconciler struct {
 	// Client is the manager's cached client for the Repository CR and status.
 	client.Client

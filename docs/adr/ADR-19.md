@@ -683,7 +683,8 @@ new orgs and adopt orgs other identities created.
   create-or-adopts `<org>/<name>` at `visibility`, applies `description`, and —
   when `webhook` is set — resolves the URL (inline or from `urlSecretRef`) and
   upserts the Quay `repo_push` notification, setting `WebhookConfigured`. A
-  finalizer deletes exactly the `status.quayRepository` path.
+  finalizer deletes created repositories at the resolved `status.quayRepository`
+  path and releases adopted repositories without deleting them.
 
 ## Decision
 
