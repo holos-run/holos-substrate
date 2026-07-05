@@ -106,7 +106,7 @@ quality scores, and the curated **Approved** (community, quality-reviewed) and
 **Supported** (commercially supported) tiers.
 
 Puppet's real contribution is the three-generation arc of the
-generic-vs-site-specific separation — the KEY question for this design:
+generic-vs-site-specific separation — the key question for this design:
 
 1. **`params.pp` — data embedded in code.** Every module carried a `params`
    class: a giant case statement over OS facts producing defaults. Data lived
@@ -601,7 +601,9 @@ Three details matter for the design:
 ### 3.6 Multi-tenancy primitives
 
 `ResourceQuota` and `LimitRange` remain the in-tree floor. **Kueue**
-(v0.17–0.18, MultiKueue GA Feb 2026) is the modern answer for batch/AI quota:
+(v0.17–0.18; multi-cluster dispatching via MultiKueue is still beta, with
+MultiKueue UX a headline 2026 roadmap item) is the modern answer for batch/AI
+quota:
 `ClusterQueue` quota pools over `ResourceFlavor`s, namespace-scoped
 `LocalQueue`s, cohort borrowing, priority preemption, and native integrations
 for Job, JobSet, and the KubeRay CRs — quota enforced at *admission* (the
@@ -774,11 +776,19 @@ packages' output.**
   model as required.
 - **Sign at publish; verify at the gate.** The distribution's publish tooling
   wraps `cue mod publish` and `oras push` with cosign signing (OCI 1.1
-  referrers, keyless in CI). Verification points, in order of arrival:
-  the promotion pipeline (§4.8) verifies before promoting a package to a
-  channel; Kyverno/VAP verifies deploy-bundle signatures at admission; and
-  Argo CD's (currently absent) OCI-source verification is watched upstream.
-  This fills CUE's signing gap (§2.4) with the Timoni-proven pattern.
+  referrers, keyless in CI). Verification points must be chosen honestly per
+  artifact kind: the promotion pipeline (§4.8) verifies signatures before
+  promoting a package to a channel — on the Argo CD path this pipeline gate is
+  the *only* config-bundle verification point today, because Argo CD has no
+  OCI-source signature verification yet (watched upstream) and admission-time
+  tooling does not cover config bundles (ValidatingAdmissionPolicy is
+  in-process CEL and cannot fetch referrers or run cosign; Kyverno's
+  `verifyImages` checks container image references in workloads, not an
+  `Application`'s OCI source). Container *images* referenced by rendered
+  workloads do get admission-time verification via Kyverno; config bundles get
+  publish/promotion-time verification, or Flux's built-in `spec.verify` when
+  the Flux consumption path is used. This fills CUE's signing gap (§2.4) with
+  the Timoni-proven pattern while stating plainly where each gate applies.
 
 ### 4.6 Custom controllers: what to build (and what not to)
 
@@ -846,10 +856,15 @@ and the registry is the only artifact channel.**
   correction included ("bypass Git, never bypass the reconciler", §3.3).
 - The audit posture: registry history + cosign signatures + Kubernetes audit
   logs of the Application apply replace the PR trail. Signed publishes (§4.5)
-  and admission verification make the direct path *no less* attested than the
-  Git path — Git review remains the default for shared/production surfaces as
-  a policy choice enforced where policy lives (admission + AppProject
-  restrictions), not as a mechanical limitation.
+  give the direct path artifact-level provenance comparable to the Git path,
+  with the caveat §4.5 states: config-bundle signatures are verified at
+  publish/promotion time (or by Flux's `spec.verify` on that path), not at
+  admission — what admission can enforce today is *which registries and
+  repositories* an `Application` may source from (AppProject `sourceRepos`
+  plus CEL over the Application spec) and Kyverno image verification for the
+  workloads the bundle deploys. Git review remains the default for
+  shared/production surfaces as a policy choice enforced where policy lives
+  (admission + AppProject restrictions), not as a mechanical limitation.
 - A web interface then requires **no new backend API**: it is a Kubernetes
   API client (through the Authenticator's impersonation path) reading
   `catalog.holos.run` Packages/Channels, project CRs and their rich ADR-22
