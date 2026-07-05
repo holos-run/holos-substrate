@@ -856,6 +856,26 @@ and the registry is the only artifact channel.**
   clusters. Nothing about the flow is imperative *state*: the Application
   lands in the project's control plane and Argo CD reconciles it, drift
   correction included ("bypass Git, never bypass the reconciler", §3.3).
+- **The direct path must not bypass the trust gate.** Because Argo CD cannot
+  yet verify OCI-source signatures and admission cannot cosign-check config
+  bundles (§4.5), a naive render→push→apply flow would let any identity with
+  registry push rights feed Argo CD an unverified bundle. The design therefore
+  requires one of two enforced arrangements, and the distribution should ship
+  the first: **(a) verified-by-construction repositories** — direct pushes
+  land in a per-project *staging* repository that Argo CD never sources; a
+  verifier (a promotion-pipeline step or a small `catalog.holos.run`-adjacent
+  reconciler) cosign-verifies the artifact and copies/retags it by digest into
+  the Argo-consumable repository, so every repository named in an AppProject's
+  `sourceRepos` contains only verified content, with admission (AppProject
+  `sourceRepos` pinning plus CEL over the Application spec requiring
+  digest-pinned `targetRevision`) making the arrangement mandatory rather than
+  conventional; or **(b) scope enforced verification to the Flux path** —
+  where a consumer needs source-time signature enforcement *today* with no
+  verifier hop, use Flux `OCIRepository.spec.verify` (§3.2), and treat the
+  Argo direct path as blocked until Argo CD grows OCI-source verification
+  (watched upstream). The `holos-paas deploy` verb implements (a): it signs on
+  push, waits for the verifier's copy, and applies an Application pinned to
+  the verified digest — one extra hop, no unverified bundle ever reconciled.
 - The audit posture: registry history + cosign signatures + Kubernetes audit
   logs of the Application apply replace the PR trail. Signed publishes (§4.5)
   give the direct path artifact-level provenance comparable to the Git path,
@@ -1019,9 +1039,12 @@ the operators that give those CRs meaning:
 
 ### Phase 3 — delivery ergonomics
 
-- **The Git-bypass CLI verb** (§4.7): `holos-paas deploy` — render, push,
-  apply the Application — the docker-push-to-deploy experience generalized to
-  configuration. Fisk command per the CLI guardrails.
+- **The Git-bypass CLI verb** (§4.7): `holos-paas deploy` — render, push
+  (signed), wait for the verifier's copy into the Argo-consumable repository,
+  apply the Application pinned to the verified digest — the
+  docker-push-to-deploy experience generalized to configuration, without
+  bypassing the trust gate. Fisk command per the CLI guardrails; ships with
+  the verifier hop and the AppProject/CEL admission pinning from §4.7.
 - **The promotion pipeline** (§4.8 item 4): channel tags, reverse-dependency
   render gates, `PackageChannel` reconciliation; wire the existing
   `ci → qa → prod` deferred work (ADR-21) to Kargo Stages with
