@@ -452,27 +452,21 @@ func (r *RepositoryReconciler) reconcileWebhook(ctx context.Context, logger logr
 
 	url, resolveErr := resolveWebhookURL(ctx, r.APIReader, repo.Namespace, repo.Spec.Webhook)
 	if resolveErr != nil {
+		if priorMutation.Mutated {
+			r.stampMutation(repo, priorMutation.HealedDrift)
+		}
 		switch {
 		case isInvalidWebhook(resolveErr):
 			// Terminal: a spec change re-triggers reconciliation. Set a False
 			// condition and do not requeue.
-			if priorMutation.Mutated {
-				r.stampMutation(repo, priorMutation.HealedDrift)
-			}
 			res, e := r.handleWebhookCondition(ctx, repo, quayv1alpha1.ReasonInvalidWebhook, resolveErr.Error(), false, priorMutation.Mutated)
 			return true, quayMutation{}, res, e
 		case isWebhookURLNotFound(resolveErr):
 			// Recoverable: requeue (error) so a later-created Secret takes effect.
-			if priorMutation.Mutated {
-				r.stampMutation(repo, priorMutation.HealedDrift)
-			}
 			res, e := r.handleWebhookCondition(ctx, repo, quayv1alpha1.ReasonWebhookURLNotFound, resolveErr.Error(), true, priorMutation.Mutated)
 			return true, quayMutation{}, res, e
 		default:
 			// Transient API error reading the Secret: requeue with backoff.
-			if priorMutation.Mutated {
-				r.stampMutation(repo, priorMutation.HealedDrift)
-			}
 			res, e := r.handleWebhookCondition(ctx, repo, quayv1alpha1.ReasonWebhookURLReadError, resolveErr.Error(), true, priorMutation.Mutated)
 			return true, quayMutation{}, res, e
 		}
@@ -1052,11 +1046,11 @@ func (r *RepositoryReconciler) handleOrgNotReady(ctx context.Context, repo *quay
 // InvalidWebhook does not requeue.
 func (r *RepositoryReconciler) handleWebhookCondition(ctx context.Context, repo *quayv1alpha1.Repository, reason, message string, requeue, extraChanged bool) (ctrl.Result, error) {
 	webhookChanged := setWebhookCondition(&repo.Status.Conditions, metav1.ConditionFalse, reason, message, repo.Generation)
+	// Also reflect the not-ready state on Ready so the headline condition is
+	// not stuck True from a prior pass while the webhook is unconfigurable.
 	readyChanged := markNotReady(&repo.Status.Conditions, reason, message, repo.Generation)
 	changed := webhookChanged || readyChanged || extraChanged
 	if changed {
-		// Also reflect the not-ready state on Ready so the headline condition is
-		// not stuck True from a prior pass while the webhook is unconfigurable.
 		if webhookChanged || readyChanged {
 			r.Recorder.Event(repo, corev1.EventTypeWarning, reason, message)
 		}
