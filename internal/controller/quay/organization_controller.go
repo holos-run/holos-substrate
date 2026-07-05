@@ -281,7 +281,7 @@ func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger log
 				// the heal path recovers the marker on the next reconcile.
 				return r.fail(ctx, org, markerErr, true)
 			}
-			return r.reconcileTeamsThenSucceed(ctx, logger, qc, org, quayMutation{Mutated: true}, ReasonCreated,
+			return r.reconcileTeamsThenSucceed(ctx, logger, qc, org, quayMutation{Mutated: true}, quayv1alpha1.ReasonCreated,
 				fmt.Sprintf("created Quay organization %q", org.Spec.Name))
 		case quay.IsConflict(err):
 			// Lost the create race: the org now exists but this CR did not
@@ -385,7 +385,7 @@ func (r *OrganizationReconciler) reconcileOwned(ctx context.Context, logger logr
 		logger.Info("applied Organization email drift", "name", org.Spec.Name)
 	}
 
-	return r.reconcileTeamsThenSucceed(ctx, logger, qc, org, mutation, ReasonReconciled,
+	return r.reconcileTeamsThenSucceed(ctx, logger, qc, org, mutation, quayv1alpha1.ReasonReconciled,
 		fmt.Sprintf("reconciled Quay organization %q", org.Spec.Name))
 }
 
@@ -423,7 +423,7 @@ func (r *OrganizationReconciler) ensureOwnerMarker(ctx context.Context, qc OrgCl
 // only on a change so an already-recorded conflict does not spin a watch loop.
 func (r *OrganizationReconciler) conflict(ctx context.Context, logger logr.Logger, org *quayv1alpha1.Organization) (ctrl.Result, error) {
 	message := fmt.Sprintf("Quay organization %q is owned by another resource (ownership marker mismatch); refusing to claim it", org.Spec.Name)
-	return r.recordConflict(ctx, logger, org, ReasonConflict, message, false)
+	return r.recordConflict(ctx, logger, org, quayv1alpha1.ReasonConflict, message, false)
 }
 
 // reconcileExistingUnowned handles a Quay org that exists but was not created by
@@ -432,9 +432,9 @@ func (r *OrganizationReconciler) conflict(ctx context.Context, logger logr.Logge
 // terminal Conflict condition (no requeue storm — a spec change re-triggers).
 func (r *OrganizationReconciler) reconcileExistingUnowned(ctx context.Context, logger logr.Logger, qc OrgClient, org *quayv1alpha1.Organization) (ctrl.Result, error) {
 	if org.Spec.Adopt {
-		reason := ReasonReconciled
+		reason := quayv1alpha1.ReasonReconciled
 		if org.Status.Created == nil {
-			reason = ReasonAdopted
+			reason = quayv1alpha1.ReasonAdopted
 		}
 		setStatusCreated(org, false)
 		return r.reconcileTeamsThenSucceed(ctx, logger, qc, org, quayMutation{}, reason,
@@ -442,7 +442,7 @@ func (r *OrganizationReconciler) reconcileExistingUnowned(ctx context.Context, l
 	}
 
 	message := fmt.Sprintf("Quay organization %q already exists and was not created by this resource; set spec.adopt to claim it", org.Spec.Name)
-	return r.recordConflict(ctx, logger, org, ReasonConflict, message, false)
+	return r.recordConflict(ctx, logger, org, quayv1alpha1.ReasonConflict, message, false)
 }
 
 // reconcileTeamsThenSucceed reconciles spec.syncedTeams into the now-owned (or
@@ -499,13 +499,13 @@ func equalStrings(a, b []string) bool {
 // conflict path. managedChanged keeps the status.managedTeams progress made before
 // the conflict durable even when the condition itself is unchanged.
 func (r *OrganizationReconciler) teamConflict(ctx context.Context, logger logr.Logger, org *quayv1alpha1.Organization, message string, managedChanged bool) (ctrl.Result, error) {
-	return r.recordConflict(ctx, logger, org, ReasonTeamConflict, message, managedChanged)
+	return r.recordConflict(ctx, logger, org, quayv1alpha1.ReasonTeamConflict, message, managedChanged)
 }
 
 func (r *OrganizationReconciler) recordConflict(ctx context.Context, logger logr.Logger, org *quayv1alpha1.Organization, reason, message string, extraChanged bool) (ctrl.Result, error) {
 	conditionChanged := setConflict
 	logMessage := "Organization conflict"
-	if reason == ReasonTeamConflict {
+	if reason == quayv1alpha1.ReasonTeamConflict {
 		conditionChanged = setTeamConflict
 		logMessage = "Organization team conflict"
 	}
@@ -523,7 +523,7 @@ func (r *OrganizationReconciler) recordConflict(ctx context.Context, logger logr
 func (r *OrganizationReconciler) succeed(ctx context.Context, logger logr.Logger, org *quayv1alpha1.Organization, reason, message string) (ctrl.Result, error) {
 	beforeConditions := append([]metav1.Condition(nil), org.Status.Conditions...)
 	markReady(&org.Status.Conditions, reason, message, org.Generation)
-	conditionTransitioned := conditionsTransitioned(beforeConditions, org.Status.Conditions, ConditionAccepted, ConditionProgrammed, ConditionReady)
+	conditionTransitioned := conditionsTransitioned(beforeConditions, org.Status.Conditions, quayv1alpha1.ConditionAccepted, quayv1alpha1.ConditionProgrammed, quayv1alpha1.ConditionReady)
 	if conditionTransitioned {
 		r.Recorder.Event(org, corev1.EventTypeNormal, reason, message)
 		logger.Info("reconciled Organization", "name", org.Spec.Name, "reason", reason)
@@ -544,7 +544,7 @@ func (r *OrganizationReconciler) stampMutation(org *quayv1alpha1.Organization, h
 }
 
 func organizationReady(org *quayv1alpha1.Organization) bool {
-	return ctrlshared.GenerationReady(org.Status.Conditions, ConditionReady, org.Generation)
+	return ctrlshared.GenerationReady(org.Status.Conditions, quayv1alpha1.ConditionReady, org.Generation)
 }
 
 // reconcileDelete runs the finalizer. Per the claim model the Quay org is deleted
@@ -579,7 +579,7 @@ func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *quayv
 	// No credential is needed: the controller does not touch Quay, it only
 	// relinquishes its claim.
 	if !statusCreated(org) {
-		r.Recorder.Event(org, corev1.EventTypeNormal, ReasonReleased,
+		r.Recorder.Event(org, corev1.EventTypeNormal, quayv1alpha1.ReasonReleased,
 			fmt.Sprintf("released Quay organization %q without deleting (adopted, not created by this resource)", org.Spec.Name))
 		return r.removeFinalizer(ctx, org)
 	}
@@ -597,7 +597,7 @@ func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *quayv
 	// not honor the spec, which keeps the finalizer in place until the bundle is
 	// corrected.
 	if err := quay.ValidateCABundle(org.Spec.CABundle); err != nil {
-		r.Recorder.Event(org, corev1.EventTypeWarning, ReasonQuayError, err.Error())
+		r.Recorder.Event(org, corev1.EventTypeWarning, quayv1alpha1.ReasonQuayError, err.Error())
 		return ctrl.Result{}, err
 	}
 
@@ -611,12 +611,12 @@ func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *quayv
 	// of delete.
 	owns, err := r.ownsViaMarker(ctx, qc, org)
 	if err != nil {
-		r.Recorder.Event(org, corev1.EventTypeWarning, ReasonQuayError,
+		r.Recorder.Event(org, corev1.EventTypeWarning, quayv1alpha1.ReasonQuayError,
 			fmt.Sprintf("verifying ownership marker for Quay organization %q: %v", org.Spec.Name, err))
 		return ctrl.Result{}, fmt.Errorf("verifying ownership marker for Quay organization %q: %w", org.Spec.Name, err)
 	}
 	if !owns {
-		r.Recorder.Event(org, corev1.EventTypeNormal, ReasonReleased,
+		r.Recorder.Event(org, corev1.EventTypeNormal, quayv1alpha1.ReasonReleased,
 			fmt.Sprintf("released Quay organization %q without deleting (ownership marker absent or foreign; org was recreated by another actor)", org.Spec.Name))
 		return r.removeFinalizer(ctx, org)
 	}
@@ -632,7 +632,7 @@ func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *quayv
 	delErr := qc.DeleteOrganizationIfExists(ctx, org.Spec.Name)
 	recordQuayAPI(opDeleteOrganization, delErr)
 	if delErr != nil {
-		r.Recorder.Event(org, corev1.EventTypeWarning, ReasonQuayError,
+		r.Recorder.Event(org, corev1.EventTypeWarning, quayv1alpha1.ReasonQuayError,
 			fmt.Sprintf("deleting Quay organization %q: %v", org.Spec.Name, delErr))
 		return ctrl.Result{}, fmt.Errorf("deleting Quay organization %q: %w", org.Spec.Name, delErr)
 	}
@@ -689,8 +689,8 @@ func (r *OrganizationReconciler) handleCredentialError(ctx context.Context, org 
 	if !isMissingCredential(err) {
 		return ctrl.Result{}, err
 	}
-	if changed := markNotReady(&org.Status.Conditions, ReasonCredentialsNotFound, err.Error(), org.Generation); changed {
-		r.Recorder.Event(org, corev1.EventTypeWarning, ReasonCredentialsNotFound, err.Error())
+	if changed := markNotReady(&org.Status.Conditions, quayv1alpha1.ReasonCredentialsNotFound, err.Error(), org.Generation); changed {
+		r.Recorder.Event(org, corev1.EventTypeWarning, quayv1alpha1.ReasonCredentialsNotFound, err.Error())
 		if statusErr := r.updateStatus(ctx, org); statusErr != nil {
 			return ctrl.Result{}, statusErr
 		}
@@ -704,10 +704,10 @@ func (r *OrganizationReconciler) handleCredentialError(ctx context.Context, org 
 // reconcile does not re-emit identical events on every backoff retry — the
 // returned error already drives the requeue.
 func (r *OrganizationReconciler) fail(ctx context.Context, org *quayv1alpha1.Organization, err error, extraChanged bool) (ctrl.Result, error) {
-	conditionChanged := markNotReady(&org.Status.Conditions, ReasonQuayError, err.Error(), org.Generation)
+	conditionChanged := markNotReady(&org.Status.Conditions, quayv1alpha1.ReasonQuayError, err.Error(), org.Generation)
 	if conditionChanged || extraChanged {
 		if conditionChanged {
-			r.Recorder.Event(org, corev1.EventTypeWarning, ReasonQuayError, err.Error())
+			r.Recorder.Event(org, corev1.EventTypeWarning, quayv1alpha1.ReasonQuayError, err.Error())
 		}
 		if statusErr := r.updateStatus(ctx, org); statusErr != nil {
 			// Prefer surfacing the original Quay error; log the status failure.

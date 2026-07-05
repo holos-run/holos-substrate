@@ -59,6 +59,72 @@ func makeOrg(ctx context.Context, t *testing.T, ns, orgName, credSecret string, 
 	return client.ObjectKeyFromObject(org)
 }
 
+func TestOrganizationCRDRejectsInvalidQuayInputs(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+
+	tests := []struct {
+		name string
+		spec quayv1alpha1.OrganizationSpec
+	}{{
+		name: "short organization name",
+		spec: quayv1alpha1.OrganizationSpec{
+			Name:  "a",
+			Email: "org@example.test",
+		},
+	}, {
+		name: "invalid organization separator",
+		spec: quayv1alpha1.OrganizationSpec{
+			Name:  "org---name",
+			Email: "org@example.test",
+		},
+	}, {
+		name: "invalid email",
+		spec: quayv1alpha1.OrganizationSpec{
+			Name:  "validorg",
+			Email: "org@localhost",
+		},
+	}, {
+		name: "short synced team name",
+		spec: quayv1alpha1.OrganizationSpec{
+			Name:  "validorg",
+			Email: "org@example.test",
+			SyncedTeams: []quayv1alpha1.SyncedTeam{{
+				Name:      "a",
+				OIDCGroup: "group",
+				Role:      quayv1alpha1.OrganizationTeamRoleMember,
+			}},
+		},
+	}, {
+		name: "invalid synced team separator",
+		spec: quayv1alpha1.OrganizationSpec{
+			Name:  "validorg",
+			Email: "org@example.test",
+			SyncedTeams: []quayv1alpha1.SyncedTeam{{
+				Name:      "team---name",
+				OIDCGroup: "group",
+				Role:      quayv1alpha1.OrganizationTeamRoleMember,
+			}},
+		},
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			org := &quayv1alpha1.Organization{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: "invalid-",
+					Namespace:    ns,
+				},
+				Spec: tt.spec,
+			}
+			err := shared.k8sClient.Create(ctx, org)
+			if !apierrors.IsInvalid(err) {
+				t.Fatalf("Create() error = %v, want invalid", err)
+			}
+		})
+	}
+}
+
 // getOrg fetches the current Organization state.
 func getOrg(ctx context.Context, t *testing.T, key client.ObjectKey) *quayv1alpha1.Organization {
 	t.Helper()
@@ -132,11 +198,11 @@ func TestReconcileCreatesOrganization(t *testing.T) {
 	}
 
 	org := getOrg(ctx, t, key)
-	if got := conditionStatus(org, ConditionReady); got != metav1.ConditionTrue {
+	if got := conditionStatus(org, quayv1alpha1.ConditionReady); got != metav1.ConditionTrue {
 		t.Errorf("Ready = %q, want True", got)
 	}
-	if got := conditionReason(org, ConditionReady); got != ReasonCreated {
-		t.Errorf("Ready reason = %q, want %q", got, ReasonCreated)
+	if got := conditionReason(org, quayv1alpha1.ConditionReady); got != quayv1alpha1.ReasonCreated {
+		t.Errorf("Ready reason = %q, want %q", got, quayv1alpha1.ReasonCreated)
 	}
 	if !statusCreated(org) {
 		t.Error("expected status.Created = true after creating the org")
@@ -152,7 +218,7 @@ func TestReconcileCreatesOrganization(t *testing.T) {
 	}
 	firstValidated := org.Status.LastValidatedTime.DeepCopy()
 	firstMutated := org.Status.LastMutatedTime.DeepCopy()
-	assertEvent(t, recorder, ReasonCreated)
+	assertEvent(t, recorder, quayv1alpha1.ReasonCreated)
 
 	time.Sleep(time.Second + 100*time.Millisecond)
 	result, err := reconcile(ctx, r, key)
@@ -169,7 +235,7 @@ func TestReconcileCreatesOrganization(t *testing.T) {
 	if !org.Status.LastMutatedTime.Equal(firstMutated) {
 		t.Errorf("lastMutatedTime changed on steady validation: first=%v second=%v", firstMutated, org.Status.LastMutatedTime)
 	}
-	assertNoEvent(t, recorder, ReasonCreated)
+	assertNoEvent(t, recorder, quayv1alpha1.ReasonCreated)
 }
 
 func TestReconcileThreadsCABundleToClientFactory(t *testing.T) {
@@ -238,11 +304,11 @@ func TestReconcileInvalidCABundleFailsWithoutQuayCall(t *testing.T) {
 		t.Errorf("expected no Quay calls for an invalid caBundle, calls were %v", fake.calls)
 	}
 	got := getOrg(ctx, t, key)
-	if s := conditionStatus(got, ConditionReady); s != metav1.ConditionFalse {
+	if s := conditionStatus(got, quayv1alpha1.ConditionReady); s != metav1.ConditionFalse {
 		t.Errorf("Ready = %q, want False for an invalid caBundle", s)
 	}
-	if reason := conditionReason(got, ConditionReady); reason != ReasonQuayError {
-		t.Errorf("Ready reason = %q, want %q", reason, ReasonQuayError)
+	if reason := conditionReason(got, quayv1alpha1.ConditionReady); reason != quayv1alpha1.ReasonQuayError {
+		t.Errorf("Ready reason = %q, want %q", reason, quayv1alpha1.ReasonQuayError)
 	}
 }
 
@@ -266,16 +332,16 @@ func TestReconcileAdoptsExistingOrganization(t *testing.T) {
 	}
 
 	org := getOrg(ctx, t, key)
-	if got := conditionStatus(org, ConditionReady); got != metav1.ConditionTrue {
+	if got := conditionStatus(org, quayv1alpha1.ConditionReady); got != metav1.ConditionTrue {
 		t.Errorf("Ready = %q, want True", got)
 	}
-	if got := conditionReason(org, ConditionReady); got != ReasonAdopted {
-		t.Errorf("Ready reason = %q, want %q", got, ReasonAdopted)
+	if got := conditionReason(org, quayv1alpha1.ConditionReady); got != quayv1alpha1.ReasonAdopted {
+		t.Errorf("Ready reason = %q, want %q", got, quayv1alpha1.ReasonAdopted)
 	}
 	if statusCreated(org) {
 		t.Error("expected status.Created = false for an adopted (not created) org")
 	}
-	assertEvent(t, recorder, ReasonAdopted)
+	assertEvent(t, recorder, quayv1alpha1.ReasonAdopted)
 }
 
 func TestReconcileQuayErrorSetsReadyFalse(t *testing.T) {
@@ -301,13 +367,13 @@ func TestReconcileQuayErrorSetsReadyFalse(t *testing.T) {
 	}
 
 	org := getOrg(ctx, t, key)
-	if got := conditionStatus(org, ConditionReady); got != metav1.ConditionFalse {
+	if got := conditionStatus(org, quayv1alpha1.ConditionReady); got != metav1.ConditionFalse {
 		t.Errorf("Ready = %q, want False", got)
 	}
-	if got := conditionReason(org, ConditionReady); got != ReasonQuayError {
-		t.Errorf("Ready reason = %q, want %q", got, ReasonQuayError)
+	if got := conditionReason(org, quayv1alpha1.ConditionReady); got != quayv1alpha1.ReasonQuayError {
+		t.Errorf("Ready reason = %q, want %q", got, quayv1alpha1.ReasonQuayError)
 	}
-	assertEvent(t, recorder, ReasonQuayError)
+	assertEvent(t, recorder, quayv1alpha1.ReasonQuayError)
 }
 
 func TestReconcileMissingCredentialSecretSetsConditionAndNoQuayCall(t *testing.T) {
@@ -333,13 +399,13 @@ func TestReconcileMissingCredentialSecretSetsConditionAndNoQuayCall(t *testing.T
 	}
 
 	org := getOrg(ctx, t, key)
-	if got := conditionStatus(org, ConditionReady); got != metav1.ConditionFalse {
+	if got := conditionStatus(org, quayv1alpha1.ConditionReady); got != metav1.ConditionFalse {
 		t.Errorf("Ready = %q, want False", got)
 	}
-	if got := conditionReason(org, ConditionReady); got != ReasonCredentialsNotFound {
-		t.Errorf("Ready reason = %q, want %q", got, ReasonCredentialsNotFound)
+	if got := conditionReason(org, quayv1alpha1.ConditionReady); got != quayv1alpha1.ReasonCredentialsNotFound {
+		t.Errorf("Ready reason = %q, want %q", got, quayv1alpha1.ReasonCredentialsNotFound)
 	}
-	assertEvent(t, recorder, ReasonCredentialsNotFound)
+	assertEvent(t, recorder, quayv1alpha1.ReasonCredentialsNotFound)
 }
 
 func TestReconcileDeleteRemovesFinalizerAfterQuayDelete(t *testing.T) {
@@ -407,16 +473,16 @@ func TestReconcileConflictWhenExistingOrgNotAdopted(t *testing.T) {
 	}
 
 	org := getOrg(ctx, t, key)
-	if got := conditionStatus(org, ConditionReady); got != metav1.ConditionFalse {
+	if got := conditionStatus(org, quayv1alpha1.ConditionReady); got != metav1.ConditionFalse {
 		t.Errorf("Ready = %q, want False", got)
 	}
-	if got := conditionReason(org, ConditionReady); got != ReasonConflict {
-		t.Errorf("Ready reason = %q, want %q", got, ReasonConflict)
+	if got := conditionReason(org, quayv1alpha1.ConditionReady); got != quayv1alpha1.ReasonConflict {
+		t.Errorf("Ready reason = %q, want %q", got, quayv1alpha1.ReasonConflict)
 	}
 	if statusCreated(org) {
 		t.Error("expected status.Created = false on a conflict")
 	}
-	assertEvent(t, recorder, ReasonConflict)
+	assertEvent(t, recorder, quayv1alpha1.ReasonConflict)
 }
 
 func TestReconcileCreateRaceDoesNotClaimOwnership(t *testing.T) {
@@ -442,8 +508,8 @@ func TestReconcileCreateRaceDoesNotClaimOwnership(t *testing.T) {
 		t.Error("status.Created must be false after losing a create race — the org was not created by this CR")
 	}
 	// Without adopt, a raced-in org is a Conflict, not a silent claim.
-	if got := conditionReason(org, ConditionReady); got != ReasonConflict {
-		t.Errorf("Ready reason = %q, want %q", got, ReasonConflict)
+	if got := conditionReason(org, quayv1alpha1.ConditionReady); got != quayv1alpha1.ReasonConflict {
+		t.Errorf("Ready reason = %q, want %q", got, quayv1alpha1.ReasonConflict)
 	}
 }
 
@@ -529,8 +595,8 @@ func TestReconcileHonorsCredentialSecretRefKey(t *testing.T) {
 	if !fake.orgExists("keyed") {
 		t.Error("expected keyed to be created; the custom credential key was not honored")
 	}
-	if got := conditionReason(getOrg(ctx, t, key), ConditionReady); got != ReasonCreated {
-		t.Errorf("Ready reason = %q, want %q", got, ReasonCreated)
+	if got := conditionReason(getOrg(ctx, t, key), quayv1alpha1.ConditionReady); got != quayv1alpha1.ReasonCreated {
+		t.Errorf("Ready reason = %q, want %q", got, quayv1alpha1.ReasonCreated)
 	}
 }
 
@@ -645,7 +711,7 @@ func TestReconcileStampsEmailMutationWhenTeamsFail(t *testing.T) {
 		t.Fatalf("Quay email = %q, want changed@example.test despite later team failure", got)
 	}
 	org = getOrg(ctx, t, key)
-	if got := conditionStatus(org, ConditionReady); got != metav1.ConditionFalse {
+	if got := conditionStatus(org, quayv1alpha1.ConditionReady); got != metav1.ConditionFalse {
 		t.Errorf("Ready = %q, want False after team failure", got)
 	}
 	if org.Status.LastValidatedTime == nil || !org.Status.LastValidatedTime.Equal(firstValidated) {
@@ -689,8 +755,8 @@ func TestReconcileHealsLostCreatedMarkerWithoutReleasing(t *testing.T) {
 	}
 
 	org = getOrg(ctx, t, key)
-	if got := conditionReason(org, ConditionReady); got != ReasonReconciled {
-		t.Errorf("Ready reason = %q, want %q (must heal, not conflict/release)", got, ReasonReconciled)
+	if got := conditionReason(org, quayv1alpha1.ConditionReady); got != quayv1alpha1.ReasonReconciled {
+		t.Errorf("Ready reason = %q, want %q (must heal, not conflict/release)", got, quayv1alpha1.ReasonReconciled)
 	}
 	if !statusCreated(org) {
 		t.Error("status.Created must remain true after healing")
@@ -741,8 +807,8 @@ func TestReconcileMarkerStampFailureAfterCreatePersistsCreatedAndHeals(t *testin
 	}
 
 	org := getOrg(ctx, t, key)
-	if got := conditionReason(org, ConditionReady); got != ReasonReconciled {
-		t.Errorf("Ready reason = %q, want %q after heal", got, ReasonReconciled)
+	if got := conditionReason(org, quayv1alpha1.ConditionReady); got != quayv1alpha1.ReasonReconciled {
+		t.Errorf("Ready reason = %q, want %q after heal", got, quayv1alpha1.ReasonReconciled)
 	}
 	if desc := fake.markers["stampfail"]; desc != string(org.UID) {
 		t.Errorf("marker = %q, want re-stamped CR UID %q", desc, org.UID)
@@ -813,13 +879,13 @@ func TestReconcileConflictWhenMarkerHoldsForeignToken(t *testing.T) {
 	}
 
 	org := getOrg(ctx, t, key)
-	if got := conditionReason(org, ConditionReady); got != ReasonConflict {
-		t.Errorf("Ready reason = %q, want %q", got, ReasonConflict)
+	if got := conditionReason(org, quayv1alpha1.ConditionReady); got != quayv1alpha1.ReasonConflict {
+		t.Errorf("Ready reason = %q, want %q", got, quayv1alpha1.ReasonConflict)
 	}
 	if statusCreated(org) {
 		t.Error("status.Created must stay false on a foreign-marker conflict")
 	}
-	assertEvent(t, recorder, ReasonConflict)
+	assertEvent(t, recorder, quayv1alpha1.ReasonConflict)
 }
 
 func TestReconcileDeleteReleasesWhenMarkerForeignAfterRecreate(t *testing.T) {
@@ -914,7 +980,7 @@ func TestReconcileSyncedTeamsZeroIsNoop(t *testing.T) {
 	}
 
 	org := getOrg(ctx, t, key)
-	if got := conditionStatus(org, ConditionReady); got != metav1.ConditionTrue {
+	if got := conditionStatus(org, quayv1alpha1.ConditionReady); got != metav1.ConditionTrue {
 		t.Errorf("Ready = %q, want True", got)
 	}
 	if len(org.Status.ManagedTeams) != 0 {
@@ -961,7 +1027,7 @@ func TestReconcileSyncedTeamsCreatesTeamSyncAndDefaultPermission(t *testing.T) {
 	}
 
 	org := getOrg(ctx, t, key)
-	if got := conditionStatus(org, ConditionReady); got != metav1.ConditionTrue {
+	if got := conditionStatus(org, quayv1alpha1.ConditionReady); got != metav1.ConditionTrue {
 		t.Errorf("Ready = %q, want True", got)
 	}
 	if !containsString(org.Status.ManagedTeams, "devs") {
@@ -1165,11 +1231,11 @@ func TestReconcileSyncedTeamsPreexistingUnmanagedIsConflict(t *testing.T) {
 	}
 
 	org := getOrg(ctx, t, key)
-	if got := conditionStatus(org, ConditionReady); got != metav1.ConditionFalse {
+	if got := conditionStatus(org, quayv1alpha1.ConditionReady); got != metav1.ConditionFalse {
 		t.Errorf("Ready = %q, want False on a team conflict", got)
 	}
-	if got := conditionReason(org, ConditionReady); got != ReasonTeamConflict {
-		t.Errorf("Ready reason = %q, want %q", got, ReasonTeamConflict)
+	if got := conditionReason(org, quayv1alpha1.ConditionReady); got != quayv1alpha1.ReasonTeamConflict {
+		t.Errorf("Ready reason = %q, want %q", got, quayv1alpha1.ReasonTeamConflict)
 	}
 	if containsString(org.Status.ManagedTeams, "foreign") {
 		t.Errorf("ManagedTeams = %v, must not adopt the foreign team", org.Status.ManagedTeams)
@@ -1183,7 +1249,7 @@ func TestReconcileSyncedTeamsPreexistingUnmanagedIsConflict(t *testing.T) {
 			t.Errorf("must not upsert a foreign team; calls were %v", fake.calls)
 		}
 	}
-	assertEvent(t, recorder, ReasonTeamConflict)
+	assertEvent(t, recorder, quayv1alpha1.ReasonTeamConflict)
 }
 
 func TestReconcileSyncedTeamsUnmanagedOutsideSpecIsIgnored(t *testing.T) {
@@ -1205,7 +1271,7 @@ func TestReconcileSyncedTeamsUnmanagedOutsideSpecIsIgnored(t *testing.T) {
 	}
 
 	org := getOrg(ctx, t, key)
-	if got := conditionStatus(org, ConditionReady); got != metav1.ConditionTrue {
+	if got := conditionStatus(org, quayv1alpha1.ConditionReady); got != metav1.ConditionTrue {
 		t.Errorf("Ready = %q, want True (a stranger team outside the spec is ignored)", got)
 	}
 	// The stranger team must be untouched: still present, still admin, still synced.
@@ -1246,11 +1312,11 @@ func TestReconcileSyncedTeamsHealsLostStatus(t *testing.T) {
 	}
 
 	org := getOrg(ctx, t, key)
-	if got := conditionStatus(org, ConditionReady); got != metav1.ConditionTrue {
+	if got := conditionStatus(org, quayv1alpha1.ConditionReady); got != metav1.ConditionTrue {
 		t.Errorf("Ready = %q, want True (a bound team must heal, not conflict)", got)
 	}
-	if got := conditionReason(org, ConditionReady); got != ReasonCreated {
-		t.Errorf("Ready reason = %q, want %q (healed, not TeamConflict)", got, ReasonCreated)
+	if got := conditionReason(org, quayv1alpha1.ConditionReady); got != quayv1alpha1.ReasonCreated {
+		t.Errorf("Ready reason = %q, want %q (healed, not TeamConflict)", got, quayv1alpha1.ReasonCreated)
 	}
 	if !containsString(org.Status.ManagedTeams, "synced") {
 		t.Errorf("ManagedTeams = %v, want the healed team recorded", org.Status.ManagedTeams)
@@ -1280,13 +1346,13 @@ func TestReconcileSyncedTeamsBoundButUnmarkedIsConflict(t *testing.T) {
 	}
 
 	org := getOrg(ctx, t, key)
-	if got := conditionReason(org, ConditionReady); got != ReasonTeamConflict {
-		t.Errorf("Ready reason = %q, want %q (a bound-but-unmarked team must not be adopted)", got, ReasonTeamConflict)
+	if got := conditionReason(org, quayv1alpha1.ConditionReady); got != quayv1alpha1.ReasonTeamConflict {
+		t.Errorf("Ready reason = %q, want %q (a bound-but-unmarked team must not be adopted)", got, quayv1alpha1.ReasonTeamConflict)
 	}
 	if containsString(org.Status.ManagedTeams, "shared") {
 		t.Errorf("ManagedTeams = %v, must not adopt a bound-but-unmarked foreign team", org.Status.ManagedTeams)
 	}
-	assertEvent(t, recorder, ReasonTeamConflict)
+	assertEvent(t, recorder, quayv1alpha1.ReasonTeamConflict)
 }
 
 func TestReconcileSyncedTeamsForeignMarkerIsConflict(t *testing.T) {
@@ -1312,13 +1378,13 @@ func TestReconcileSyncedTeamsForeignMarkerIsConflict(t *testing.T) {
 	}
 
 	org := getOrg(ctx, t, key)
-	if got := conditionReason(org, ConditionReady); got != ReasonTeamConflict {
-		t.Errorf("Ready reason = %q, want %q (a foreign-marker team must not be adopted)", got, ReasonTeamConflict)
+	if got := conditionReason(org, quayv1alpha1.ConditionReady); got != quayv1alpha1.ReasonTeamConflict {
+		t.Errorf("Ready reason = %q, want %q (a foreign-marker team must not be adopted)", got, quayv1alpha1.ReasonTeamConflict)
 	}
 	if containsString(org.Status.ManagedTeams, "team") {
 		t.Errorf("ManagedTeams = %v, must not adopt a foreign-marker team", org.Status.ManagedTeams)
 	}
-	assertEvent(t, recorder, ReasonTeamConflict)
+	assertEvent(t, recorder, quayv1alpha1.ReasonTeamConflict)
 }
 
 func TestReconcileSyncedTeamsRecoversAfterPostUpsertFailure(t *testing.T) {
@@ -1368,8 +1434,8 @@ func TestReconcileSyncedTeamsRecoversAfterPostUpsertFailure(t *testing.T) {
 	}
 
 	org := getOrg(ctx, t, key)
-	if got := conditionReason(org, ConditionReady); got != ReasonReconciled {
-		t.Errorf("Ready reason = %q, want %q (healed, not TeamConflict)", got, ReasonReconciled)
+	if got := conditionReason(org, quayv1alpha1.ConditionReady); got != quayv1alpha1.ReasonReconciled {
+		t.Errorf("Ready reason = %q, want %q (healed, not TeamConflict)", got, quayv1alpha1.ReasonReconciled)
 	}
 	if group, ok := fake.teamGroup("recover", "team"); !ok || group != "g" {
 		t.Errorf("team sync = %q (synced=%v), want bound to g after recovery", group, ok)
@@ -1456,7 +1522,7 @@ func TestReconcileDeprovisionAlreadyMissingTeamConverges(t *testing.T) {
 	}
 
 	org = getOrg(ctx, t, key)
-	if got := conditionStatus(org, ConditionReady); got != metav1.ConditionTrue {
+	if got := conditionStatus(org, quayv1alpha1.ConditionReady); got != metav1.ConditionTrue {
 		t.Errorf("Ready = %q, want True when already-missing managed team converges", got)
 	}
 	if containsString(org.Status.ManagedTeams, "gone") {

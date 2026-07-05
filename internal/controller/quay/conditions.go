@@ -3,11 +3,9 @@
 // internal/quay REST client, authenticating with the superuser OAuth-Application
 // credential named by a resource's credentialsSecretRef.
 //
-// This file is the home of the Gateway-API-style condition types and reasons,
-// and the small helpers both reconcilers use to set them with
-// apimachinery/pkg/api/meta.SetStatusCondition. Keeping the vocabulary in one
-// place means the Repository reconciler reuses exactly the same condition types
-// and reasons the Organization reconciler establishes here.
+// This file holds the small helpers both reconcilers use to set Gateway-API-
+// style conditions with apimachinery/pkg/api/meta.SetStatusCondition. The
+// condition vocabulary itself lives in the API package.
 package quay
 
 import (
@@ -38,92 +36,6 @@ const quayExternalResourceResync = time.Hour
 // prompt wakeups; this interval is only the periodic backstop.
 const requeueDependency = 30 * time.Second
 
-// Condition types surfaced on quay.holos.run resource status. They mirror the
-// vocabulary already declared on the API types (ConditionAccepted /
-// ConditionProgrammed / ConditionReady) and follow the Gateway API convention:
-//
-//   - Accepted   — the spec was understood and claimed by this resource.
-//   - Programmed — the desired state was written into Quay.
-//   - Ready      — the resource is fully provisioned and usable.
-//
-// Reusing the same string values the API package defines keeps the printer
-// columns (which match on type=="Ready") and any client tooling consistent.
-const (
-	// ConditionAccepted reports whether the spec was accepted for reconciliation.
-	ConditionAccepted = quayv1alpha1.ConditionAccepted
-	// ConditionProgrammed reports whether the desired state has been written into
-	// Quay.
-	ConditionProgrammed = quayv1alpha1.ConditionProgrammed
-	// ConditionReady reports whether the resource is provisioned and usable.
-	ConditionReady = quayv1alpha1.ConditionReady
-	// ConditionWebhookConfigured reports whether the Repository's repo_push
-	// webhook notification reflects the desired target URL. It is a
-	// Repository-only condition surfaced distinctly from Ready so an operator can
-	// tell a provisioned-but-webhookless repository (e.g. its urlSecretRef Secret
-	// has not been created yet) from a fully-wired one.
-	ConditionWebhookConfigured = quayv1alpha1.ConditionWebhookConfigured
-)
-
-// Condition reasons. Reasons are stable, CamelCase machine-readable tokens
-// (metav1.Condition requires this) describing why a condition holds its current
-// status. They are documented here so both reconcilers draw from one vocabulary.
-const (
-	// ReasonCreated marks the resource as newly created in Quay.
-	ReasonCreated = quayv1alpha1.ReasonCreated
-	// ReasonAdopted marks a pre-existing Quay object adopted by this resource.
-	ReasonAdopted = quayv1alpha1.ReasonAdopted
-	// ReasonConflict marks a condition False because a pre-existing,
-	// externally-created Quay object of the same name exists and the resource did
-	// not opt in to adoption (spec.adopt), or because an ownership marker belongs
-	// to another resource. The object is never silently seized.
-	ReasonConflict = quayv1alpha1.ReasonConflict
-	// ReasonReleased marks an adopted Quay object released (finalizer dropped
-	// without deleting) on CR removal — adoption is non-destructive.
-	ReasonReleased = quayv1alpha1.ReasonReleased
-	// ReasonCredentialsNotFound marks a condition False because the credential
-	// Secret (or a required key within it) could not be resolved.
-	ReasonCredentialsNotFound = quayv1alpha1.ReasonCredentialsNotFound
-	// ReasonQuayError marks a condition False because a Quay API call failed.
-	ReasonQuayError = quayv1alpha1.ReasonQuayError
-	// ReasonReconciled marks a Repository as in steady state — its Quay repository
-	// (and webhook, if configured) reflect the spec.
-	ReasonReconciled = quayv1alpha1.ReasonReconciled
-	// ReasonTeamConflict marks an Organization's Programmed/Ready conditions False
-	// because a spec.syncedTeams entry names a Quay team that already exists but was
-	// not created by this resource: it is absent from status.managedTeams and its
-	// description does not carry this CR's managedTeamMarker (the unforgeable,
-	// UID-bearing ownership marker). The team is never silently seized — adoption of
-	// a pre-existing team is a reconcile error, mirroring the org-level claim model
-	// even when the team happens to be bound to the entry's oidcGroup. It is
-	// distinct from ReasonConflict so an operator can tell an org-name conflict from
-	// a team conflict.
-	ReasonTeamConflict = quayv1alpha1.ReasonTeamConflict
-	// ReasonOrganizationNotReady marks a Repository's conditions False because the
-	// Quay organization named by spec.organizationRef does not yet exist. The
-	// Repository reconciler never creates the org; it requeues until the Organization
-	// reconciler provisions it.
-	ReasonOrganizationNotReady = quayv1alpha1.ReasonOrganizationNotReady
-	// ReasonWebhookURLNotFound marks the WebhookConfigured condition False because
-	// the webhook urlSecretRef Secret (or its key) could not be resolved. This is
-	// recoverable: the reconciler requeues so a later-created Secret takes effect.
-	ReasonWebhookURLNotFound = quayv1alpha1.ReasonWebhookURLNotFound
-	// ReasonWebhookURLReadError marks the WebhookConfigured condition False
-	// because the Kubernetes API read for the webhook urlSecretRef Secret failed
-	// for a transient reason.
-	ReasonWebhookURLReadError = quayv1alpha1.ReasonWebhookURLReadError
-	// ReasonInvalidWebhook marks a condition False because spec.webhook violated
-	// the mutual-exclusion rule (neither or both of url/urlSecretRef set) at
-	// runtime, a defense-in-depth check behind the CRD XValidation.
-	ReasonInvalidWebhook = quayv1alpha1.ReasonInvalidWebhook
-	// ReasonWebhookConfigured marks the WebhookConfigured condition True because
-	// the repo_push notification reflects the resolved webhook URL.
-	ReasonWebhookConfigured = quayv1alpha1.ReasonWebhookConfigured
-	// ReasonWebhookNotConfigured marks the WebhookConfigured condition False (with
-	// no error) because spec.webhook is unset — the repository is intentionally
-	// webhookless.
-	ReasonWebhookNotConfigured = quayv1alpha1.ReasonWebhookNotConfigured
-)
-
 // setCondition sets a single condition on the supplied condition slice using
 // apimachinery's meta.SetStatusCondition, stamping observedGeneration so callers
 // can tell which generation the condition reflects. It returns true when the
@@ -146,9 +58,9 @@ func setCondition(conditions *[]metav1.Condition, condType, status, reason, mess
 // of the three conditions changed, so callers can skip a redundant status write
 // and event (avoiding a self-triggered reconcile loop).
 func markReady(conditions *[]metav1.Condition, reason, message string, observedGeneration int64) bool {
-	a := setCondition(conditions, ConditionAccepted, string(metav1.ConditionTrue), reason, message, observedGeneration)
-	p := setCondition(conditions, ConditionProgrammed, string(metav1.ConditionTrue), reason, message, observedGeneration)
-	r := setCondition(conditions, ConditionReady, string(metav1.ConditionTrue), reason, message, observedGeneration)
+	a := setCondition(conditions, quayv1alpha1.ConditionAccepted, string(metav1.ConditionTrue), reason, message, observedGeneration)
+	p := setCondition(conditions, quayv1alpha1.ConditionProgrammed, string(metav1.ConditionTrue), reason, message, observedGeneration)
+	r := setCondition(conditions, quayv1alpha1.ConditionReady, string(metav1.ConditionTrue), reason, message, observedGeneration)
 	return a || p || r
 }
 
@@ -160,16 +72,16 @@ func conditionsTransitioned(before, after []metav1.Condition, types ...string) b
 // reason and message. The spec was understood; it just could not be programmed.
 // It returns true when any condition changed.
 func markNotReady(conditions *[]metav1.Condition, reason, message string, observedGeneration int64) bool {
-	a := setCondition(conditions, ConditionAccepted, string(metav1.ConditionTrue), reason, message, observedGeneration)
-	p := setCondition(conditions, ConditionProgrammed, string(metav1.ConditionFalse), reason, message, observedGeneration)
-	r := setCondition(conditions, ConditionReady, string(metav1.ConditionFalse), reason, message, observedGeneration)
+	a := setCondition(conditions, quayv1alpha1.ConditionAccepted, string(metav1.ConditionTrue), reason, message, observedGeneration)
+	p := setCondition(conditions, quayv1alpha1.ConditionProgrammed, string(metav1.ConditionFalse), reason, message, observedGeneration)
+	r := setCondition(conditions, quayv1alpha1.ConditionReady, string(metav1.ConditionFalse), reason, message, observedGeneration)
 	return a || p || r
 }
 
 // setConflict marks Programmed and Ready False with reason Conflict. It returns
 // true when either condition changed.
 func setConflict(conditions *[]metav1.Condition, message string, observedGeneration int64) bool {
-	return markNotReady(conditions, ReasonConflict, message, observedGeneration)
+	return markNotReady(conditions, quayv1alpha1.ReasonConflict, message, observedGeneration)
 }
 
 // setTeamConflict marks Programmed and Ready False with reason TeamConflict — the
@@ -177,7 +89,7 @@ func setConflict(conditions *[]metav1.Condition, message string, observedGenerat
 // pre-existing Quay team this resource did not create. It returns true when either
 // condition changed.
 func setTeamConflict(conditions *[]metav1.Condition, message string, observedGeneration int64) bool {
-	return markNotReady(conditions, ReasonTeamConflict, message, observedGeneration)
+	return markNotReady(conditions, quayv1alpha1.ReasonTeamConflict, message, observedGeneration)
 }
 
 // setWebhookCondition sets the WebhookConfigured condition to the given status
@@ -186,5 +98,5 @@ func setTeamConflict(conditions *[]metav1.Condition, message string, observedGen
 // Repository draws its condition vocabulary from the same place as Organization.
 // It returns true when the condition changed.
 func setWebhookCondition(conditions *[]metav1.Condition, status metav1.ConditionStatus, reason, message string, observedGeneration int64) bool {
-	return setCondition(conditions, ConditionWebhookConfigured, string(status), reason, message, observedGeneration)
+	return setCondition(conditions, quayv1alpha1.ConditionWebhookConfigured, string(status), reason, message, observedGeneration)
 }

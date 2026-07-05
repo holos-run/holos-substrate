@@ -121,9 +121,9 @@ func makeReadyOrg(ctx context.Context, t *testing.T, ns, orgName string) string 
 		t.Fatalf("getting created Organization: %v", err)
 	}
 	meta.SetStatusCondition(&org.Status.Conditions, metav1.Condition{
-		Type:               ConditionReady,
+		Type:               quayv1alpha1.ConditionReady,
 		Status:             metav1.ConditionTrue,
-		Reason:             ReasonCreated,
+		Reason:             quayv1alpha1.ReasonCreated,
 		Message:            "ready for test",
 		ObservedGeneration: org.Generation,
 	})
@@ -221,14 +221,14 @@ func TestRepositoryCreatesWithInlineWebhook(t *testing.T) {
 	if repo.Status.WebhookNotificationUUID == "" {
 		t.Fatal("status.webhookNotificationUUID is empty, want recorded controller webhook UUID")
 	}
-	if got := repoConditionStatus(repo, ConditionReady); got != metav1.ConditionTrue {
+	if got := repoConditionStatus(repo, quayv1alpha1.ConditionReady); got != metav1.ConditionTrue {
 		t.Errorf("Ready = %q, want True", got)
 	}
-	if got := repoConditionStatus(repo, ConditionWebhookConfigured); got != metav1.ConditionTrue {
+	if got := repoConditionStatus(repo, quayv1alpha1.ConditionWebhookConfigured); got != metav1.ConditionTrue {
 		t.Errorf("WebhookConfigured = %q, want True", got)
 	}
-	if got := repoConditionReason(repo, ConditionWebhookConfigured); got != ReasonWebhookConfigured {
-		t.Errorf("WebhookConfigured reason = %q, want %q", got, ReasonWebhookConfigured)
+	if got := repoConditionReason(repo, quayv1alpha1.ConditionWebhookConfigured); got != quayv1alpha1.ReasonWebhookConfigured {
+		t.Errorf("WebhookConfigured reason = %q, want %q", got, quayv1alpha1.ReasonWebhookConfigured)
 	}
 	if repo.Status.ObservedGeneration != repo.Generation {
 		t.Errorf("observedGeneration = %d, want %d", repo.Status.ObservedGeneration, repo.Generation)
@@ -244,7 +244,7 @@ func TestRepositoryCreatesWithInlineWebhook(t *testing.T) {
 	}
 	firstValidated := repo.Status.LastValidatedTime.DeepCopy()
 	firstMutated := repo.Status.LastMutatedTime.DeepCopy()
-	assertEvent(t, recorder, ReasonReconciled)
+	assertEvent(t, recorder, quayv1alpha1.ReasonReconciled)
 
 	time.Sleep(time.Second + 100*time.Millisecond)
 	result, err := reconcileRepo(ctx, r, key)
@@ -261,7 +261,7 @@ func TestRepositoryCreatesWithInlineWebhook(t *testing.T) {
 	if !repo.Status.LastMutatedTime.Equal(firstMutated) {
 		t.Errorf("lastMutatedTime changed on steady validation: first=%v second=%v", firstMutated, repo.Status.LastMutatedTime)
 	}
-	assertNoEvent(t, recorder, ReasonReconciled)
+	assertNoEvent(t, recorder, quayv1alpha1.ReasonReconciled)
 }
 
 func TestRepositoryThreadsCABundleToClientFactory(t *testing.T) {
@@ -306,11 +306,11 @@ func TestRepositoryInvalidCABundleFailsWithoutQuayCall(t *testing.T) {
 		t.Errorf("expected no Quay calls for an invalid caBundle, calls were %v", fake.calls)
 	}
 	got := getRepo(ctx, t, key)
-	if s := repoConditionStatus(got, ConditionReady); s != metav1.ConditionFalse {
+	if s := repoConditionStatus(got, quayv1alpha1.ConditionReady); s != metav1.ConditionFalse {
 		t.Errorf("Ready = %q, want False for an invalid caBundle", s)
 	}
-	if reason := repoConditionReason(got, ConditionReady); reason != ReasonQuayError {
-		t.Errorf("Ready reason = %q, want %q", reason, ReasonQuayError)
+	if reason := repoConditionReason(got, quayv1alpha1.ConditionReady); reason != quayv1alpha1.ReasonQuayError {
+		t.Errorf("Ready reason = %q, want %q", reason, quayv1alpha1.ReasonQuayError)
 	}
 }
 
@@ -395,11 +395,11 @@ func TestRepositoryCreatesWithSecretRefWebhook(t *testing.T) {
 		t.Errorf("webhook URLs = %v, want exactly [%s]", urls, hook)
 	}
 	repo := getRepo(ctx, t, key)
-	if got := repoConditionStatus(repo, ConditionWebhookConfigured); got != metav1.ConditionTrue {
+	if got := repoConditionStatus(repo, quayv1alpha1.ConditionWebhookConfigured); got != metav1.ConditionTrue {
 		t.Errorf("WebhookConfigured = %q, want True", got)
 	}
 	// The secret-backed webhook URL is sensitive; it must NOT appear in status.
-	if c := meta.FindStatusCondition(repo.Status.Conditions, ConditionWebhookConfigured); c != nil && strings.Contains(c.Message, hook) {
+	if c := meta.FindStatusCondition(repo.Status.Conditions, quayv1alpha1.ConditionWebhookConfigured); c != nil && strings.Contains(c.Message, hook) {
 		t.Errorf("WebhookConfigured message leaked the secret URL: %q", c.Message)
 	}
 
@@ -513,17 +513,17 @@ func TestRepositoryWebhookSecretReadErrorPersistsPriorMutation(t *testing.T) {
 		t.Fatal("expected repository create to complete before webhook Secret read failed")
 	}
 	repo := getRepo(ctx, t, key)
-	if got := repoConditionStatus(repo, ConditionReady); got != metav1.ConditionFalse {
+	if got := repoConditionStatus(repo, quayv1alpha1.ConditionReady); got != metav1.ConditionFalse {
 		t.Errorf("Ready = %q, want False after webhook Secret read error", got)
 	}
-	if got := repoConditionReason(repo, ConditionReady); got != ReasonWebhookURLReadError {
-		t.Errorf("Ready reason = %q, want %q", got, ReasonWebhookURLReadError)
+	if got := repoConditionReason(repo, quayv1alpha1.ConditionReady); got != quayv1alpha1.ReasonWebhookURLReadError {
+		t.Errorf("Ready reason = %q, want %q", got, quayv1alpha1.ReasonWebhookURLReadError)
 	}
-	if got := repoConditionStatus(repo, ConditionWebhookConfigured); got != metav1.ConditionFalse {
+	if got := repoConditionStatus(repo, quayv1alpha1.ConditionWebhookConfigured); got != metav1.ConditionFalse {
 		t.Errorf("WebhookConfigured = %q, want False after webhook Secret read error", got)
 	}
-	if got := repoConditionReason(repo, ConditionWebhookConfigured); got != ReasonWebhookURLReadError {
-		t.Errorf("WebhookConfigured reason = %q, want %q", got, ReasonWebhookURLReadError)
+	if got := repoConditionReason(repo, quayv1alpha1.ConditionWebhookConfigured); got != quayv1alpha1.ReasonWebhookURLReadError {
+		t.Errorf("WebhookConfigured reason = %q, want %q", got, quayv1alpha1.ReasonWebhookURLReadError)
 	}
 	if repo.Status.LastMutatedTime == nil || repo.Status.LastMutationReason != quayv1alpha1.MutationReasonSpecChange {
 		t.Errorf("mutation status = (%v, %q), want stamped SpecChange after repository create", repo.Status.LastMutatedTime, repo.Status.LastMutationReason)
@@ -579,13 +579,13 @@ func TestRepositorySecretRefMissingKeySetsConditionAndRequeues(t *testing.T) {
 	}
 
 	repo := getRepo(ctx, t, key)
-	if got := repoConditionStatus(repo, ConditionWebhookConfigured); got != metav1.ConditionFalse {
+	if got := repoConditionStatus(repo, quayv1alpha1.ConditionWebhookConfigured); got != metav1.ConditionFalse {
 		t.Errorf("WebhookConfigured = %q, want False", got)
 	}
-	if got := repoConditionReason(repo, ConditionWebhookConfigured); got != ReasonWebhookURLNotFound {
-		t.Errorf("WebhookConfigured reason = %q, want %q", got, ReasonWebhookURLNotFound)
+	if got := repoConditionReason(repo, quayv1alpha1.ConditionWebhookConfigured); got != quayv1alpha1.ReasonWebhookURLNotFound {
+		t.Errorf("WebhookConfigured reason = %q, want %q", got, quayv1alpha1.ReasonWebhookURLNotFound)
 	}
-	assertEvent(t, recorder, ReasonWebhookURLNotFound)
+	assertEvent(t, recorder, quayv1alpha1.ReasonWebhookURLNotFound)
 }
 
 func TestRepositoryCorrectsVisibilityAndDescriptionDrift(t *testing.T) {
@@ -652,8 +652,8 @@ func TestRepositoryExistingUnclaimedWithoutAdoptIsConflict(t *testing.T) {
 	}
 
 	repo := getRepo(ctx, t, key)
-	if got := repoConditionReason(repo, ConditionReady); got != ReasonConflict {
-		t.Errorf("Ready reason = %q, want %q", got, ReasonConflict)
+	if got := repoConditionReason(repo, quayv1alpha1.ConditionReady); got != quayv1alpha1.ReasonConflict {
+		t.Errorf("Ready reason = %q, want %q", got, quayv1alpha1.ReasonConflict)
 	}
 	if repo.Status.Created != nil && *repo.Status.Created {
 		t.Errorf("status.created = %v, want unset/false on conflict", repo.Status.Created)
@@ -661,7 +661,7 @@ func TestRepositoryExistingUnclaimedWithoutAdoptIsConflict(t *testing.T) {
 	if st := fake.repos[repoKey("acme", "foreign")]; st.description != "human repo" {
 		t.Errorf("description mutated on conflict: %q", st.description)
 	}
-	assertEvent(t, recorder, ReasonConflict)
+	assertEvent(t, recorder, quayv1alpha1.ReasonConflict)
 }
 
 func TestRepositoryAdoptsExistingRepository(t *testing.T) {
@@ -792,7 +792,7 @@ func TestRepositoryStampsPartialMutationWhenDescriptionUpdateFails(t *testing.T)
 	}
 
 	repo := getRepo(ctx, t, key)
-	if got := repoConditionStatus(repo, ConditionReady); got != metav1.ConditionFalse {
+	if got := repoConditionStatus(repo, quayv1alpha1.ConditionReady); got != metav1.ConditionFalse {
 		t.Errorf("Ready = %q, want False after partial repository update failure", got)
 	}
 	if repo.Status.LastValidatedTime == nil || !repo.Status.LastValidatedTime.Equal(firstValidated) {
@@ -975,7 +975,7 @@ func TestRepositoryStampsWebhookDeleteBeforeFailedCreate(t *testing.T) {
 	}
 
 	repo = getRepo(ctx, t, key)
-	if got := repoConditionStatus(repo, ConditionReady); got != metav1.ConditionFalse {
+	if got := repoConditionStatus(repo, quayv1alpha1.ConditionReady); got != metav1.ConditionFalse {
 		t.Errorf("Ready = %q, want False after webhook create failure", got)
 	}
 	if repo.Status.LastValidatedTime == nil || !repo.Status.LastValidatedTime.Equal(firstValidated) {
@@ -1020,10 +1020,10 @@ func TestRepositoryOrganizationNotReadyRequeues(t *testing.T) {
 		t.Errorf("must not create a repo before the org exists; calls were %v", fake.calls)
 	}
 	repo := getRepo(ctx, t, key)
-	if got := repoConditionReason(repo, ConditionReady); got != ReasonOrganizationNotReady {
-		t.Errorf("Ready reason = %q, want %q", got, ReasonOrganizationNotReady)
+	if got := repoConditionReason(repo, quayv1alpha1.ConditionReady); got != quayv1alpha1.ReasonOrganizationNotReady {
+		t.Errorf("Ready reason = %q, want %q", got, quayv1alpha1.ReasonOrganizationNotReady)
 	}
-	assertEvent(t, recorder, ReasonOrganizationNotReady)
+	assertEvent(t, recorder, quayv1alpha1.ReasonOrganizationNotReady)
 }
 
 func TestRepositoryMissingCredentialSetsConditionAndNoQuayCall(t *testing.T) {
@@ -1048,10 +1048,10 @@ func TestRepositoryMissingCredentialSetsConditionAndNoQuayCall(t *testing.T) {
 		t.Errorf("expected no Quay calls when the credential Secret is missing, got %v", fake.calls)
 	}
 	repo := getRepo(ctx, t, key)
-	if got := repoConditionReason(repo, ConditionReady); got != ReasonCredentialsNotFound {
-		t.Errorf("Ready reason = %q, want %q", got, ReasonCredentialsNotFound)
+	if got := repoConditionReason(repo, quayv1alpha1.ConditionReady); got != quayv1alpha1.ReasonCredentialsNotFound {
+		t.Errorf("Ready reason = %q, want %q", got, quayv1alpha1.ReasonCredentialsNotFound)
 	}
-	assertEvent(t, recorder, ReasonCredentialsNotFound)
+	assertEvent(t, recorder, quayv1alpha1.ReasonCredentialsNotFound)
 }
 
 func TestRepositoryNoWebhookIsWebhookless(t *testing.T) {
@@ -1070,14 +1070,14 @@ func TestRepositoryNoWebhookIsWebhookless(t *testing.T) {
 	}
 
 	repo := getRepo(ctx, t, key)
-	if got := repoConditionStatus(repo, ConditionReady); got != metav1.ConditionTrue {
+	if got := repoConditionStatus(repo, quayv1alpha1.ConditionReady); got != metav1.ConditionTrue {
 		t.Errorf("Ready = %q, want True", got)
 	}
-	if got := repoConditionStatus(repo, ConditionWebhookConfigured); got != metav1.ConditionFalse {
+	if got := repoConditionStatus(repo, quayv1alpha1.ConditionWebhookConfigured); got != metav1.ConditionFalse {
 		t.Errorf("WebhookConfigured = %q, want False (webhookless)", got)
 	}
-	if got := repoConditionReason(repo, ConditionWebhookConfigured); got != ReasonWebhookNotConfigured {
-		t.Errorf("WebhookConfigured reason = %q, want %q", got, ReasonWebhookNotConfigured)
+	if got := repoConditionReason(repo, quayv1alpha1.ConditionWebhookConfigured); got != quayv1alpha1.ReasonWebhookNotConfigured {
+		t.Errorf("WebhookConfigured reason = %q, want %q", got, quayv1alpha1.ReasonWebhookNotConfigured)
 	}
 }
 
@@ -1180,7 +1180,7 @@ func TestRepositoryDeleteReleasesAdoptedRepositoryWithoutDeleting(t *testing.T) 
 	if urls := fake.webhookURLs("acme", "adoptdelete"); len(urls) != 1 || urls[0] != manualHook {
 		t.Errorf("webhook URLs after release = %v, want only manual hook", urls)
 	}
-	assertEvent(t, recorder, ReasonReleased)
+	assertEvent(t, recorder, quayv1alpha1.ReasonReleased)
 }
 
 func TestRepositoryDeleteWithForeignMarkerRemovesManagedWebhook(t *testing.T) {
@@ -1235,7 +1235,7 @@ func TestRepositoryDeleteWithForeignMarkerRemovesManagedWebhook(t *testing.T) {
 	if got := fake.repos[repoKey("acme", "foreignmarker")].description; got != foreignDescription {
 		t.Errorf("description after release = %q, want foreign marker preserved as %q", got, foreignDescription)
 	}
-	assertEvent(t, recorder, ReasonReleased)
+	assertEvent(t, recorder, quayv1alpha1.ReasonReleased)
 }
 
 func TestRepositoryCreateRaceConfirmedByGet(t *testing.T) {
@@ -1258,7 +1258,7 @@ func TestRepositoryCreateRaceConfirmedByGet(t *testing.T) {
 	if repo.Status.Created == nil || !*repo.Status.Created {
 		t.Errorf("status.created = %v, want true when GET confirms our create", repo.Status.Created)
 	}
-	if got := repoConditionStatus(repo, ConditionReady); got != metav1.ConditionTrue {
+	if got := repoConditionStatus(repo, quayv1alpha1.ConditionReady); got != metav1.ConditionTrue {
 		t.Errorf("Ready = %q, want True after confirmed create race", got)
 	}
 }
@@ -1283,7 +1283,7 @@ func TestRepositoryResolvesQuayOrgThroughOrganizationSpecName(t *testing.T) {
 		t.Fatalf("getting created Organization: %v", err)
 	}
 	meta.SetStatusCondition(&org.Status.Conditions, metav1.Condition{
-		Type: ConditionReady, Status: metav1.ConditionTrue, Reason: ReasonCreated, Message: "ready", ObservedGeneration: org.Generation,
+		Type: quayv1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: quayv1alpha1.ReasonCreated, Message: "ready", ObservedGeneration: org.Generation,
 	})
 	org.Status.ObservedGeneration = org.Generation
 	if err := shared.k8sClient.Status().Update(ctx, org); err != nil {
@@ -1344,8 +1344,8 @@ func TestRepositoryOrganizationExistsButNotReadyRequeues(t *testing.T) {
 		t.Errorf("expected no Quay calls while the org is not Ready, got %v", fake.calls)
 	}
 	repo := getRepo(ctx, t, key)
-	if got := repoConditionReason(repo, ConditionReady); got != ReasonOrganizationNotReady {
-		t.Errorf("Ready reason = %q, want %q", got, ReasonOrganizationNotReady)
+	if got := repoConditionReason(repo, quayv1alpha1.ConditionReady); got != quayv1alpha1.ReasonOrganizationNotReady {
+		t.Errorf("Ready reason = %q, want %q", got, quayv1alpha1.ReasonOrganizationNotReady)
 	}
 }
 
