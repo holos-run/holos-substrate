@@ -232,7 +232,7 @@ func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger log
 	// a failed reconcile (Ready=False) rather than silently falling back to
 	// system trust and possibly reporting Ready=True for an unhonored spec.
 	if err := quay.ValidateCABundle(org.Spec.CABundle); err != nil {
-		return r.fail(ctx, org, err)
+		return r.fail(ctx, org, err, false)
 	}
 
 	qc := r.NewClient(cred, org.Spec.CABundle)
@@ -274,11 +274,12 @@ func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger log
 			// org for a foreign one and releasing it (Codex round 1).
 			setStatusCreated(org, true)
 			if markerErr := r.ensureOwnerMarker(ctx, qc, org); markerErr != nil {
+				r.stampMutation(org, false)
 				// fail() persists status (carrying Created=true) and requeues, so
 				// the heal path recovers the marker on the next reconcile.
-				return r.fail(ctx, org, markerErr)
+				return r.fail(ctx, org, markerErr, true)
 			}
-			return r.reconcileTeamsThenSucceed(ctx, logger, qc, org, true, ReasonCreated,
+			return r.reconcileTeamsThenSucceed(ctx, logger, qc, org, quayMutation{Mutated: true}, ReasonCreated,
 				fmt.Sprintf("created Quay organization %q", org.Spec.Name))
 		case quay.IsConflict(err):
 			// Lost the create race: the org now exists but this CR did not
@@ -286,7 +287,7 @@ func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger log
 			// marker, adopt, or Conflict).
 			return r.reconcileExisting(ctx, logger, qc, org, nil)
 		default:
-			return r.fail(ctx, org, fmt.Errorf("creating Quay organization %q: %w", org.Spec.Name, err))
+			return r.fail(ctx, org, fmt.Errorf("creating Quay organization %q: %w", org.Spec.Name, err), false)
 		}
 
 	case getErr == nil:
@@ -295,7 +296,7 @@ func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger log
 
 	default:
 		// Any other Quay error (auth, server error): fail and requeue.
-		return r.fail(ctx, org, fmt.Errorf("getting Quay organization %q: %w", org.Spec.Name, getErr))
+		return r.fail(ctx, org, fmt.Errorf("getting Quay organization %q: %w", org.Spec.Name, getErr), false)
 	}
 }
 
@@ -334,7 +335,7 @@ func (r *OrganizationReconciler) reconcileExisting(ctx context.Context, logger l
 		// it and continue as owned rather than mis-releasing the org.
 		if statusCreated(org) {
 			if err := r.ensureOwnerMarker(ctx, qc, org); err != nil {
-				return r.fail(ctx, org, err)
+				return r.fail(ctx, org, err, false)
 			}
 			return r.reconcileOwned(ctx, logger, qc, org, actual, true)
 		}
@@ -343,7 +344,7 @@ func (r *OrganizationReconciler) reconcileExisting(ctx context.Context, logger l
 
 	default:
 		// Any other Quay error reading the marker: fail and requeue.
-		return r.fail(ctx, org, fmt.Errorf("reading ownership marker for Quay organization %q: %w", org.Spec.Name, markerErr))
+		return r.fail(ctx, org, fmt.Errorf("reading ownership marker for Quay organization %q: %w", org.Spec.Name, markerErr), false)
 	}
 }
 
@@ -351,7 +352,8 @@ func (r *OrganizationReconciler) reconcileExisting(ctx context.Context, logger l
 // status.Created, pushes any mutable spec drift (the contact email) to Quay, then
 // marks Ready. It never errors on an org we own beyond a genuine Quay-API failure.
 func (r *OrganizationReconciler) reconcileOwned(ctx context.Context, logger logr.Logger, qc OrgClient, org *quayv1alpha1.Organization, actual *quay.Organization, markerMutated ...bool) (ctrl.Result, error) {
-	mutated := len(markerMutated) > 0 && markerMutated[0]
+	mutation := quayMutation{Mutated: len(markerMutated) > 0 && markerMutated[0]}
+	canMarkDrift := organizationReady(org)
 	setStatusCreated(org, true)
 
 	// Apply mutable spec drift before marking Ready. Quay 3.17.3 organizations
@@ -361,7 +363,10 @@ func (r *OrganizationReconciler) reconcileOwned(ctx context.Context, logger logr
 		fetched, err := qc.GetOrganization(ctx, org.Spec.Name)
 		recordQuayAPI(opGetOrganization, err)
 		if err != nil {
-			return r.fail(ctx, org, fmt.Errorf("getting Quay organization %q: %w", org.Spec.Name, err))
+			if mutation.Mutated {
+				r.stampMutation(org, mutation.HealedDrift)
+			}
+			return r.fail(ctx, org, fmt.Errorf("getting Quay organization %q: %w", org.Spec.Name, err), mutation.Mutated)
 		}
 		actual = fetched
 	}
@@ -369,13 +374,16 @@ func (r *OrganizationReconciler) reconcileOwned(ctx context.Context, logger logr
 		updateErr := qc.UpdateOrganization(ctx, org.Spec.Name, org.Spec.Email)
 		recordQuayAPI(opUpdateOrganization, updateErr)
 		if updateErr != nil {
-			return r.fail(ctx, org, fmt.Errorf("updating Quay organization %q: %w", org.Spec.Name, updateErr))
+			if mutation.Mutated {
+				r.stampMutation(org, mutation.HealedDrift)
+			}
+			return r.fail(ctx, org, fmt.Errorf("updating Quay organization %q: %w", org.Spec.Name, updateErr), mutation.Mutated)
 		}
-		mutated = true
+		mutation = mutation.or(quayMutation{Mutated: true, HealedDrift: canMarkDrift})
 		logger.Info("applied Organization email drift", "name", org.Spec.Name)
 	}
 
-	return r.reconcileTeamsThenSucceed(ctx, logger, qc, org, mutated, ReasonCreated,
+	return r.reconcileTeamsThenSucceed(ctx, logger, qc, org, mutation, ReasonCreated,
 		fmt.Sprintf("reconciled Quay organization %q", org.Spec.Name))
 }
 
@@ -433,7 +441,7 @@ func (r *OrganizationReconciler) conflict(ctx context.Context, logger logr.Logge
 func (r *OrganizationReconciler) reconcileExistingUnowned(ctx context.Context, logger logr.Logger, qc OrgClient, org *quayv1alpha1.Organization) (ctrl.Result, error) {
 	if org.Spec.Adopt {
 		setStatusCreated(org, false)
-		return r.reconcileTeamsThenSucceed(ctx, logger, qc, org, false, ReasonAdopted,
+		return r.reconcileTeamsThenSucceed(ctx, logger, qc, org, quayMutation{}, ReasonAdopted,
 			fmt.Sprintf("adopted existing Quay organization %q", org.Spec.Name))
 	}
 
@@ -461,30 +469,33 @@ func (r *OrganizationReconciler) reconcileExistingUnowned(ctx context.Context, l
 // rather than a generic Quay error; any other Quay error fails the reconcile and
 // requeues. The status write that succeed()/teamConflict() performs also persists
 // the status.managedTeams set reconcileSyncedTeams computed.
-func (r *OrganizationReconciler) reconcileTeamsThenSucceed(ctx context.Context, logger logr.Logger, qc OrgClient, org *quayv1alpha1.Organization, mutated bool, reason, message string) (ctrl.Result, error) {
+func (r *OrganizationReconciler) reconcileTeamsThenSucceed(ctx context.Context, logger logr.Logger, qc OrgClient, org *quayv1alpha1.Organization, mutation quayMutation, reason, message string) (ctrl.Result, error) {
 	// Snapshot the managed-team set so a change to status.managedTeams (e.g. a team
 	// added, removed, or healed in) is persisted even when Ready and
 	// observedGeneration are unchanged — without it, succeed() would skip the write
 	// on a steady-state reconcile and lose the updated ownership record.
 	before := append([]string(nil), org.Status.ManagedTeams...)
-	teamMutated, err := r.reconcileSyncedTeams(ctx, qc, org)
-	mutated = mutated || teamMutated
+	teamMutation, err := r.reconcileSyncedTeams(ctx, qc, org)
+	mutation = mutation.or(teamMutation)
 	// reconcileSyncedTeams may rewrite status.managedTeams even when it returns a
 	// (conflict) error — it persists the progress made before the conflict — so
 	// compute the change for both the success and the conflict status write.
 	managedChanged := !equalStrings(before, org.Status.ManagedTeams)
 	if err != nil {
-		if isTeamConflict(err) {
-			return r.teamConflict(ctx, logger, org, err.Error(), managedChanged)
+		if mutation.Mutated {
+			r.stampMutation(org, mutation.HealedDrift)
 		}
-		return r.fail(ctx, org, err)
+		if isTeamConflict(err) {
+			return r.teamConflict(ctx, logger, org, err.Error(), managedChanged || mutation.Mutated)
+		}
+		return r.fail(ctx, org, err, managedChanged || mutation.Mutated)
 	}
-	if mutated {
-		r.stampMutation(org)
+	if mutation.Mutated {
+		r.stampMutation(org, mutation.HealedDrift)
 	}
 	now := metav1.Now()
 	org.Status.LastValidatedTime = &now
-	return r.succeed(ctx, logger, org, reason, message, managedChanged)
+	return r.succeed(ctx, logger, org, reason, message)
 }
 
 // equalStrings reports whether two string slices are element-wise equal. Both
@@ -525,29 +536,25 @@ func (r *OrganizationReconciler) teamConflict(ctx context.Context, logger logr.L
 	return ctrl.Result{}, nil
 }
 
-// succeed stamps Ready/Programmed/Accepted true with the given reason+message.
-// It emits a Normal event and writes status only when something actually changed
-// (a condition flipped, observedGeneration advanced, or extraChanged is set), so a
-// steady-state reconcile of an unchanged resource does not write status — which
-// would otherwise re-enqueue the object and spin a reconcile/update/event loop.
-// extraChanged is load-bearing for status.managedTeams: a team set that changes
-// without flipping Ready or bumping the generation must still be persisted.
-func (r *OrganizationReconciler) succeed(ctx context.Context, logger logr.Logger, org *quayv1alpha1.Organization, reason, message string, extraChanged bool) (ctrl.Result, error) {
-	validationChanged := true
-	changed := markReady(&org.Status.Conditions, reason, message, org.Generation)
-	changed = changed || extraChanged || validationChanged || org.Status.ObservedGeneration != org.Generation
-	if !changed {
-		return ctrl.Result{RequeueAfter: quayExternalResourceResync}, nil
+// succeed stages Ready/Programmed/Accepted true and writes status on every
+// successful validation so lastValidatedTime is persisted. Normal events and Info
+// logs are emitted only when a condition's status, reason, or observedGeneration
+// transitions.
+func (r *OrganizationReconciler) succeed(ctx context.Context, logger logr.Logger, org *quayv1alpha1.Organization, reason, message string) (ctrl.Result, error) {
+	beforeConditions := append([]metav1.Condition(nil), org.Status.Conditions...)
+	markReady(&org.Status.Conditions, reason, message, org.Generation)
+	conditionTransitioned := conditionsTransitioned(beforeConditions, org.Status.Conditions, ConditionAccepted, ConditionProgrammed, ConditionReady)
+	if conditionTransitioned {
+		r.Recorder.Event(org, corev1.EventTypeNormal, reason, message)
+		logger.Info("reconciled Organization", "name", org.Spec.Name, "reason", reason)
 	}
-	r.Recorder.Event(org, corev1.EventTypeNormal, reason, message)
-	logger.Info("reconciled Organization", "name", org.Spec.Name, "reason", reason)
 	if err := r.updateStatus(ctx, org); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: quayExternalResourceResync}, nil
 }
 
-func (r *OrganizationReconciler) stampMutation(org *quayv1alpha1.Organization) {
+func (r *OrganizationReconciler) stampMutation(org *quayv1alpha1.Organization, healedDrift bool) {
 	now := metav1.Now()
 	reason := quayv1alpha1.MutationReasonDriftRemediation
 	if org.Status.ObservedGeneration != org.Generation || !organizationReady(org) {
@@ -555,7 +562,7 @@ func (r *OrganizationReconciler) stampMutation(org *quayv1alpha1.Organization) {
 	}
 	org.Status.LastMutatedTime = &now
 	org.Status.LastMutationReason = reason
-	if reason == quayv1alpha1.MutationReasonDriftRemediation {
+	if reason == quayv1alpha1.MutationReasonDriftRemediation || healedDrift {
 		org.Status.LastDriftTime = &now
 	}
 }
@@ -726,9 +733,12 @@ func (r *OrganizationReconciler) handleCredentialError(ctx context.Context, org 
 // emitted only when the condition actually changed, so a persistently failing
 // reconcile does not re-emit identical events on every backoff retry — the
 // returned error already drives the requeue.
-func (r *OrganizationReconciler) fail(ctx context.Context, org *quayv1alpha1.Organization, err error) (ctrl.Result, error) {
-	if changed := markNotReady(&org.Status.Conditions, ReasonQuayError, err.Error(), org.Generation); changed {
-		r.Recorder.Event(org, corev1.EventTypeWarning, ReasonQuayError, err.Error())
+func (r *OrganizationReconciler) fail(ctx context.Context, org *quayv1alpha1.Organization, err error, extraChanged bool) (ctrl.Result, error) {
+	conditionChanged := markNotReady(&org.Status.Conditions, ReasonQuayError, err.Error(), org.Generation)
+	if conditionChanged || extraChanged {
+		if conditionChanged {
+			r.Recorder.Event(org, corev1.EventTypeWarning, ReasonQuayError, err.Error())
+		}
 		if statusErr := r.updateStatus(ctx, org); statusErr != nil {
 			// Prefer surfacing the original Quay error; log the status failure.
 			log.FromContext(ctx).Error(statusErr, "updating status after Quay error")

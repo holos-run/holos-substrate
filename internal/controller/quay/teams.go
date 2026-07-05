@@ -74,9 +74,10 @@ func isTeamConflict(err error) bool {
 // controller now manages (sorted for a stable status). On the first conflict it
 // returns a teamConflictError so the caller sets the TeamConflict condition; the
 // managed set computed up to that point is still persisted so progress is durable.
-func (r *OrganizationReconciler) reconcileSyncedTeams(ctx context.Context, qc OrgClient, org *quayv1alpha1.Organization) (bool, error) {
-	mutated := false
+func (r *OrganizationReconciler) reconcileSyncedTeams(ctx context.Context, qc OrgClient, org *quayv1alpha1.Organization) (quayMutation, error) {
+	mutation := quayMutation{}
 	orgName := org.Spec.Name
+	canMarkDrift := organizationReady(org)
 
 	// The set of teams this CR currently records as managed (its durable owner
 	// record). Map for O(1) membership, mutated as teams are added/removed.
@@ -91,7 +92,7 @@ func (r *OrganizationReconciler) reconcileSyncedTeams(ctx context.Context, qc Or
 	teams, err := qc.ListTeams(ctx, orgName)
 	recordQuayAPI(opListTeams, err)
 	if err != nil {
-		return mutated, fmt.Errorf("listing Quay teams for organization %q: %w", orgName, err)
+		return mutation, fmt.Errorf("listing Quay teams for organization %q: %w", orgName, err)
 	}
 
 	// Index desired teams by name for the de-provision diff below.
@@ -109,11 +110,13 @@ func (r *OrganizationReconciler) reconcileSyncedTeams(ctx context.Context, qc Or
 		if _, stillDesired := desired[name]; stillDesired {
 			continue
 		}
-		teamMutated, err := r.deprovisionTeam(ctx, qc, orgName, name)
+		_, teamPresent := teams[name]
+		teamMutation, err := r.deprovisionTeam(ctx, qc, orgName, name, teamPresent)
+		mutation = mutation.or(teamMutation)
 		if err != nil {
-			return mutated, err
+			r.writeManagedTeams(org, managed)
+			return mutation, err
 		}
-		mutated = mutated || teamMutated
 		delete(managed, name)
 	}
 
@@ -124,6 +127,7 @@ func (r *OrganizationReconciler) reconcileSyncedTeams(ctx context.Context, qc Or
 		t := &org.Spec.SyncedTeams[i]
 		existing, present := teams[t.Name]
 		owned := managed[t.Name]
+		ownedBefore := owned || (present && existing.Description == managedTeamMarker(org))
 
 		if present && !owned {
 			// Heal-or-conflict for an existing team this CR does not yet record.
@@ -143,7 +147,7 @@ func (r *OrganizationReconciler) reconcileSyncedTeams(ctx context.Context, qc Or
 			if existing.Description != managedTeamMarker(org) {
 				// Conflict: persist progress so far, then surface the conflict.
 				r.writeManagedTeams(org, managed)
-				return mutated, &teamConflictError{team: t.Name}
+				return mutation, &teamConflictError{team: t.Name}
 			}
 			managed[t.Name] = true
 		}
@@ -156,22 +160,24 @@ func (r *OrganizationReconciler) reconcileSyncedTeams(ctx context.Context, qc Or
 		// this CR's UID) is the backstop that lets the next reconcile heal the team
 		// back into ownership rather than mistaking it for foreign — independent of
 		// whether the sync binding step had a chance to run.
-		teamMutated, err := r.ensureTeamUpserted(ctx, qc, org, t, existing, present)
+		teamMutation, err := r.ensureTeamUpserted(ctx, qc, org, t, existing, present, owned, canMarkDrift)
+		mutation = mutation.or(teamMutation)
 		if err != nil {
-			return mutated, err
+			r.writeManagedTeams(org, managed)
+			return mutation, err
 		}
-		mutated = mutated || teamMutated
 		managed[t.Name] = true
 
-		teamMutated, err = r.ensureTeamSyncAndPrototype(ctx, qc, orgName, t)
+		teamMutation, err = r.ensureTeamSyncAndPrototype(ctx, qc, orgName, t, ownedBefore, canMarkDrift)
+		mutation = mutation.or(teamMutation)
 		if err != nil {
-			return mutated, err
+			r.writeManagedTeams(org, managed)
+			return mutation, err
 		}
-		mutated = mutated || teamMutated
 	}
 
 	r.writeManagedTeams(org, managed)
-	return mutated, nil
+	return mutation, nil
 }
 
 // ensureTeamUpserted upserts a single desired team to its role with the
@@ -186,49 +192,49 @@ func (r *OrganizationReconciler) reconcileSyncedTeams(ctx context.Context, qc Or
 // description is not yet this CR's marker (so a team created with an older or
 // missing marker gets stamped), and is skipped only when the team already matches
 // on both role and marker — keeping a steady-state reconcile call-free.
-func (r *OrganizationReconciler) ensureTeamUpserted(ctx context.Context, qc OrgClient, org *quayv1alpha1.Organization, t *quayv1alpha1.SyncedTeam, existing quay.Team, present bool) (bool, error) {
+func (r *OrganizationReconciler) ensureTeamUpserted(ctx context.Context, qc OrgClient, org *quayv1alpha1.Organization, t *quayv1alpha1.SyncedTeam, existing quay.Team, present, owned, canMarkDrift bool) (quayMutation, error) {
 	role := string(t.Role)
 	marker := managedTeamMarker(org)
 	if present && existing.Role == role && existing.Description == marker {
-		return false, nil
+		return quayMutation{}, nil
 	}
 	err := qc.UpsertTeam(ctx, org.Spec.Name, t.Name, role, marker)
 	recordQuayAPI(opUpsertTeam, err)
 	if err != nil {
-		return false, fmt.Errorf("upserting Quay team %q in organization %q: %w", t.Name, org.Spec.Name, err)
+		return quayMutation{}, fmt.Errorf("upserting Quay team %q in organization %q: %w", t.Name, org.Spec.Name, err)
 	}
-	return true, nil
+	return quayMutation{Mutated: true, HealedDrift: canMarkDrift && present && (owned || existing.Description == marker)}, nil
 }
 
 // ensureTeamSyncAndPrototype binds the team's OIDC sync and reconciles its
 // optional default-permission prototype. It runs after ensureTeamUpserted has
 // stamped ownership, so a failure here leaves a team that the next reconcile heals
 // back into ownership via its description marker rather than mistaking for foreign.
-func (r *OrganizationReconciler) ensureTeamSyncAndPrototype(ctx context.Context, qc OrgClient, orgName string, t *quayv1alpha1.SyncedTeam) (bool, error) {
+func (r *OrganizationReconciler) ensureTeamSyncAndPrototype(ctx context.Context, qc OrgClient, orgName string, t *quayv1alpha1.SyncedTeam, ownedBefore, canMarkDrift bool) (quayMutation, error) {
 	// Bind (or re-bind) the team's membership to the desired OIDC group.
 	// EnableTeamSyncIfNotSynced no-ops when already bound to t.OIDCGroup; when bound
 	// to a different group it surfaces the drift, which we correct by disabling and
 	// re-enabling so the binding always tracks the spec (AC #2 oidcGroup re-bind).
-	syncMutated, err := r.bindTeamSync(ctx, qc, orgName, t.Name, t.OIDCGroup)
+	syncMutation, err := r.bindTeamSync(ctx, qc, orgName, t.Name, t.OIDCGroup, ownedBefore, canMarkDrift)
 	if err != nil {
-		return false, err
+		return syncMutation, err
 	}
 
 	// Reconcile the optional org default-permission prototype delegating a repo
 	// role to this team.
-	prototypeMutated, err := r.reconcileTeamPrototype(ctx, qc, orgName, t)
-	return syncMutated || prototypeMutated, err
+	prototypeMutation, err := r.reconcileTeamPrototype(ctx, qc, orgName, t, ownedBefore, canMarkDrift)
+	return syncMutation.or(prototypeMutation), err
 }
 
 // bindTeamSync ensures the team's sync binding names oidcGroup, re-binding
 // (disable then enable) when it is currently bound to a different group so an
 // oidcGroup change in the spec takes effect (AC #2).
-func (r *OrganizationReconciler) bindTeamSync(ctx context.Context, qc OrgClient, orgName, team, oidcGroup string) (bool, error) {
-	mutated := false
+func (r *OrganizationReconciler) bindTeamSync(ctx context.Context, qc OrgClient, orgName, team, oidcGroup string, ownedBefore, canMarkDrift bool) (quayMutation, error) {
+	mutation := quayMutation{}
 	members, err := qc.GetTeamMembers(ctx, orgName, team)
 	recordQuayAPI(opGetTeamMembers, err)
 	if err != nil {
-		return mutated, fmt.Errorf("reading Quay team %q members in organization %q: %w", team, orgName, err)
+		return mutation, fmt.Errorf("reading Quay team %q members in organization %q: %w", team, orgName, err)
 	}
 
 	if members.Synced != nil && members.GroupName() != oidcGroup {
@@ -237,20 +243,20 @@ func (r *OrganizationReconciler) bindTeamSync(ctx context.Context, qc OrgClient,
 		disableErr := qc.DisableTeamSyncIfSynced(ctx, orgName, team)
 		recordQuayAPI(opDisableTeamSync, disableErr)
 		if disableErr != nil {
-			return mutated, fmt.Errorf("disabling stale sync on Quay team %q in organization %q: %w", team, orgName, disableErr)
+			return mutation, fmt.Errorf("disabling stale sync on Quay team %q in organization %q: %w", team, orgName, disableErr)
 		}
-		mutated = true
+		mutation = mutation.or(quayMutation{Mutated: true, HealedDrift: canMarkDrift})
 	}
 
 	if members.Synced == nil || members.GroupName() != oidcGroup {
 		enableErr := qc.EnableTeamSyncIfNotSynced(ctx, orgName, team, oidcGroup)
 		recordQuayAPI(opEnableTeamSync, enableErr)
 		if enableErr != nil {
-			return mutated, fmt.Errorf("enabling sync on Quay team %q in organization %q to group %q: %w", team, orgName, oidcGroup, enableErr)
+			return mutation, fmt.Errorf("enabling sync on Quay team %q in organization %q to group %q: %w", team, orgName, oidcGroup, enableErr)
 		}
-		mutated = true
+		mutation = mutation.or(quayMutation{Mutated: true, HealedDrift: canMarkDrift && ownedBefore})
 	}
-	return mutated, nil
+	return mutation, nil
 }
 
 // reconcileTeamPrototype makes the org default-permission prototype delegating to
@@ -259,11 +265,11 @@ func (r *OrganizationReconciler) bindTeamSync(ctx context.Context, qc OrgClient,
 // prototype for this team by matching the delegate (kind team, name team) — only a
 // prototype delegating to this exact team is touched, so peers and manually-created
 // prototypes are left alone (non-exclusive, mirroring the webhook diff).
-func (r *OrganizationReconciler) reconcileTeamPrototype(ctx context.Context, qc OrgClient, orgName string, t *quayv1alpha1.SyncedTeam) (bool, error) {
+func (r *OrganizationReconciler) reconcileTeamPrototype(ctx context.Context, qc OrgClient, orgName string, t *quayv1alpha1.SyncedTeam, ownedBefore, canMarkDrift bool) (quayMutation, error) {
 	prototypes, err := qc.ListPrototypes(ctx, orgName)
 	recordQuayAPI(opListPrototypes, err)
 	if err != nil {
-		return false, fmt.Errorf("listing Quay prototypes for organization %q: %w", orgName, err)
+		return quayMutation{}, fmt.Errorf("listing Quay prototypes for organization %q: %w", orgName, err)
 	}
 
 	existing := findTeamPrototype(prototypes, t.Name)
@@ -272,14 +278,14 @@ func (r *OrganizationReconciler) reconcileTeamPrototype(ctx context.Context, qc 
 		// No default permission desired: delete the controller's prototype for this
 		// team if one exists.
 		if existing == nil {
-			return false, nil
+			return quayMutation{}, nil
 		}
 		delErr := qc.DeletePrototypeIfExists(ctx, orgName, existing.ID)
 		recordQuayAPI(opDeletePrototype, delErr)
 		if delErr != nil {
-			return false, fmt.Errorf("deleting Quay default permission for team %q in organization %q: %w", t.Name, orgName, delErr)
+			return quayMutation{}, fmt.Errorf("deleting Quay default permission for team %q in organization %q: %w", t.Name, orgName, delErr)
 		}
-		return true, nil
+		return quayMutation{Mutated: true, HealedDrift: canMarkDrift}, nil
 	}
 
 	role := string(*t.RepositoryPermission)
@@ -287,54 +293,67 @@ func (r *OrganizationReconciler) reconcileTeamPrototype(ctx context.Context, qc 
 		_, createErr := qc.CreatePrototype(ctx, orgName, role, t.Name)
 		recordQuayAPI(opCreatePrototype, createErr)
 		if createErr != nil {
-			return false, fmt.Errorf("creating Quay default permission for team %q in organization %q: %w", t.Name, orgName, createErr)
+			return quayMutation{}, fmt.Errorf("creating Quay default permission for team %q in organization %q: %w", t.Name, orgName, createErr)
 		}
-		return true, nil
+		return quayMutation{Mutated: true, HealedDrift: canMarkDrift && ownedBefore}, nil
 	}
 	if existing.Role != role {
 		updateErr := qc.UpdatePrototype(ctx, orgName, existing.ID, role)
 		recordQuayAPI(opUpdatePrototype, updateErr)
 		if updateErr != nil {
-			return false, fmt.Errorf("updating Quay default permission for team %q in organization %q: %w", t.Name, orgName, updateErr)
+			return quayMutation{}, fmt.Errorf("updating Quay default permission for team %q in organization %q: %w", t.Name, orgName, updateErr)
 		}
-		return true, nil
+		return quayMutation{Mutated: true, HealedDrift: canMarkDrift}, nil
 	}
-	return false, nil
+	return quayMutation{}, nil
 }
 
 // deprovisionTeam fully removes a controller-managed team that was dropped from
 // the spec: it deletes the team's default-permission prototype (if any), disables
 // its sync binding, and deletes the team (AC #3). Each step is idempotent so a
 // retry after a partial failure converges.
-func (r *OrganizationReconciler) deprovisionTeam(ctx context.Context, qc OrgClient, orgName, team string) (bool, error) {
-	mutated := false
+func (r *OrganizationReconciler) deprovisionTeam(ctx context.Context, qc OrgClient, orgName, team string, teamPresent bool) (quayMutation, error) {
+	mutation := quayMutation{}
 	prototypes, err := qc.ListPrototypes(ctx, orgName)
 	recordQuayAPI(opListPrototypes, err)
 	if err != nil {
-		return mutated, fmt.Errorf("listing Quay prototypes for organization %q: %w", orgName, err)
+		return mutation, fmt.Errorf("listing Quay prototypes for organization %q: %w", orgName, err)
 	}
 	if p := findTeamPrototype(prototypes, team); p != nil {
 		delErr := qc.DeletePrototypeIfExists(ctx, orgName, p.ID)
 		recordQuayAPI(opDeletePrototype, delErr)
 		if delErr != nil {
-			return mutated, fmt.Errorf("deleting Quay default permission for removed team %q in organization %q: %w", team, orgName, delErr)
+			return mutation, fmt.Errorf("deleting Quay default permission for removed team %q in organization %q: %w", team, orgName, delErr)
 		}
-		mutated = true
+		mutation = mutation.or(quayMutation{Mutated: true})
 	}
 
-	disableErr := qc.DisableTeamSyncIfSynced(ctx, orgName, team)
-	recordQuayAPI(opDisableTeamSync, disableErr)
-	if disableErr != nil {
-		return mutated, fmt.Errorf("disabling sync on removed Quay team %q in organization %q: %w", team, orgName, disableErr)
+	if teamPresent {
+		members, err := qc.GetTeamMembers(ctx, orgName, team)
+		recordQuayAPI(opGetTeamMembers, ignoreNotFound(err))
+		if quay.IsNotFound(err) {
+			teamPresent = false
+		} else if err != nil {
+			return mutation, fmt.Errorf("reading Quay team %q members in organization %q before deprovision: %w", team, orgName, err)
+		} else if members.Synced != nil {
+			disableErr := qc.DisableTeamSyncIfSynced(ctx, orgName, team)
+			recordQuayAPI(opDisableTeamSync, disableErr)
+			if disableErr != nil {
+				return mutation, fmt.Errorf("disabling sync on removed Quay team %q in organization %q: %w", team, orgName, disableErr)
+			}
+			mutation = mutation.or(quayMutation{Mutated: true})
+		}
 	}
-	mutated = true
 
 	delErr := qc.DeleteTeamIfExists(ctx, orgName, team)
 	recordQuayAPI(opDeleteTeam, delErr)
 	if delErr != nil {
-		return mutated, fmt.Errorf("deleting removed Quay team %q in organization %q: %w", team, orgName, delErr)
+		return mutation, fmt.Errorf("deleting removed Quay team %q in organization %q: %w", team, orgName, delErr)
 	}
-	return true, nil
+	if teamPresent {
+		mutation = mutation.or(quayMutation{Mutated: true})
+	}
+	return mutation, nil
 }
 
 // writeManagedTeams sets org.Status.ManagedTeams to the sorted names in the

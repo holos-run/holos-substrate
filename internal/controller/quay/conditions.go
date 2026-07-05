@@ -103,6 +103,10 @@ const (
 	// the webhook urlSecretRef Secret (or its key) could not be resolved. This is
 	// recoverable: the reconciler requeues so a later-created Secret takes effect.
 	ReasonWebhookURLNotFound = "WebhookURLNotFound"
+	// ReasonWebhookURLReadError marks the WebhookConfigured condition False
+	// because the Kubernetes API read for the webhook urlSecretRef Secret failed
+	// for a transient reason.
+	ReasonWebhookURLReadError = "WebhookURLReadError"
 	// ReasonInvalidWebhook marks a condition False because spec.webhook violated
 	// the mutual-exclusion rule (neither or both of url/urlSecretRef set) at
 	// runtime, a defense-in-depth check behind the CRD XValidation.
@@ -142,6 +146,22 @@ func markReady(conditions *[]metav1.Condition, reason, message string, observedG
 	p := setCondition(conditions, ConditionProgrammed, string(metav1.ConditionTrue), reason, message, observedGeneration)
 	r := setCondition(conditions, ConditionReady, string(metav1.ConditionTrue), reason, message, observedGeneration)
 	return a || p || r
+}
+
+func conditionsTransitioned(before, after []metav1.Condition, types ...string) bool {
+	for _, typ := range types {
+		old := meta.FindStatusCondition(before, typ)
+		cur := meta.FindStatusCondition(after, typ)
+		switch {
+		case old == nil && cur == nil:
+			continue
+		case old == nil || cur == nil:
+			return true
+		case old.Status != cur.Status || old.Reason != cur.Reason || old.ObservedGeneration != cur.ObservedGeneration:
+			return true
+		}
+	}
+	return false
 }
 
 // markNotReady sets Programmed and Ready False with the given reason and message

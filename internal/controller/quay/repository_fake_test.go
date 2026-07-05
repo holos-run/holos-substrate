@@ -34,6 +34,10 @@ type fakeRepoClient struct {
 
 	// createRepoErr, when non-nil, is returned by CreateRepository.
 	createRepoErr error
+	// updateVisibilityErr/updateDescriptionErr, when non-nil, are returned by
+	// the corresponding repository update operation.
+	updateVisibilityErr  error
+	updateDescriptionErr error
 	// createNotifErr, when non-nil, is returned by CreateNotification — used to
 	// simulate a Quay error whose body echoes the submitted (secret) webhook URL.
 	createNotifErr error
@@ -102,6 +106,9 @@ func (f *fakeRepoClient) UpdateRepositoryVisibility(ctx context.Context, ns, rep
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("UpdateRepositoryVisibility:" + repoKey(ns, repo))
+	if f.updateVisibilityErr != nil {
+		return f.updateVisibilityErr
+	}
 	if st, ok := f.repos[repoKey(ns, repo)]; ok {
 		st.isPublic = visibility == "public"
 	}
@@ -112,6 +119,9 @@ func (f *fakeRepoClient) UpdateRepositoryDescription(ctx context.Context, ns, re
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("UpdateRepositoryDescription:" + repoKey(ns, repo))
+	if f.updateDescriptionErr != nil {
+		return f.updateDescriptionErr
+	}
 	if st, ok := f.repos[repoKey(ns, repo)]; ok {
 		st.description = description
 	}
