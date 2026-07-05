@@ -1,12 +1,12 @@
 package quay
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -131,7 +131,7 @@ func TestAPIRootBaseURLNoDoubling(t *testing.T) {
 	t.Cleanup(srv.Close)
 	c := NewClient(srv.URL+"/api/v1", "test-token", srv.Client())
 
-	if _, err := c.GetOrganization(context.Background(), "acme"); err != nil {
+	if _, err := c.GetOrganization(t.Context(), "acme"); err != nil {
 		t.Fatalf("GetOrganization: %v", err)
 	}
 	if h.gotPath != "/api/v1/organization/acme" {
@@ -143,7 +143,7 @@ func TestCreateOrganization(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodPost, wantPath: "/api/v1/organization/", status: http.StatusCreated}
 	c, _ := newTestClient(t, h)
 
-	if err := c.CreateOrganization(context.Background(), "acme", "ops@acme.example"); err != nil {
+	if err := c.CreateOrganization(t.Context(), "acme", "ops@acme.example"); err != nil {
 		t.Fatalf("CreateOrganization: %v", err)
 	}
 	assertCommonRequest(t, h, true)
@@ -164,14 +164,19 @@ func TestCreateOrganizationDuplicateIsConflict(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	err := c.CreateOrganization(context.Background(), "acme", "ops@acme.example")
+	err := c.CreateOrganization(t.Context(), "acme", "ops@acme.example")
 	if !IsConflict(err) {
 		t.Fatalf("expected IsConflict for duplicate org, got %v", err)
 	}
-
-	// The if-not-exists wrapper swallows it.
-	if err := c.CreateOrganizationIfNotExists(context.Background(), "acme", "ops@acme.example"); err != nil {
-		t.Fatalf("CreateOrganizationIfNotExists should treat duplicate as success, got %v", err)
+	var ae *APIError
+	if !errors.As(err, &ae) {
+		t.Fatalf("error is not *APIError: %v", err)
+	}
+	if ae.StatusCode != http.StatusBadRequest {
+		t.Fatalf("StatusCode = %d, want wire status 400", ae.StatusCode)
+	}
+	if got := err.Error(); !strings.Contains(got, "unexpected status 400") {
+		t.Fatalf("Error() = %q, want wire status 400", got)
 	}
 }
 
@@ -183,12 +188,12 @@ func TestGetOrganization(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	org, err := c.GetOrganization(context.Background(), "acme")
+	org, err := c.GetOrganization(t.Context(), "acme")
 	if err != nil {
 		t.Fatalf("GetOrganization: %v", err)
 	}
 	assertCommonRequest(t, h, false)
-	if org.Name != "acme" || org.Email != "ops@acme.example" || !org.IsOrgAdmin {
+	if org.Name != "acme" || org.Email != "ops@acme.example" {
 		t.Errorf("decoded org = %+v", org)
 	}
 }
@@ -201,7 +206,7 @@ func TestGetOrganizationNotFound(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	_, err := c.GetOrganization(context.Background(), "missing")
+	_, err := c.GetOrganization(t.Context(), "missing")
 	if !IsNotFound(err) {
 		t.Fatalf("expected IsNotFound, got %v", err)
 	}
@@ -218,7 +223,7 @@ func TestUpdateOrganization(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodPut, wantPath: "/api/v1/organization/acme", status: http.StatusOK}
 	c, _ := newTestClient(t, h)
 
-	if err := c.UpdateOrganization(context.Background(), "acme", "new@acme.example"); err != nil {
+	if err := c.UpdateOrganization(t.Context(), "acme", "new@acme.example"); err != nil {
 		t.Fatalf("UpdateOrganization: %v", err)
 	}
 	assertCommonRequest(t, h, true)
@@ -235,7 +240,7 @@ func TestGetOrganizationRobot(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	robot, err := c.GetOrganizationRobot(context.Background(), "acme", "holos-owner")
+	robot, err := c.GetOrganizationRobot(t.Context(), "acme", "holos-owner")
 	if err != nil {
 		t.Fatalf("GetOrganizationRobot: %v", err)
 	}
@@ -253,7 +258,7 @@ func TestGetOrganizationRobotNotFound(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	_, err := c.GetOrganizationRobot(context.Background(), "acme", "holos-owner")
+	_, err := c.GetOrganizationRobot(t.Context(), "acme", "holos-owner")
 	if !IsNotFound(err) {
 		t.Fatalf("expected IsNotFound, got %v", err)
 	}
@@ -263,7 +268,7 @@ func TestCreateOrganizationRobot(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodPut, wantPath: "/api/v1/organization/acme/robots/holos-owner", status: http.StatusCreated}
 	c, _ := newTestClient(t, h)
 
-	if err := c.CreateOrganizationRobot(context.Background(), "acme", "holos-owner", "owner-uid-123"); err != nil {
+	if err := c.CreateOrganizationRobot(t.Context(), "acme", "holos-owner", "owner-uid-123"); err != nil {
 		t.Fatalf("CreateOrganizationRobot: %v", err)
 	}
 	assertCommonRequest(t, h, true)
@@ -282,7 +287,7 @@ func TestCreateOrganizationRobotDuplicateIsConflict(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	err := c.CreateOrganizationRobot(context.Background(), "acme", "holos-owner", "owner-uid-123")
+	err := c.CreateOrganizationRobot(t.Context(), "acme", "holos-owner", "owner-uid-123")
 	if !IsConflict(err) {
 		t.Fatalf("expected IsConflict for duplicate robot, got %v", err)
 	}
@@ -292,7 +297,7 @@ func TestDeleteOrganizationRobotIfExistsSwallowsNotFound(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: "/api/v1/organization/acme/robots/holos-owner", status: http.StatusNotFound}
 	c, _ := newTestClient(t, h)
 
-	if err := c.DeleteOrganizationRobotIfExists(context.Background(), "acme", "holos-owner"); err != nil {
+	if err := c.DeleteOrganizationRobotIfExists(t.Context(), "acme", "holos-owner"); err != nil {
 		t.Fatalf("DeleteOrganizationRobotIfExists should swallow 404, got %v", err)
 	}
 }
@@ -301,7 +306,7 @@ func TestDeleteOrganization(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: "/api/v1/organization/acme", status: http.StatusNoContent}
 	c, _ := newTestClient(t, h)
 
-	if err := c.DeleteOrganization(context.Background(), "acme"); err != nil {
+	if err := c.DeleteOrganization(t.Context(), "acme"); err != nil {
 		t.Fatalf("DeleteOrganization: %v", err)
 	}
 	assertCommonRequest(t, h, false)
@@ -311,7 +316,7 @@ func TestDeleteOrganizationIfExistsSwallowsNotFound(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: "/api/v1/organization/gone", status: http.StatusNotFound}
 	c, _ := newTestClient(t, h)
 
-	if err := c.DeleteOrganizationIfExists(context.Background(), "gone"); err != nil {
+	if err := c.DeleteOrganizationIfExists(t.Context(), "gone"); err != nil {
 		t.Fatalf("DeleteOrganizationIfExists should swallow 404, got %v", err)
 	}
 }
@@ -320,7 +325,7 @@ func TestCreateRepository(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodPost, wantPath: "/api/v1/repository", status: http.StatusCreated}
 	c, _ := newTestClient(t, h)
 
-	err := c.CreateRepository(context.Background(), "acme", "web", VisibilityPrivate, "the web app")
+	err := c.CreateRepository(t.Context(), "acme", "web", "private", "the web app")
 	if err != nil {
 		t.Fatalf("CreateRepository: %v", err)
 	}
@@ -347,11 +352,11 @@ func TestCreateRepositoryConflict(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	err := c.CreateRepository(context.Background(), "acme", "web", VisibilityPrivate, "")
+	err := c.CreateRepository(t.Context(), "acme", "web", "private", "")
 	if !IsConflict(err) {
 		t.Fatalf("expected IsConflict, got %v", err)
 	}
-	if err := c.CreateRepositoryIfNotExists(context.Background(), "acme", "web", VisibilityPrivate, ""); err != nil {
+	if err := c.CreateRepositoryIfNotExists(t.Context(), "acme", "web", "private", ""); err != nil {
 		t.Fatalf("CreateRepositoryIfNotExists should swallow 409, got %v", err)
 	}
 }
@@ -387,7 +392,7 @@ func TestCreateRepositoryGenericQuay400IsNotConflict(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	err := c.CreateRepository(context.Background(), "acme", "web", VisibilityPrivate, "")
+	err := c.CreateRepository(t.Context(), "acme", "web", "private", "")
 	if err == nil {
 		t.Fatal("expected an error for the 400")
 	}
@@ -413,7 +418,7 @@ func TestCreateRepositoryIfNotExistsConfirmsViaGet(t *testing.T) {
 	}}
 	c, _ := newTestClient(t, m)
 
-	if err := c.CreateRepositoryIfNotExists(context.Background(), "acme", "web", VisibilityPrivate, ""); err != nil {
+	if err := c.CreateRepositoryIfNotExists(t.Context(), "acme", "web", "private", ""); err != nil {
 		t.Fatalf("CreateRepositoryIfNotExists should succeed when GET confirms existence, got %v", err)
 	}
 	if !getHit {
@@ -436,7 +441,7 @@ func TestCreateRepositoryIfNotExistsSurfacesRealError(t *testing.T) {
 	}}
 	c, _ := newTestClient(t, m)
 
-	err := c.CreateRepositoryIfNotExists(context.Background(), "acme", "web", VisibilityPrivate, "")
+	err := c.CreateRepositoryIfNotExists(t.Context(), "acme", "web", "private", "")
 	if err == nil {
 		t.Fatal("expected the original create error to surface")
 	}
@@ -454,7 +459,7 @@ func TestGetRepository(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	repo, err := c.GetRepository(context.Background(), "acme", "web")
+	repo, err := c.GetRepository(t.Context(), "acme", "web")
 	if err != nil {
 		t.Fatalf("GetRepository: %v", err)
 	}
@@ -475,7 +480,7 @@ func TestUpdateRepositoryVisibility(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodPost, wantPath: "/api/v1/repository/acme/web/changevisibility", status: http.StatusOK}
 	c, _ := newTestClient(t, h)
 
-	if err := c.UpdateRepositoryVisibility(context.Background(), "acme", "web", VisibilityPublic); err != nil {
+	if err := c.UpdateRepositoryVisibility(t.Context(), "acme", "web", "public"); err != nil {
 		t.Fatalf("UpdateRepositoryVisibility: %v", err)
 	}
 	assertCommonRequest(t, h, true)
@@ -488,7 +493,7 @@ func TestUpdateRepositoryDescription(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodPut, wantPath: "/api/v1/repository/acme/web", status: http.StatusOK}
 	c, _ := newTestClient(t, h)
 
-	if err := c.UpdateRepositoryDescription(context.Background(), "acme", "web", "updated"); err != nil {
+	if err := c.UpdateRepositoryDescription(t.Context(), "acme", "web", "updated"); err != nil {
 		t.Fatalf("UpdateRepositoryDescription: %v", err)
 	}
 	assertCommonRequest(t, h, true)
@@ -501,7 +506,7 @@ func TestDeleteRepository(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: "/api/v1/repository/acme/web", status: http.StatusNoContent}
 	c, _ := newTestClient(t, h)
 
-	if err := c.DeleteRepository(context.Background(), "acme", "web"); err != nil {
+	if err := c.DeleteRepository(t.Context(), "acme", "web"); err != nil {
 		t.Fatalf("DeleteRepository: %v", err)
 	}
 	assertCommonRequest(t, h, false)
@@ -511,7 +516,7 @@ func TestDeleteRepositoryIfExistsSwallowsNotFound(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: "/api/v1/repository/acme/gone", status: http.StatusNotFound}
 	c, _ := newTestClient(t, h)
 
-	if err := c.DeleteRepositoryIfExists(context.Background(), "acme", "gone"); err != nil {
+	if err := c.DeleteRepositoryIfExists(t.Context(), "acme", "gone"); err != nil {
 		t.Fatalf("DeleteRepositoryIfExists should swallow 404, got %v", err)
 	}
 }
@@ -524,7 +529,7 @@ func TestCreateNotification(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	n, err := c.CreateNotification(context.Background(), "acme", "web", "https://kargo.example/webhook", "kargo")
+	n, err := c.CreateNotification(t.Context(), "acme", "web", "https://kargo.example/webhook", "kargo")
 	if err != nil {
 		t.Fatalf("CreateNotification: %v", err)
 	}
@@ -555,7 +560,7 @@ func TestListNotifications(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	list, err := c.ListNotifications(context.Background(), "acme", "web")
+	list, err := c.ListNotifications(t.Context(), "acme", "web")
 	if err != nil {
 		t.Fatalf("ListNotifications: %v", err)
 	}
@@ -569,7 +574,7 @@ func TestDeleteNotification(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: "/api/v1/repository/acme/web/notification/u1", status: http.StatusNoContent}
 	c, _ := newTestClient(t, h)
 
-	if err := c.DeleteNotification(context.Background(), "acme", "web", "u1"); err != nil {
+	if err := c.DeleteNotification(t.Context(), "acme", "web", "u1"); err != nil {
 		t.Fatalf("DeleteNotification: %v", err)
 	}
 	assertCommonRequest(t, h, false)
@@ -579,23 +584,118 @@ func TestDeleteNotificationIfExistsSwallowsNotFound(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: "/api/v1/repository/acme/web/notification/gone", status: http.StatusNotFound}
 	c, _ := newTestClient(t, h)
 
-	if err := c.DeleteNotificationIfExists(context.Background(), "acme", "web", "gone"); err != nil {
+	if err := c.DeleteNotificationIfExists(t.Context(), "acme", "web", "gone"); err != nil {
 		t.Fatalf("DeleteNotificationIfExists should swallow 404, got %v", err)
 	}
 }
 
-func TestDeleteNotificationIfExistsSwallows400InvalidRequest(t *testing.T) {
+func TestDeleteNotificationIfExistsSwallows400InvalidRequestWhenListConfirmsAbsent(t *testing.T) {
 	// Quay can return 400 InvalidRequest (not 404) for an already-removed
-	// notification UUID; the if-exists wrapper must treat it as gone.
-	h := &recordingHandler{
-		t: t, wantMethod: http.MethodDelete, wantPath: "/api/v1/repository/acme/web/notification/gone",
-		status:   http.StatusBadRequest,
-		respBody: `{"error":"InvalidRequest","error_message":"Invalid request"}`,
-	}
-	c, _ := newTestClient(t, h)
+	// notification UUID; the if-exists wrapper treats it as gone only after a
+	// confirming ListNotifications shows the UUID is absent.
+	listHit := false
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"DELETE /api/v1/repository/acme/web/notification/gone": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":"InvalidRequest","error_message":"Invalid request"}`)
+		},
+		"GET /api/v1/repository/acme/web/notification/": func(w http.ResponseWriter, _ *http.Request) {
+			listHit = true
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"notifications":[{"uuid":"other","event":"repo_push","method":"webhook","config":{"url":"https://a"}}]}`)
+		},
+	}}
+	c, _ := newTestClient(t, m)
 
-	if err := c.DeleteNotificationIfExists(context.Background(), "acme", "web", "gone"); err != nil {
-		t.Fatalf("DeleteNotificationIfExists should swallow 400 InvalidRequest, got %v", err)
+	if err := c.DeleteNotificationIfExists(t.Context(), "acme", "web", "gone"); err != nil {
+		t.Fatalf("DeleteNotificationIfExists should swallow confirmed-absent 400 InvalidRequest, got %v", err)
+	}
+	if !listHit {
+		t.Fatal("expected ListNotifications to confirm absence after ambiguous 400")
+	}
+}
+
+func TestDeleteNotificationIfExistsConfirmsSpecificAbsentNotification400s(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{name: "no notification", body: `{"error_message":"No notification exists for UUID gone"}`},
+		{name: "notification not found", body: `{"error_message":"notification not found"}`},
+		{name: "could not find notification", body: `{"error_message":"could not find notification"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			listHit := false
+			m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+				"DELETE /api/v1/repository/acme/web/notification/gone": func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = io.WriteString(w, tc.body)
+				},
+				"GET /api/v1/repository/acme/web/notification/": func(w http.ResponseWriter, _ *http.Request) {
+					listHit = true
+					w.WriteHeader(http.StatusOK)
+					_, _ = io.WriteString(w, `{"notifications":[]}`)
+				},
+			}}
+			c, _ := newTestClient(t, m)
+
+			if err := c.DeleteNotificationIfExists(t.Context(), "acme", "web", "gone"); err != nil {
+				t.Fatalf("DeleteNotificationIfExists should swallow confirmed-absent 400, got %v", err)
+			}
+			if !listHit {
+				t.Fatal("expected ListNotifications to confirm absence after specific absent-notification 400")
+			}
+		})
+	}
+}
+
+func TestDeleteNotificationIfExistsSurfacesAmbiguous400WhenNotificationStillPresent(t *testing.T) {
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"DELETE /api/v1/repository/acme/web/notification/u1": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":"InvalidRequest","error_message":"Invalid request"}`)
+		},
+		"GET /api/v1/repository/acme/web/notification/": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"notifications":[{"uuid":"u1","event":"repo_push","method":"webhook","config":{"url":"https://a"}}]}`)
+		},
+	}}
+	c, _ := newTestClient(t, m)
+
+	err := c.DeleteNotificationIfExists(t.Context(), "acme", "web", "u1")
+	if err == nil {
+		t.Fatal("expected ambiguous 400 to surface when the notification is still present")
+	}
+	var ae *APIError
+	if !errors.As(err, &ae) || ae.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected the original 400 delete error, got %v", err)
+	}
+}
+
+func TestDeleteNotificationIfExistsSurfacesConfirmationListError(t *testing.T) {
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"DELETE /api/v1/repository/acme/web/notification/u1": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":"InvalidRequest","error_message":"Invalid request"}`)
+		},
+		"GET /api/v1/repository/acme/web/notification/": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"error_message":"list boom"}`)
+		},
+	}}
+	c, _ := newTestClient(t, m)
+
+	err := c.DeleteNotificationIfExists(t.Context(), "acme", "web", "u1")
+	if err == nil {
+		t.Fatal("expected list confirmation error to surface")
+	}
+	var ae *APIError
+	if !errors.As(err, &ae) || ae.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected wrapped list error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "ambiguous delete") {
+		t.Fatalf("Error() = %q, want ambiguous delete context", err.Error())
 	}
 }
 
@@ -608,7 +708,7 @@ func TestDeleteNotificationIfExistsSurfacesOther400(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	if err := c.DeleteNotificationIfExists(context.Background(), "acme", "web", "u1"); err == nil {
+	if err := c.DeleteNotificationIfExists(t.Context(), "acme", "web", "u1"); err == nil {
 		t.Fatal("expected an unrelated 400 to surface, got nil")
 	}
 }
@@ -621,7 +721,7 @@ func TestServerError500(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	_, err := c.GetOrganization(context.Background(), "acme")
+	_, err := c.GetOrganization(t.Context(), "acme")
 	if err == nil {
 		t.Fatal("expected error for 500")
 	}
@@ -638,6 +738,54 @@ func TestServerError500(t *testing.T) {
 	if ae.Body != `{"error_message":"boom"}` {
 		t.Errorf("APIError.Body should surface raw body, got %q", ae.Body)
 	}
+	if !strings.Contains(err.Error(), "127.0.0.1:") {
+		t.Errorf("Error() = %q, want Quay host", err.Error())
+	}
+}
+
+func TestOversizedErrorBodyIsBoundedAndTruncated(t *testing.T) {
+	oversized := strings.Repeat("x", maxResponseBodyBytes+1024)
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodGet, wantPath: "/api/v1/organization/acme",
+		status:   http.StatusInternalServerError,
+		respBody: oversized,
+	}
+	c, _ := newTestClient(t, h)
+
+	_, err := c.GetOrganization(t.Context(), "acme")
+	if err == nil {
+		t.Fatal("expected error for 500")
+	}
+	var ae *APIError
+	if !errors.As(err, &ae) {
+		t.Fatalf("error is not *APIError: %v", err)
+	}
+	if len(ae.Body) != maxAPIErrorBodyBytes {
+		t.Fatalf("APIError.Body len = %d, want %d", len(ae.Body), maxAPIErrorBodyBytes)
+	}
+	if !strings.HasSuffix(ae.Body, truncationMarker) {
+		t.Fatalf("APIError.Body suffix = %q, want truncation marker", ae.Body[len(ae.Body)-len(truncationMarker):])
+	}
+	if len(err.Error()) > maxAPIErrorBodyBytes+256 {
+		t.Fatalf("Error() was not bounded enough, len = %d", len(err.Error()))
+	}
+}
+
+func TestOversizedSuccessfulBodyReturnsExplicitError(t *testing.T) {
+	oversized := strings.Repeat(" ", maxResponseBodyBytes) + "{}"
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodGet, wantPath: "/api/v1/organization/acme",
+		status: http.StatusOK, respBody: oversized,
+	}
+	c, _ := newTestClient(t, h)
+
+	_, err := c.GetOrganization(t.Context(), "acme")
+	if err == nil {
+		t.Fatal("expected oversized success body error")
+	}
+	if !strings.Contains(err.Error(), "exceeded 1048576 bytes") {
+		t.Fatalf("Error() = %q, want explicit oversized response error", err.Error())
+	}
 }
 
 func TestPathEscaping(t *testing.T) {
@@ -645,7 +793,7 @@ func TestPathEscaping(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodGet, wantPath: "/api/v1/organization/a b", status: http.StatusOK, respBody: `{"name":"a b"}`}
 	c, _ := newTestClient(t, h)
 
-	if _, err := c.GetOrganization(context.Background(), "a b"); err != nil {
+	if _, err := c.GetOrganization(t.Context(), "a b"); err != nil {
 		t.Fatalf("GetOrganization with space: %v", err)
 	}
 	// r.URL.Path is already percent-decoded by net/http (so gotPath is the

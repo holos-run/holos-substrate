@@ -1,7 +1,6 @@
 package quay
 
 import (
-	"context"
 	"net/http"
 	"testing"
 )
@@ -14,7 +13,7 @@ func TestListPrototypes(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	protos, err := c.ListPrototypes(context.Background(), "acme")
+	protos, err := c.ListPrototypes(t.Context(), "acme")
 	if err != nil {
 		t.Fatalf("ListPrototypes: %v", err)
 	}
@@ -41,7 +40,7 @@ func TestListPrototypesNotFound(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	if _, err := c.ListPrototypes(context.Background(), "missing"); !IsNotFound(err) {
+	if _, err := c.ListPrototypes(t.Context(), "missing"); !IsNotFound(err) {
 		t.Fatalf("expected IsNotFound, got %v", err)
 	}
 }
@@ -54,7 +53,7 @@ func TestCreatePrototype(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	p, err := c.CreatePrototype(context.Background(), "acme", PrototypeRoleWrite, "devs")
+	p, err := c.CreatePrototype(t.Context(), "acme", PrototypeRoleWrite, "devs")
 	if err != nil {
 		t.Fatalf("CreatePrototype: %v", err)
 	}
@@ -78,7 +77,7 @@ func TestUpdatePrototype(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodPut, wantPath: "/api/v1/organization/acme/prototypes/p1", status: http.StatusOK}
 	c, _ := newTestClient(t, h)
 
-	if err := c.UpdatePrototype(context.Background(), "acme", "p1", PrototypeRoleAdmin); err != nil {
+	if err := c.UpdatePrototype(t.Context(), "acme", "p1", PrototypeRoleAdmin); err != nil {
 		t.Fatalf("UpdatePrototype: %v", err)
 	}
 	assertCommonRequest(t, h, true)
@@ -95,7 +94,7 @@ func TestUpdatePrototypeNotFound(t *testing.T) {
 	}
 	c, _ := newTestClient(t, h)
 
-	if err := c.UpdatePrototype(context.Background(), "acme", "gone", PrototypeRoleRead); !IsNotFound(err) {
+	if err := c.UpdatePrototype(t.Context(), "acme", "gone", PrototypeRoleRead); !IsNotFound(err) {
 		t.Fatalf("expected IsNotFound, got %v", err)
 	}
 }
@@ -104,7 +103,7 @@ func TestDeletePrototype(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: "/api/v1/organization/acme/prototypes/p1", status: http.StatusNoContent}
 	c, _ := newTestClient(t, h)
 
-	if err := c.DeletePrototype(context.Background(), "acme", "p1"); err != nil {
+	if err := c.DeletePrototype(t.Context(), "acme", "p1"); err != nil {
 		t.Fatalf("DeletePrototype: %v", err)
 	}
 	assertCommonRequest(t, h, false)
@@ -114,7 +113,7 @@ func TestDeletePrototypeIfExistsSwallowsNotFound(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: "/api/v1/organization/acme/prototypes/gone", status: http.StatusNotFound}
 	c, _ := newTestClient(t, h)
 
-	if err := c.DeletePrototypeIfExists(context.Background(), "acme", "gone"); err != nil {
+	if err := c.DeletePrototypeIfExists(t.Context(), "acme", "gone"); err != nil {
 		t.Fatalf("DeletePrototypeIfExists should swallow 404, got %v", err)
 	}
 }
@@ -123,7 +122,7 @@ func TestPrototypePathEscaping(t *testing.T) {
 	h := &recordingHandler{t: t, wantMethod: http.MethodDelete, wantPath: "/api/v1/organization/a b/prototypes/p 1", status: http.StatusNoContent}
 	c, _ := newTestClient(t, h)
 
-	if err := c.DeletePrototype(context.Background(), "a b", "p 1"); err != nil {
+	if err := c.DeletePrototype(t.Context(), "a b", "p 1"); err != nil {
 		t.Fatalf("DeletePrototype with spaces: %v", err)
 	}
 	if h.gotEscaped != "/api/v1/organization/a%20b/prototypes/p%201" {

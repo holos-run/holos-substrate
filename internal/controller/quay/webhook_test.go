@@ -1,7 +1,7 @@
 package quay
 
 import (
-	"context"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -26,9 +26,13 @@ func TestResolveWebhookURL(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "empty-key"},
 		Data:       map[string][]byte{"url": []byte("")},
 	}
+	tooLongSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "too-long"},
+		Data:       map[string][]byte{"url": []byte(strings.Repeat("x", maxWebhookURLLength+1))},
+	}
 	reader := fake.NewClientBuilder().
 		WithScheme(scheme.Scheme).
-		WithObjects(secret, emptyKeySecret).
+		WithObjects(secret, emptyKeySecret, tooLongSecret).
 		Build()
 
 	inline := "https://inline.example.test/webhook/abc"
@@ -73,6 +77,13 @@ func TestResolveWebhookURL(t *testing.T) {
 			wantErr: isWebhookURLNotFound,
 		},
 		{
+			name: "secretRef value too long",
+			webhook: &quayv1alpha1.RepositoryWebhook{
+				URLSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "too-long", Key: "url"},
+			},
+			wantErr: isWebhookURLNotFound,
+		},
+		{
 			name: "both set is invalid",
 			webhook: &quayv1alpha1.RepositoryWebhook{
 				URL:          &inline,
@@ -89,7 +100,7 @@ func TestResolveWebhookURL(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			url, err := resolveWebhookURL(context.Background(), reader, ns, tc.webhook)
+			url, err := resolveWebhookURL(t.Context(), reader, ns, tc.webhook)
 			if tc.wantErr != nil {
 				if err == nil {
 					t.Fatalf("expected an error, got url %q", url)

@@ -13,6 +13,8 @@ import (
 	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
 )
 
+const maxWebhookURLLength = 2048
+
 // webhookURLNotFoundError reports that the webhook urlSecretRef Secret, or the
 // key within it, could not be resolved into a non-empty URL. It is a recoverable
 // condition: the reconciler maps it to a False WebhookConfigured condition with
@@ -105,6 +107,11 @@ func resolveWebhookURL(ctx context.Context, reader client.Reader, namespace stri
 	if url == "" {
 		return "", &webhookURLNotFoundError{
 			msg: fmt.Sprintf("webhook URL Secret %s/%s is missing the %q key", namespace, ref.Name, ref.Key),
+		}
+	}
+	if len(url) > maxWebhookURLLength {
+		return "", &webhookURLNotFoundError{
+			msg: fmt.Sprintf("webhook URL Secret %s/%s key %q exceeds %d bytes", namespace, ref.Name, ref.Key, maxWebhookURLLength),
 		}
 	}
 	return url, nil

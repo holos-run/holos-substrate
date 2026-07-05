@@ -18,6 +18,8 @@ import (
 type APIError struct {
 	// StatusCode is the HTTP status code of the response.
 	StatusCode int
+	// Host is the Quay API host the request targeted.
+	Host string
 	// Method is the HTTP method of the request that failed.
 	Method string
 	// Path is the request path that failed.
@@ -25,8 +27,12 @@ type APIError struct {
 	// Message is the human-readable error message parsed from Quay's error
 	// body, when one is present.
 	Message string
-	// Body is the raw, untruncated response body Quay returned.
+	// Body is the bounded response body Quay returned. Long bodies are
+	// truncated before they can flow into status condition messages.
 	Body string
+	// duplicate records Quay's non-409 already-exists signal while preserving
+	// StatusCode as the wire status for operator diagnostics.
+	duplicate bool
 }
 
 // Error implements the error interface.
@@ -35,7 +41,11 @@ func (e *APIError) Error() string {
 	if msg == "" {
 		msg = e.Body
 	}
-	return fmt.Sprintf("quay: %s %s: unexpected status %d: %s", e.Method, e.Path, e.StatusCode, msg)
+	prefix := "quay:"
+	if e.Host != "" {
+		prefix = "quay " + e.Host + ":"
+	}
+	return fmt.Sprintf("%s %s %s: unexpected status %d: %s", prefix, e.Method, e.Path, e.StatusCode, msg)
 }
 
 // IsNotFound reports whether the API responded 404 Not Found. Reconcilers use
@@ -49,7 +59,7 @@ func (e *APIError) IsNotFound() bool {
 // message) when the resource already exists; both map to a conflict so create
 // operations can be treated as idempotent.
 func (e *APIError) IsConflict() bool {
-	return e.StatusCode == http.StatusConflict
+	return e.StatusCode == http.StatusConflict || e.duplicate
 }
 
 // IsNotFound reports whether err is an *APIError describing a 404 response.
@@ -60,6 +70,13 @@ func IsNotFound(err error) bool {
 		return ae.IsNotFound()
 	}
 	return false
+}
+
+func ignoreNotFound(err error) error {
+	if IsNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 // IsConflict reports whether err is an *APIError describing an already-exists
@@ -74,26 +91,24 @@ func IsConflict(err error) bool {
 
 // mapDuplicateToConflict normalizes Quay's already-exists signaling. Some
 // endpoints (notably organization creation) report a duplicate not as 409 but
-// as 400 with a message naming the conflict; this rewrites such an *APIError to
-// StatusConflict so IsConflict and the idempotent create wrappers detect it
-// uniformly. Any other error (including a genuine 409) is returned unchanged.
+// as 400 with a message naming the conflict; this marks such an *APIError as a
+// conflict while preserving the wire status for operator diagnostics. Any other
+// error (including a genuine 409) is returned unchanged.
 func mapDuplicateToConflict(err error) error {
 	var ae *APIError
 	if !errors.As(err, &ae) {
 		return err
 	}
 	if ae.StatusCode == http.StatusBadRequest && isDuplicateMessage(ae.Message, ae.Body) {
-		ae.StatusCode = http.StatusConflict
+		ae.duplicate = true
 	}
 	return err
 }
 
-// isAbsentNotification reports whether err is an *APIError describing a Quay
-// delete-notification response for a UUID that is already gone. Quay does not
-// uniformly return 404 here: an unknown notification UUID can come back as a
-// 400 InvalidRequest. This recognizes that 400 form so DeleteNotificationIfExists
-// stays idempotent. A genuine 404 is handled separately by IsNotFound.
-func isAbsentNotification(err error) bool {
+// isAmbiguousNotificationDelete reports whether err is an *APIError describing
+// Quay's generic delete-notification 400. Callers must prove absence with
+// ListNotifications before treating it as success.
+func isAmbiguousNotificationDelete(err error) bool {
 	var ae *APIError
 	if !errors.As(err, &ae) {
 		return false
@@ -148,4 +163,15 @@ func isDuplicateMessage(message, body string) bool {
 		strings.Contains(hay, "already taken") ||
 		strings.Contains(hay, "already in use") ||
 		strings.Contains(hay, "already a member")
+}
+
+func truncateString(s string, limit int) string {
+	if limit <= 0 || len(s) <= limit {
+		return s
+	}
+	marker := truncationMarker
+	if limit <= len(marker) {
+		return s[:limit]
+	}
+	return s[:limit-len(marker)] + marker
 }

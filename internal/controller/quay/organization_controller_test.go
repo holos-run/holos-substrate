@@ -30,7 +30,9 @@ func makeNamespace(ctx context.Context, t *testing.T) string {
 		t.Fatalf("creating namespace: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = shared.k8sClient.Delete(context.Background(), ns)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = shared.k8sClient.Delete(cleanupCtx, ns)
 	})
 	return ns.Name
 }
@@ -108,7 +110,7 @@ func reconcileUntilStable(ctx context.Context, t *testing.T, r *OrganizationReco
 }
 
 func TestReconcileCreatesOrganization(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -171,7 +173,7 @@ func TestReconcileCreatesOrganization(t *testing.T) {
 }
 
 func TestReconcileThreadsCABundleToClientFactory(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -204,7 +206,7 @@ func TestReconcileThreadsCABundleToClientFactory(t *testing.T) {
 }
 
 func TestReconcileInvalidCABundleFailsWithoutQuayCall(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -245,7 +247,7 @@ func TestReconcileInvalidCABundleFailsWithoutQuayCall(t *testing.T) {
 }
 
 func TestReconcileAdoptsExistingOrganization(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -277,7 +279,7 @@ func TestReconcileAdoptsExistingOrganization(t *testing.T) {
 }
 
 func TestReconcileQuayErrorSetsReadyFalse(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -309,7 +311,7 @@ func TestReconcileQuayErrorSetsReadyFalse(t *testing.T) {
 }
 
 func TestReconcileMissingCredentialSecretSetsConditionAndNoQuayCall(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	// Deliberately do NOT create the credential Secret.
 	key := makeOrg(ctx, t, ns, "nocreds", "", false)
@@ -341,7 +343,7 @@ func TestReconcileMissingCredentialSecretSetsConditionAndNoQuayCall(t *testing.T
 }
 
 func TestReconcileDeleteRemovesFinalizerAfterQuayDelete(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -383,7 +385,7 @@ func TestReconcileDeleteRemovesFinalizerAfterQuayDelete(t *testing.T) {
 }
 
 func TestReconcileConflictWhenExistingOrgNotAdopted(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -418,7 +420,7 @@ func TestReconcileConflictWhenExistingOrgNotAdopted(t *testing.T) {
 }
 
 func TestReconcileCreateRaceDoesNotClaimOwnership(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -446,7 +448,7 @@ func TestReconcileCreateRaceDoesNotClaimOwnership(t *testing.T) {
 }
 
 func TestReconcileDeleteReleasesAdoptedOrgWithoutDeleting(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -486,7 +488,7 @@ func TestReconcileDeleteReleasesAdoptedOrgWithoutDeleting(t *testing.T) {
 }
 
 func TestReconcileHonorsCredentialSecretRefKey(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	// A credential Secret whose token lives under a custom key, not "token".
 	secret := &corev1.Secret{
@@ -533,7 +535,7 @@ func TestReconcileHonorsCredentialSecretRefKey(t *testing.T) {
 }
 
 func TestReconcileStampsOwnershipMarkerOnCreate(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -562,7 +564,7 @@ func TestReconcileStampsOwnershipMarkerOnCreate(t *testing.T) {
 }
 
 func TestReconcileAppliesEmailDriftToOwnedOrg(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -610,7 +612,7 @@ func TestReconcileAppliesEmailDriftToOwnedOrg(t *testing.T) {
 }
 
 func TestReconcileStampsEmailMutationWhenTeamsFail(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -665,7 +667,7 @@ func TestReconcileHealsLostCreatedMarkerWithoutReleasing(t *testing.T) {
 	// status.Created true but, if the marker write was also lost, the org carries
 	// no marker. The reconciler must re-stamp the marker and keep ownership, never
 	// mis-classify the org as foreign and release it.
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -704,7 +706,7 @@ func TestReconcileMarkerStampFailureAfterCreatePersistsCreatedAndHeals(t *testin
 	// persist status.Created=true (so the org is not later mistaken for foreign),
 	// and a subsequent reconcile must re-stamp the marker (heal) rather than
 	// release the org.
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -751,7 +753,7 @@ func TestReconcileMarkerStampFailureAfterCreatePersistsCreatedAndHeals(t *testin
 func TestReconcileDeleteSucceedsBeforeMarkerCleanup(t *testing.T) {
 	// Codex round 1: the org must be deleted before the marker, so a failed org
 	// delete leaves the marker intact for the retry to re-verify ownership.
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -796,7 +798,7 @@ func TestReconcileDeleteSucceedsBeforeMarkerCleanup(t *testing.T) {
 func TestReconcileConflictWhenMarkerHoldsForeignToken(t *testing.T) {
 	// An org marked by a DIFFERENT owner must never be seized — not even on a
 	// create-race conflict path that re-evaluates ownership.
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -826,7 +828,7 @@ func TestReconcileDeleteReleasesWhenMarkerForeignAfterRecreate(t *testing.T) {
 	// but in the delete gap another actor recreated the same global org name with
 	// a foreign (or absent) marker. The retried delete must NOT destroy the
 	// recreated org — it releases instead.
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -899,7 +901,7 @@ func updateSyncedTeams(ctx context.Context, t *testing.T, key client.ObjectKey, 
 }
 
 func TestReconcileSyncedTeamsZeroIsNoop(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -928,7 +930,7 @@ func TestReconcileSyncedTeamsZeroIsNoop(t *testing.T) {
 }
 
 func TestReconcileSyncedTeamsCreatesTeamSyncAndDefaultPermission(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -969,7 +971,7 @@ func TestReconcileSyncedTeamsCreatesTeamSyncAndDefaultPermission(t *testing.T) {
 }
 
 func TestReconcileSyncedTeamsRoleDrift(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -997,7 +999,7 @@ func TestReconcileSyncedTeamsRoleDrift(t *testing.T) {
 }
 
 func TestReconcileSyncedTeamsOIDCGroupRebind(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -1038,7 +1040,7 @@ func TestReconcileSyncedTeamsOIDCGroupRebind(t *testing.T) {
 }
 
 func TestReconcileSyncedTeamsDefaultPermissionAddChangeRemove(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -1097,7 +1099,7 @@ func TestReconcileSyncedTeamsDefaultPermissionAddChangeRemove(t *testing.T) {
 }
 
 func TestReconcileSyncedTeamsRemovedFromSpecIsDeprovisioned(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -1142,7 +1144,7 @@ func TestReconcileSyncedTeamsRemovedFromSpecIsDeprovisioned(t *testing.T) {
 }
 
 func TestReconcileSyncedTeamsPreexistingUnmanagedIsConflict(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -1186,7 +1188,7 @@ func TestReconcileSyncedTeamsPreexistingUnmanagedIsConflict(t *testing.T) {
 }
 
 func TestReconcileSyncedTeamsUnmanagedOutsideSpecIsIgnored(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -1223,7 +1225,7 @@ func TestReconcileSyncedTeamsHealsLostStatus(t *testing.T) {
 	// AC #4: a team that pre-exists and carries this CR's managedTeamMarker (a lost
 	// status write after our own create) is healed into ownership via the marker
 	// alone — even when unsynced — rather than treated as an adoption conflict.
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -1261,7 +1263,7 @@ func TestReconcileSyncedTeamsBoundButUnmarkedIsConflict(t *testing.T) {
 	// to the desired oidcGroup but lacks the controller's ownership-marker
 	// description must NOT be healed/adopted — it is a TeamConflict. The heal rule
 	// requires the durable description marker, not just a coincidental group match.
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -1293,7 +1295,7 @@ func TestReconcileSyncedTeamsForeignMarkerIsConflict(t *testing.T) {
 	// carrying a DIFFERENT CR's marker (or any non-matching description) must not be
 	// healed — it is a conflict. This is the team-level analog of the org's
 	// foreign-marker conflict.
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -1326,7 +1328,7 @@ func TestReconcileSyncedTeamsRecoversAfterPostUpsertFailure(t *testing.T) {
 	// fails, the team carries this CR's marker. The next reconcile must heal it back
 	// into ownership (via the marker) and complete — never wedge into a false
 	// TeamConflict.
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -1381,7 +1383,7 @@ func TestReconcileSyncedTeamsRecoversAfterPostUpsertFailure(t *testing.T) {
 }
 
 func TestReconcileDeprovisionFailureDoesNotRestampWithoutMutation(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
@@ -1424,7 +1426,7 @@ func TestReconcileDeprovisionFailureDoesNotRestampWithoutMutation(t *testing.T) 
 }
 
 func TestReconcileDeprovisionAlreadyMissingTeamConverges(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)

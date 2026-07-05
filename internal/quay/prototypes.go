@@ -73,7 +73,7 @@ type updatePrototypeRequest struct {
 // path with the org segment escaped; callers append a prototype id for item
 // operations.
 func prototypesPath(org string) string {
-	return "/api/v1/organization/" + url.PathEscape(org) + "/prototypes"
+	return organizationPath(org) + "/prototypes"
 }
 
 // ListPrototypes returns the organization's default-permission prototypes via
@@ -129,9 +129,5 @@ func (c *Client) DeletePrototype(ctx context.Context, org, prototypeID string) e
 // DeletePrototypeIfExists deletes the prototype and returns nil when it is
 // already absent, so the call is idempotent for cleanup and finalizer logic.
 func (c *Client) DeletePrototypeIfExists(ctx context.Context, org, prototypeID string) error {
-	err := c.DeletePrototype(ctx, org, prototypeID)
-	if IsNotFound(err) {
-		return nil
-	}
-	return err
+	return ignoreNotFound(c.DeletePrototype(ctx, org, prototypeID))
 }
