@@ -3,6 +3,7 @@ package shared
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"slices"
 
 	"github.com/go-logr/logr"
@@ -11,24 +12,83 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func PatchStatus(ctx context.Context, c client.Client, base, obj client.Object, resource string) error {
-	if err := c.Get(ctx, client.ObjectKeyFromObject(obj), base); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		return fmt.Errorf("reading %s before status patch: %w", resource, err)
+	desiredStatus, err := statusSnapshot(obj)
+	if err != nil {
+		return fmt.Errorf("reading desired %s status: %w", resource, err)
 	}
-	if err := c.Status().Patch(ctx, obj, client.MergeFrom(base)); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
+	key := client.ObjectKeyFromObject(obj)
+	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		if err := c.Get(ctx, key, base); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return fmt.Errorf("reading %s before status update: %w", resource, err)
 		}
+		if err := setStatus(base, desiredStatus); err != nil {
+			return fmt.Errorf("setting desired %s status: %w", resource, err)
+		}
+		if err := c.Status().Update(ctx, base); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+		obj.SetResourceVersion(base.GetResourceVersion())
+		return nil
+	}); err != nil {
 		return fmt.Errorf("updating %s status: %w", resource, err)
 	}
 	return nil
+}
+
+func statusSnapshot(obj client.Object) (reflect.Value, error) {
+	status, err := statusField(obj)
+	if err != nil {
+		return reflect.Value{}, err
+	}
+	snapshot := reflect.New(status.Type()).Elem()
+	snapshot.Set(status)
+	return snapshot, nil
+}
+
+func setStatus(obj client.Object, status reflect.Value) error {
+	target, err := statusField(obj)
+	if err != nil {
+		return err
+	}
+	if !status.Type().AssignableTo(target.Type()) {
+		return fmt.Errorf("status type %s is not assignable to %s", status.Type(), target.Type())
+	}
+	target.Set(status)
+	return nil
+}
+
+func statusField(obj client.Object) (reflect.Value, error) {
+	if obj == nil {
+		return reflect.Value{}, fmt.Errorf("object is nil")
+	}
+	value := reflect.ValueOf(obj)
+	if value.Kind() != reflect.Ptr || value.IsNil() {
+		return reflect.Value{}, fmt.Errorf("object must be a non-nil pointer")
+	}
+	elem := value.Elem()
+	if elem.Kind() != reflect.Struct {
+		return reflect.Value{}, fmt.Errorf("object must point to a struct")
+	}
+	status := elem.FieldByName("Status")
+	if !status.IsValid() {
+		return reflect.Value{}, fmt.Errorf("object has no Status field")
+	}
+	if !status.CanSet() {
+		return reflect.Value{}, fmt.Errorf("Status field is not settable")
+	}
+	return status, nil
 }
 
 func GenerationReady(conditions []v1.Condition, conditionType string, generation int64) bool {
