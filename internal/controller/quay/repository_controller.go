@@ -766,8 +766,10 @@ func isRepositoryConflict(err error) bool {
 	return errors.As(err, &conflict)
 }
 
-// reconcileDelete runs the finalizer: it deletes the Quay repository (which
-// removes its notifications) then drops the finalizer so the CR is removed.
+// reconcileDelete runs the finalizer: it deletes created Quay repositories
+// (which removes their notifications), releases adopted repositories after
+// removing controller-owned notifications, then drops the finalizer so the CR is
+// removed.
 //
 // The repository identity is taken from status.QuayRepository — the resolved
 // <org>/<repo> path recorded when the repo was provisioned. When status is empty
@@ -876,15 +878,36 @@ func (r *RepositoryReconciler) releaseRepositoryWithClient(ctx context.Context, 
 			fmt.Sprintf("reading Quay repository %s/%s for release: %v", ns, name, err))
 		return ctrl.Result{}, fmt.Errorf("reading Quay repository %s/%s for release: %w", ns, name, err)
 	}
+	mutation, err := r.removeManagedWebhooks(ctx, qc, ns, name)
+	if err != nil {
+		if mutation.Mutated {
+			r.stampMutation(repo, false)
+			if statusErr := r.updateStatus(ctx, repo); statusErr != nil {
+				return ctrl.Result{}, statusErr
+			}
+		}
+		r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonQuayError,
+			fmt.Sprintf("removing managed webhooks for Quay repository %s/%s release: %v", ns, name, err))
+		return ctrl.Result{}, fmt.Errorf("removing managed webhooks for Quay repository %s/%s release: %w", ns, name, err)
+	}
 	if repositoryDescriptionOwner(current.Description) == repositoryOwnerToken(repo) {
 		releasedDescription := repositoryDescriptionWithoutOwner(current.Description)
 		err := qc.UpdateRepositoryDescription(ctx, ns, name, releasedDescription)
 		recordQuayAPI(opUpdateRepository, err)
 		if err != nil {
+			if mutation.Mutated {
+				r.stampMutation(repo, false)
+				if statusErr := r.updateStatus(ctx, repo); statusErr != nil {
+					return ctrl.Result{}, statusErr
+				}
+			}
 			r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonQuayError,
 				fmt.Sprintf("releasing ownership marker for Quay repository %s/%s: %v", ns, name, err))
 			return ctrl.Result{}, fmt.Errorf("releasing ownership marker for Quay repository %s/%s: %w", ns, name, err)
 		}
+		mutation = mutation.or(quayMutation{Mutated: true})
+	}
+	if mutation.Mutated {
 		r.stampMutation(repo, false)
 		if err := r.updateStatus(ctx, repo); err != nil {
 			return ctrl.Result{}, err

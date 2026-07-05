@@ -1044,9 +1044,12 @@ func TestRepositoryDeleteReleasesAdoptedRepositoryWithoutDeleting(t *testing.T) 
 		t.Fatalf("creating credential secret: %v", err)
 	}
 	makeReadyOrg(ctx, t, ns, "acme")
+	const adoptedHook = "https://kargo.example.test/webhook/adopted"
+	const manualHook = "https://example.test/manual"
 	key := makeRepo(ctx, t, ns, "acme", "adoptdelete", repoOpts{
 		adopt:       true,
 		description: "survives",
+		webhook:     &quayv1alpha1.RepositoryWebhook{URL: ptr(adoptedHook)},
 	})
 
 	fake := newFakeRepoClient()
@@ -1062,6 +1065,10 @@ func TestRepositoryDeleteReleasesAdoptedRepositoryWithoutDeleting(t *testing.T) 
 	repo := getRepo(ctx, t, key)
 	if repo.Status.Created == nil || *repo.Status.Created {
 		t.Fatalf("status.created = %v, want false after adopt", repo.Status.Created)
+	}
+	fake.seedNotification("acme", "adoptdelete", "manual", manualHook)
+	if urls := fake.webhookURLs("acme", "adoptdelete"); len(urls) != 2 || !containsString(urls, adoptedHook) || !containsString(urls, manualHook) {
+		t.Fatalf("webhook URLs before delete = %v, want controller and manual hooks", urls)
 	}
 
 	if err := shared.k8sClient.Delete(ctx, repo); err != nil {
@@ -1083,6 +1090,9 @@ func TestRepositoryDeleteReleasesAdoptedRepositoryWithoutDeleting(t *testing.T) 
 	}
 	if st.description != "survives" {
 		t.Errorf("description after release = %q, want survives", st.description)
+	}
+	if urls := fake.webhookURLs("acme", "adoptdelete"); len(urls) != 1 || urls[0] != manualHook {
+		t.Errorf("webhook URLs after release = %v, want only manual hook", urls)
 	}
 	assertEvent(t, recorder, ReasonReleased)
 }
