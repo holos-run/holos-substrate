@@ -50,6 +50,7 @@ type fakeOrgClient struct {
 	listTeamsErr       error
 	upsertTeamErr      error
 	enableSyncErr      error
+	deleteTeamErr      error
 	listPrototypesErr  error
 	createPrototypeErr error
 
@@ -283,6 +284,9 @@ func (f *fakeOrgClient) DeleteTeamIfExists(ctx context.Context, org, team string
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("DeleteTeam:" + org + "/" + team)
+	if f.deleteTeamErr != nil {
+		return f.deleteTeamErr
+	}
 	key := teamKey(org, team)
 	delete(f.teams, key)
 	delete(f.teamSync, key)
@@ -293,6 +297,9 @@ func (f *fakeOrgClient) GetTeamMembers(ctx context.Context, org, team string) (*
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("GetTeamMembers:" + org + "/" + team)
+	if _, ok := f.teams[teamKey(org, team)]; !ok {
+		return nil, notFoundError(org + "/" + team)
+	}
 	out := &quay.TeamMembers{Name: team}
 	if group, ok := f.teamSync[teamKey(org, team)]; ok {
 		out.Synced = &quay.TeamSync{

@@ -150,6 +150,7 @@ func TestReconcileCreatesOrganization(t *testing.T) {
 	}
 	firstValidated := org.Status.LastValidatedTime.DeepCopy()
 	firstMutated := org.Status.LastMutatedTime.DeepCopy()
+	assertEvent(t, recorder, ReasonCreated)
 
 	time.Sleep(time.Second + 100*time.Millisecond)
 	result, err := reconcile(ctx, r, key)
@@ -166,7 +167,7 @@ func TestReconcileCreatesOrganization(t *testing.T) {
 	if !org.Status.LastMutatedTime.Equal(firstMutated) {
 		t.Errorf("lastMutatedTime changed on steady validation: first=%v second=%v", firstMutated, org.Status.LastMutatedTime)
 	}
-	assertEvent(t, recorder, ReasonCreated)
+	assertNoEvent(t, recorder, ReasonCreated)
 }
 
 func TestReconcileThreadsCABundleToClientFactory(t *testing.T) {
@@ -605,6 +606,57 @@ func TestReconcileAppliesEmailDriftToOwnedOrg(t *testing.T) {
 		if strings.HasPrefix(c, "Update:") {
 			t.Errorf("unexpected UpdateOrganization on a no-drift reconcile: %v", fake.calls[before:])
 		}
+	}
+}
+
+func TestReconcileStampsEmailMutationWhenTeamsFail(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrg(ctx, t, ns, "emailfail", "", false)
+
+	fake := newFakeOrgClient()
+	r, _ := newReconciler(fake, ns)
+
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile create: %v", err)
+	}
+	before := getOrg(ctx, t, key)
+	firstValidated := before.Status.LastValidatedTime.DeepCopy()
+	firstMutated := before.Status.LastMutatedTime.DeepCopy()
+
+	time.Sleep(time.Second + 100*time.Millisecond)
+	org := getOrg(ctx, t, key)
+	org.Spec.Email = "changed@example.test"
+	if err := shared.k8sClient.Update(ctx, org); err != nil {
+		t.Fatalf("updating spec email: %v", err)
+	}
+	fake.listTeamsErr = &quay.APIError{StatusCode: http.StatusInternalServerError, Message: "teams boom"}
+
+	if err := reconcileUntilStable(ctx, t, r, key); err == nil {
+		t.Fatal("expected reconcile to fail after applying email drift")
+	}
+
+	if got := fake.emails["emailfail"]; got != "changed@example.test" {
+		t.Fatalf("Quay email = %q, want changed@example.test despite later team failure", got)
+	}
+	org = getOrg(ctx, t, key)
+	if got := conditionStatus(org, ConditionReady); got != metav1.ConditionFalse {
+		t.Errorf("Ready = %q, want False after team failure", got)
+	}
+	if org.Status.LastValidatedTime == nil || !org.Status.LastValidatedTime.Equal(firstValidated) {
+		t.Errorf("lastValidatedTime changed on failed reconcile: before=%v after=%v", firstValidated, org.Status.LastValidatedTime)
+	}
+	if org.Status.LastMutatedTime == nil || !org.Status.LastMutatedTime.After(firstMutated.Time) {
+		t.Errorf("lastMutatedTime did not advance after partial mutation: before=%v after=%v", firstMutated, org.Status.LastMutatedTime)
+	}
+	if got := org.Status.LastMutationReason; got != quayv1alpha1.MutationReasonSpecChange {
+		t.Errorf("lastMutationReason = %q, want %q", got, quayv1alpha1.MutationReasonSpecChange)
+	}
+	if org.Status.LastDriftTime != nil {
+		t.Errorf("lastDriftTime = %v, want nil for a pure spec-driven email update", org.Status.LastDriftTime)
 	}
 }
 
@@ -1288,18 +1340,26 @@ func TestReconcileSyncedTeamsRecoversAfterPostUpsertFailure(t *testing.T) {
 	fake.enableSyncErr = &quay.APIError{StatusCode: http.StatusInternalServerError, Message: "sync boom"}
 	r, _ := newReconciler(fake, ns)
 
-	// Drive the finalizer + create + failing sync; expect a requeue error.
-	for i := 0; i < 3; i++ {
-		if _, err := reconcile(ctx, r, key); err != nil {
-			break
-		}
+	// Drive the finalizer + create + failing sync; expect a requeue error after
+	// UpsertTeam has already stamped the external team.
+	if err := reconcileUntilStable(ctx, t, r, key); err == nil {
+		t.Fatal("expected reconcile to fail after UpsertTeam succeeded and sync failed")
 	}
-	// The team was created (carries our marker) but is NOT yet in managedTeams.
+
+	// The team was created (carries our marker) and the partial progress is now
+	// persisted so the failure path records both managedTeams and mutation stamps.
 	if _, ok := fake.teamRole("recover", "team"); !ok {
 		t.Fatal("expected the team to be created despite the sync failure")
 	}
-	if containsString(getOrg(ctx, t, key).Status.ManagedTeams, "team") {
-		t.Fatal("did not expect the team in managedTeams before the status write succeeded")
+	failed := getOrg(ctx, t, key)
+	if !containsString(failed.Status.ManagedTeams, "team") {
+		t.Fatalf("ManagedTeams = %v, want to contain team after partial failure", failed.Status.ManagedTeams)
+	}
+	if failed.Status.LastMutatedTime == nil || failed.Status.LastMutationReason != quayv1alpha1.MutationReasonSpecChange {
+		t.Fatalf("mutation status = (%v, %q), want stamped SpecChange after partial failure", failed.Status.LastMutatedTime, failed.Status.LastMutationReason)
+	}
+	if failed.Status.LastValidatedTime != nil {
+		t.Fatalf("lastValidatedTime = %v, want nil on failed validation", failed.Status.LastValidatedTime)
 	}
 
 	// Clear the sync fault; the next reconcile must heal (not conflict) and finish.
@@ -1317,6 +1377,94 @@ func TestReconcileSyncedTeamsRecoversAfterPostUpsertFailure(t *testing.T) {
 	}
 	if !containsString(org.Status.ManagedTeams, "team") {
 		t.Errorf("ManagedTeams = %v, want the recovered team recorded", org.Status.ManagedTeams)
+	}
+}
+
+func TestReconcileDeprovisionFailureDoesNotRestampWithoutMutation(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrgWithTeams(ctx, t, ns, "deprovision-retry", []quayv1alpha1.SyncedTeam{
+		{Name: "drop", OIDCGroup: "g", Role: quayv1alpha1.OrganizationTeamRoleMember},
+	})
+
+	fake := newFakeOrgClient()
+	r, _ := newReconciler(fake, ns)
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("initial reconcile: %v", err)
+	}
+
+	org := getOrg(ctx, t, key)
+	org.Spec.SyncedTeams = nil
+	if err := shared.k8sClient.Update(ctx, org); err != nil {
+		t.Fatalf("removing synced team from spec: %v", err)
+	}
+	fake.deleteTeamErr = &quay.APIError{StatusCode: http.StatusInternalServerError, Message: "delete boom"}
+
+	time.Sleep(time.Second + 100*time.Millisecond)
+	if err := reconcileUntilStable(ctx, t, r, key); err == nil {
+		t.Fatal("expected first deprovision reconcile to fail deleting the team")
+	}
+	failed := getOrg(ctx, t, key)
+	if failed.Status.LastMutatedTime == nil {
+		t.Fatal("lastMutatedTime not set after sync disable succeeded before delete failure")
+	}
+	firstFailureMutation := failed.Status.LastMutatedTime.DeepCopy()
+
+	time.Sleep(time.Second + 100*time.Millisecond)
+	if _, err := reconcile(ctx, r, key); err == nil {
+		t.Fatal("expected second deprovision reconcile to keep failing deleting the team")
+	}
+	failed = getOrg(ctx, t, key)
+	if !failed.Status.LastMutatedTime.Equal(firstFailureMutation) {
+		t.Errorf("lastMutatedTime changed on retry without a new remote mutation: first=%v second=%v", firstFailureMutation, failed.Status.LastMutatedTime)
+	}
+}
+
+func TestReconcileDeprovisionAlreadyMissingTeamConverges(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrgWithTeams(ctx, t, ns, "deprovision-missing", []quayv1alpha1.SyncedTeam{
+		{Name: "gone", OIDCGroup: "g", Role: quayv1alpha1.OrganizationTeamRoleMember},
+	})
+
+	fake := newFakeOrgClient()
+	r, _ := newReconciler(fake, ns)
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("initial reconcile: %v", err)
+	}
+	before := getOrg(ctx, t, key)
+	firstMutated := before.Status.LastMutatedTime.DeepCopy()
+
+	fake.mu.Lock()
+	delete(fake.teams, teamKey("deprovision-missing", "gone"))
+	delete(fake.teamSync, teamKey("deprovision-missing", "gone"))
+	fake.mu.Unlock()
+
+	org := getOrg(ctx, t, key)
+	org.Spec.SyncedTeams = nil
+	if err := shared.k8sClient.Update(ctx, org); err != nil {
+		t.Fatalf("removing synced team from spec: %v", err)
+	}
+
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile missing team deprovision: %v", err)
+	}
+
+	org = getOrg(ctx, t, key)
+	if got := conditionStatus(org, ConditionReady); got != metav1.ConditionTrue {
+		t.Errorf("Ready = %q, want True when already-missing managed team converges", got)
+	}
+	if containsString(org.Status.ManagedTeams, "gone") {
+		t.Errorf("ManagedTeams = %v, want gone removed", org.Status.ManagedTeams)
+	}
+	if org.Status.LastMutatedTime == nil || !org.Status.LastMutatedTime.Equal(firstMutated) {
+		t.Errorf("lastMutatedTime changed for already-missing team: before=%v after=%v", firstMutated, org.Status.LastMutatedTime)
 	}
 }
 
@@ -1347,6 +1495,21 @@ func assertEvent(t *testing.T, recorder *record.FakeRecorder, want string) {
 			}
 		default:
 			t.Errorf("expected an event containing %q, none found", want)
+			return
+		}
+	}
+}
+
+func assertNoEvent(t *testing.T, recorder *record.FakeRecorder, want string) {
+	t.Helper()
+	for {
+		select {
+		case e := <-recorder.Events:
+			if strings.Contains(e, want) {
+				t.Errorf("unexpected event containing %q: %s", want, e)
+				return
+			}
+		default:
 			return
 		}
 	}

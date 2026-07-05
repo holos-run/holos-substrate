@@ -2,6 +2,8 @@ package quay
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -157,6 +159,22 @@ func repoConditionReason(repo *quayv1alpha1.Repository, condType string) string 
 
 func ptr(s string) *string { return &s }
 
+type webhookSecretFailReader struct {
+	client.Reader
+	namespace string
+	name      string
+	err       error
+}
+
+func (r webhookSecretFailReader) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if key.Namespace == r.namespace && key.Name == r.name {
+		if _, ok := obj.(*corev1.Secret); ok {
+			return r.err
+		}
+	}
+	return r.Reader.Get(ctx, key, obj, opts...)
+}
+
 // containsString reports whether xs contains want.
 func containsString(xs []string, want string) bool {
 	for _, x := range xs {
@@ -214,6 +232,7 @@ func TestRepositoryCreatesWithInlineWebhook(t *testing.T) {
 	}
 	firstValidated := repo.Status.LastValidatedTime.DeepCopy()
 	firstMutated := repo.Status.LastMutatedTime.DeepCopy()
+	assertEvent(t, recorder, ReasonReconciled)
 
 	time.Sleep(time.Second + 100*time.Millisecond)
 	result, err := reconcileRepo(ctx, r, key)
@@ -230,7 +249,7 @@ func TestRepositoryCreatesWithInlineWebhook(t *testing.T) {
 	if !repo.Status.LastMutatedTime.Equal(firstMutated) {
 		t.Errorf("lastMutatedTime changed on steady validation: first=%v second=%v", firstMutated, repo.Status.LastMutatedTime)
 	}
-	assertEvent(t, recorder, ReasonReconciled)
+	assertNoEvent(t, recorder, ReasonReconciled)
 }
 
 func TestRepositoryThreadsCABundleToClientFactory(t *testing.T) {
@@ -380,6 +399,56 @@ func TestRepositorySecretRefWebhookErrorDoesNotLeakURL(t *testing.T) {
 	}
 }
 
+func TestRepositoryWebhookSecretReadErrorPersistsPriorMutation(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	key := makeRepo(ctx, t, ns, "acme", "readerror", repoOpts{
+		webhook: &quayv1alpha1.RepositoryWebhook{
+			URLSecretRef: &quayv1alpha1.WebhookURLSecretRef{Name: "hook-url", Key: "url"},
+		},
+	})
+
+	fake := newFakeRepoClient()
+	r, _ := newRepoReconciler(fake, ns)
+	r.APIReader = webhookSecretFailReader{
+		Reader:    shared.k8sClient,
+		namespace: ns,
+		name:      "hook-url",
+		err:       errors.New("temporary apiserver read failure"),
+	}
+
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err == nil {
+		t.Fatal("expected reconcile to fail after repository create and webhook Secret read error")
+	}
+
+	if !fake.repoExists("acme", "readerror") {
+		t.Fatal("expected repository create to complete before webhook Secret read failed")
+	}
+	repo := getRepo(ctx, t, key)
+	if got := repoConditionStatus(repo, ConditionReady); got != metav1.ConditionFalse {
+		t.Errorf("Ready = %q, want False after webhook Secret read error", got)
+	}
+	if got := repoConditionReason(repo, ConditionReady); got != ReasonWebhookURLReadError {
+		t.Errorf("Ready reason = %q, want %q", got, ReasonWebhookURLReadError)
+	}
+	if got := repoConditionStatus(repo, ConditionWebhookConfigured); got != metav1.ConditionFalse {
+		t.Errorf("WebhookConfigured = %q, want False after webhook Secret read error", got)
+	}
+	if got := repoConditionReason(repo, ConditionWebhookConfigured); got != ReasonWebhookURLReadError {
+		t.Errorf("WebhookConfigured reason = %q, want %q", got, ReasonWebhookURLReadError)
+	}
+	if repo.Status.LastMutatedTime == nil || repo.Status.LastMutationReason != quayv1alpha1.MutationReasonSpecChange {
+		t.Errorf("mutation status = (%v, %q), want stamped SpecChange after repository create", repo.Status.LastMutatedTime, repo.Status.LastMutationReason)
+	}
+	if repo.Status.LastValidatedTime != nil {
+		t.Errorf("lastValidatedTime = %v, want nil on failed validation", repo.Status.LastValidatedTime)
+	}
+}
+
 func TestRepositorySecretRefMissingKeySetsConditionAndRequeues(t *testing.T) {
 	ctx := context.Background()
 	ns := makeNamespace(ctx, t)
@@ -473,6 +542,57 @@ func TestRepositoryCorrectsVisibilityAndDescriptionDrift(t *testing.T) {
 	}
 }
 
+func TestRepositoryStampsPartialMutationWhenDescriptionUpdateFails(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	key := makeRepo(ctx, t, ns, "acme", "partial", repoOpts{
+		visibility:  quayv1alpha1.RepositoryVisibilityPrivate,
+		description: "desired description",
+	})
+
+	fake := newFakeRepoClient()
+	r, _ := newRepoReconciler(fake, ns)
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("initial reconcile: %v", err)
+	}
+	before := getRepo(ctx, t, key)
+	firstValidated := before.Status.LastValidatedTime.DeepCopy()
+	firstMutated := before.Status.LastMutatedTime.DeepCopy()
+
+	time.Sleep(time.Second + 100*time.Millisecond)
+	fake.mu.Lock()
+	st := fake.repos[repoKey("acme", "partial")]
+	st.isPublic = true
+	st.description = "remote drift"
+	fake.updateDescriptionErr = &quay.APIError{StatusCode: http.StatusInternalServerError, Message: "description boom"}
+	fake.mu.Unlock()
+
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err == nil {
+		t.Fatal("expected reconcile to fail after visibility update and description failure")
+	}
+
+	repo := getRepo(ctx, t, key)
+	if got := repoConditionStatus(repo, ConditionReady); got != metav1.ConditionFalse {
+		t.Errorf("Ready = %q, want False after partial repository update failure", got)
+	}
+	if repo.Status.LastValidatedTime == nil || !repo.Status.LastValidatedTime.Equal(firstValidated) {
+		t.Errorf("lastValidatedTime changed on failed reconcile: before=%v after=%v", firstValidated, repo.Status.LastValidatedTime)
+	}
+	if repo.Status.LastMutatedTime == nil || !repo.Status.LastMutatedTime.After(firstMutated.Time) {
+		t.Errorf("lastMutatedTime did not advance after partial repository update: before=%v after=%v", firstMutated, repo.Status.LastMutatedTime)
+	}
+	if got := repo.Status.LastMutationReason; got != quayv1alpha1.MutationReasonDriftRemediation {
+		t.Errorf("lastMutationReason = %q, want %q", got, quayv1alpha1.MutationReasonDriftRemediation)
+	}
+	if repo.Status.LastDriftTime == nil || !repo.Status.LastDriftTime.Equal(repo.Status.LastMutatedTime) {
+		t.Errorf("lastDriftTime = %v, want same instant as lastMutatedTime %v", repo.Status.LastDriftTime, repo.Status.LastMutatedTime)
+	}
+}
+
 func TestRepositoryWebhookURLChangeReplacesNotification(t *testing.T) {
 	ctx := context.Background()
 	ns := makeNamespace(ctx, t)
@@ -511,6 +631,66 @@ func TestRepositoryWebhookURLChangeReplacesNotification(t *testing.T) {
 	}
 	if !containsString(urls, "https://manual.example.test/keep") {
 		t.Errorf("manually-created webhook must be preserved; URLs = %v", urls)
+	}
+}
+
+func TestRepositoryStampsWebhookDeleteBeforeFailedCreate(t *testing.T) {
+	ctx := context.Background()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	oldHook := "https://kargo.example.test/webhook/old"
+	key := makeRepo(ctx, t, ns, "acme", "webhookpartial", repoOpts{
+		webhook: &quayv1alpha1.RepositoryWebhook{URL: ptr(oldHook)},
+	})
+
+	fake := newFakeRepoClient()
+	r, _ := newRepoReconciler(fake, ns)
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("initial reconcile: %v", err)
+	}
+	before := getRepo(ctx, t, key)
+	firstValidated := before.Status.LastValidatedTime.DeepCopy()
+	firstMutated := before.Status.LastMutatedTime.DeepCopy()
+
+	time.Sleep(time.Second + 100*time.Millisecond)
+	repo := getRepo(ctx, t, key)
+	newHook := "https://kargo.example.test/webhook/new"
+	repo.Spec.Webhook.URL = ptr(newHook)
+	if err := shared.k8sClient.Update(ctx, repo); err != nil {
+		t.Fatalf("updating webhook URL: %v", err)
+	}
+	fake.createNotifErr = &quay.APIError{StatusCode: http.StatusInternalServerError, Message: "create notification boom"}
+
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err == nil {
+		t.Fatal("expected reconcile to fail after deleting stale webhook and failing create")
+	}
+
+	urls := fake.webhookURLs("acme", "webhookpartial")
+	if containsString(urls, oldHook) {
+		t.Errorf("stale webhook URL should have been deleted before create failed; URLs = %v", urls)
+	}
+	if containsString(urls, newHook) {
+		t.Errorf("new webhook URL should not exist because create failed; URLs = %v", urls)
+	}
+
+	repo = getRepo(ctx, t, key)
+	if got := repoConditionStatus(repo, ConditionReady); got != metav1.ConditionFalse {
+		t.Errorf("Ready = %q, want False after webhook create failure", got)
+	}
+	if repo.Status.LastValidatedTime == nil || !repo.Status.LastValidatedTime.Equal(firstValidated) {
+		t.Errorf("lastValidatedTime changed on failed reconcile: before=%v after=%v", firstValidated, repo.Status.LastValidatedTime)
+	}
+	if repo.Status.LastMutatedTime == nil || !repo.Status.LastMutatedTime.After(firstMutated.Time) {
+		t.Errorf("lastMutatedTime did not advance after webhook partial mutation: before=%v after=%v", firstMutated, repo.Status.LastMutatedTime)
+	}
+	if got := repo.Status.LastMutationReason; got != quayv1alpha1.MutationReasonSpecChange {
+		t.Errorf("lastMutationReason = %q, want %q", got, quayv1alpha1.MutationReasonSpecChange)
+	}
+	if repo.Status.LastDriftTime != nil {
+		t.Errorf("lastDriftTime = %v, want nil for a pure spec-driven webhook URL update", repo.Status.LastDriftTime)
 	}
 }
 
