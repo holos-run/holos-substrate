@@ -894,6 +894,44 @@ func TestRepositoryWebhookStatusLossRecoversUUIDWithoutDuplicate(t *testing.T) {
 	}
 }
 
+func TestRepositoryWebhookDuplicateCleanupKeepsRecordedUUID(t *testing.T) {
+	ctx := t.Context()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	const hook = "https://kargo.example.test/webhook/dedupe"
+	key := makeRepo(ctx, t, ns, "acme", "dedupehook", repoOpts{
+		webhook: &quayv1alpha1.RepositoryWebhook{URL: ptr(hook)},
+	})
+
+	fake := newFakeRepoClient()
+	repo := getRepo(ctx, t, key)
+	fake.repos[repoKey("acme", "dedupehook")] = &fakeRepoStore{
+		description:   repositoryOwnerMarker(repo, true),
+		notifications: map[string]quay.Notification{},
+	}
+	keptUUID := fake.seedNotification("acme", "dedupehook", repositoryWebhookTitle(repo), hook)
+	duplicateUUID := fake.seedNotification("acme", "dedupehook", repositoryWebhookTitle(repo), hook)
+
+	r, _ := newRepoReconciler(fake, ns)
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile duplicate cleanup: %v", err)
+	}
+
+	repo = getRepo(ctx, t, key)
+	if got := repo.Status.WebhookNotificationUUID; got != keptUUID {
+		t.Fatalf("status.webhookNotificationUUID = %q, want kept UUID %q", got, keptUUID)
+	}
+	if urls := fake.webhookURLs("acme", "dedupehook"); len(urls) != 1 || urls[0] != hook {
+		t.Errorf("webhook URLs after duplicate cleanup = %v, want exactly [%s]", urls, hook)
+	}
+	if !fake.callsContain("DeleteNotification:acme/dedupehook:" + duplicateUUID) {
+		t.Errorf("expected duplicate webhook %q to be deleted; calls were %v", duplicateUUID, fake.calls)
+	}
+}
+
 func TestRepositoryStampsWebhookDeleteBeforeFailedCreate(t *testing.T) {
 	ctx := t.Context()
 	ns := makeNamespace(ctx, t)

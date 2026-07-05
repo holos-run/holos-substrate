@@ -3,6 +3,7 @@ package quay
 import (
 	"context"
 	"net/http"
+	"sort"
 	"sync"
 
 	"github.com/holos-run/holos-paas/internal/quay"
@@ -178,6 +179,9 @@ func (f *fakeRepoClient) ListNotifications(ctx context.Context, ns, repo string)
 	for _, n := range st.notifications {
 		out = append(out, n)
 	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].UUID < out[j].UUID
+	})
 	return out, nil
 }
 

@@ -581,7 +581,9 @@ func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient,
 		if delErr != nil {
 			return mutation, fmt.Errorf("deleting stale Quay notification %s on %s/%s: %w", n.UUID, ns, name, delErr)
 		}
-		repo.Status.WebhookNotificationUUID = ""
+		if repo.Status.WebhookNotificationUUID == n.UUID {
+			repo.Status.WebhookNotificationUUID = ""
+		}
 		mutation = mutation.or(quayMutation{Mutated: true, HealedDrift: repositoryPreviouslyReady})
 	}
 	if matched {
