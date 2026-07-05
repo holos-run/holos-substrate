@@ -86,7 +86,7 @@ func statusField(obj client.Object) (reflect.Value, error) {
 		return reflect.Value{}, fmt.Errorf("object has no Status field")
 	}
 	if !status.CanSet() {
-		return reflect.Value{}, fmt.Errorf("Status field is not settable")
+		return reflect.Value{}, fmt.Errorf("status field is not settable")
 	}
 	return status, nil
 }
