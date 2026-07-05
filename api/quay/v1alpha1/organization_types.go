@@ -98,12 +98,13 @@ type OrganizationSpec struct {
 	Name string `json:"name"`
 
 	// Email is the organization contact email Quay stores for the namespace. It
-	// is required, must look like an address with one local part and at least two
-	// non-empty domain labels, has no default, and is reconciled if it drifts.
+	// is required, must look like an address with a non-empty local part and a
+	// DNS-style domain with at least two labels, has no default, and is
+	// reconciled if it drifts.
 	//
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=254
-	// +kubebuilder:validation:Pattern=`^[^@]+@[^@.]+(\.[^@.]+)+$`
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9.!#$%&'*+/=?^_{|}~-]+@[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$`
 	Email string `json:"email"`
 
 	// CredentialsSecretRef selects the controller-namespace Secret containing the

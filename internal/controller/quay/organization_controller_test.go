@@ -79,10 +79,28 @@ func TestOrganizationCRDRejectsInvalidQuayInputs(t *testing.T) {
 			Email: "org@example.test",
 		},
 	}, {
-		name: "invalid email",
+		name: "single-label email domain",
 		spec: quayv1alpha1.OrganizationSpec{
 			Name:  "validorg",
 			Email: "org@localhost",
+		},
+	}, {
+		name: "email local part with whitespace",
+		spec: quayv1alpha1.OrganizationSpec{
+			Name:  "validorg",
+			Email: "bad domain@example.com",
+		},
+	}, {
+		name: "email domain with slash",
+		spec: quayv1alpha1.OrganizationSpec{
+			Name:  "validorg",
+			Email: "org@exa/mple.test",
+		},
+	}, {
+		name: "email domain label with whitespace",
+		spec: quayv1alpha1.OrganizationSpec{
+			Name:  "validorg",
+			Email: "org@example. test",
 		},
 	}, {
 		name: "short synced team name",
