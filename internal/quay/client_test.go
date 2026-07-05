@@ -638,6 +638,32 @@ func TestDeleteNotificationIfExistsSurfacesAmbiguous400WhenNotificationStillPres
 	}
 }
 
+func TestDeleteNotificationIfExistsSurfacesConfirmationListError(t *testing.T) {
+	m := &muxHandler{t: t, routes: map[string]func(http.ResponseWriter, *http.Request){
+		"DELETE /api/v1/repository/acme/web/notification/u1": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":"InvalidRequest","error_message":"Invalid request"}`)
+		},
+		"GET /api/v1/repository/acme/web/notification/": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"error_message":"list boom"}`)
+		},
+	}}
+	c, _ := newTestClient(t, m)
+
+	err := c.DeleteNotificationIfExists(t.Context(), "acme", "web", "u1")
+	if err == nil {
+		t.Fatal("expected list confirmation error to surface")
+	}
+	var ae *APIError
+	if !errors.As(err, &ae) || ae.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected wrapped list error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "ambiguous delete") {
+		t.Fatalf("Error() = %q, want ambiguous delete context", err.Error())
+	}
+}
+
 func TestDeleteNotificationIfExistsSurfacesOther400(t *testing.T) {
 	// A 400 that is not an absent-UUID signal must still surface.
 	h := &recordingHandler{
@@ -707,6 +733,23 @@ func TestOversizedErrorBodyIsBoundedAndTruncated(t *testing.T) {
 	}
 	if len(err.Error()) > maxAPIErrorBodyBytes+256 {
 		t.Fatalf("Error() was not bounded enough, len = %d", len(err.Error()))
+	}
+}
+
+func TestOversizedSuccessfulBodyReturnsExplicitError(t *testing.T) {
+	oversized := strings.Repeat(" ", maxResponseBodyBytes) + "{}"
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodGet, wantPath: "/api/v1/organization/acme",
+		status: http.StatusOK, respBody: oversized,
+	}
+	c, _ := newTestClient(t, h)
+
+	_, err := c.GetOrganization(t.Context(), "acme")
+	if err == nil {
+		t.Fatal("expected oversized success body error")
+	}
+	if !strings.Contains(err.Error(), "exceeded 1048576 bytes") {
+		t.Fatalf("Error() = %q, want explicit oversized response error", err.Error())
 	}
 }
 

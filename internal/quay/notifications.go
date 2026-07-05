@@ -2,6 +2,7 @@ package quay
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 )
@@ -108,7 +109,7 @@ func (c *Client) DeleteNotificationIfExists(ctx context.Context, ns, repo, uuid 
 	if isAmbiguousNotificationDelete(err) {
 		notifications, listErr := c.ListNotifications(ctx, ns, repo)
 		if listErr != nil {
-			return err
+			return fmt.Errorf("confirming notification %q absence after ambiguous delete: %w (delete error: %v)", uuid, listErr, err)
 		}
 		for _, notification := range notifications {
 			if notification.UUID == uuid {

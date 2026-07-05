@@ -193,13 +193,16 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body, out any)
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
+	respBody, oversized, err := readBounded(resp.Body, maxResponseBodyBytes)
 	if err != nil {
 		return fmt.Errorf("quay %s: reading response body for %s %s: %w", c.host(), method, path, err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return newAPIError(c.host(), method, path, resp.StatusCode, respBody)
+	}
+	if oversized {
+		return fmt.Errorf("quay %s: response body for %s %s exceeded %d bytes", c.host(), method, path, maxResponseBodyBytes)
 	}
 
 	if out != nil && len(bytes.TrimSpace(respBody)) > 0 {
@@ -252,4 +255,15 @@ func (c *Client) host() string {
 		return c.baseURL
 	}
 	return "<empty-host>"
+}
+
+func readBounded(r io.Reader, limit int64) ([]byte, bool, error) {
+	body, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(body)) > limit {
+		return body[:limit], true, nil
+	}
+	return body, false, nil
 }

@@ -30,7 +30,9 @@ func makeNamespace(ctx context.Context, t *testing.T) string {
 		t.Fatalf("creating namespace: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = shared.k8sClient.Delete(t.Context(), ns)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = shared.k8sClient.Delete(cleanupCtx, ns)
 	})
 	return ns.Name
 }
