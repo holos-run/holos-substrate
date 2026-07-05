@@ -85,7 +85,7 @@ credential record. What the resulting token can actually do is governed by Quay
 RBAC: an action succeeds only if `svc-quay-resource-controller` holds the proper
 role on the target namespace (or is a full-access superuser — see below), even
 when the token carries a broad scope like `repo:admin`. That splits into two
-cases that matter for the future reconciler:
+cases that matter for the shipped reconciler:
 
 1. **Orgs the controller creates** (the clean GitOps path; e.g. `my-project`).
    The token calls `POST /api/v1/organization/`, and the creating user —
@@ -242,7 +242,7 @@ the helper script selects exactly these.
 | `repo:create` | create repositories | auto-create repositories under provisioned orgs |
 | `repo:read` | read repository metadata | confirm a repository exists / read its current state before updating |
 | `repo:write` | push/modify repository content and settings | apply `visibility`/`description` and reconcile repository state |
-| `repo:admin` | administer a repository (settings, notifications) | create/list/delete the `repo_push` webhook notification (AC #8) |
+| `repo:admin` | administer a repository (settings, notifications) | create/list/delete the `repo_push` webhook notification |
 | `user:admin` / `user:read` | administer/read the acting user's account | round out the acting user's reach for superuser data-plane operations |
 
 **Can this token create *additional* organizations?** **Yes.** Org creation is a
@@ -365,7 +365,7 @@ The bring-up ordering and the `caBundle` TLS-trust note are documented in the
   orgs/repos/webhooks in-cluster.
 - [Holos Controller runbook](holos-controller.md) — the consumer side: how the
   controller reads this token from `holos-controller-quay-creds` in the
-  `holos-controller` namespace, and the AC #3 superuser-token assumption.
+  `holos-controller` namespace, and the superuser-token assumption.
 - [Quay↔Keycloak OIDC runbook](quay-keycloak-oidc.md) — the SSO wiring, the two
   superuser realm users, secret rotation, and `code exchange: 400`
   troubleshooting.

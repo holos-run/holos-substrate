@@ -53,7 +53,7 @@ type fakeRepoClient struct {
 
 	// gotCABundle records the caBundle the reconciler's RepoClientFactory was
 	// last invoked with, so a test asserts the spec's CABundle is threaded
-	// through to the client factory (HOL-1320).
+	// through to the client factory.
 	gotCABundle []byte
 }
 

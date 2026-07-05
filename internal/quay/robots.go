@@ -11,7 +11,7 @@ import (
 // server-side ownership marker: the robot's Description carries an opaque,
 // controller-managed token (the owning CR's UID), so create/adopt/delete
 // decisions can be keyed on the Quay org itself rather than solely on the CR's
-// status.created field (ADR-19, "Ownership and the claim model").
+// status.created field.
 type OrganizationRobot struct {
 	// Name is the fully-qualified robot username, "<orgname>+<shortname>".
 	Name string `json:"name"`

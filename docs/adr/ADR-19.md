@@ -17,6 +17,7 @@
 | 5        | 2026-06-18 | @jeffmccune | Document the **`caBundle` spec field** (HOL-1320/HOL-1321): both Organization and Repository carry an identical `caBundle []byte` (JSON `caBundle,omitempty`, `+optional`) — a PEM/base64 trust anchor for the in-cluster Quay registry's local-CA serving cert, threaded into the Quay client's TLS `RootCAs`; empty means use the controller pod's system trust store. The shared shape is defined once in `api/quay/v1alpha1/common_types.go` and re-used by both Kinds (the cross-Kind convention ADR-18 Revision 3 states controller-wide). |
 | 6        | 2026-06-19 | @jeffmccune | Document **Organization synced teams** ([HOL-1325](https://linear.app/holos-run/issue/HOL-1325), shipped HOL-1326..HOL-1328): the Organization gains `spec.syncedTeams[]` (`name`, `oidcGroup`, `role` ∈ `admin`/`creator`/`member`, optional `repositoryPermission` ∈ `read`/`write`/`admin`) and `status.managedTeams`. Records the **two distinct Quay concepts** (the team *org role* vs. the org *default repository permission*/prototype), the preserved **API-group dependency boundary** (OIDC groups referenced by name as data — no Keycloak import, AC #7), **non-exclusive management** + **adoption-is-an-error** with a future per-team `adopt` escape hatch, the `status.managedTeams` ownership marker and the durable-description **heal rule**, and the **GCP-style primitive-role use case** (owner/editor/viewer). Moves org group→team/role bindings out of *Out of scope* into the implemented design. |
 | 7        | 2026-07-04 | @jeffmccune | **Implement ADR-22 drift-observability status on Quay external-resource Kinds (HOL-1459).** `Organization` and `Repository` now carry `status.lastValidatedTime`, `status.lastMutatedTime`, `status.lastMutationReason`, and `status.lastDriftTime`, plus the extended `Validated` printer column. The reconcilers stamp validation only after successful Quay verification, stamp mutation only for actual Quay changes (org create/update, synced-team/prototype/sync changes, repo create/update, webhook changes), return bounded steady-state resyncs, and filter primary watches to generation changes to avoid timestamp hot loops. |
+| 8        | 2026-07-05 | @jeffmccune | Record the **Repository claim/adoption model** and final as-built Quay controller conventions. `Repository` now mirrors Organization's external-resource ownership shape with `spec.adopt`, `status.created`, description-based ownership markers, conflict-on-unclaimed pre-existing repositories, non-destructive release for adopted repositories, and finalizer cleanup keyed by the resolved `status.quayRepository` path. The controller now uses shared reconciler plumbing for status patching, metrics, dependency waits, and generation-current Ready gates; events fire only on condition transitions while validation timestamps may update more frequently. |
 
 ## Context and Problem Statement
 
@@ -436,7 +437,7 @@ Keycloak group to exist or be imported to declare the binding.
 
 A `Repository` is a single repository within an owning `Organization`, optionally
 with a `repo_push` webhook. It references its organization **by CR name**, never
-inlined into the Organization (AC #9).
+inlined into the Organization.
 
 ```yaml
 apiVersion: quay.holos.run/v1alpha1
@@ -453,6 +454,9 @@ spec:
   name: my-project-config
   visibility: private            # private (default) | public
   description: Rendered manifests for my-project
+  # Opt-in to adopting a pre-existing, externally-created repository at
+  # <Organization.spec.name>/<name>. Omit or false to report Conflict instead.
+  adopt: false
   # Same Quay credential Secret as Organization (defaults to
   # holos-controller-quay-creds in holos-controller).
   credentialsSecretRef:
@@ -471,6 +475,12 @@ status:
   # The resolved <org>/<repo> path, recorded on first create so the finalizer
   # deletes exactly this path even if the owning Organization CR is gone.
   quayRepository: my-project/my-project-config
+  # Ownership marker: true = this CR created the Quay repository; false = it
+  # adopted an existing repository and finalization releases it without deleting.
+  created: true
+  lastValidatedTime: "2026-07-05T20:00:00Z"
+  lastMutatedTime: "2026-07-05T20:00:00Z"
+  lastMutationReason: SpecChange
   conditions:
     - type: Accepted
       status: "True"
@@ -488,21 +498,24 @@ status:
 
 | Spec field | Purpose |
 | --- | --- |
-| `organizationRef` | (AC #9) the owning `Organization` CR in this namespace (by `metadata.name`); resolved to its `spec.name` for the Quay path. **Immutable**. A Repository can only target a Quay org a same-namespace `Organization` has claimed — it never names a Quay org by string (which would bypass the claim/adopt guardrail). |
+| `organizationRef` | the owning `Organization` CR in this namespace (by `metadata.name`); resolved to its `spec.name` for the Quay path. **Immutable**. A Repository can only target a Quay org a same-namespace `Organization` has claimed — it never names a Quay org by string (which would bypass the claim/adopt guardrail). |
 | `name` | the repository name; full path is `<Organization.spec.name>/<name>`. **Immutable** — `(organizationRef, name)` is the repo's durable identity. |
 | `visibility` | `private` (default) or `public`. |
 | `description` | optional human-friendly description. |
+| `adopt` | opt-in (default `false`) to take ownership of a pre-existing unmarked repository under the resolved Quay org; without it such a repository is a `Conflict`. An adopted repository is released, not deleted, on CR removal. |
 | `credentialsSecretRef` | the Quay superuser credential Secret; defaults to `holos-controller-quay-creds`. Distinct from the webhook `urlSecretRef`. |
-| `webhook` | (AC #8) optional `repo_push` webhook; **exactly one** of inline `url` or `urlSecretRef` (a Secret `name`/`key` in the resource's own namespace holding the URL). A CEL `XValidation` enforces the mutual exclusion at admission. |
+| `webhook` | optional `repo_push` webhook; **exactly one** of inline `url` or `urlSecretRef` (a Secret `name`/`key` in the resource's own namespace holding the URL). A CEL `XValidation` enforces the mutual exclusion at admission. |
 | `caBundle` | optional PEM/base64 CA trust anchor for the Quay registry's local-CA serving cert; see *CA bundle* above. Identical shape to the Organization field. |
 
 | Status field | Purpose |
 | --- | --- |
 | `observedGeneration` | last `spec` generation reconciled. |
 | `quayRepository` | the resolved `<org>/<repo>` path, recorded on first create. |
+| `created` | the durable ownership marker of the Repository claim model: `true` if this CR created the Quay repository, `false` if it adopted one. The finalizer deletes the Quay repository only when `created: true`; adopted repositories are released. |
+| `lastValidatedTime` / `lastMutatedTime` / `lastMutationReason` / `lastDriftTime` | drift-observability timestamps and mutation classification shared with Organization. |
 | `conditions[]` | Gateway-API `Accepted`/`Programmed`/`Ready` plus the Repository-only `WebhookConfigured` (see below). |
 
-### Webhook: `url` vs `urlSecretRef` (AC #8)
+### Webhook: `url` vs `urlSecretRef`
 
 The Repository's optional `webhook` registers a Quay `repo_push` notification so a
 push notifies a downstream receiver (the Kargo `Warehouse`, [ADR-16](ADR-16.md)).
@@ -515,16 +528,16 @@ The target URL is supplied **exactly one** of two ways, enforced by a CEL
   generated, **hard-to-guess** receiver URL is wired without committing it: an
   operator (or, later, a delivery component) stores the URL in a Secret and the
   Repository references it. `urlSecretRef` is deliberately **decoupled from
-  Kargo** — it is an opaque URL-bearing Secret, satisfying AC #7. If the
-  `urlSecretRef` Secret or key is missing, the reconciler sets
+  Kargo** — it is an opaque URL-bearing Secret. If the `urlSecretRef` Secret or
+  key is missing, the reconciler sets
   `WebhookConfigured=False` (reason `WebhookURLNotFound`) and requeues rather
   than guessing.
 
 This replaces Revision 1's `pushWebhook.kargoProjectConfigRef`, which would have
 read the receiver URL from a Kargo `ProjectConfig.status` and thereby imported a
-Kargo coupling into the API group — forbidden by AC #7.
+Kargo coupling into the API group.
 
-### Status conditions (Gateway-API model, AC #2)
+### Status conditions (Gateway-API model)
 
 Both resources report status as a slice of standard `metav1.Condition` following
 the Gateway-API convention (`+listType=map`, `+listMapKey=type`, merge-patch on
@@ -545,10 +558,10 @@ also implement ADR-22 drift-observability status:
 | Reason | Applies to | Meaning |
 | --- | --- | --- |
 | `Created` | Org/Repo | newly created in Quay. |
-| `Adopted` | Org | a pre-existing Quay org adopted via `spec.adopt`. |
-| `Conflict` | Org | a pre-existing, externally-created org of the same name exists and `adopt` was not set; never silently seized (claim model). |
-| `TeamConflict` | Org | a `spec.syncedTeams` entry names a pre-existing Quay team this CR did not create (absent from `status.managedTeams` and lacking this CR's team description marker); `Ready=False` with a Warning event. Adoption-is-an-error (AC #6); never silently seized. |
-| `Released` | Org | an adopted org released (finalizer dropped without deleting) on CR removal — adoption is non-destructive. |
+| `Adopted` | Org/Repo | a pre-existing Quay org or repository adopted via `spec.adopt`. |
+| `Conflict` | Org/Repo | a pre-existing, externally-created org or repository of the same name exists and `adopt` was not set, or an ownership marker belongs to another resource; never silently seized (claim model). |
+| `TeamConflict` | Org | a `spec.syncedTeams` entry names a pre-existing Quay team this CR did not create (absent from `status.managedTeams` and lacking this CR's team description marker); `Ready=False` with a Warning event. Adoption is an error; the team is never silently seized. |
+| `Released` | Org/Repo | an adopted org or repository released (finalizer dropped without deleting) on CR removal — adoption is non-destructive. |
 | `Reconciled` | Repo | the repository is in steady state. |
 | `OrganizationNotReady` | Repo | the owning `Organization` is not yet provisioned. |
 | `CredentialsNotFound` | Org/Repo | the credential Secret or a required key is missing. |

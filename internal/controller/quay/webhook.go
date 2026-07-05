@@ -19,7 +19,7 @@ const maxWebhookURLLength = 2048
 // key within it, could not be resolved into a non-empty URL. It is a recoverable
 // condition: the reconciler maps it to a False WebhookConfigured condition with
 // reason WebhookURLNotFound and requeues, so a later-created Secret takes effect
-// (AC #8) rather than failing permanently.
+// rather than failing permanently.
 type webhookURLNotFoundError struct {
 	// msg is the human-readable explanation surfaced on the status condition.
 	msg string
@@ -35,9 +35,9 @@ func isWebhookURLNotFound(err error) bool {
 
 // invalidWebhookError reports that spec.webhook violated the mutual-exclusion
 // rule at runtime — neither or both of url/urlSecretRef were set. The CRD's
-// XValidation should reject this at admission (HOL-1309), so this is a
-// defense-in-depth guard; the reconciler maps it to a False condition with
-// reason InvalidWebhook and does not requeue (a spec change re-triggers).
+// XValidation should reject this at admission, so this is a defense-in-depth
+// guard; the reconciler maps it to a False condition with reason InvalidWebhook
+// and does not requeue (a spec change re-triggers).
 type invalidWebhookError struct {
 	// msg is the human-readable explanation surfaced on the status condition.
 	msg string
@@ -52,7 +52,7 @@ func isInvalidWebhook(err error) bool {
 }
 
 // resolveWebhookURL resolves a Repository's repo_push webhook target URL from
-// spec.webhook (AC #8). The URL comes from exactly one of two sources:
+// spec.webhook. The URL comes from exactly one of two sources:
 //
 //   - webhook.url — the inline URL, returned verbatim.
 //   - webhook.urlSecretRef — read Secret[name].Data[key] in the Repository's own

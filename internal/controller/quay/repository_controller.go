@@ -43,8 +43,8 @@ const webhookTitle = "holos-controller repo_push"
 // from a urlSecretRef is re-reconciled, so a change to the referenced Secret's
 // value is eventually picked up. The controller cannot watch Secrets (it holds
 // get, not list/watch, and uses a non-caching reader), so this periodic requeue
-// stands in for a Secret watch (AC #8). The interval mirrors the Quay team-resync
-// cadence used elsewhere in the platform.
+// stands in for a Secret watch. The interval mirrors the Quay team-resync cadence
+// used elsewhere in the platform.
 const webhookSecretResyncInterval = 30 * time.Minute
 
 const (
@@ -119,8 +119,8 @@ var _ RepoClient = (*quay.Client)(nil)
 // in-cluster Quay registry: it creates or updates the named repository inside an
 // existing Organization, configures a repo_push webhook from spec.webhook (an
 // inline url or a urlSecretRef), and on delete runs a finalizer that deletes the
-// repository. Repository creation/configuration happens solely here (AC #9) —
-// the Organization reconciler never touches repositories. Status follows the same
+// repository. Repository creation/configuration happens solely here; the
+// Organization reconciler never touches repositories. Status follows the same
 // Gateway-API convention as Organization (see conditions.go) and meaningful
 // transitions emit Events.
 type RepositoryReconciler struct {
@@ -131,7 +131,7 @@ type RepositoryReconciler struct {
 	// Repository's namespace) without a cluster-wide Secret cache.
 	APIReader client.Reader
 	// Recorder emits Kubernetes Events for created/updated/failed/deleted
-	// transitions (AC #5).
+	// transitions.
 	Recorder record.EventRecorder
 	// Namespace is the controller's own namespace, where credential Secrets are
 	// resolved. Defaults to DefaultControllerNamespace via controllerNamespace().
@@ -150,7 +150,7 @@ type RepositoryReconciler struct {
 // Reconcile drives a Repository toward its desired state. Loop shape:
 // fetch CR → ensure finalizer → on delete run Quay delete then remove finalizer →
 // else resolve credential → confirm the owning Quay org exists (never create it,
-// AC #9) → GetRepository (404 ⇒ create, else reconcile visibility/description) →
+// by design) → GetRepository (404 ⇒ create, else reconcile visibility/description) →
 // resolve and reconcile the repo_push webhook → mark Ready/WebhookConfigured with
 // observedGeneration → Status().Patch. Credential, org-not-ready, webhook, and
 // Quay errors map to a False condition with an actionable reason; recoverable
@@ -159,10 +159,10 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	logger := log.FromContext(ctx)
 
 	// Record the reconcile outcome (success/error) per kind for the custom
-	// holos_controller_reconcile_total metric (AC #4), alongside
-	// controller-runtime's built-in reconcile metrics. retErr is the named
-	// return, so the deferred record observes whatever error the reconcile
-	// ultimately returns regardless of which path produced it.
+	// holos_controller_reconcile_total metric, alongside controller-runtime's
+	// built-in reconcile metrics. retErr is the named return, so the deferred record
+	// observes whatever error the reconcile ultimately returns regardless of which
+	// path produced it.
 	defer func() { recordReconcile(kindRepository, retErr) }()
 
 	repo := &quayv1alpha1.Repository{}
@@ -215,10 +215,10 @@ func (r *RepositoryReconciler) reconcileNormal(ctx context.Context, logger logr.
 	// Resolve the Quay org name through the Organization CR named by
 	// spec.organizationRef in this Repository's namespace — never trust the ref as
 	// a Quay org name directly. This binds the Repository to a Quay org a
-	// same-namespace Organization resource has claimed (ADR-19 claim model), so
-	// the controller's superuser credential cannot be used to write into an
-	// arbitrary org by string. AC #9: the Repository reconciler never creates the
-	// org; it requeues until the Organization CR exists and is Ready.
+	// same-namespace Organization resource has claimed, so the controller's
+	// superuser credential cannot be used to write into an arbitrary org by string.
+	// The Repository reconciler never creates the org; it requeues until the
+	// Organization CR exists and is Ready.
 	quayOrg, result, handled, err := r.resolveQuayOrg(ctx, repo)
 	if handled {
 		return result, err
@@ -264,8 +264,7 @@ func (r *RepositoryReconciler) reconcileNormal(ctx context.Context, logger logr.
 	// a non-caching get (no cluster-wide Secret informer — the RBAC grants Secrets
 	// get only, not list/watch), so it cannot watch Secrets to be woken on a value
 	// change. For a urlSecretRef-backed webhook, periodically requeue so a later
-	// change to the Secret's value is picked up and re-pushed to Quay (AC #8's
-	// "watch the referenced Secret, or requeue on a sane interval"). An inline or
+	// change to the Secret's value is picked up and re-pushed to Quay. An inline or
 	// absent webhook needs no resync — its desired URL lives entirely in the spec,
 	// which already triggers reconciliation on change.
 	if usesWebhookSecretRef(repo) {
@@ -977,9 +976,9 @@ func (r *RepositoryReconciler) handleCredentialError(ctx context.Context, repo *
 
 // handleOrgNotReady records that the owning Organization (named by
 // spec.organizationRef) is not resolvable/Ready and requeues. The Repository
-// reconciler never creates the org (AC #9); it waits for the Organization
-// reconciler. The status write and event fire only when the condition changed,
-// and RequeueAfter backstops the Organization watch.
+// reconciler never creates the org; it waits for the Organization reconciler. The
+// status write and event fire only when the condition changed, and RequeueAfter
+// backstops the Organization watch.
 func (r *RepositoryReconciler) handleOrgNotReady(ctx context.Context, repo *quayv1alpha1.Repository, message string) (ctrl.Result, error) {
 	if changed := markNotReady(&repo.Status.Conditions, ReasonOrganizationNotReady, message, repo.Generation); changed {
 		r.Recorder.Event(repo, corev1.EventTypeWarning, ReasonOrganizationNotReady, message)
@@ -1075,7 +1074,7 @@ func (r *RepositoryReconciler) updateStatus(ctx context.Context, repo *quayv1alp
 // RBAC grants Secrets get, not list/watch), so a Secret informer is neither
 // available nor desired. A urlSecretRef-backed Repository instead requeues on
 // webhookSecretResyncInterval (set on the reconcile result) so a later change to
-// the referenced Secret's value is eventually re-pushed to Quay (AC #8).
+// the referenced Secret's value is eventually re-pushed to Quay.
 func (r *RepositoryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.APIReader == nil {
 		r.APIReader = mgr.GetAPIReader()

@@ -931,8 +931,8 @@ func TestRepositoryOrganizationNotReadyRequeues(t *testing.T) {
 		t.Fatalf("RequeueAfter = %v, want %v", result.RequeueAfter, requeueDependency)
 	}
 
-	// No repository was created (AC #9: the reconciler never creates the org and
-	// must not create a repo before the org exists).
+	// No repository was created: the reconciler never creates the org and must not
+	// create a repo before the org exists.
 	if fake.callsContain("CreateRepository:missing-org/web") {
 		t.Errorf("must not create a repo before the org exists; calls were %v", fake.calls)
 	}
