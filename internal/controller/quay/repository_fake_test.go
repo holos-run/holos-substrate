@@ -260,7 +260,7 @@ func (f *fakeRepoClient) webhookURLs(ns, repo string) []string {
 // ns/repo with the given title and url so tests can exercise the
 // URL-change-replaces-notification path and the manual-webhook-preservation path
 // (title != webhookTitle).
-func (f *fakeRepoClient) seedNotification(ns, repo, title, url string) {
+func (f *fakeRepoClient) seedNotification(ns, repo, title, url string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	st, ok := f.repos[repoKey(ns, repo)]
@@ -277,6 +277,7 @@ func (f *fakeRepoClient) seedNotification(ns, repo, title, url string) {
 		Title:  title,
 		Config: quay.NotificationConfig{URL: url},
 	}
+	return uuid
 }
 
 // compile-time assertion that the fake satisfies the reconciler's seam.

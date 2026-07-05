@@ -478,6 +478,9 @@ status:
   # Ownership marker: true = this CR created the Quay repository; false = it
   # adopted an existing repository and finalization releases it without deleting.
   created: true
+  # UUID of the repo_push notification this resource created, when a webhook is
+  # configured. Used as the deletion gate for webhook cleanup.
+  webhookNotificationUUID: 7d2f...
   lastValidatedTime: "2026-07-05T20:00:00Z"
   lastMutatedTime: "2026-07-05T20:00:00Z"
   lastMutationReason: SpecChange
@@ -512,6 +515,7 @@ status:
 | `observedGeneration` | last `spec` generation reconciled. |
 | `quayRepository` | the resolved `<org>/<repo>` path, recorded after provisioning or claiming the repository. |
 | `created` | the durable ownership marker of the Repository claim model: `true` if this CR created the Quay repository, `false` if it adopted one. The finalizer deletes the Quay repository only when `created: true`; adopted repositories are released. |
+| `webhookNotificationUUID` | the Quay UUID of the `repo_push` webhook notification this CR created. Webhook cleanup deletes only this recorded UUID, so a manually-created notification with the same public title is not treated as owned by the CR. |
 | `lastValidatedTime` / `lastMutatedTime` / `lastMutationReason` / `lastDriftTime` | drift-observability timestamps and mutation classification shared with Organization. |
 | `conditions[]` | Gateway-API `Accepted`/`Programmed`/`Ready` plus the Repository-only `WebhookConfigured` (see below). |
 
@@ -682,9 +686,11 @@ new orgs and adopt orgs other identities created.
   CR (requeuing with `OrganizationNotReady` until the org is provisioned),
   create-or-adopts `<org>/<name>` at `visibility`, applies `description`, and —
   when `webhook` is set — resolves the URL (inline or from `urlSecretRef`) and
-  upserts the Quay `repo_push` notification, setting `WebhookConfigured`. A
-  finalizer deletes created repositories at the resolved `status.quayRepository`
-  path and releases adopted repositories without deleting them.
+  upserts the Quay `repo_push` notification, recording the created notification's
+  UUID in status and setting `WebhookConfigured`. A finalizer deletes created
+  repositories at the resolved `status.quayRepository` path and releases adopted
+  repositories without deleting them; release removes only the recorded webhook
+  notification UUID.
 
 ## Decision
 
@@ -715,8 +721,9 @@ new orgs and adopt orgs other identities created.
    (immutable), `visibility`, `description`, `adopt`, `credentialsSecretRef`, and
    an optional `webhook` with **exactly one** of inline `url` or `urlSecretRef`
    (CEL-enforced). Status carries `observedGeneration`, the resolved
-   `quayRepository` path, the `created` ownership marker, drift-observability
-   timestamps, and `Accepted`/`Programmed`/`Ready`/`WebhookConfigured` conditions.
+   `quayRepository` path, the `created` ownership marker,
+   `webhookNotificationUUID`, drift-observability timestamps, and
+   `Accepted`/`Programmed`/`Ready`/`WebhookConfigured` conditions.
 5. The reconcilers call the **Quay REST API** with the superuser OAuth-Application
    token from `credentialsSecretRef` (defaulting to `holos-controller-quay-creds`
    in `holos-controller`, keys `url`/`token`/optional `username`), are

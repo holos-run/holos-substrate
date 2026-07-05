@@ -218,6 +218,9 @@ func TestRepositoryCreatesWithInlineWebhook(t *testing.T) {
 	}
 
 	repo := getRepo(ctx, t, key)
+	if repo.Status.WebhookNotificationUUID == "" {
+		t.Fatal("status.webhookNotificationUUID is empty, want recorded controller webhook UUID")
+	}
 	if got := repoConditionStatus(repo, ConditionReady); got != metav1.ConditionTrue {
 		t.Errorf("Ready = %q, want True", got)
 	}
@@ -819,15 +822,18 @@ func TestRepositoryWebhookURLChangeReplacesNotification(t *testing.T) {
 	})
 
 	fake := newFakeRepoClient()
-	// Pre-create the repo with a stale controller-owned repo_push webhook pointing
-	// elsewhere (same webhookTitle, so the reconciler owns and replaces it) plus a
-	// manually-created webhook with a different title that must be preserved.
+	// Pre-create the repo with a stale recorded repo_push webhook pointing
+	// elsewhere plus a manually-created webhook with a different title that must be
+	// preserved.
 	repo := getRepo(ctx, t, key)
 	fake.repos[repoKey("acme", "rehook")] = &fakeRepoStore{
 		description:   repositoryOwnerMarker(repo, true),
 		notifications: map[string]quay.Notification{},
 	}
-	fake.seedNotification("acme", "rehook", webhookTitle, "https://old.example.test/stale")
+	repo.Status.WebhookNotificationUUID = fake.seedNotification("acme", "rehook", webhookTitle, "https://old.example.test/stale")
+	if err := shared.k8sClient.Status().Update(ctx, repo); err != nil {
+		t.Fatalf("recording stale webhook UUID in status: %v", err)
+	}
 	fake.seedNotification("acme", "rehook", "manual webhook", "https://manual.example.test/keep")
 
 	r, _ := newRepoReconciler(fake, ns)
@@ -1066,7 +1072,10 @@ func TestRepositoryDeleteReleasesAdoptedRepositoryWithoutDeleting(t *testing.T) 
 	if repo.Status.Created == nil || *repo.Status.Created {
 		t.Fatalf("status.created = %v, want false after adopt", repo.Status.Created)
 	}
-	fake.seedNotification("acme", "adoptdelete", "manual", manualHook)
+	if repo.Status.WebhookNotificationUUID == "" {
+		t.Fatal("status.webhookNotificationUUID is empty, want recorded controller webhook UUID")
+	}
+	fake.seedNotification("acme", "adoptdelete", webhookTitle, manualHook)
 	if urls := fake.webhookURLs("acme", "adoptdelete"); len(urls) != 2 || !containsString(urls, adoptedHook) || !containsString(urls, manualHook) {
 		t.Fatalf("webhook URLs before delete = %v, want controller and manual hooks", urls)
 	}
