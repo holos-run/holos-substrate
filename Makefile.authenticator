@@ -76,13 +76,13 @@ authenticator-generate: authenticator-controller-gen-tool ## Generate deepcopy m
 # authenticator-manifests generates the authenticator CRD and its OWN RBAC role
 # (holos-authenticator-role) — distinct from the controller's
 # holos-controller-manager-role — scoped to the authenticator packages. The CRD
-# lands under config/crd/bases (shared with the controller's CRDs); the RBAC role
-# lands under config/authenticator/rbac so it never clobbers config/rbac/role.yaml.
+# lands under the holos-authenticator kustomize base; the RBAC role lands under
+# config/authenticator/rbac so it never clobbers config/rbac/role.yaml.
 .PHONY: authenticator-manifests
 authenticator-manifests: authenticator-controller-gen-tool ## Generate the authenticator CRD and its own RBAC role.
 	$(CONTROLLER_GEN) $(CRD_OPTIONS) rbac:roleName=holos-authenticator-role \
 		paths="./api/authenticator/..." paths="./cmd/holos-authenticator/..." paths="./internal/controller/authenticator/..." \
-		output:crd:artifacts:config=config/crd/bases \
+		output:crd:artifacts:config=config/crd/holos-authenticator/bases \
 		output:rbac:artifacts:config=config/authenticator/rbac
 
 .PHONY: authenticator-fmt

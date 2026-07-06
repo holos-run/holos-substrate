@@ -1,14 +1,8 @@
-# This kustomization aggregates the generated CRD bases. CRD patches
-# (conversion webhooks, etc.) are added in later phases as needed.
+# This kustomization aggregates the service-specific CRD bases. Consumers that
+# need only one service's API surface can render config/crd/holos-controller or
+# config/crd/holos-authenticator directly.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - bases/quay.holos.run_organizations.yaml
-  - bases/quay.holos.run_repositories.yaml
-  - bases/keycloak.holos.run_keycloakinstances.yaml
-  - bases/keycloak.holos.run_keycloakgroups.yaml
-  - bases/keycloak.holos.run_keycloakgroupmemberships.yaml
-  - bases/keycloak.holos.run_keycloakusers.yaml
-  - bases/keycloak.holos.run_keycloakclients.yaml
-  - bases/security.holos.run_referencegrants.yaml
-  - bases/authenticator.holos.run_backends.yaml
+  - holos-controller
+  - holos-authenticator
