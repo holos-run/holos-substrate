@@ -1,0 +1,6 @@
+# This kustomization is the holos-authenticator CRD base. It includes only
+# resources served by the holos-authenticator binary.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - bases/authenticator.holos.run_backends.yaml

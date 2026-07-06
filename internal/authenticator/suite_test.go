@@ -41,7 +41,7 @@ func TestMain(m *testing.M) {
 	}
 
 	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
+		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "holos-authenticator", "bases")},
 		ErrorIfCRDPathMissing: true,
 	}
 

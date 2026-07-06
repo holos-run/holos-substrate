@@ -32,18 +32,19 @@ type testEnv struct {
 var shared *testEnv
 
 // TestMain stands up a single envtest control plane for the whole package: it
-// installs the authenticator.holos.run CRDs from config/crd/bases, registers the
-// scheme, and builds a client. When KUBEBUILDER_ASSETS is unset the package is
-// skipped cleanly (exit 0 with no tests run) so the repo-wide `go test ./...`
-// stays green — the envtest-backed reconcile tests run under
-// `make authenticator-test` with the control-plane binaries provisioned.
+// installs the authenticator.holos.run CRDs from
+// config/crd/holos-authenticator/bases, registers the scheme, and builds a
+// client. When KUBEBUILDER_ASSETS is unset the package is skipped cleanly (exit
+// 0 with no tests run) so the repo-wide `go test ./...` stays green — the
+// envtest-backed reconcile tests run under `make authenticator-test` with the
+// control-plane binaries provisioned.
 func TestMain(m *testing.M) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		os.Exit(0)
 	}
 
 	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd", "bases")},
+		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd", "holos-authenticator", "bases")},
 		ErrorIfCRDPathMissing: true,
 	}
 
