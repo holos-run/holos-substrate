@@ -940,6 +940,11 @@ and the future web catalog alike.
 - **Deprecation policy in the policy manual**: how a package signals
   deprecation (a `Package` CR field + render-time warning), the migration
   window, and the adoption process for orphaned packages (§5).
+- **The contributing team's repository layout** — the package monorepo with
+  one module per package, golden-render examples as the test suite,
+  per-module release tags, and the extraction path to collective-owned repos —
+  is proposed concretely in
+  [Team Repository Layout for Integrating Software into the Distribution](distribution-package-repo-layout.md).
 
 ---
 
