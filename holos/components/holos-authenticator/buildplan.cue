@@ -705,7 +705,7 @@ userDefinedBuildPlan: {
 				},
 				{
 					// The generated Backend CRD
-					// (config/crd/bases/authenticator.holos.run_backends.yaml, vendored
+					// (config/crd/holos-authenticator/bases/authenticator.holos.run_backends.yaml, vendored
 					// here as vendor/customresourcedefinition-backends.yaml) ships with
 					// the component so the authenticator.holos.run types are installed
 					// alongside the controller — the cert-manager-crds / cnpg-crds /

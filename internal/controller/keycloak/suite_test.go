@@ -67,7 +67,7 @@ var shared *testEnv
 
 // TestMain stands up a single envtest control plane for the whole package: it
 // installs the keycloak.holos.run and security.holos.run CRDs from
-// config/crd/bases, registers the scheme, and builds a client.
+// config/crd/holos-controller/bases, registers the scheme, and builds a client.
 //
 // When KUBEBUILDER_ASSETS is unset the package is skipped rather than failed, so
 // the repo-wide `go test ./...` (which does not provision envtest) stays green.
@@ -78,7 +78,7 @@ func TestMain(m *testing.M) {
 	}
 
 	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd", "bases")},
+		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd", "holos-controller", "bases")},
 		ErrorIfCRDPathMissing: true,
 	}
 

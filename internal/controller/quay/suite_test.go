@@ -66,10 +66,10 @@ type testEnv struct {
 var shared *testEnv
 
 // TestMain stands up a single envtest control plane for the whole package: it
-// installs the quay.holos.run CRDs from config/crd/bases, registers the scheme,
-// and builds a client. setup-envtest must have provisioned the control-plane
-// binaries and KUBEBUILDER_ASSETS must point at them — the controller-test make
-// target does this, and so does the dedicated CI step.
+// installs the quay.holos.run CRDs from config/crd/holos-controller/bases,
+// registers the scheme, and builds a client. setup-envtest must have provisioned
+// the control-plane binaries and KUBEBUILDER_ASSETS must point at them — the
+// controller-test make target does this, and so does the dedicated CI step.
 //
 // When KUBEBUILDER_ASSETS is unset the package is skipped rather than failed, so
 // the repo-wide `go test ./...` (the holos-paas Go job, which does not provision
@@ -86,7 +86,7 @@ func TestMain(m *testing.M) {
 	}
 
 	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd", "bases")},
+		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "config", "crd", "holos-controller", "bases")},
 		ErrorIfCRDPathMissing: true,
 	}
 

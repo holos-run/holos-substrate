@@ -52,7 +52,7 @@ privileged credential, so Envoy forwards the request straight to the API server.
   below);
 - a **Service** exposing the gRPC and metrics ports;
 - the generated **Backend CRD** (vendored from
-  `config/crd/bases/authenticator.holos.run_backends.yaml`);
+  `config/crd/holos-authenticator/bases/authenticator.holos.run_backends.yaml`);
 - an **AuthorizationPolicy** with `action: CUSTOM` and
   `provider.name: holos-authenticator`, matching the Istio extension provider;
 - three example **Backend** CRs — the discovery-based `example` (in-cluster
