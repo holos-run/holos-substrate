@@ -17,10 +17,13 @@ Step 4 is required when the new CR should regain delete authority. Omitted
 `deletionPolicy` follows provenance: created resources are deleted, but adopted
 resources are released by default.
 
-Do not run this while Argo CD or another GitOps loop would immediately recreate
-the old CR. Update or pause the rendered manifests first. For project/application
+Do not let Argo CD or another GitOps loop prune the old CR before step 1 has
+reconciled. Either pause automated sync/pruning until the manual orphan/delete is
+complete, or first sync an intermediate rendered state where the old CR still
+exists with `spec.deletionPolicy: Orphan`; only after that should the rendered
+manifests remove the old CR and add the replacement. For project/application
 template resources, make the rename in the CUE registration and run
-`scripts/render` before applying the transfer.
+`scripts/render` as part of that staged handoff.
 
 ## Identity Fields
 
