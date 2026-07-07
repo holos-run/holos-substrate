@@ -53,11 +53,10 @@ import (
 // namespace via the manager's APIReader. The marker below carries a `namespace`
 // field so `make authenticator-manifests` emits a namespaced Role (not a
 // ClusterRole) in the authorizer's namespace — a cluster-wide `secrets` verb
-// would over-grant cluster-wide Secret reads. controller-gen emits only the Role;
-// the RoleBinding that binds it to the authorizer's ServiceAccount is part of the
-// deploy component in HOL-1389 (the platform wiring), so the Role is inert until
-// that phase lands. The Backend reconciler (HOL-1387) still never reads Secrets;
-// only this data path does.
+// would over-grant cluster-wide Secret reads. The
+// config/deploy/holos-authenticator base ships the RoleBinding that binds it to
+// the authorizer's ServiceAccount. The Backend reconciler (HOL-1387) still never
+// reads Secrets; only this data path does.
 //
 // The authorizer also mints short-lived impersonator tokens for a ServiceAccount
 // in its own namespace via the TokenRequest API (spec.serviceAccountRef, HOL-1400)
@@ -77,8 +76,8 @@ import (
 // platform decision that must widen this Role, not a tenant-selectable default.
 // The token is minted WITHOUT a BoundObjectRef (matching `kubectl create token`),
 // so create is the only verb needed — no get on serviceaccounts. The default
-// impersonator ServiceAccount itself is shipped by the deploy component in the next
-// phase (HOL-1401).
+// impersonator ServiceAccount itself is shipped by the
+// config/deploy/holos-authenticator base.
 //
 // +kubebuilder:rbac:groups="",namespace=holos-authenticator,resources=secrets,verbs=get
 // +kubebuilder:rbac:groups="",namespace=holos-authenticator,resources=serviceaccounts/token,resourceNames=holos-authenticator-impersonator,verbs=create
@@ -172,8 +171,8 @@ func main() {
 	if secureMetrics {
 		// Serve metrics over HTTPS and gate scrapes behind Kubernetes
 		// authentication and authorization (TokenReview + SubjectAccessReview),
-		// so the documented "authn/authz" actually holds. This requires the
-		// metrics-reader RBAC granted in config/rbac.
+		// so the documented "authn/authz" actually holds. This requires matching
+		// metrics-reader RBAC if --metrics-secure is enabled.
 		metricsOptions.SecureServing = true
 		metricsOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
 		metricsOptions.TLSOpts = []func(*tls.Config){}

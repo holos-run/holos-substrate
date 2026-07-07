@@ -1,0 +1,14 @@
+# RBAC for the holos-authenticator manager: the generated ClusterRole and Role
+# (role.yaml), bindings for both, and the service accounts used by the manager
+# and the default impersonator credential source.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - service_account.yaml
+  - impersonator_service_account.yaml
+  - impersonator_role.yaml
+  - impersonator_role_binding.yaml
+  - role.yaml
+  - role_binding.yaml
+  - leader_election_role.yaml
+  - leader_election_role_binding.yaml

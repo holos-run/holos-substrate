@@ -7,9 +7,7 @@
 # scripts/render, or scripts/publish. As of HOL-1386 it includes controller-gen
 # code-generation targets (authenticator-generate / authenticator-manifests) for
 # the authenticator.holos.run API group, generating the Backend CRD and the
-# authenticator's OWN RBAC role (holos-authenticator-role). It still has no
-# kustomize/envtest deploy targets — the authenticator install wiring lands in a
-# later phase (HOL-1389).
+# authenticator's OWN RBAC role (holos-authenticator-role).
 
 # Container image coordinates for the authenticator. Defaults target the local
 # k3d in-cluster registry so a pushed image is pullable by the cluster (mirrors
@@ -77,13 +75,37 @@ authenticator-generate: authenticator-controller-gen-tool ## Generate deepcopy m
 # (holos-authenticator-role) — distinct from the controller's
 # holos-controller-manager-role — scoped to the authenticator packages. The CRD
 # lands under the holos-authenticator kustomize base; the RBAC role lands under
-# config/authenticator/rbac so it never clobbers config/rbac/role.yaml.
+# config/deploy/holos-authenticator/rbac so it never clobbers the controller's
+# generated role.
 .PHONY: authenticator-manifests
 authenticator-manifests: authenticator-controller-gen-tool ## Generate the authenticator CRD and its own RBAC role.
 	$(CONTROLLER_GEN) $(CRD_OPTIONS) rbac:roleName=holos-authenticator-role \
 		paths="./api/authenticator/..." paths="./cmd/holos-authenticator/..." paths="./internal/controller/authenticator/..." \
 		output:crd:artifacts:config=config/crd/holos-authenticator/bases \
-		output:rbac:artifacts:config=config/authenticator/rbac
+		output:rbac:artifacts:config=config/deploy/holos-authenticator/rbac
+
+.PHONY: authenticator-manifests-build
+authenticator-manifests-build: kustomize-tool ## Render config/deploy/holos-authenticator to stdout (no apply).
+	$(KUSTOMIZE) build config/deploy/holos-authenticator
+
+.PHONY: authenticator-install
+authenticator-install: kustomize-tool ## Install the holos-authenticator CRDs into the cluster.
+	$(KUSTOMIZE) build config/crd/holos-authenticator | kubectl apply --server-side -f -
+
+.PHONY: authenticator-deploy
+authenticator-deploy: kustomize-tool ## Deploy the authenticator manager config (no CRDs).
+	@set -e; \
+	if [ "$(AUTHENTICATOR_IMAGE)" != "$(AUTHENTICATOR_IMAGE_REPO):$(AUTHENTICATOR_IMAGE_TAG)" ]; then \
+		backup="$$(mktemp)"; \
+		cp config/deploy/holos-authenticator/kustomization.yaml "$$backup"; \
+		trap 'cp "$$backup" config/deploy/holos-authenticator/kustomization.yaml; rm -f "$$backup"' EXIT; \
+		( cd config/deploy/holos-authenticator && $(KUSTOMIZE) edit set image authenticator=$(AUTHENTICATOR_IMAGE) ); \
+	fi; \
+	$(KUSTOMIZE) build config/deploy/holos-authenticator | kubectl apply --server-side -f -
+
+.PHONY: authenticator-undeploy
+authenticator-undeploy: kustomize-tool ## Remove the authenticator manager config (keeps namespace and CRDs).
+	$(KUSTOMIZE) build config/deploy/holos-authenticator | kubectl delete --ignore-not-found -f -
 
 .PHONY: authenticator-fmt
 authenticator-fmt: ## Run go fmt against the authenticator sources.

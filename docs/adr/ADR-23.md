@@ -216,7 +216,7 @@ separate.
   `holos-authenticator-impersonator` (matching the kubebuilder
   `+kubebuilder:rbac:…resources=serviceaccounts/token,resourceNames=holos-authenticator-impersonator,verbs=create`
   marker in `cmd/holos-authenticator/main.go` and the generated
-  `config/authenticator/rbac/role.yaml`).
+  `config/deploy/holos-authenticator/rbac/role.yaml`).
 - **Deviation (ratified): the shipped impersonator ClusterRole is impersonate-on-
   `groups`-only, scoped to SA virtual groups — not unbounded
   `users`/`groups`/`serviceaccounts`.** Parent issue HOL-1398's AC #3 literally

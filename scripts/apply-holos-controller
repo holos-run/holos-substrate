@@ -2,12 +2,13 @@
 # Deploy the Holos Controller (ADR-18) onto a freshly-bootstrapped cluster from a
 # PINNED, publicly-pullable image tag (HOL-1380).
 #
-# This is the BOOTSTRAP deploy path, and it differs from `make controller-deploy`
-# in exactly one way: the image.  On a fresh cluster the in-cluster Quay `holos`
-# organization does not exist yet — that is the chicken-and-egg this whole
-# bootstrap sequence resolves — so the controller image CANNOT be pulled from the
-# in-cluster registry (quay.holos.internal/holos/holos-controller:dev, the
-# `make controller-deploy` default).  Instead this script deploys the
+# This is the BOOTSTRAP deploy path, and it differs from `make controller-install`
+# + `make controller-deploy` in exactly one way: the image.  On a fresh cluster
+# the in-cluster Quay `holos` organization does not exist yet — that is the
+# chicken-and-egg this whole bootstrap sequence resolves — so the controller image
+# CANNOT be pulled from the in-cluster registry
+# (quay.holos.internal/holos/holos-controller:dev, the `make controller-deploy`
+# default).  Instead this script deploys the
 # CI-published multi-arch image from the public registry:
 #
 #   ghcr.io/holos-run/holos-controller:v0.2.0-36-gd1fa190
@@ -16,9 +17,10 @@
 # reconciler that creates the `holos` Quay organization + holos-controller
 # repository from the quay.holos.run CRs that script applies.
 #
-# It reuses `make controller-deploy` verbatim (only overriding CONTROLLER_IMAGE),
-# so the kustomize render + server-side apply logic is single-sourced with the
-# Makefile.controller target — no second copy of the deploy mechanics to drift.
+# It reuses `make controller-install` and `make controller-deploy` verbatim
+# (only overriding CONTROLLER_IMAGE for deploy), so the kustomize render +
+# server-side apply logic is single-sourced with the Makefile.controller targets
+# — no second copy of the deploy mechanics to drift.
 #
 # Once the holos Quay organization exists and the controller image has been
 # published to it (quay.holos.internal/holos/holos-controller:dev), use the
@@ -46,11 +48,10 @@
 #
 # Prerequisites:
 #   - kubectl, with a context pointing at the target cluster
-#   - make + the Go toolchain (the controller-deploy target installs kustomize
-#     under bin/ at the pinned version)
-#   - the holos-controller Namespace and the quay.holos.run CRDs are installed by
-#     `make controller-deploy` itself (CRDs) and the platform namespaces component
-#     (the Namespace), so run scripts/apply first.
+#   - make + the Go toolchain (the controller targets install kustomize under
+#     bin/ at the pinned version)
+#   - the holos-controller Namespace is installed by the platform namespaces
+#     component, so run scripts/apply first.
 
 set -euo pipefail
 
@@ -82,8 +83,8 @@ fi
 
 # Resolve the target context (the scripts/apply posture): refuse to apply to
 # whatever context happens to be current unless it is k3d-holos or the operator
-# explicitly opted in via KUBE_CONTEXT.  `make controller-deploy` applies to the
-# CURRENT context, so additionally require the current context to MATCH
+# explicitly opted in via KUBE_CONTEXT.  The make targets apply to the CURRENT
+# context, so additionally require the current context to MATCH
 # KUBE_CONTEXT — this script validates, it does not switch contexts.
 CURRENT_CONTEXT="$(kubectl config current-context)"
 if [[ -z "${KUBE_CONTEXT:-}" ]]; then
@@ -96,7 +97,7 @@ if [[ -z "${KUBE_CONTEXT:-}" ]]; then
   fi
 elif [[ "${KUBE_CONTEXT}" != "${CURRENT_CONTEXT}" ]]; then
   echo "ERROR: KUBE_CONTEXT is '${KUBE_CONTEXT}' but the current context is '${CURRENT_CONTEXT}'." >&2
-  echo "       'make controller-deploy' applies to the CURRENT context, so switch to it first:" >&2
+  echo "       The controller make targets apply to the CURRENT context, so switch to it first:" >&2
   echo "         kubectl config use-context ${KUBE_CONTEXT}" >&2
   exit 1
 fi
@@ -173,11 +174,11 @@ fi
 
 echo "Deploying the Holos Controller image ${DEPLOY_IMAGE} to context ${KUBE_CONTEXT} ..."
 
-# Reuse the controller-deploy target (single-sourced kustomize render + apply),
-# overriding only the image.  controller-deploy applies --server-side, so it
-# converges and is safe to re-run.  The target uses the current kubectl context;
+# Reuse the controller install/deploy targets (single-sourced kustomize render +
+# apply), overriding only the image for deploy. Both targets apply --server-side,
+# so they converge and are safe to re-run. They use the current kubectl context;
 # we have already pinned/validated it above.
-make -C "${REPO_ROOT}" controller-deploy CONTROLLER_IMAGE="${DEPLOY_IMAGE}"
+make -C "${REPO_ROOT}" controller-install controller-deploy CONTROLLER_IMAGE="${DEPLOY_IMAGE}"
 
 echo "Waiting for holos-controller-manager to become avaialble ..."
 kubectl --context "${KUBE_CONTEXT}" -n holos-controller rollout status deploy/holos-controller-manager

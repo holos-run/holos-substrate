@@ -1,50 +1,36 @@
-# The holos-controller Namespace is NOT defined here: it is owned centrally by
-# the platform's namespace registry (holos/namespaces.cue), per the component
-# guidelines that forbid a component creating its own namespace. The
-# config/default kustomization sets `namespace: holos-controller` so every
-# namespaced resource (this Deployment and the metrics Service) targets it
-# without this tree duplicating the Namespace object — which is why neither the
-# Deployment nor the Service pins `namespace` here.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: holos-controller-manager
+  name: holos-authenticator-manager
   labels:
-    app.kubernetes.io/name: holos-controller
+    app.kubernetes.io/name: holos-authenticator
     app.kubernetes.io/managed-by: kustomize
-    control-plane: controller-manager
+    control-plane: authenticator-manager
 spec:
   replicas: 1
   selector:
     matchLabels:
-      control-plane: controller-manager
+      control-plane: authenticator-manager
   template:
     metadata:
       labels:
-        control-plane: controller-manager
+        control-plane: authenticator-manager
     spec:
-      serviceAccountName: holos-controller-manager
+      serviceAccountName: holos-authenticator
       securityContext:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: manager
-          # The image is replaced by the config/manager kustomization images
-          # transformer (controller -> quay.holos.internal/holos/holos-controller).
-          image: controller:dev
+          image: authenticator:dev
           imagePullPolicy: Always
           args:
             - --leader-elect
             - --health-probe-bind-address=:8081
             - --metrics-bind-address=:8080
+            - --grpc-bind-address=:9000
           env:
-            # Expose the manager's own namespace via the downward API so the
-            # credential resolver reads holos-controller-quay-creds from the
-            # namespace the manager actually runs in (controllerNamespace() reads
-            # POD_NAMESPACE, defaulting to holos-controller). The Deployment does
-            # NOT envFrom/mount a fixed credential Secret — credentials are
-            # resolved per-resource via credentialsSecretRef (HOL-1311).
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -52,6 +38,9 @@ spec:
           ports:
             - name: metrics
               containerPort: 8080
+              protocol: TCP
+            - name: grpc
+              containerPort: 9000
               protocol: TCP
           livenessProbe:
             httpGet:
