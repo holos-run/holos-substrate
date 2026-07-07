@@ -42,8 +42,8 @@ import (
 // authorization helper lists — no reconciler, so get;list;watch only), read
 // access to the credential and webhook-URL Secrets the specs reference, and
 // leader-election + event-recording permissions. The markers live here so
-// controller-gen emits config/rbac/role.yaml; the reconcilers added in later
-// phases use exactly these verbs.
+// controller-gen emits config/deploy/holos-controller/rbac/role.yaml; the
+// reconcilers added in later phases use exactly these verbs.
 //
 // Secrets are limited to get and create (never list/watch): the reconcilers
 // resolve only the specific credential/webhook-URL Secrets a CR names, via the
@@ -132,7 +132,7 @@ func main() {
 		// Serve metrics over HTTPS and gate scrapes behind Kubernetes
 		// authentication and authorization (TokenReview + SubjectAccessReview),
 		// so the documented "authn/authz" actually holds. This requires the
-		// metrics-reader RBAC granted in config/rbac.
+		// metrics-reader RBAC granted in config/deploy/holos-controller/rbac.
 		metricsOptions.SecureServing = true
 		metricsOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
 		metricsOptions.TLSOpts = []func(*tls.Config){}

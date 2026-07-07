@@ -37,7 +37,8 @@
 #      Secret the controller authenticates to Quay with) and the Keycloak
 #      controller credential — see docs/runbooks/holos-controller.md.
 #   3. The master scripts/apply (the Argo CD / Kargo controllers + namespaces
-#      component) and `make controller-deploy` (the Holos Controller + its CRDs).
+#      component), `make controller-install` (CRDs), and
+#      `make controller-deploy` (manager config).
 #
 # Environment overrides (identical to scripts/apply-my-project):
 #   KUBE_CONTEXT     — kubectl context to apply to (default: current, must be k3d-holos).
@@ -116,7 +117,7 @@ if ! kubectl --context "${KUBE_CONTEXT}" get crd organizations.quay.holos.run \
   --request-timeout=10s >/dev/null 2>&1; then
   echo "ERROR: the organizations.quay.holos.run CRD is not installed on context '${KUBE_CONTEXT}'." >&2
   echo "       The Holos Controller reconciles each project's Organization; install it first with:" >&2
-  echo "         make controller-deploy" >&2
+  echo "         make controller-install && make controller-deploy" >&2
   echo "       (see docs/runbooks/holos-controller.md).  scripts/apply does not install the controller." >&2
   exit 1
 fi

@@ -1,0 +1,7 @@
+# This kustomization aggregates the service-specific controller-manager deploy
+# bases. It deliberately excludes CRDs, which are installed from config/crd.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - holos-controller
+  - holos-authenticator

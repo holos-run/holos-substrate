@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: holos-authenticator-manager-metrics-service
+  labels:
+    app.kubernetes.io/name: holos-authenticator
+    app.kubernetes.io/managed-by: kustomize
+    control-plane: authenticator-manager
+spec:
+  selector:
+    control-plane: authenticator-manager
+  ports:
+    - name: metrics
+      port: 8080
+      protocol: TCP
+      targetPort: metrics

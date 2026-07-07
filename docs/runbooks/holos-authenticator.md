@@ -1487,6 +1487,18 @@ like `holos-controller`: the manager Deployment pulls
 freshly bootstrapped cluster until an operator publishes it after the bootstrap
 floor. It is **applied out of band** once its image is published.
 
+The standalone kustomize install uses the same split as `holos-controller`:
+
+```bash
+make authenticator-manifests        # regenerate the Backend CRD + authenticator RBAC
+make authenticator-install          # kubectl apply -k config/crd/holos-authenticator
+make authenticator-manifests-build  # render config/deploy/holos-authenticator
+make authenticator-deploy           # kubectl apply -k config/deploy/holos-authenticator
+```
+
+The deploy base targets, but does not create, the `holos-authenticator`
+Namespace. That Namespace remains owned by the platform namespace registry.
+
 > **CRD-before-CR within the directory.** The component bundles the `Backend`
 > CRD **and** the example `Backend` CRs in one directory. The out-of-band apply
 > must apply `customresourcedefinition-*.yaml` first and wait for it to be
@@ -1529,8 +1541,8 @@ See [README.md](../../README.md) (*Container image* → *Multi-arch images* /
    health endpoint:
 
    ```bash
-   kubectl -n holos-authenticator rollout status deploy/holos-authenticator
-   kubectl -n holos-authenticator logs deploy/holos-authenticator | grep "starting manager"
+   kubectl -n holos-authenticator rollout status deploy/holos-authenticator-manager
+   kubectl -n holos-authenticator logs deploy/holos-authenticator-manager | grep "starting manager"
    ```
 
 2. **Backend is Ready.** The `Backend` CR reports `Ready=True` once its

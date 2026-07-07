@@ -166,8 +166,9 @@ never touch `scripts/apply`/`scripts/render` or the `holos-paas` image:
 
 ```bash
 make controller-manifests        # regenerate CRDs + RBAC from Go markers
-make controller-manifests-build  # render config/default (CRDs, RBAC, manager, metrics Service)
-make controller-deploy           # kubectl apply -k config/default into holos-controller
+make controller-install          # kubectl apply -k config/crd/holos-controller
+make controller-manifests-build  # render config/deploy/holos-controller
+make controller-deploy           # kubectl apply -k config/deploy/holos-controller
 ```
 
 The `holos-controller` namespace itself is owned by the central registry
@@ -181,8 +182,8 @@ the controller image has been published to it (`make controller-docker-push`).
 On a **freshly bootstrapped** cluster that registry does not exist yet (it is
 exactly what the bootstrap provisions), so the controller cannot be pulled from
 it. Use [`scripts/apply-holos-controller`](../../scripts/apply-holos-controller)
-(HOL-1380) for the bootstrap deploy instead: it reuses `make controller-deploy`
-but overrides the image to a pinned, publicly-pullable
+(HOL-1380) for the bootstrap deploy instead: it reuses `make controller-install`
+and `make controller-deploy`, overriding the deploy image to a pinned, publicly-pullable
 `ghcr.io/holos-run/holos-controller:<tag>`, so the controller can come up and
 reconcile the `holos` Quay organization
 ([`scripts/apply-holos-quay-organization`](../../scripts/apply-holos-quay-organization))
@@ -262,12 +263,12 @@ Run the bring-up steps **in order**:
    service-account client and the generate-once `CONTROLLER_CREDS_BOOTSTRAP` Job
    that writes the `holos-controller-keycloak-creds` Secret, HOL-1348). The
    Keycloak credential therefore needs **no** manual mint.
-3. **`make controller-deploy`** — installs the `quay.holos.run`,
-   `keycloak.holos.run`, and `security.holos.run` CRDs and the manager into the
-   `holos-controller` namespace (the *Deploy and verify the controller* steps
-   above). It targets, but does not create, that Namespace, and `scripts/apply`
-   does **not** install the CRDs; `scripts/apply-projects` fails fast if a CRD
-   it needs is absent.
+3. **`make controller-install && make controller-deploy`** — installs the
+   `quay.holos.run`, `keycloak.holos.run`, and `security.holos.run` CRDs, then
+   installs the manager config into the `holos-controller` namespace (the
+   *Deploy and verify the controller* steps above). The deploy base targets, but
+   does not create, that Namespace, and `scripts/apply` does **not** install the
+   CRDs; `scripts/apply-projects` fails fast if a CRD it needs is absent.
 4. **The manual Quay credential mint** — `scripts/apply-svc-quay-resource-controller-creds`
    plus the `platform-automation` org / OAuth-Application token, per the
    [credentials runbook](quay-resource-controller-credentials.md). This creates

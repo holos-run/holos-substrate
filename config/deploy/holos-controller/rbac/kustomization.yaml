@@ -1,6 +1,6 @@
 # RBAC for the holos-controller manager: the generated ClusterRole (role.yaml)
-# plus its binding to the manager service account, the leader-election Role, and
-# the service account itself.
+# plus its bindings, the manager service account, leader-election RBAC, and
+# helper roles shipped with the controller install.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:

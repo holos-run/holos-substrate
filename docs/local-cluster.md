@@ -239,10 +239,10 @@ time and never committed. Apply it separately, **after** these prerequisites are
 in place, with the dedicated helper:
 
 1. **Deploy the Holos Controller** with the isolated `controller-*` targets
-   (`make controller-deploy` installs the `quay.holos.run` CRDs and the manager
-   into the `holos-controller` namespace) — `scripts/apply` does **not** install
-   them, and `scripts/apply-projects` fails fast if the Organization CRD is
-   absent.
+   (`make controller-install && make controller-deploy` installs the
+   `quay.holos.run` CRDs and the manager config into the `holos-controller`
+   namespace) — `scripts/apply` does **not** install them, and
+   `scripts/apply-projects` fails fast if the Organization CRD is absent.
 2. **Mint and store the Quay superuser credential** the controller authenticates
    with (`scripts/apply-svc-quay-resource-controller-creds` plus the
    `platform-automation` org / OAuth token per the runbooks).

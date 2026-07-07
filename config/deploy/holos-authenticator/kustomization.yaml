@@ -1,0 +1,14 @@
+# Deploys the holos-authenticator manager and the RBAC it needs. This base
+# deliberately excludes CRDs; install config/crd/holos-authenticator separately.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: holos-authenticator
+resources:
+  - rbac
+  - manager.yaml
+  - metrics_service.yaml
+  - grpc_service.yaml
+images:
+  - name: authenticator
+    newName: quay.holos.internal/holos/holos-authenticator
+    newTag: dev

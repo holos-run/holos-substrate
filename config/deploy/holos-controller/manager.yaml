@@ -1,0 +1,79 @@
+# The holos-controller Namespace is NOT defined here: it is owned centrally by
+# the platform's namespace registry (holos/namespaces.cue). The
+# config/deploy/holos-controller kustomization sets `namespace: holos-controller`
+# so every namespaced resource targets it without this tree duplicating the
+# Namespace object.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: holos-controller-manager
+  labels:
+    app.kubernetes.io/name: holos-controller
+    app.kubernetes.io/managed-by: kustomize
+    control-plane: controller-manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+  template:
+    metadata:
+      labels:
+        control-plane: controller-manager
+    spec:
+      serviceAccountName: holos-controller-manager
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: manager
+          # The image is replaced by the config/deploy/holos-controller
+          # kustomization images transformer.
+          image: controller:dev
+          imagePullPolicy: Always
+          args:
+            - --leader-elect
+            - --health-probe-bind-address=:8081
+            - --metrics-bind-address=:8080
+          env:
+            # Expose the manager's own namespace via the downward API so the
+            # credential resolver reads holos-controller-quay-creds from the
+            # namespace the manager actually runs in (controllerNamespace() reads
+            # POD_NAMESPACE, defaulting to holos-controller). The Deployment does
+            # NOT envFrom/mount a fixed credential Secret — credentials are
+            # resolved per-resource via credentialsSecretRef (HOL-1311).
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi
+      terminationGracePeriodSeconds: 10

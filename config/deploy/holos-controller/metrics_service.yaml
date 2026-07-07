@@ -5,8 +5,8 @@
 # holos-controller-manager-metrics-service.holos-controller.svc:8080/metrics.
 #
 # The selector matches the manager Deployment's pod label (control-plane:
-# controller-manager). The Namespace is set by the config/default kustomization
-# (namespace: holos-controller), so it is not pinned here.
+# controller-manager). The Namespace is set by the
+# config/deploy/holos-controller kustomization, so it is not pinned here.
 #
 # A ServiceMonitor is intentionally NOT shipped in the default tree: it depends
 # on the Prometheus operator's CRD being installed, which the platform does not

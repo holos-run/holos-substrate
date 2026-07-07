@@ -1,6 +1,10 @@
+# Deploys the holos-controller manager and the RBAC it needs. This base
+# deliberately excludes CRDs; install config/crd/holos-controller separately.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
+namespace: holos-controller
 resources:
+  - rbac
   - manager.yaml
   - metrics_service.yaml
 images:
