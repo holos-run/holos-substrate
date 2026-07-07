@@ -19,11 +19,14 @@ resources are released by default.
 
 Do not let Argo CD or another GitOps loop prune the old CR before step 1 has
 reconciled. Either pause automated sync/pruning until the manual orphan/delete is
-complete, or first sync an intermediate rendered state where the old CR still
-exists with `spec.deletionPolicy: Orphan`; only after that should the rendered
-manifests remove the old CR and add the replacement. For project/application
-template resources, make the rename in the CUE registration and run
-`scripts/render` as part of that staged handoff.
+complete, or use three rendered syncs: first sync the old CR with
+`spec.deletionPolicy: Orphan`, then sync a state that removes the old CR and wait
+for its deletion/finalizer to complete, then sync the replacement CR with
+`spec.adopt: true`. Do not remove the old CR and add the replacement in the same
+sync; the replacement can reconcile before the old finalizer has stripped the
+ownership marker and get stuck in a conflict. For project/application template
+resources, make the rename in the CUE registration and run `scripts/render` as
+part of that staged handoff.
 
 ## Identity Fields
 
