@@ -561,4 +561,127 @@ func TestUserDelete(t *testing.T) {
 			t.Errorf("controller-added IdP link was not pruned on release")
 		}
 	})
+
+	t.Run("orphan leaves created user untouched without Keycloak calls", func(t *testing.T) {
+		user := &keycloakv1alpha1.KeycloakUser{
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "del-orphan"},
+			Spec: keycloakv1alpha1.KeycloakUserSpec{
+				Email:          "del-orphan@example.com",
+				InstanceRef:    keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				DeletionPolicy: keycloakv1alpha1.DeletionPolicyOrphan,
+			},
+		}
+		if err := shared.k8sClient.Create(ctx, user); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		fake := newFakeKeycloakClient()
+		r, _ := newUserReconciler(fake, ns)
+		key := client.ObjectKeyFromObject(user)
+		reconcileUserToSteady(t, ctx, r, key)
+		if !fake.userExists("del-orphan@example.com") {
+			t.Fatalf("precondition: user should exist")
+		}
+		fake.resetCalls()
+
+		if err := shared.k8sClient.Delete(ctx, getUser(t, ctx, key)); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if _, err := reconcileUser(ctx, r, key); err != nil {
+			t.Fatalf("reconcile (delete): %v", err)
+		}
+		if gotCalls := fake.callCount(); gotCalls != 0 {
+			t.Errorf("deletionPolicy Orphan made Keycloak calls: %v", fake.calls)
+		}
+		if !fake.userExists("del-orphan@example.com") {
+			t.Errorf("orphaned user should remain in Keycloak")
+		}
+	})
+
+	t.Run("adopted user with explicit delete is deleted by pinned UUID", func(t *testing.T) {
+		user := &keycloakv1alpha1.KeycloakUser{
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "del-adopted-explicit"},
+			Spec: keycloakv1alpha1.KeycloakUserSpec{
+				Email:                "del-adopted-explicit@example.com",
+				InstanceRef:          keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				Adopt:                true,
+				IdentityProviderLink: &keycloakv1alpha1.IdentityProviderLink{Alias: "corp-oidc", UserID: "sub-explicit"},
+				DeletionPolicy:       keycloakv1alpha1.DeletionPolicyDelete,
+			},
+		}
+		if err := shared.k8sClient.Create(ctx, user); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		fake := newFakeKeycloakClient()
+		userID := fake.seedUser("del-adopted-explicit@example.com")
+		r, _ := newUserReconciler(fake, ns)
+		key := client.ObjectKeyFromObject(user)
+		reconcileUserToSteady(t, ctx, r, key)
+		if !getUser(t, ctx, key).Status.Adopted {
+			t.Fatalf("expected adopted user")
+		}
+		fake.resetCalls()
+
+		if err := shared.k8sClient.Delete(ctx, getUser(t, ctx, key)); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if _, err := reconcileUser(ctx, r, key); err != nil {
+			t.Fatalf("reconcile (delete): %v", err)
+		}
+		if fake.userExists("del-adopted-explicit@example.com") {
+			t.Errorf("adopted user with deletionPolicy Delete should be deleted")
+		}
+		if !fake.callsContain("DeleteUser:" + userID) {
+			t.Errorf("expected delete by pinned user UUID %q; calls = %v", userID, fake.calls)
+		}
+		if fake.callsContain("FederatedUnlink:" + userID + "/corp-oidc") {
+			t.Errorf("explicit user delete should not separately prune the IdP link; calls = %v", fake.calls)
+		}
+	})
+
+	t.Run("adopted user explicit delete releases out-of-band replacement", func(t *testing.T) {
+		const email = "del-adopted-replaced@example.com"
+		user := &keycloakv1alpha1.KeycloakUser{
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "del-adopted-replaced"},
+			Spec: keycloakv1alpha1.KeycloakUserSpec{
+				Email:          email,
+				InstanceRef:    keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				Adopt:          true,
+				DeletionPolicy: keycloakv1alpha1.DeletionPolicyDelete,
+			},
+		}
+		if err := shared.k8sClient.Create(ctx, user); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		fake := newFakeKeycloakClient()
+		claimedID := fake.seedUser(email)
+		r, _ := newUserReconciler(fake, ns)
+		key := client.ObjectKeyFromObject(user)
+		reconcileUserToSteady(t, ctx, r, key)
+		if gotID := getUser(t, ctx, key).Status.UserID; gotID != claimedID {
+			t.Fatalf("status.userID = %q, want claimed %q", gotID, claimedID)
+		}
+
+		renamed := fake.users[email]
+		delete(fake.users, email)
+		renamed.Email = "renamed-" + email
+		fake.users[renamed.Email] = renamed
+		replacementID := fake.seedUser(email)
+		fake.resetCalls()
+
+		if err := shared.k8sClient.Delete(ctx, getUser(t, ctx, key)); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if _, err := reconcileUser(ctx, r, key); err != nil {
+			t.Fatalf("reconcile (delete): %v", err)
+		}
+		if !fake.userExists(renamed.Email) {
+			t.Errorf("renamed originally-adopted user must not be deleted")
+		}
+		if !fake.userExists(email) {
+			t.Errorf("foreign replacement user must not be deleted")
+		}
+		if fake.callsContain("DeleteUser:"+claimedID) || fake.callsContain("DeleteUser:"+replacementID) {
+			t.Errorf("explicit delete must release on UUID mismatch, not delete either user; calls = %v", fake.calls)
+		}
+	})
 }

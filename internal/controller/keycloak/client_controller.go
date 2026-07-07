@@ -512,12 +512,19 @@ func (r *ClientReconciler) reconcileDelete(ctx context.Context, logger logr.Logg
 	if !controllerutil.ContainsFinalizer(kclient, clientFinalizer) {
 		return ctrl.Result{}, nil
 	}
+	if kclient.Spec.DeletionPolicy == keycloakv1alpha1.DeletionPolicyOrphan {
+		r.Recorder.Event(kclient, corev1.EventTypeNormal, ReasonReleased,
+			fmt.Sprintf("orphaned Keycloak client %q (deletionPolicy Orphan; nothing removed from Keycloak)", kclient.Spec.ClientID))
+		return r.removeFinalizer(ctx, kclient)
+	}
 
-	// Only a client this CR created needs a Keycloak-side delete. An adopted or
-	// never-created client (rejected, blocked, conflict, or merely claimed) has no
-	// client this CR owns to delete — drop the finalizer immediately rather than
+	// Only a client this CR created, or an adopted client explicitly set to
+	// deletionPolicy Delete, needs a Keycloak-side delete. Other adopted or
+	// never-created clients (rejected, blocked, conflict, or merely claimed) have
+	// no client this CR owns to delete — drop the finalizer immediately rather than
 	// resolving an instance + credential that may never resolve.
-	if !kclient.Status.Created {
+	deleteAdopted := kclient.Spec.DeletionPolicy == keycloakv1alpha1.DeletionPolicyDelete && kclient.Status.Adopted
+	if !kclient.Status.Created && !deleteAdopted {
 		return r.removeFinalizer(ctx, kclient)
 	}
 

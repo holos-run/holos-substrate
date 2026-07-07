@@ -159,3 +159,18 @@ const (
 	// drift while the CR's desired spec generation was unchanged.
 	MutationReasonDriftRemediation MutationReason = "DriftRemediation"
 )
+
+// DeletionPolicy controls what the controller does to remote Keycloak state
+// when a custom resource is deleted.
+//
+// +kubebuilder:validation:Enum=Delete;Orphan
+type DeletionPolicy string
+
+const (
+	// DeletionPolicyDelete deletes the remote Keycloak state this resource owns,
+	// after verifying it still matches the identity recorded in status.
+	DeletionPolicyDelete DeletionPolicy = "Delete"
+	// DeletionPolicyOrphan leaves remote Keycloak state untouched and removes only
+	// the Kubernetes finalizer.
+	DeletionPolicyOrphan DeletionPolicy = "Orphan"
+)

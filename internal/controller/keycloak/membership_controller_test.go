@@ -279,6 +279,118 @@ func TestMembershipPruneDeleteAndUUIDPin(t *testing.T) {
 	}
 }
 
+func TestMembershipDeletionPolicy(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-membership-delpolicy"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+	readyGroup(t, ctx, ns, "owner", "projects/dp/roles/owner", keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"})
+
+	t.Run("orphan leaves managed memberships untouched without Keycloak calls", func(t *testing.T) {
+		membership := &keycloakv1alpha1.KeycloakGroupMembership{
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "orphan-members"},
+			Spec: keycloakv1alpha1.KeycloakGroupMembershipSpec{
+				InstanceRef:    keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				GroupRef:       keycloakv1alpha1.KeycloakGroupReference{Name: "owner"},
+				Members:        []keycloakv1alpha1.KeycloakGroupMembershipMember{{Email: "orphan-member@example.com"}},
+				DeletionPolicy: keycloakv1alpha1.DeletionPolicyOrphan,
+			},
+		}
+		if err := shared.k8sClient.Create(ctx, membership); err != nil {
+			t.Fatalf("create membership: %v", err)
+		}
+		fake := newFakeKeycloakClient("projects/dp/roles/owner")
+		groupID := fake.groups[normPath("projects/dp/roles/owner")]
+		userID := fake.seedUser("orphan-member@example.com")
+		r, _ := newMembershipReconciler(fake, ns)
+		key := client.ObjectKeyFromObject(membership)
+		reconcileMembershipToSteady(t, ctx, r, key)
+		if !fake.memberOf(userID, groupID) {
+			t.Fatalf("precondition: member should be in group")
+		}
+		fake.resetCalls()
+
+		if err := shared.k8sClient.Delete(ctx, getMembership(t, ctx, key)); err != nil {
+			t.Fatalf("delete membership: %v", err)
+		}
+		if _, err := reconcileMembership(ctx, r, key); err != nil {
+			t.Fatalf("reconcile delete: %v", err)
+		}
+		if gotCalls := fake.callCount(); gotCalls != 0 {
+			t.Errorf("deletionPolicy Orphan made Keycloak calls: %v", fake.calls)
+		}
+		if !fake.memberOf(userID, groupID) {
+			t.Errorf("orphaned membership should remain in Keycloak")
+		}
+	})
+
+	t.Run("explicit delete removes managed memberships", func(t *testing.T) {
+		membership := &keycloakv1alpha1.KeycloakGroupMembership{
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "delete-members"},
+			Spec: keycloakv1alpha1.KeycloakGroupMembershipSpec{
+				InstanceRef:    keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				GroupRef:       keycloakv1alpha1.KeycloakGroupReference{Name: "owner"},
+				Members:        []keycloakv1alpha1.KeycloakGroupMembershipMember{{Email: "delete-member@example.com"}},
+				DeletionPolicy: keycloakv1alpha1.DeletionPolicyDelete,
+			},
+		}
+		if err := shared.k8sClient.Create(ctx, membership); err != nil {
+			t.Fatalf("create membership: %v", err)
+		}
+		fake := newFakeKeycloakClient("projects/dp/roles/owner")
+		groupID := fake.groups[normPath("projects/dp/roles/owner")]
+		userID := fake.seedUser("delete-member@example.com")
+		r, _ := newMembershipReconciler(fake, ns)
+		key := client.ObjectKeyFromObject(membership)
+		reconcileMembershipToSteady(t, ctx, r, key)
+
+		if err := shared.k8sClient.Delete(ctx, getMembership(t, ctx, key)); err != nil {
+			t.Fatalf("delete membership: %v", err)
+		}
+		if _, err := reconcileMembership(ctx, r, key); err != nil {
+			t.Fatalf("reconcile delete: %v", err)
+		}
+		if fake.memberOf(userID, groupID) {
+			t.Errorf("explicit deletionPolicy Delete should remove managed membership")
+		}
+	})
+
+	t.Run("orphan drops finalizer without resolving instance", func(t *testing.T) {
+		membership := &keycloakv1alpha1.KeycloakGroupMembership{
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "orphan-no-instance"},
+			Spec: keycloakv1alpha1.KeycloakGroupMembershipSpec{
+				InstanceRef:    keycloakv1alpha1.KeycloakInstanceReference{Name: "absent"},
+				GroupRef:       keycloakv1alpha1.KeycloakGroupReference{Name: "owner"},
+				DeletionPolicy: keycloakv1alpha1.DeletionPolicyOrphan,
+			},
+		}
+		if err := shared.k8sClient.Create(ctx, membership); err != nil {
+			t.Fatalf("create membership: %v", err)
+		}
+		fake := newFakeKeycloakClient("projects/dp/roles/owner")
+		r, _ := newMembershipReconciler(fake, ns)
+		key := client.ObjectKeyFromObject(membership)
+		if _, err := reconcileMembership(ctx, r, key); err != nil {
+			t.Fatalf("reconcile finalizer: %v", err)
+		}
+		fake.resetCalls()
+
+		if err := shared.k8sClient.Delete(ctx, getMembership(t, ctx, key)); err != nil {
+			t.Fatalf("delete membership: %v", err)
+		}
+		if _, err := reconcileMembership(ctx, r, key); err != nil {
+			t.Fatalf("reconcile delete: %v", err)
+		}
+		if gotCalls := fake.callCount(); gotCalls != 0 {
+			t.Errorf("orphan with missing instance made Keycloak calls: %v", fake.calls)
+		}
+	})
+}
+
 func TestMembershipUnauthorizedPeerDoesNotBlockPrune(t *testing.T) {
 	if shared == nil {
 		t.Skip("envtest not provisioned")

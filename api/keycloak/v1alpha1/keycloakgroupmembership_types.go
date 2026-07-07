@@ -77,6 +77,16 @@ type KeycloakGroupMembershipSpec struct {
 	// +listType=map
 	// +listMapKey=email
 	Members []KeycloakGroupMembershipMember `json:"members,omitempty"`
+
+	// DeletionPolicy controls how the controller handles the group memberships
+	// this resource manages when the resource is deleted. Delete removes the
+	// managed memberships unless another membership resource still declares the
+	// same user for the same group. Orphan leaves all Keycloak memberships
+	// untouched. When omitted, the controller removes managed memberships, matching
+	// Delete.
+	//
+	// +optional
+	DeletionPolicy DeletionPolicy `json:"deletionPolicy,omitempty"`
 }
 
 // KeycloakGroupMembershipStatus defines the observed state of a
