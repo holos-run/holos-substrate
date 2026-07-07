@@ -185,6 +185,16 @@ Renaming an `Organization` CR forces a transfer of its `Repository` CRs.
 organization. Orphan the old repositories, delete them, and recreate them with
 the new `organizationRef`, the same `spec.name`, and `spec.adopt: true`.
 
+Organization `spec.syncedTeams[]` entries do not transfer automatically. Orphaning
+the Organization strips the org marker, but team descriptions still carry the old
+CR's managed-team marker. A replacement Organization that declares those teams
+will report `Ready=False` with `TeamConflict`, even if each entry sets `adopt:
+true`, because per-team adoption only claims unmarked teams. During an
+Organization transfer, either leave `spec.syncedTeams[]` out of the replacement
+until the old team markers have been deliberately cleared or reassigned by an
+operator, or restore the old CR and perform a different handoff. There is no
+per-team `deletionPolicy: Orphan` field.
+
 Renaming a `KeycloakClient` CR requires updating every `clientRef` that points to
 the old CR name. Check `KeycloakGroup.spec.clientRoles[]` and
 `KeycloakClient.spec.clientRoles[]`, then apply those referencing CR changes with
@@ -206,6 +216,13 @@ creating a duplicate.
 
 `deletionPolicy: Orphan` on Keycloak resources makes no Keycloak calls. It is the
 escape hatch when the backing realm or credential is gone.
+
+For confidential `KeycloakClient` resources, the delivered Secret named by
+`spec.secretRef` is Kubernetes state owned by the old CR, not part of the remote
+Keycloak client identity. Reusing the same Secret name before ownership is
+resolved will surface as a Secret collision. Use a new `secretRef` for the
+replacement or deliberately transfer/remove the old Secret owner reference before
+expecting the replacement to deliver the client secret.
 
 ## Rollback and Conflict Inspection
 
