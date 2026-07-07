@@ -12,6 +12,7 @@
 | 1        | 2026-06-20 | @jeffmccune | Initial design |
 | 2        | 2026-07-04 | @jeffmccune | **Design-record only: add drift-observability status fields for external-resource CRs (HOL-1454).** Every `holos.run` CR whose reconciler fronts an external system (Keycloak, Quay, and future peers) carries `status.lastValidatedTime`, `status.lastMutatedTime`, `status.lastMutationReason`, and `status.lastDriftTime` in addition to the Gateway-API conditions/`observedGeneration` model. The fields distinguish the last successful remote validation from the last actual remote mutation, and classify that mutation as `SpecChange` (intentional/spec-driven) or `DriftRemediation` (corrective/out-of-band drift healed), borrowing Puppet's corrective-vs-intentional change model and Argo CD self-heal semantics. Read-only validators that never mutate the remote system, such as `KeycloakInstance`, carry `lastValidatedTime` only. No CRD or reconciler behavior changes in this revision; `Status: Proposed` unchanged |
 | 3        | 2026-07-04 | @jeffmccune | **Implement the drift-observability retrofit for shipped external-resource Kinds (HOL-1459).** The already-shipped `keycloak.holos.run` Kinds (`KeycloakInstance`, `KeycloakGroup`, `KeycloakUser`, `KeycloakClient`) and `quay.holos.run` Kinds (`Organization`, `Repository`) now expose the Rev 2 status timestamps and `Validated` printer columns in their CRDs. `KeycloakInstance` remains validation-only (`lastValidatedTime` only); the mutating Kinds report `lastValidatedTime`, `lastMutatedTime`, `lastMutationReason`, and `lastDriftTime` with the canonical `SpecChange` / `DriftRemediation` values. Their reconcilers update validation only after successful remote verification, stamp mutation only after successful remote changes, return bounded steady-state resyncs, and use generation-changed primary watches to avoid status-write hot loops. |
+| 4        | 2026-07-07 | @jeffmccune | **Design-record only: add the Adopt & Preserve lifecycle contract for external-resource CRs (HOL-1533).** Every `holos.run` CR that fronts a nameable external resource acquires pre-existing resources only with explicit `spec.adopt`, derives external identity from immutable spec fields rather than `metadata.name`, and carries `spec.deletionPolicy` with omitted/`Delete`/`Orphan` semantics that preserve the shipped non-destructive adoption invariant while adding an explicit abandon/transfer path. Read-only validators and set-membership managers get narrow exemptions as described below. Design-record only — no CRD or reconciler behavior changes in this revision; `Status: Proposed` unchanged |
 
 ## Context and Problem Statement
 
@@ -293,6 +294,160 @@ Rules:
    across all API groups. Each group defines its own Go constants with these
    exact string values because API packages do not import one another.
 
+### Adopt & Preserve lifecycle contract for external-resource CRs
+
+External-resource CRs need a single lifecycle contract for resources that may
+already exist before Kubernetes begins managing them. That contract must prevent
+one namespace from silently seizing a global external name, must make rename and
+transfer possible without deleting the remote object, and must keep the
+already-shipped Quay and Keycloak adoption behavior non-destructive.
+
+This ADR therefore defines the **Adopt & Preserve** contract for every
+`holos.run` CR that fronts a nameable external resource:
+
+1. **Acquisition is explicit.** A CR that can own a pre-existing nameable
+   external resource carries `spec.adopt bool`, defaulting to `false`. When an
+   unclaimed external resource already exists, the reconciler reports a
+   `Conflict` unless `spec.adopt` is set. Omitted and explicit `false` are
+   equivalent, so this field is a plain boolean rather than `*bool`.
+2. **External identity comes from immutable spec fields, never
+   `metadata.name`.** The external name or identity is declared in spec and made
+   immutable with validation. Current examples are `Organization.spec.name`,
+   `Repository.spec.organizationRef` plus `spec.name`, `KeycloakGroup.spec.path`,
+   `KeycloakUser.spec.email`, and `KeycloakClient.spec.clientId`. This decouples
+   Kubernetes object naming from remote identity, so a CR can be renamed by
+   orphaning and re-adopting the same external resource.
+3. **Deletion behavior is declarative and provenance-aware.** Each mutating
+   external-resource group defines its own `DeletionPolicy` enum in
+   `api/<group>/v1alpha1/common_types.go`, matching the existing per-group
+   `MutationReason` precedent and preserving the ADR-18 API dependency boundary.
+
+The canonical enum shape is:
+
+```go
+// DeletionPolicy controls what happens to the external resource a
+// Kubernetes resource fronts when that Kubernetes resource is deleted.
+// +kubebuilder:validation:Enum=Delete;Orphan
+type DeletionPolicy string
+
+const (
+	// DeletionPolicyDelete removes the external resource when the
+	// Kubernetes resource is deleted, after verifying this resource
+	// still owns it.
+	DeletionPolicyDelete DeletionPolicy = "Delete"
+	// DeletionPolicyOrphan leaves the external resource in place when
+	// the Kubernetes resource is deleted. The controller removes only
+	// its own ownership marker, if any, so a replacement resource can
+	// adopt the external resource later.
+	DeletionPolicyOrphan DeletionPolicy = "Orphan"
+)
+```
+
+The canonical spec field shape is:
+
+```go
+// DeletionPolicy controls what happens to the <external resource> when
+// this resource is deleted. Delete removes it from <system> after
+// verifying ownership. Orphan leaves it in place, removing only this
+// controller's ownership marker so a replacement resource can adopt it.
+// When omitted, the behavior follows provenance: a <resource> this
+// resource created is deleted, and an adopted one is released without
+// being deleted.
+// +optional
+DeletionPolicy DeletionPolicy `json:"deletionPolicy,omitempty"`
+```
+
+The empty string is the unset sentinel; `omitempty` keeps the field off the wire
+when omitted, so no pointer is needed.
+
+| `deletionPolicy` | created by this CR | adopted by this CR |
+| -- | -- | -- |
+| *(omitted)* | delete (ownership-verified) — current behavior | release: prune controller-added side-effects (conferred roles, custodians, IdP links, recorded webhooks), keep the entity — current behavior |
+| `Delete` | delete (ownership-verified) | delete (verified by marker / pinned UUID) |
+| `Orphan` | abandon: strip only the holos ownership marker; **no other remote mutation** (no prunes) | abandon: strip marker if present; no other remote mutation |
+
+Rules:
+
+1. **Ownership is verified before destructive cleanup.** `Delete` never deletes a
+   remote object merely because the CR has the same name. The finalizer must
+   verify this CR's durable ownership marker, pinned remote UUID, or equivalent
+   claim evidence before deletion.
+2. **Omitted preserves shipped adoption semantics.** For resources created by the
+   CR, omission keeps the current delete-on-CR-removal behavior. For resources
+   adopted with `spec.adopt`, omission keeps the current release-not-delete path:
+   the controller removes or prunes only the side effects it added, such as
+   conferred roles, custodians, identity-provider links, or recorded webhooks,
+   and leaves the external entity.
+3. **`Orphan` is an abandon operation.** It strips only the holos ownership
+   marker, if any, and performs no other remote mutation. It does not prune
+   conferred roles, custodians, identity-provider links, webhooks, teams, or
+   similar side effects. This is the transfer/rename path, so it avoids churn
+   while another CR is about to adopt the same external resource.
+4. **`Delete` on an adopted resource is deliberate.** It grants destructive
+   cleanup authority over an external resource this CR did not originally
+   create, but only after ownership can be verified by a marker, pinned UUID, or
+   equivalent claim.
+5. **Rename and transfer use orphan then adopt.** To move management of the same
+   remote object to a different Kubernetes object name:
+   1. Patch the old CR with `spec.deletionPolicy: Orphan`.
+   2. Delete the old CR; the external resource is abandoned with markers stripped.
+   3. Apply the CR under the new `metadata.name` with identical immutable
+      identity fields and `spec.adopt: true`.
+   4. Optionally set `spec.deletionPolicy: Delete` on the new CR to restore
+      delete authority; because the new CR acquired the resource by adoption, its
+      omitted default remains non-destructive release.
+6. **Exemptions are narrow.** Read-only validators that own nothing, such as
+   `KeycloakInstance`, omit both `spec.adopt` and `spec.deletionPolicy`.
+   Set-membership managers with no single ownable external object, such as
+   `KeycloakGroupMembership`, omit `spec.adopt` but still carry
+   `spec.deletionPolicy`, because they mutate external membership edges and need
+   delete-time preserve/prune semantics.
+7. **New external-resource Kinds inherit this contract.** A new mutating
+   external-resource CR must justify any exemption in its API-group ADR before
+   shipping.
+
+#### Sources of inspiration and deliberate deviations
+
+This contract borrows vocabulary and lifecycle shape from established
+Kubernetes-native controllers while deliberately preserving holos's tenant-safety
+and non-destructive adoption model:
+
+- **Config Connector** documents
+  [`cnrm.cloud.google.com/deletion-policy`](https://docs.cloud.google.com/config-connector/docs/reference/annotations),
+  acquiring existing resources by declaring them in Kubernetes
+  ([managing and deleting resources](https://docs.cloud.google.com/config-connector/docs/how-to/managing-deleting-resources)),
+  and immutable
+  [`spec.resourceID`](https://docs.cloud.google.com/config-connector/docs/how-to/managing-resources-with-resource-ids)
+  for decoupling external identity from `metadata.name`, including a rename flow
+  that abandons then re-acquires the resource.
+- **Crossplane managed resources** define
+  [`spec.deletionPolicy: Delete|Orphan`](https://docs.crossplane.io/latest/managed-resources/managed-resources/)
+  and the `crossplane.io/external-name` annotation for external identity.
+- **External Secrets** separates creation ownership from deletion behavior with
+  [`creationPolicy` and `deletionPolicy`](https://external-secrets.io/latest/guides/ownership-deletion-policy/).
+- **cert-manager** keeps the target Secret when a Certificate is deleted unless
+  certificate owner references are explicitly enabled, as documented in
+  [Certificate usage](https://cert-manager.io/docs/usage/certificate/).
+- **Kubernetes garbage collection** provides the upstream
+  [`propagationPolicy: Orphan`](https://kubernetes.io/docs/concepts/architecture/garbage-collection/)
+  vocabulary for abandoning dependents rather than deleting them.
+
+The two deliberate deviations are:
+
+1. **No acquire-by-default.** Config Connector acquires an existing resource by
+   default when the Kubernetes object names the same remote identity. Holos
+   requires `spec.adopt: true` because CRs are namespaced, several external
+   namespaces are global, and the controller credential may be instance-wide
+   (for example Quay's `FEATURE_SUPERUSERS_FULL_ACCESS`). A namespace-local CR
+   must not silently seize a global external object.
+2. **Omitted deletion policy is provenance-aware.** Crossplane defaults
+   `spec.deletionPolicy` to `Delete`, including for imported resources. Holos
+   keeps omitted deletion policy compatible with shipped behavior: created
+   resources are deleted after ownership verification, while adopted resources
+   are released without deleting the external entity. Explicit `Orphan` is
+   stricter than omitted-adopted release because it performs no remote mutation
+   beyond marker stripping.
+
 ## Decision
 
 1. **A new `security.holos.run` API group is established**, owned by the
@@ -335,12 +490,20 @@ Rules:
    external-resource CRs*. Read-only validators that never mutate the remote
    system carry `lastValidatedTime` only. The canonical mutation reasons are
    `SpecChange` and `DriftRemediation`.
-8. **This convention is a guard rail for all current and future `holos.run`
-   custom resources.** It is recorded in `AGENTS.md` under *Guard Rails*; the
-   API-group ADRs that consume cross-namespace references
-   ([ADR-20](ADR-20.md), [ADR-21](ADR-21.md)) will reference it as they are
-   revised to adopt the convention (a later phase of this work updates ADR-20).
-9. **This phase fixes the convention only — no Go or CUE code.** The
+8. **External-resource CRs follow the Adopt & Preserve lifecycle contract.**
+   Every `holos.run` CR that fronts a nameable external resource acquires
+   pre-existing resources only through explicit `spec.adopt`, derives external
+   identity from immutable spec fields rather than `metadata.name`, and exposes
+   `spec.deletionPolicy` with omitted/`Delete`/`Orphan` semantics. The omitted
+   behavior preserves the current non-destructive release path for adopted
+   resources, and explicit `Orphan` provides the rename/transfer path.
+9. **These cross-cutting conventions are guard rails for current and future
+   `holos.run` custom resources.** The ReferenceGrant, status,
+   drift-observability, and Adopt & Preserve contracts are recorded in
+   `AGENTS.md` under *Guard Rails*. API-group ADRs that consume them link back
+   here rather than redefining them; ADR-19 and ADR-20 carry pointer rows for the
+   group-specific Adopt & Preserve implementation phases.
+10. **This phase fixes the convention only — no Go or CUE code.** The
    `ReferenceGrant` schema here is illustrative; the field-level API, CEL
    validation, printer columns, and the reconciler land in later
    CRD-implementation issues.
@@ -378,6 +541,15 @@ Rules:
   implementation discipline: reconcilers must check before applying, preserve
   stale timestamps on errors, periodically re-validate, and avoid status-write
   hot loops with generation-change predicates.
+- **External-resource deletion is now explicit and portable across groups.**
+  API groups keep independent enum constants, but users see one
+  omitted/`Delete`/`Orphan` contract across Quay, Keycloak, and future external
+  systems. New reconcilers must track provenance and ownership evidence strongly
+  enough to distinguish delete, release, and abandon paths.
+- **Rename and transfer are supported without remote deletion.** Operators can
+  move management between Kubernetes object names by orphaning the old CR and
+  adopting with the new one. That path intentionally avoids side-effect pruning
+  to prevent churn during handoff.
 - **Coexistence with Gateway API's grant must stay legible.** Two `ReferenceGrant`
   kinds now exist in the platform — Gateway API's (route/backend/certificate
   references) and `security.holos.run`'s (`holos.run` CR-to-CR references).
