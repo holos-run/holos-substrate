@@ -687,6 +687,99 @@ func TestReconcileDeleteOrphansCreatedOrg(t *testing.T) {
 	assertEvent(t, recorder, quayv1alpha1.ReasonReleased)
 }
 
+func TestOrganizationRenameTransferFlow(t *testing.T) {
+	ctx := t.Context()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+
+	old := &quayv1alpha1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "old-owner"},
+		Spec: quayv1alpha1.OrganizationSpec{
+			Name:  "transfer-org",
+			Email: "transfer-org@example.test",
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, old); err != nil {
+		t.Fatalf("creating old Organization: %v", err)
+	}
+	oldKey := client.ObjectKeyFromObject(old)
+
+	fake := newFakeOrgClient()
+	r, _ := newReconciler(fake, ns)
+	if err := reconcileUntilStable(ctx, t, r, oldKey); err != nil {
+		t.Fatalf("reconcile old create: %v", err)
+	}
+	old = getOrg(ctx, t, oldKey)
+	if !statusCreated(old) {
+		t.Fatalf("old status.created = false, want true")
+	}
+	if desc, want := fake.markers["transfer-org"], organizationOwnerToken(old, true); desc != want {
+		t.Fatalf("old marker = %q, want %q", desc, want)
+	}
+
+	old.Spec.DeletionPolicy = quayv1alpha1.DeletionPolicyOrphan
+	if err := shared.k8sClient.Update(ctx, old); err != nil {
+		t.Fatalf("setting old deletionPolicy: %v", err)
+	}
+	if err := shared.k8sClient.Delete(ctx, old); err != nil {
+		t.Fatalf("deleting old Organization: %v", err)
+	}
+	if err := reconcileUntilStable(ctx, t, r, oldKey); err != nil {
+		t.Fatalf("reconcile old orphan: %v", err)
+	}
+	if !fake.orgExists("transfer-org") {
+		t.Fatal("orphaned organization should remain in Quay")
+	}
+	if _, ok := fake.markers["transfer-org"]; ok {
+		t.Fatalf("orphaned organization marker should be stripped, markers=%v", fake.markers)
+	}
+
+	replacement := &quayv1alpha1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "new-owner"},
+		Spec: quayv1alpha1.OrganizationSpec{
+			Name:  "transfer-org",
+			Email: "transfer-org@example.test",
+			Adopt: true,
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, replacement); err != nil {
+		t.Fatalf("creating replacement Organization: %v", err)
+	}
+	newKey := client.ObjectKeyFromObject(replacement)
+	if err := reconcileUntilStable(ctx, t, r, newKey); err != nil {
+		t.Fatalf("reconcile replacement adopt: %v", err)
+	}
+	replacement = getOrg(ctx, t, newKey)
+	if got := conditionStatus(replacement, quayv1alpha1.ConditionReady); got != metav1.ConditionTrue {
+		t.Fatalf("replacement Ready = %q, want True", got)
+	}
+	if statusCreated(replacement) {
+		t.Fatalf("replacement status.created = true, want adopted provenance")
+	}
+	if desc, want := fake.markers["transfer-org"], organizationOwnerToken(replacement, false); desc != want {
+		t.Fatalf("replacement marker = %q, want %q", desc, want)
+	}
+
+	replacement.Spec.DeletionPolicy = quayv1alpha1.DeletionPolicyDelete
+	if err := shared.k8sClient.Update(ctx, replacement); err != nil {
+		t.Fatalf("setting replacement deletionPolicy: %v", err)
+	}
+	if err := shared.k8sClient.Delete(ctx, replacement); err != nil {
+		t.Fatalf("deleting replacement Organization: %v", err)
+	}
+	if err := reconcileUntilStable(ctx, t, r, newKey); err != nil {
+		t.Fatalf("reconcile replacement delete: %v", err)
+	}
+	if !fake.callsContain("Delete:transfer-org") {
+		t.Fatalf("explicit Delete should delete transferred organization; calls were %v", fake.calls)
+	}
+	if fake.orgExists("transfer-org") {
+		t.Fatal("transferred organization should be deleted after explicit Delete")
+	}
+}
+
 func TestReconcileOrgAdoptionDoesNotAdoptOrphanedTeams(t *testing.T) {
 	ctx := t.Context()
 	ns := makeNamespace(ctx, t)

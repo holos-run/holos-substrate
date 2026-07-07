@@ -21,6 +21,7 @@
 | 9        | 2026-07-07 | @jeffmccune | **Design pointer to ADR-22's Adopt & Preserve contract (HOL-1533).** A later Quay implementation revision will add `spec.deletionPolicy` to `Organization` and `Repository`, change Organization adoption markers to the kind-prefixed form needed for the cross-group contract, and add per-team adoption controls for `spec.syncedTeams[]`. This row records the design dependency only; no Quay CRD or reconciler behavior changes in this revision. |
 | 10       | 2026-07-07 | @jeffmccune | **Implement Quay Adopt & Preserve lifecycle semantics for Organization and Repository (HOL-1534).** Both Kinds now carry `spec.deletionPolicy` (`Delete`/`Orphan`, omitted uses provenance defaults). Organization ownership markers are kind-prefixed as `created:<uid>` or `adopted:<uid>`, with legacy bare-UID markers accepted as created and healed. Finalizers can abandon created resources with `Orphan`, delete adopted resources with explicit `Delete` after ownership verification, and preserve the existing release safety for foreign or absent markers. |
 | 11       | 2026-07-07 | @jeffmccune | **Implement per-team adoption for Organization `spec.syncedTeams[]` (HOL-1535).** Each synced team entry now carries optional `adopt` (default `false`). With `adopt: true`, a pre-existing unmarked Quay team is stamped with this resource's managed-team marker, recorded in `status.managedTeams`, and reconciled like a created team. Teams marked for another resource remain `TeamConflict`; omitted or false `adopt` preserves the existing conflict path. |
+| 12       | 2026-07-07 | @jeffmccune | **Document and test the rename/transfer flow (HOL-1537).** The Quay controller tests now cover the full old-CR `deletionPolicy: Orphan` -> new-CR `adopt: true` -> new-CR `deletionPolicy: Delete` path for both Organization and Repository. The external-resource rename runbook documents the same operator procedure, repository webhook continuity, Organization-to-Repository reference cascades, and marker-conflict inspection. |
 
 ## Context and Problem Statement
 
@@ -586,21 +587,26 @@ namespace**, and the controller's credential carries
 `FEATURE_SUPERUSERS_FULL_ACCESS` (instance-wide write). A naive "adopt any
 existing org" rule would let an `Organization` in one tenant namespace silently
 seize another project's Quay org. The reconciler therefore enforces a **claim**,
-recorded by the durable `status.created` ownership marker:
+recorded by the CR's provenance status and a durable server-side ownership
+marker:
 
 - **Org does not exist** → **create** it and set `created: true` (the clean
   GitOps path; condition reason `Created`).
 - **Org exists and this CR created it** (`created: true`) → reconcile normally.
-- **Org exists, externally created, and `spec.adopt: true`** → **adopt** it
-  (`created: false`, reason `Adopted`); released, not deleted, on CR removal.
+- **Org exists, externally created, and `spec.adopt: true`** -> **adopt** it
+  (`created: false`, reason `Adopted`); released on CR removal unless
+  `spec.deletionPolicy: Delete` explicitly grants destructive cleanup authority.
 - **Org exists, externally created, and `adopt` is unset** → **Conflict**: the
   reconciler refuses to write, sets `Ready=False` reason `Conflict`, and emits an
   event. An externally-created org is never silently seized just because the
   credential *can* write to it.
 
-The finalizer deletes the Quay org only when `created: true`; an adopted org is
-released. This bounds the `FEATURE_SUPERUSERS_FULL_ACCESS` blast radius to orgs
-the platform created or was explicitly told to adopt.
+The finalizer deletes the Quay org when the marker proves created ownership, or
+when the marker proves adopted ownership and `spec.deletionPolicy: Delete` is set.
+`spec.deletionPolicy: Orphan` strips this CR's marker and leaves the org behind;
+omitting the field deletes created orgs and releases adopted orgs. This bounds
+the `FEATURE_SUPERUSERS_FULL_ACCESS` blast radius to orgs the platform created or
+was explicitly told to adopt and then explicitly authorized to delete.
 
 #### Durable server-side ownership marker
 
@@ -615,26 +621,32 @@ org itself** and keys the create/heal/delete decisions on it — the exact
 mechanism is an implementation detail of the controller, not API surface:
 
 - The marker is a dedicated robot account, **`<org>+holos-owner`**, whose
-  free-text `description` holds an opaque, controller-managed token: the owning
-  `Organization` CR's `metadata.uid` (stable for the CR's lifetime, unique across
-  CRs, never reused). Quay 3.17.3 organizations expose no label/annotation/
-  description field of their own, so a marker robot is the durable per-org record
-  available through the standard org API. The marker is stamped immediately after
-  a clean create.
+  free-text `description` holds an ownership kind plus an opaque,
+  controller-managed token: `created:<uid>` or `adopted:<uid>`, where the UID is
+  the owning `Organization` CR's `metadata.uid` (stable for the CR's lifetime,
+  unique across CRs, never reused). Quay 3.17.3 organizations expose no label/
+  annotation/description field of their own, so a marker robot is the durable
+  per-org record available through the standard org API. The marker is stamped
+  immediately after a clean create or explicit adoption.
 - **Create / heal:** an existing org whose marker token matches this CR is owned
-  (its `status.created` is healed to `true` if a prior write was lost — closing
-  race (a) — rather than released). An existing org with no marker but
-  `status.created == true` is re-stamped and kept. An org whose marker holds a
-  *different* token is owned by another claim and is a `Conflict`, never seized —
-  even with `spec.adopt`.
+  (its `status.created` is healed from the marker kind if a prior write was lost
+  -- closing race (a) -- rather than released). An existing org with no marker
+  but `status.created == true` is re-stamped as `created:<uid>` and kept. Legacy
+  bare-UID markers are accepted as created ownership and healed to the prefixed
+  form. An org whose marker holds a *different* token is owned by another claim
+  and is a `Conflict`, never seized -- even with `spec.adopt`.
 - **Delete:** before deleting, the finalizer re-reads the marker and deletes the
-  Quay org only when it still names this CR; if the marker is absent or holds a
-  foreign token (the org was recreated by another actor in the delete gap), it
-  **releases** instead of deleting — closing race (b).
+  Quay org only when the marker still names this CR and the policy grants delete
+  authority: created provenance by default, or adopted provenance with explicit
+  `spec.deletionPolicy: Delete`. If the marker is absent or holds a foreign token
+  (the org was recreated by another actor in the delete gap), it **releases**
+  instead of deleting -- closing race (b).
 
-Adopted orgs (claimed via `spec.adopt`, `created: false`) are **not** marked:
-adoption is non-destructive, the finalizer releases them without touching Quay,
-and stamping a marker would wrongly arm them for deletion.
+Adopted orgs are now marked as `adopted:<uid>` so ownership can transfer safely
+across Kubernetes object renames. The marker does not by itself arm destructive
+cleanup: omitted `deletionPolicy` still releases adopted orgs, while explicit
+`Delete` is required before an adopted org may be removed. This supersedes the
+earlier concern that marking adopted orgs would make adoption destructive.
 
 ### Out of scope (deliberately)
 
