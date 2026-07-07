@@ -82,6 +82,9 @@ type RepoClient interface {
 	// CreateNotification creates a repo_push webhook notification delivering to
 	// url, labeled title.
 	CreateNotification(ctx context.Context, ns, repo, url, title string) (*quay.Notification, error)
+	// UpdateNotification updates an existing repo_push webhook notification by
+	// uuid to deliver to url, labeled title.
+	UpdateNotification(ctx context.Context, ns, repo, uuid, url, title string) error
 	// DeleteNotificationIfExists deletes the notification by uuid, treating an
 	// already-absent response as success (idempotent).
 	DeleteNotificationIfExists(ctx context.Context, ns, repo, uuid string) error
@@ -119,8 +122,9 @@ var _ RepoClient = (*quay.Client)(nil)
 // RepositoryReconciler reconciles a quay.holos.run Repository against the
 // in-cluster Quay registry: it creates or updates the named repository inside an
 // existing Organization, configures a repo_push webhook from spec.webhook (an
-// inline url or a urlSecretRef), and on delete runs a finalizer that deletes
-// created repositories or releases adopted repositories. Repository
+// inline url or a urlSecretRef), and on delete runs a finalizer that applies
+// spec.deletionPolicy with ownership verification before deleting or releasing
+// the external repository. Repository
 // creation/configuration happens solely here; the Organization reconciler never
 // touches repositories. Status follows the same Gateway-API convention as
 // Organization (see conditions.go) and meaningful transitions emit Events.
@@ -539,11 +543,16 @@ func isManagedWebhook(repo *quayv1alpha1.Repository, n quay.Notification) bool {
 	return n.Event == quay.EventRepoPush && n.Method == quay.MethodWebhook && n.Title == repositoryWebhookTitle(repo)
 }
 
+func isControllerWebhook(n quay.Notification) bool {
+	return n.Event == quay.EventRepoPush && n.Method == quay.MethodWebhook && strings.HasPrefix(n.Title, webhookTitlePrefix+" ")
+}
+
 // ensureWebhook makes the controller-managed repo_push webhook notifications
 // converge on exactly one recorded notification delivering to url. Deletion is
-// gated by the Repository's UID-bearing title and recorded UUID, so a
-// manually-created webhook with the public prefix is not treated as owned by this
-// resource.
+// gated by the Repository's UID-bearing title and recorded UUID. During explicit
+// adoption, an exact URL match with the controller title prefix can be re-titled
+// to this Repository's UID-bearing title so an orphan-then-adopt transfer does
+// not create a duplicate webhook.
 func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient, repo *quayv1alpha1.Repository, ns, name, url string, repositoryPreviouslyReady bool) (quayMutation, error) {
 	mutation := quayMutation{}
 	notifications, err := qc.ListNotifications(ctx, ns, name)
@@ -553,18 +562,31 @@ func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient,
 	}
 
 	recordedUUID := repo.Status.WebhookNotificationUUID
-	matched := false
+	keepUUID := ""
 	for _, n := range notifications {
-		if !isManagedWebhook(repo, n) && n.UUID != recordedUUID {
-			// Not recorded as ours and does not carry this resource's UID-bearing
-			// title. Treat it as foreign.
+		if n.Config.URL == url && isManagedWebhook(repo, n) {
+			keepUUID = n.UUID
+			repo.Status.WebhookNotificationUUID = n.UUID
+			break
+		}
+	}
+	for _, n := range notifications {
+		if n.UUID == keepUUID {
 			continue
 		}
-		if !matched && n.Config.URL == url && isManagedWebhook(repo, n) {
-			// Keep exactly one correct notification. If status lost the UUID, recover it
-			// from the UID-bearing title.
-			repo.Status.WebhookNotificationUUID = n.UUID
-			matched = true
+		if !isManagedWebhook(repo, n) && n.UUID != recordedUUID {
+			if keepUUID == "" && recordedUUID == "" && repo.Spec.Adopt && n.Config.URL == url && isControllerWebhook(n) {
+				updateErr := qc.UpdateNotification(ctx, ns, name, n.UUID, url, repositoryWebhookTitle(repo))
+				recordQuayAPI(opUpdateNotification, updateErr)
+				if updateErr != nil {
+					return mutation, fmt.Errorf("claiming transferred Quay notification %s on %s/%s: %w", n.UUID, ns, name, updateErr)
+				}
+				keepUUID = n.UUID
+				repo.Status.WebhookNotificationUUID = n.UUID
+				mutation = mutation.or(quayMutation{Mutated: true, HealedDrift: repositoryPreviouslyReady})
+			}
+			// Not recorded as ours and does not carry this resource's UID-bearing
+			// title. Treat it as foreign.
 			continue
 		}
 		// The recorded notification is stale, lacks this resource's UID-bearing title,
@@ -580,7 +602,7 @@ func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient,
 		}
 		mutation = mutation.or(quayMutation{Mutated: true, HealedDrift: repositoryPreviouslyReady})
 	}
-	if matched {
+	if keepUUID != "" {
 		return mutation, nil
 	}
 
@@ -845,13 +867,19 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 		return r.removeFinalizer(ctx, repo)
 	}
 	owns := ownership.Token == repositoryOwnerToken(repo)
-	created := false
+	deleteAllowed := false
 	if repo.Status.Created != nil {
-		created = *repo.Status.Created && owns && ownership.Created
+		deleteAllowed = *repo.Status.Created && owns && ownership.Created
 	} else {
-		created = owns && ownership.Created
+		deleteAllowed = owns && ownership.Created
 	}
-	if !created {
+	if repo.Spec.DeletionPolicy == quayv1alpha1.DeletionPolicyDelete && owns {
+		deleteAllowed = true
+	}
+	if repo.Spec.DeletionPolicy == quayv1alpha1.DeletionPolicyOrphan {
+		return r.orphanRepositoryWithClient(ctx, repo, qc, ns, name)
+	}
+	if !deleteAllowed {
 		if owns {
 			return r.releaseRepositoryWithClient(ctx, repo, qc, ns, name)
 		}
@@ -889,6 +917,44 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 	r.Recorder.Event(repo, corev1.EventTypeNormal, "Deleted",
 		fmt.Sprintf("deleted Quay repository %s/%s", ns, name))
 
+	return r.removeFinalizer(ctx, repo)
+}
+
+func (r *RepositoryReconciler) orphanRepositoryWithClient(ctx context.Context, repo *quayv1alpha1.Repository, qc RepoClient, ns, name string) (ctrl.Result, error) {
+	current, err := qc.GetRepository(ctx, ns, name)
+	recordQuayAPI(opGetRepository, ignoreNotFound(err))
+	if quay.IsNotFound(err) {
+		r.Recorder.Event(repo, corev1.EventTypeNormal, quayv1alpha1.ReasonReleased,
+			fmt.Sprintf("released Quay repository %s/%s without deleting (repository already absent)", ns, name))
+		return r.removeFinalizer(ctx, repo)
+	}
+	if err != nil {
+		r.Recorder.Event(repo, corev1.EventTypeWarning, quayv1alpha1.ReasonQuayError,
+			fmt.Sprintf("reading Quay repository %s/%s for orphan release: %v", ns, name, err))
+		return ctrl.Result{}, fmt.Errorf("reading Quay repository %s/%s for orphan release: %w", ns, name, err)
+	}
+
+	mutation := quayMutation{}
+	ownership, ok := repositoryDescriptionOwnership(current.Description)
+	if ok && ownership.Token == repositoryOwnerToken(repo) {
+		releasedDescription := repositoryDescriptionWithoutOwner(current.Description)
+		err := qc.UpdateRepositoryDescription(ctx, ns, name, releasedDescription)
+		recordQuayAPI(opUpdateRepository, err)
+		if err != nil {
+			r.Recorder.Event(repo, corev1.EventTypeWarning, quayv1alpha1.ReasonQuayError,
+				fmt.Sprintf("orphaning ownership marker for Quay repository %s/%s: %v", ns, name, err))
+			return ctrl.Result{}, fmt.Errorf("orphaning ownership marker for Quay repository %s/%s: %w", ns, name, err)
+		}
+		mutation = mutation.or(quayMutation{Mutated: true})
+	}
+	if mutation.Mutated {
+		r.stampMutation(repo, false)
+		if err := r.updateStatus(ctx, repo); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	r.Recorder.Event(repo, corev1.EventTypeNormal, quayv1alpha1.ReasonReleased,
+		fmt.Sprintf("released Quay repository %s/%s without deleting (orphaned by deletionPolicy)", ns, name))
 	return r.removeFinalizer(ctx, repo)
 }
 

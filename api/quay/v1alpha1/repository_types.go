@@ -109,6 +109,18 @@ type RepositorySpec struct {
 	// +optional
 	Adopt bool `json:"adopt,omitempty"`
 
+	// DeletionPolicy controls what happens to the Quay repository when this
+	// resource is deleted. Delete removes the repository from Quay after verifying
+	// this resource still owns it. Orphan leaves the repository in place and
+	// removes only this controller's ownership marker from the repository
+	// description, keeping any recorded push webhook in place so a replacement
+	// resource can adopt the repository later. When omitted, the behavior follows
+	// how ownership was established: a repository this resource created is deleted,
+	// and an adopted repository is released without being deleted.
+	//
+	// +optional
+	DeletionPolicy DeletionPolicy `json:"deletionPolicy,omitempty"`
+
 	// CredentialsSecretRef selects the controller-namespace Secret containing the
 	// Quay API URL and OAuth token. When omitted, the controller uses
 	// holos-controller-quay-creds. This is separate from webhook.urlSecretRef,

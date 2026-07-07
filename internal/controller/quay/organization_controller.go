@@ -3,6 +3,7 @@ package quay
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -37,6 +38,11 @@ const organizationFinalizer = "organization.quay.holos.run/finalizer"
 // foreign recreate of the same global org name from destroying the recreated org.
 const ownerRobotShortname = "holos-owner"
 
+const (
+	organizationOwnerKindCreated = "created"
+	organizationOwnerKindAdopted = "adopted"
+)
+
 func statusCreated(org *quayv1alpha1.Organization) bool {
 	return org.Status.Created != nil && *org.Status.Created
 }
@@ -45,12 +51,32 @@ func setStatusCreated(org *quayv1alpha1.Organization, created bool) {
 	org.Status.Created = k8sptr.To(created)
 }
 
-// ownerToken returns the opaque, controller-managed ownership token stamped into
-// the marker robot's description for org. It is the Organization CR's UID: stable
-// for the CR's lifetime, unique across CRs, and never reused, so a foreign org
-// (or a same-named org recreated by another actor) cannot accidentally match it.
+// ownerToken returns the opaque, controller-managed ownership token used by
+// organization child markers. It is the Organization CR's UID: stable for the
+// CR's lifetime, unique across CRs, and never reused, so a foreign org (or a
+// same-named org recreated by another actor) cannot accidentally match it.
 func ownerToken(org *quayv1alpha1.Organization) string {
 	return string(org.UID)
+}
+
+// organizationOwnerToken returns the marker robot description recording which CR
+// owns the org and whether ownership came from create or adopt.
+func organizationOwnerToken(org *quayv1alpha1.Organization, created bool) string {
+	kind := organizationOwnerKindAdopted
+	if created {
+		kind = organizationOwnerKindCreated
+	}
+	return kind + ":" + ownerToken(org)
+}
+
+func parseOrganizationOwnerToken(description string) (uid string, created bool) {
+	if rest, ok := strings.CutPrefix(description, organizationOwnerKindAdopted+":"); ok {
+		return rest, false
+	}
+	if rest, ok := strings.CutPrefix(description, organizationOwnerKindCreated+":"); ok {
+		return rest, true
+	}
+	return description, true
 }
 
 // OrgClient is the seam the Organization reconciler drives Quay through. It is
@@ -243,11 +269,12 @@ func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger log
 	// credential carries FEATURE_SUPERUSERS_FULL_ACCESS, so a naive "adopt any
 	// existing org" rule would let a namespaced CR seize another tenant's org.
 	// Ownership is recorded by a durable, server-side marker — a dedicated
-	// "<org>+holos-owner" robot whose description is this CR's UID (ownerToken) —
-	// backed by the CR's status.Created. The marker is the authority for the
-	// delete decision (so a delete that races a foreign recreate cannot destroy
-	// the recreated org) and heals status.Created when a prior create's
-	// status-write was lost.
+	// "<org>+holos-owner" robot whose description is "created:<uid>" or
+	// "adopted:<uid>" — backed by the CR's status.Created. The marker is the
+	// authority for the delete decision (so a delete that races a foreign recreate
+	// cannot destroy the recreated org) and heals status.Created when a prior
+	// status-write was lost. Legacy bare-UID marker descriptions are accepted as
+	// created markers and healed to the prefixed form.
 	//
 	// GET the org and branch on the claim-model cases. A NotFound is an expected
 	// branch (create path), not a Quay-API failure, so it records as success.
@@ -275,7 +302,7 @@ func (r *OrganizationReconciler) reconcileNormal(ctx context.Context, logger log
 			// and takes the heal path (re-stamp), rather than mistaking its own
 			// org for a foreign one and releasing it.
 			setStatusCreated(org, true)
-			if markerErr := r.ensureOwnerMarker(ctx, qc, org); markerErr != nil {
+			if _, markerErr := r.ensureOwnerMarker(ctx, qc, org, organizationOwnerToken(org, true)); markerErr != nil {
 				r.stampMutation(org, false)
 				// fail() persists status (carrying Created=true) and requeues, so
 				// the heal path recovers the marker on the next reconcile.
@@ -324,8 +351,21 @@ func (r *OrganizationReconciler) reconcileExisting(ctx context.Context, logger l
 	switch {
 	case markerErr == nil:
 		// A marker exists. Owned only when its token matches this CR.
-		if robot.Description == ownerToken(org) {
-			return r.reconcileOwned(ctx, logger, qc, org, actual, false)
+		uid, created := parseOrganizationOwnerToken(robot.Description)
+		if uid == ownerToken(org) {
+			markerMutated := false
+			desired := organizationOwnerToken(org, created)
+			if robot.Description != desired {
+				mutated, err := r.replaceOwnerMarker(ctx, qc, org, robot.Description, desired)
+				if err != nil {
+					if mutated {
+						r.stampMutation(org, false)
+					}
+					return r.fail(ctx, org, err, mutated)
+				}
+				markerMutated = mutated
+			}
+			return r.reconcileOwned(ctx, logger, qc, org, actual, created, markerMutated)
 		}
 		// Marker holds a foreign token → another owner. Never seize, even with
 		// spec.adopt: an actively-marked org belongs to a different claim.
@@ -336,10 +376,11 @@ func (r *OrganizationReconciler) reconcileExisting(ctx context.Context, logger l
 		// write was lost after a successful create — re-stamp
 		// it and continue as owned rather than mis-releasing the org.
 		if statusCreated(org) {
-			if err := r.ensureOwnerMarker(ctx, qc, org); err != nil {
+			markerMutated, err := r.ensureOwnerMarker(ctx, qc, org, organizationOwnerToken(org, true))
+			if err != nil {
 				return r.fail(ctx, org, err, false)
 			}
-			return r.reconcileOwned(ctx, logger, qc, org, actual, true)
+			return r.reconcileOwned(ctx, logger, qc, org, actual, true, markerMutated)
 		}
 		// Unowned, externally-created org → adopt (if opted in) or Conflict.
 		return r.reconcileExistingUnowned(ctx, logger, qc, org)
@@ -353,10 +394,10 @@ func (r *OrganizationReconciler) reconcileExisting(ctx context.Context, logger l
 // reconcileOwned reconciles an org this CR owns (the marker matches): it heals
 // status.Created, pushes any mutable spec drift (the contact email) to Quay, then
 // marks Ready. It never errors on an org we own beyond a genuine Quay-API failure.
-func (r *OrganizationReconciler) reconcileOwned(ctx context.Context, logger logr.Logger, qc OrgClient, org *quayv1alpha1.Organization, actual *quay.Organization, markerMutated bool) (ctrl.Result, error) {
+func (r *OrganizationReconciler) reconcileOwned(ctx context.Context, logger logr.Logger, qc OrgClient, org *quayv1alpha1.Organization, actual *quay.Organization, created, markerMutated bool) (ctrl.Result, error) {
 	mutation := quayMutation{Mutated: markerMutated}
 	canMarkDrift := organizationReady(org)
-	setStatusCreated(org, true)
+	setStatusCreated(org, created)
 
 	// Apply mutable spec drift before marking Ready. Quay 3.17.3 organizations
 	// expose only the contact email as a mutable, programmable field on this
@@ -396,26 +437,49 @@ func (r *OrganizationReconciler) reconcileOwned(ctx context.Context, logger logr
 // CR's token and treats a match as success; a conflicting marker that holds a
 // foreign token is a genuine error so the reconcile does not falsely claim
 // ownership.
-func (r *OrganizationReconciler) ensureOwnerMarker(ctx context.Context, qc OrgClient, org *quayv1alpha1.Organization) error {
-	err := qc.CreateOrganizationRobot(ctx, org.Spec.Name, ownerRobotShortname, ownerToken(org))
+func (r *OrganizationReconciler) ensureOwnerMarker(ctx context.Context, qc OrgClient, org *quayv1alpha1.Organization, token string) (bool, error) {
+	err := qc.CreateOrganizationRobot(ctx, org.Spec.Name, ownerRobotShortname, token)
 	recordQuayAPI(opCreateOrganizationRobot, ignoreConflict(err))
 	if err == nil {
-		return nil
+		return true, nil
 	}
 	if !quay.IsConflict(err) {
-		return fmt.Errorf("stamping ownership marker on Quay organization %q: %w", org.Spec.Name, err)
+		return false, fmt.Errorf("stamping ownership marker on Quay organization %q: %w", org.Spec.Name, err)
 	}
 	// The marker robot already exists. Confirm it holds this CR's token; if so the
 	// marker is already correct (idempotent), otherwise ownership is contested.
 	robot, getErr := qc.GetOrganizationRobot(ctx, org.Spec.Name, ownerRobotShortname)
 	recordQuayAPI(opGetOrganizationRobot, getErr)
 	if getErr != nil {
-		return fmt.Errorf("verifying ownership marker on Quay organization %q: %w", org.Spec.Name, getErr)
+		return false, fmt.Errorf("verifying ownership marker on Quay organization %q: %w", org.Spec.Name, getErr)
 	}
-	if robot.Description != ownerToken(org) {
-		return fmt.Errorf("ownership marker on Quay organization %q holds a foreign token; refusing to claim", org.Spec.Name)
+	if robot.Description == token {
+		return false, nil
 	}
-	return nil
+	uid, _ := parseOrganizationOwnerToken(robot.Description)
+	if uid != ownerToken(org) {
+		return false, fmt.Errorf("ownership marker on Quay organization %q holds a foreign token; refusing to claim", org.Spec.Name)
+	}
+	return r.replaceOwnerMarker(ctx, qc, org, robot.Description, token)
+}
+
+func (r *OrganizationReconciler) replaceOwnerMarker(ctx context.Context, qc OrgClient, org *quayv1alpha1.Organization, oldToken, newToken string) (bool, error) {
+	delErr := qc.DeleteOrganizationRobotIfExists(ctx, org.Spec.Name, ownerRobotShortname)
+	recordQuayAPI(opDeleteOrganizationRobot, delErr)
+	if delErr != nil {
+		return false, fmt.Errorf("replacing ownership marker on Quay organization %q: deleting old marker: %w", org.Spec.Name, delErr)
+	}
+	createErr := qc.CreateOrganizationRobot(ctx, org.Spec.Name, ownerRobotShortname, newToken)
+	recordQuayAPI(opCreateOrganizationRobot, ignoreConflict(createErr))
+	if createErr != nil {
+		restoreErr := qc.CreateOrganizationRobot(ctx, org.Spec.Name, ownerRobotShortname, oldToken)
+		recordQuayAPI(opCreateOrganizationRobot, ignoreConflict(restoreErr))
+		if restoreErr != nil {
+			return true, fmt.Errorf("replacing ownership marker on Quay organization %q: creating new marker: %w; restoring old marker: %v", org.Spec.Name, createErr, restoreErr)
+		}
+		return true, fmt.Errorf("replacing ownership marker on Quay organization %q: creating new marker: %w", org.Spec.Name, createErr)
+	}
+	return true, nil
 }
 
 // conflict records a terminal Conflict condition for an org owned by another
@@ -437,7 +501,11 @@ func (r *OrganizationReconciler) reconcileExistingUnowned(ctx context.Context, l
 			reason = quayv1alpha1.ReasonAdopted
 		}
 		setStatusCreated(org, false)
-		return r.reconcileTeamsThenSucceed(ctx, logger, qc, org, quayMutation{}, reason,
+		markerMutated, err := r.ensureOwnerMarker(ctx, qc, org, organizationOwnerToken(org, false))
+		if err != nil {
+			return r.fail(ctx, org, err, true)
+		}
+		return r.reconcileTeamsThenSucceed(ctx, logger, qc, org, quayMutation{Mutated: markerMutated}, reason,
 			fmt.Sprintf("adopted existing Quay organization %q", org.Spec.Name))
 	}
 
@@ -548,21 +616,19 @@ func organizationReady(org *quayv1alpha1.Organization) bool {
 }
 
 // reconcileDelete runs the finalizer. Per the claim model the Quay org is deleted
-// only when this CR created it (status.Created); an adopted org is released (the
-// finalizer drops without deleting), so removing a CR that merely claimed a
-// pre-existing org never destroys it. After cleanup the finalizer is removed so the
-// CR is deleted. A Quay error during delete fails the reconcile and requeues, so
-// the finalizer is not removed until cleanup succeeds.
+// only when policy and the server-side marker prove this CR has delete authority;
+// otherwise it is released. After cleanup the finalizer is removed so the CR is
+// deleted. A Quay error during delete fails the reconcile and requeues, so the
+// finalizer is not removed until cleanup succeeds.
 //
 // Synced teams need no separate finalizer: deleting the Quay org cascades its
 // teams (and their default-permission prototypes), so the existing org delete is
 // sufficient cleanup for a created org. Adopted-org edge case: when the org is
-// released rather than deleted (status.Created false), the synced teams this
-// controller created inside it are intentionally NOT individually deleted — the
-// platform did not create the org and non-destructive release is the contract
-// (mirroring the org-level claim model: an adopted org is never mutated on
-// release), so the teams remain on the surviving org. This deliberate tradeoff can
-// leave controller-created teams (OIDC-synced, possibly with default repository
+// released rather than deleted (status.Created false), the finalizer strips this
+// CR's org-level marker but does not individually delete synced teams this
+// controller created inside the surviving org. The platform did not create the org
+// and non-destructive release is the contract. This deliberate tradeoff can leave
+// controller-created teams (OIDC-synced, possibly with default repository
 // permissions) behind on an adopted org, i.e. stale access grants an operator must
 // clean up out of band. The alternative — deprovisioning status.managedTeams before
 // releasing — would mutate an org the platform does not own. (Dropping a team from
@@ -575,20 +641,11 @@ func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *quayv
 		return ctrl.Result{}, nil
 	}
 
-	// Adopted org (or one never created by this CR) → release, do not delete.
-	// No credential is needed: the controller does not touch Quay, it only
-	// relinquishes its claim.
-	if !statusCreated(org) {
-		r.Recorder.Event(org, corev1.EventTypeNormal, quayv1alpha1.ReasonReleased,
-			fmt.Sprintf("released Quay organization %q without deleting (adopted, not created by this resource)", org.Spec.Name))
-		return r.removeFinalizer(ctx, org)
-	}
-
 	cred, err := resolveCredential(ctx, r.APIReader, r.Namespace, org.Spec.CredentialsSecretRef)
 	if err != nil {
-		// Without the credential the Quay org cannot be deleted; do not strand
-		// the CR by dropping the finalizer when cleanup could not run. Surface
-		// the condition and requeue.
+		// Without the credential the Quay org cannot be deleted or have its
+		// ownership marker stripped; do not strand remote state by dropping the
+		// finalizer when cleanup could not run.
 		return r.handleCredentialError(ctx, org, err)
 	}
 
@@ -602,6 +659,11 @@ func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *quayv
 	}
 
 	qc := r.NewClient(cred, org.Spec.CABundle)
+	policy := org.Spec.DeletionPolicy
+
+	if policy == quayv1alpha1.DeletionPolicyOrphan {
+		return r.orphanOrganization(ctx, qc, org)
+	}
 
 	// Verify the durable server-side marker still names this CR before deleting.
 	// If a prior delete succeeded but finalizer removal failed, and another actor
@@ -609,15 +671,45 @@ func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *quayv
 	// but the recreated org carries no (or a foreign) marker — deleting it would
 	// destroy a stranger's org. When the marker no longer matches, release instead
 	// of delete.
-	owns, err := r.ownsViaMarker(ctx, qc, org)
+	owns, markerCreated, err := r.ownsViaMarker(ctx, qc, org)
 	if err != nil {
 		r.Recorder.Event(org, corev1.EventTypeWarning, quayv1alpha1.ReasonQuayError,
 			fmt.Sprintf("verifying ownership marker for Quay organization %q: %v", org.Spec.Name, err))
 		return ctrl.Result{}, fmt.Errorf("verifying ownership marker for Quay organization %q: %w", org.Spec.Name, err)
 	}
+	shouldDelete := owns && (policy == quayv1alpha1.DeletionPolicyDelete || (policy == "" && markerCreated))
 	if !owns {
+		eventType := corev1.EventTypeNormal
+		if policy == quayv1alpha1.DeletionPolicyDelete {
+			eventType = corev1.EventTypeWarning
+		}
+		r.Recorder.Event(org, eventType, quayv1alpha1.ReasonReleased,
+			fmt.Sprintf("released Quay organization %q without deleting (ownership marker absent or foreign)", org.Spec.Name))
+		return r.removeFinalizer(ctx, org)
+	}
+	if !shouldDelete {
+		if !markerCreated {
+			mutation, err := r.removeOwnerMarkerIfOwned(ctx, qc, org)
+			if err != nil {
+				if mutation.Mutated {
+					r.stampMutation(org, false)
+					if statusErr := r.updateStatus(ctx, org); statusErr != nil {
+						return ctrl.Result{}, statusErr
+					}
+				}
+				r.Recorder.Event(org, corev1.EventTypeWarning, quayv1alpha1.ReasonQuayError,
+					fmt.Sprintf("releasing ownership marker for Quay organization %q: %v", org.Spec.Name, err))
+				return ctrl.Result{}, fmt.Errorf("releasing ownership marker for Quay organization %q: %w", org.Spec.Name, err)
+			}
+			if mutation.Mutated {
+				r.stampMutation(org, false)
+				if err := r.updateStatus(ctx, org); err != nil {
+					return ctrl.Result{}, err
+				}
+			}
+		}
 		r.Recorder.Event(org, corev1.EventTypeNormal, quayv1alpha1.ReasonReleased,
-			fmt.Sprintf("released Quay organization %q without deleting (ownership marker absent or foreign; org was recreated by another actor)", org.Spec.Name))
+			fmt.Sprintf("released Quay organization %q without deleting (adopted, not created by this resource)", org.Spec.Name))
 		return r.removeFinalizer(ctx, org)
 	}
 
@@ -653,20 +745,66 @@ func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *quayv
 }
 
 // ownsViaMarker reports whether the durable server-side ownership marker on the
-// Quay org still names this CR (its UID). A NotFound marker means the org carries
-// no marker — it is not the org this CR created (either never marked or recreated
-// by another actor after a prior delete), so it must not be deleted. A non-marker
-// Quay error is returned so the caller requeues rather than guessing.
-func (r *OrganizationReconciler) ownsViaMarker(ctx context.Context, qc OrgClient, org *quayv1alpha1.Organization) (bool, error) {
+// Quay org still names this CR (its UID), and whether that marker records created
+// provenance. A NotFound marker means the org carries no marker — it is not the
+// org this CR may delete. A non-marker Quay error is returned so the caller
+// requeues rather than guessing.
+func (r *OrganizationReconciler) ownsViaMarker(ctx context.Context, qc OrgClient, org *quayv1alpha1.Organization) (bool, bool, error) {
 	robot, err := qc.GetOrganizationRobot(ctx, org.Spec.Name, ownerRobotShortname)
 	recordQuayAPI(opGetOrganizationRobot, ignoreNotFound(err))
 	if quay.IsNotFound(err) {
-		return false, nil
+		return false, false, nil
 	}
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
-	return robot.Description == ownerToken(org), nil
+	uid, created := parseOrganizationOwnerToken(robot.Description)
+	return uid == ownerToken(org), created, nil
+}
+
+func (r *OrganizationReconciler) orphanOrganization(ctx context.Context, qc OrgClient, org *quayv1alpha1.Organization) (ctrl.Result, error) {
+	mutation, err := r.removeOwnerMarkerIfOwned(ctx, qc, org)
+	if err != nil {
+		if mutation.Mutated {
+			r.stampMutation(org, false)
+			if statusErr := r.updateStatus(ctx, org); statusErr != nil {
+				return ctrl.Result{}, statusErr
+			}
+		}
+		r.Recorder.Event(org, corev1.EventTypeWarning, quayv1alpha1.ReasonQuayError,
+			fmt.Sprintf("orphaning Quay organization %q: %v", org.Spec.Name, err))
+		return ctrl.Result{}, fmt.Errorf("orphaning Quay organization %q: %w", org.Spec.Name, err)
+	}
+	if mutation.Mutated {
+		r.stampMutation(org, false)
+		if err := r.updateStatus(ctx, org); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	r.Recorder.Event(org, corev1.EventTypeNormal, quayv1alpha1.ReasonReleased,
+		fmt.Sprintf("released Quay organization %q without deleting (orphaned by deletionPolicy)", org.Spec.Name))
+	return r.removeFinalizer(ctx, org)
+}
+
+func (r *OrganizationReconciler) removeOwnerMarkerIfOwned(ctx context.Context, qc OrgClient, org *quayv1alpha1.Organization) (quayMutation, error) {
+	robot, err := qc.GetOrganizationRobot(ctx, org.Spec.Name, ownerRobotShortname)
+	recordQuayAPI(opGetOrganizationRobot, ignoreNotFound(err))
+	if quay.IsNotFound(err) {
+		return quayMutation{}, nil
+	}
+	if err != nil {
+		return quayMutation{}, err
+	}
+	uid, _ := parseOrganizationOwnerToken(robot.Description)
+	if uid != ownerToken(org) {
+		return quayMutation{}, nil
+	}
+	delErr := qc.DeleteOrganizationRobotIfExists(ctx, org.Spec.Name, ownerRobotShortname)
+	recordQuayAPI(opDeleteOrganizationRobot, delErr)
+	if delErr != nil {
+		return quayMutation{}, delErr
+	}
+	return quayMutation{Mutated: true}, nil
 }
 
 // removeFinalizer drops the organization finalizer and persists the change so

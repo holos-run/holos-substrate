@@ -124,6 +124,17 @@ type OrganizationSpec struct {
 	// +optional
 	Adopt bool `json:"adopt,omitempty"`
 
+	// DeletionPolicy controls what happens to the Quay organization when this
+	// resource is deleted. Delete removes the organization from Quay after
+	// verifying this resource still owns it. Orphan leaves the organization in
+	// place and removes only this controller's ownership marker, so a replacement
+	// resource can adopt the organization later. When omitted, the behavior follows
+	// how ownership was established: an organization this resource created is
+	// deleted, and an adopted organization is released without being deleted.
+	//
+	// +optional
+	DeletionPolicy DeletionPolicy `json:"deletionPolicy,omitempty"`
+
 	// CABundle carries PEM-encoded x509 CA certificates the controller trusts
 	// in addition to its system store when reaching the Quay API. The API server
 	// serializes this byte slice as one base64 string. When omitted or empty, the

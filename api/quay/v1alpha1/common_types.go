@@ -47,6 +47,21 @@ const (
 	MutationReasonDriftRemediation MutationReason = "DriftRemediation"
 )
 
+// DeletionPolicy controls what happens to the external Quay resource a
+// Kubernetes resource fronts when that Kubernetes resource is deleted.
+//
+// +kubebuilder:validation:Enum=Delete;Orphan
+type DeletionPolicy string
+
+const (
+	// DeletionPolicyDelete removes the external Quay resource after verifying
+	// this Kubernetes resource still owns it.
+	DeletionPolicyDelete DeletionPolicy = "Delete"
+	// DeletionPolicyOrphan leaves the external Quay resource in place and removes
+	// only this controller's ownership marker, if one is present.
+	DeletionPolicyOrphan DeletionPolicy = "Orphan"
+)
+
 // Condition types used by quay.holos.run resources. They follow the
 // Gateway-API vocabulary so operators can interpret all resources consistently.
 const (

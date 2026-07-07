@@ -208,6 +208,24 @@ func (f *fakeRepoClient) CreateNotification(ctx context.Context, ns, repo, url, 
 	return &n, nil
 }
 
+func (f *fakeRepoClient) UpdateNotification(ctx context.Context, ns, repo, uuid, url, title string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("UpdateNotification:" + repoKey(ns, repo) + ":" + uuid + ":" + url)
+	st, ok := f.repos[repoKey(ns, repo)]
+	if !ok {
+		return notFoundRepoError(ns, repo)
+	}
+	n, ok := st.notifications[uuid]
+	if !ok {
+		return notFoundError(uuid)
+	}
+	n.Config.URL = url
+	n.Title = title
+	st.notifications[uuid] = n
+	return nil
+}
+
 func (f *fakeRepoClient) DeleteNotificationIfExists(ctx context.Context, ns, repo, uuid string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

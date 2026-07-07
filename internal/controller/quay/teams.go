@@ -143,8 +143,7 @@ func (r *OrganizationReconciler) reconcileSyncedTeams(ctx context.Context, qc Or
 			// the marker (not the sync binding) also makes recovery robust: a team
 			// created last pass whose sync/prototype step then failed still carries
 			// the marker, so this pass heals it rather than wedging into a false
-			// TeamConflict. Adoption stays a reconcile-time error only; a future
-			// per-team adopt can flip this conflict path without an API break.
+			// TeamConflict.
 			if existing.Description != managedTeamMarker(org) {
 				// Conflict: persist progress so far, then surface the conflict.
 				r.writeManagedTeams(org, managed)
