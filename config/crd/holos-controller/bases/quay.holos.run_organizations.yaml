@@ -151,9 +151,18 @@ spec:
                   description: |-
                     SyncedTeam declares a Quay team whose membership is synchronized from an OIDC
                     group. The controller manages the team role, optional default repository
-                    permission, and sync binding. A pre-existing team not created by this resource
-                    is reported as a conflict and is not adopted.
+                    permission, and sync binding. A pre-existing team not managed by this resource
+                    is reported as a conflict unless Adopt is true.
                   properties:
+                    adopt:
+                      description: |-
+                        Adopt opts in to claiming a pre-existing Quay team with the same name. It
+                        defaults to false; without this opt-in, an unmanaged existing team is
+                        reported as a conflict. An adopted team is managed the same way as a team
+                        this resource created: its membership syncs from OIDC, its role and default
+                        repository permission are reconciled, and it is removed with the
+                        organization when the organization is deleted.
+                      type: boolean
                     name:
                       description: |-
                         Name is the Quay team name to manage inside the organization. It is

@@ -20,6 +20,7 @@
 | 8        | 2026-07-05 | @jeffmccune | Record the **Repository claim/adoption model** and final as-built Quay controller conventions. `Repository` now mirrors Organization's external-resource ownership shape with `spec.adopt`, `status.created`, description-based ownership markers, conflict-on-unclaimed pre-existing repositories, non-destructive release for adopted repositories, and finalizer cleanup keyed by the resolved `status.quayRepository` path. The controller now uses shared reconciler plumbing for status patching, metrics, dependency waits, and generation-current Ready gates; events fire only on condition transitions while validation timestamps may update more frequently. |
 | 9        | 2026-07-07 | @jeffmccune | **Design pointer to ADR-22's Adopt & Preserve contract (HOL-1533).** A later Quay implementation revision will add `spec.deletionPolicy` to `Organization` and `Repository`, change Organization adoption markers to the kind-prefixed form needed for the cross-group contract, and add per-team adoption controls for `spec.syncedTeams[]`. This row records the design dependency only; no Quay CRD or reconciler behavior changes in this revision. |
 | 10       | 2026-07-07 | @jeffmccune | **Implement Quay Adopt & Preserve lifecycle semantics for Organization and Repository (HOL-1534).** Both Kinds now carry `spec.deletionPolicy` (`Delete`/`Orphan`, omitted uses provenance defaults). Organization ownership markers are kind-prefixed as `created:<uid>` or `adopted:<uid>`, with legacy bare-UID markers accepted as created and healed. Finalizers can abandon created resources with `Orphan`, delete adopted resources with explicit `Delete` after ownership verification, and preserve the existing release safety for foreign or absent markers. |
+| 11       | 2026-07-07 | @jeffmccune | **Implement per-team adoption for Organization `spec.syncedTeams[]` (HOL-1535).** Each synced team entry now carries optional `adopt` (default `false`). With `adopt: true`, a pre-existing unmarked Quay team is stamped with this resource's managed-team marker, recorded in `status.managedTeams`, and reconciled like a created team. Teams marked for another resource remain `TeamConflict`; omitted or false `adopt` preserves the existing conflict path. |
 
 ## Context and Problem Statement
 
@@ -280,20 +281,21 @@ status:
 | `credentialsSecretRef` | the Quay superuser credential Secret; defaults to `holos-controller-quay-creds` in `holos-controller`. The resource's **only** auth dependency (AC #7). |
 | `adopt` | opt-in (default `false`) to take ownership of a pre-existing unmarked org; without it such an org is a `Conflict`. An adopted org is *released*, not deleted, on CR removal. |
 | `caBundle` | optional PEM/base64 CA trust anchor for the Quay registry's local-CA serving cert; see *CA bundle* above. Identical shape on both Kinds. |
-| `syncedTeams[]` | the OIDC-synced Quay teams this org manages; a keyed list (`+listMapKey=name`). Each entry carries `name`, `oidcGroup`, `role`, and optional `repositoryPermission` — see *Synced teams* below. Empty/omitted ⇒ no managed teams. |
+| `syncedTeams[]` | the OIDC-synced Quay teams this org manages; a keyed list (`+listMapKey=name`). Each entry carries `name`, `oidcGroup`, `role`, optional `adopt`, and optional `repositoryPermission` — see *Synced teams* below. Empty/omitted ⇒ no managed teams. |
 
 | `syncedTeams[]` entry | Purpose |
 | --- | --- |
 | `name` | the Quay team name to create and manage within the org; the list's `+listMapKey` (unique per org). Required (`MinLength=1`). |
 | `oidcGroup` | the OIDC groups-claim **value** (a plain string) this team's membership is synced from; the reconciler enables Quay team syncing bound to it. Referenced **by name only** — no Keycloak type is imported (AC #7). Required (`MinLength=1`). |
 | `role` | the team's **org-level** Quay role — `admin`, `creator`, or `member`. Required, no default (intent is always explicit). This is the team *org role*, distinct from `repositoryPermission` below. |
+| `adopt` | opt-in (default `false`) to take ownership of a pre-existing unmarked team; without it such a team is a `TeamConflict`. A team with another resource's managed-team marker remains a `TeamConflict` even when `adopt` is true. |
 | `repositoryPermission` | optional org **default repository permission** (a Quay *prototype*) delegating a repo role — `read`, `write`, or `admin` — to this team on repositories **subsequently created** in the org (a Quay prototype applies to new repos, not retroactively to pre-existing ones). A nil pointer ⇒ no default permission managed for this team. |
 
 | Status field | Purpose |
 | --- | --- |
 | `observedGeneration` | last `spec` generation reconciled. |
 | `created` | the durable ownership marker of the claim model: `true` if this CR created the Quay org, `false` if it adopted one. The finalizer deletes the Quay org only when `created: true`. |
-| `managedTeams[]` | the Quay team **names** this CR created and manages — the team-level analog of `created`. Underpins non-exclusive management (a team dropped from the spec is de-provisioned only if it appears here) and adoption-is-an-error (a spec team that exists in Quay but is absent here **and** lacks this CR's durable description marker → `TeamConflict`; a team carrying this CR's marker is healed back in, not a conflict). See *Synced teams* below. |
+| `managedTeams[]` | the Quay team **names** this CR created or adopted and manages — the team-level analog of `created`. Underpins non-exclusive management (a team dropped from the spec is de-provisioned only if it appears here) and the claim model (a spec team that exists in Quay but is absent here **and** lacks this CR's durable description marker → `TeamConflict` unless the spec entry sets `adopt: true`; a team carrying this CR's marker is healed back in, not a conflict). See *Synced teams* below. |
 | `conditions[]` | Gateway-API `Accepted`/`Programmed`/`Ready` (see *Status conditions*). |
 
 There is **no** `access[]`, `allowRepositoryCreation`, or inline `repositories[]`
@@ -352,7 +354,7 @@ provider Quay is configured with, named only by string. This keeps the API
 package extractable and the identity coupling out of the Quay group, consistent
 with the *API-group dependency boundary* section above.
 
-#### Non-exclusive management and adoption-is-an-error
+#### Non-exclusive management and explicit adoption
 
 Quay teams within an org are a shared namespace — an operator or another tool may
 create teams the controller knows nothing about. Management is therefore
@@ -360,21 +362,21 @@ create teams the controller knows nothing about. Management is therefore
 team-level analog of `status.created`):
 
 - **Non-exclusive (AC #5).** The reconciler manages exactly the teams it created
-  — those in `status.managedTeams` plus those it creates this pass — and leaves
-  every other team in the org untouched. A team that is neither in the spec nor
-  in `status.managedTeams` is ignored. A team **removed from the spec** is
-  de-provisioned (disable syncing, delete its default-permission prototype,
+  or adopted — those in `status.managedTeams` plus those it claims this pass —
+  and leaves every other team in the org untouched. A team that is neither in the
+  spec nor in `status.managedTeams` is ignored. A team **removed from the spec**
+  is de-provisioned (disable syncing, delete its default-permission prototype,
   delete the team) **only if it appears in `status.managedTeams`** — never a
   foreign team of the same name.
-- **Adoption-is-an-error (AC #6).** A `syncedTeams` entry that names a team which
-  **already exists in Quay** but is **not** controller-managed is a **Conflict**:
-  the reconciler refuses to modify it, sets `Ready=False` with reason
-  `TeamConflict`, and emits a Warning event. It is never silently seized.
-  Adoption is implemented as a reconcile-time error *only* — **no API field
-  forbids it** — so a future optional per-team `adopt` bool on `SyncedTeam` can
-  flip the conflict path to adoption **without an API break**. The schema is
-  deliberately free of any required field or validation that adding `adopt` would
-  have to change.
+- **Explicit adoption (AC #6).** A `syncedTeams` entry that names a team which
+  **already exists in Quay** but is **not** controller-managed is a
+  `TeamConflict` by default: the reconciler refuses to modify it, sets
+  `Ready=False`, and emits a Warning event. When that entry sets `adopt: true`
+  and the existing team has no managed-team marker, the reconciler claims the
+  team by stamping this CR's managed-team marker, records it in
+  `status.managedTeams`, and then reconciles role, sync binding, and default
+  repository permission normally. A team carrying another CR's managed-team
+  marker remains a `TeamConflict` even with `adopt: true`.
 
 This mirrors the org-level claim model: full-access credentials *can* seize a
 foreign team, so the controller deliberately refuses to.
@@ -393,7 +395,8 @@ manually-created team cannot accidentally carry another CR's marker.
 The **heal rule (AC #4):** on reconcile, a Quay team whose description carries
 **this CR's** marker is treated as controller-managed and healed back into
 `status.managedTeams`, even if a prior status write was lost. A team that exists
-but lacks this CR's marker is a `TeamConflict`, never adopted — **even if it
+but lacks this CR's marker is a `TeamConflict` unless the spec entry sets
+`adopt: true` and the team has no foreign managed-team marker — **even if it
 happens to be bound to the desired `oidcGroup`** (binding alone is not proof of
 ownership; only the unforgeable marker is). The rule is documented in a code
 comment on the reconcile helper.
@@ -566,7 +569,7 @@ also implement ADR-22 drift-observability status:
 | `Created` | Org/Repo | newly created in Quay. |
 | `Adopted` | Org/Repo | a pre-existing Quay org or repository adopted via `spec.adopt`. |
 | `Conflict` | Org/Repo | a pre-existing, externally-created org or repository of the same name exists and `adopt` was not set, or an ownership marker belongs to another resource; never silently seized (claim model). |
-| `TeamConflict` | Org | a `spec.syncedTeams` entry names a pre-existing Quay team this CR did not create (absent from `status.managedTeams` and lacking this CR's team description marker); `Ready=False` with a Warning event. Adoption is an error; the team is never silently seized. |
+| `TeamConflict` | Org | a `spec.syncedTeams` entry names a pre-existing Quay team this CR does not manage (absent from `status.managedTeams` and lacking this CR's team description marker) and the entry did not opt in to adoption, or the team carries another resource's managed-team marker; `Ready=False` with a Warning event. The team is never silently seized. |
 | `Released` | Org/Repo | an adopted org or repository released (finalizer dropped without deleting) on CR removal — adoption is non-destructive. |
 | `Reconciled` | Repo | the repository is in steady state. |
 | `OrganizationNotReady` | Repo | the owning `Organization` is not yet provisioned. |
@@ -645,8 +648,8 @@ built** — until a concrete requirement appears:
   `spec.syncedTeams` (*Synced teams* above, Revision 6) — while
   `FEATURE_TEAM_SYNCING` ([ADR-15](ADR-15.md)) keeps each synced team's
   *membership* tracking the `groups` claim. Per-team **adoption** of a
-  pre-existing externally-created team (a future optional per-team `adopt`) and a
-  free-form Revision 1-style `access[]` binding list remain deferred.
+  pre-existing externally-created team is also modeled by `syncedTeams[].adopt`;
+  a free-form Revision 1-style `access[]` binding list remains deferred.
 - **Inline `repositories[]` on the Organization** — forbidden by AC #9;
   repositories are provisioned **only** by the `Repository` resource.
 - **Repository `retention`/auto-prune** policy.
@@ -681,9 +684,10 @@ new orgs and adopt orgs other identities created.
   above): upsert each team with its role, bind syncing to `oidcGroup`, manage the
   optional default-permission prototype, heal/track ownership in
   `status.managedTeams`, de-provision teams dropped from the spec, and surface a
-  `TeamConflict` (with a Warning event) for a pre-existing unmanaged team. It sets
-  `Accepted`/`Programmed`/`Ready` accordingly. A finalizer deletes a created org
-  (cascading its teams) or releases an adopted one.
+  `TeamConflict` (with a Warning event) for a pre-existing unmanaged team unless
+  that entry sets `adopt: true`. It sets `Accepted`/`Programmed`/`Ready`
+  accordingly. A finalizer deletes a created org (cascading its teams) or releases
+  an adopted one.
 - **Repository reconcile** resolves the credential and the owning `Organization`
   CR (requeuing with `OrganizationNotReady` until the org is provisioned),
   create-or-adopts `<org>/<name>` at `visibility`, applies `description`, and —
@@ -717,8 +721,8 @@ new orgs and adopt orgs other identities created.
    create + stamp `created: true`, reconcile an owned org, adopt an external org
    only on `adopt: true`, treat any other pre-existing org as a `Conflict`; and
    manage synced teams **non-exclusively** (tracked in `status.managedTeams`),
-   treating a pre-existing externally-created team named in the spec as a
-   `TeamConflict` rather than adopting it.
+   adopting a pre-existing unmarked team only when that entry sets `adopt: true`
+   and otherwise surfacing `TeamConflict`.
 4. **Repository** carries `organizationRef` (immutable; the owning Organization CR
    by name — repos are provisioned **only** here, never inlined), `name`
    (immutable), `visibility`, `description`, `adopt`, `credentialsSecretRef`, and
