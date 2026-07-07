@@ -497,11 +497,12 @@ The two deliberate deviations are:
    `spec.deletionPolicy` with omitted/`Delete`/`Orphan` semantics. The omitted
    behavior preserves the current non-destructive release path for adopted
    resources, and explicit `Orphan` provides the rename/transfer path.
-9. **This convention is a guard rail for all current and future `holos.run`
-   custom resources.** It is recorded in `AGENTS.md` under *Guard Rails*; the
-   API-group ADRs that consume cross-namespace references
-   ([ADR-20](ADR-20.md), [ADR-21](ADR-21.md)) will reference it as they are
-   revised to adopt the convention (a later phase of this work updates ADR-20).
+9. **These cross-cutting conventions are guard rails for current and future
+   `holos.run` custom resources.** The ReferenceGrant, status,
+   drift-observability, and Adopt & Preserve contracts are recorded in
+   `AGENTS.md` under *Guard Rails*. API-group ADRs that consume them link back
+   here rather than redefining them; ADR-19 and ADR-20 carry pointer rows for the
+   group-specific Adopt & Preserve implementation phases.
 10. **This phase fixes the convention only — no Go or CUE code.** The
    `ReferenceGrant` schema here is illustrative; the field-level API, CEL
    validation, printer columns, and the reconciler land in later
