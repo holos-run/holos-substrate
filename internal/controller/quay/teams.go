@@ -57,9 +57,9 @@ func isTeamConflict(err error) bool {
 // are never touched on an org this CR does not own.
 //
 // Management is non-exclusive: the controller manages exactly the teams it created
-// — those recorded in status.managedTeams plus those it creates this pass — and
-// ignores every other team in the org. A team that is neither in the spec nor in
-// status.managedTeams is left untouched.
+// or adopted — those recorded in status.managedTeams plus those it claims this
+// pass — and ignores every other team in the org. A team that is neither in the
+// spec nor in status.managedTeams is left untouched.
 //
 // Ownership and the heal rule: a desired team is owned when it is recorded in
 // status.managedTeams. To survive a lost status write after a create (the team-level
