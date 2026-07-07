@@ -599,6 +599,104 @@ func TestGroupDelete(t *testing.T) {
 	})
 }
 
+func TestGroupRenameTransferFlow(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-group-transfer"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	old := &keycloakv1alpha1.KeycloakGroup{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "old-owner"},
+		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Path:        "projects/transfer/roles/owner",
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, old); err != nil {
+		t.Fatalf("create old group: %v", err)
+	}
+	oldKey := client.ObjectKeyFromObject(old)
+
+	fake := newFakeKeycloakClient()
+	r, _ := newGroupReconciler(fake, ns)
+	_, _ = reconcileGroup(ctx, r, oldKey) // finalizer
+	if _, err := reconcileGroup(ctx, r, oldKey); err != nil {
+		t.Fatalf("reconcile old create: %v", err)
+	}
+	old = getGroup(t, ctx, oldKey)
+	if !old.Status.Created || old.Status.GroupID == "" {
+		t.Fatalf("old status = %+v, want created with GroupID", old.Status)
+	}
+	oldID := old.Status.GroupID
+
+	old.Spec.DeletionPolicy = keycloakv1alpha1.DeletionPolicyOrphan
+	if err := shared.k8sClient.Update(ctx, old); err != nil {
+		t.Fatalf("setting old deletionPolicy: %v", err)
+	}
+	fake.resetCalls()
+	if err := shared.k8sClient.Delete(ctx, old); err != nil {
+		t.Fatalf("delete old group: %v", err)
+	}
+	if _, err := reconcileGroup(ctx, r, oldKey); err != nil {
+		t.Fatalf("reconcile old orphan: %v", err)
+	}
+	if gotCalls := fake.callCount(); gotCalls != 0 {
+		t.Fatalf("orphan transfer should not call Keycloak; calls were %v", fake.calls)
+	}
+	if !fake.groupExists("projects/transfer/roles/owner") {
+		t.Fatal("orphaned group should remain in Keycloak")
+	}
+
+	replacement := &keycloakv1alpha1.KeycloakGroup{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "new-owner"},
+		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Path:        "projects/transfer/roles/owner",
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Adopt:       true,
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, replacement); err != nil {
+		t.Fatalf("create replacement group: %v", err)
+	}
+	newKey := client.ObjectKeyFromObject(replacement)
+	_, _ = reconcileGroup(ctx, r, newKey) // finalizer
+	if _, err := reconcileGroup(ctx, r, newKey); err != nil {
+		t.Fatalf("reconcile replacement adopt: %v", err)
+	}
+	replacement = getGroup(t, ctx, newKey)
+	status, reason, _ := conditionStatus(replacement.Status.Conditions, ConditionReady)
+	if status != metav1.ConditionTrue || reason != ReasonAdopted {
+		t.Fatalf("replacement Ready = (%v, %v), want (True, %s)", status, reason, ReasonAdopted)
+	}
+	if replacement.Status.Created || !replacement.Status.Adopted {
+		t.Fatalf("replacement Created=%v Adopted=%v, want adopted provenance", replacement.Status.Created, replacement.Status.Adopted)
+	}
+	if replacement.Status.GroupID != oldID {
+		t.Fatalf("replacement GroupID = %q, want transferred ID %q", replacement.Status.GroupID, oldID)
+	}
+
+	replacement.Spec.DeletionPolicy = keycloakv1alpha1.DeletionPolicyDelete
+	if err := shared.k8sClient.Update(ctx, replacement); err != nil {
+		t.Fatalf("setting replacement deletionPolicy: %v", err)
+	}
+	if err := shared.k8sClient.Delete(ctx, replacement); err != nil {
+		t.Fatalf("delete replacement group: %v", err)
+	}
+	if _, err := reconcileGroup(ctx, r, newKey); err != nil {
+		t.Fatalf("reconcile replacement delete: %v", err)
+	}
+	if fake.groupExists("projects/transfer/roles/owner") {
+		t.Fatal("transferred group should be deleted after explicit Delete")
+	}
+	if !fake.callsContain("DeleteGroup:" + oldID) {
+		t.Fatalf("explicit Delete should delete transferred group by pinned UUID; calls were %v", fake.calls)
+	}
+}
+
 func TestGroupClientRolePrune(t *testing.T) {
 	if shared == nil {
 		t.Skip("envtest not provisioned")

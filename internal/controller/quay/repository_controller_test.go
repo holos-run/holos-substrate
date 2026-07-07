@@ -1276,7 +1276,7 @@ func TestRepositoryDeleteOrphansCreatedRepository(t *testing.T) {
 	assertEvent(t, recorder, quayv1alpha1.ReasonReleased)
 }
 
-func TestRepositoryAdoptAfterOrphanDoesNotDuplicateWebhook(t *testing.T) {
+func TestRepositoryRenameTransferFlow(t *testing.T) {
 	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
@@ -1339,6 +1339,9 @@ func TestRepositoryAdoptAfterOrphanDoesNotDuplicateWebhook(t *testing.T) {
 	if got := repoConditionStatus(replacement, quayv1alpha1.ConditionReady); got != metav1.ConditionTrue {
 		t.Fatalf("replacement Ready = %q, want True", got)
 	}
+	if replacement.Status.Created == nil || *replacement.Status.Created {
+		t.Fatalf("replacement status.created = %v, want false after adopt", replacement.Status.Created)
+	}
 	newUUID := replacement.Status.WebhookNotificationUUID
 	if newUUID == "" {
 		t.Fatal("replacement webhook UUID is empty, want claimed webhook recorded")
@@ -1359,6 +1362,23 @@ func TestRepositoryAdoptAfterOrphanDoesNotDuplicateWebhook(t *testing.T) {
 	}
 	if !fake.callsContain("UpdateNotification:acme/transferrepo:" + oldUUID + ":" + hook) {
 		t.Fatalf("replacement adopt should retitle the transferred webhook; calls after adopt were %v", fake.calls[before:])
+	}
+
+	replacement.Spec.DeletionPolicy = quayv1alpha1.DeletionPolicyDelete
+	if err := shared.k8sClient.Update(ctx, replacement); err != nil {
+		t.Fatalf("setting replacement deletionPolicy: %v", err)
+	}
+	if err := shared.k8sClient.Delete(ctx, replacement); err != nil {
+		t.Fatalf("deleting replacement Repository: %v", err)
+	}
+	if err := reconcileRepoUntilStable(ctx, t, r, newKey); err != nil {
+		t.Fatalf("reconcile replacement delete: %v", err)
+	}
+	if !fake.callsContain("DeleteRepository:acme/transferrepo") {
+		t.Fatalf("explicit Delete should delete transferred repository; calls were %v", fake.calls)
+	}
+	if fake.repoExists("acme", "transferrepo") {
+		t.Fatal("transferred repository should be deleted after explicit Delete")
 	}
 }
 

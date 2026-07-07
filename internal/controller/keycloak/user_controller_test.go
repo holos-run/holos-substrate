@@ -486,6 +486,118 @@ func TestUserReconcileReferenceGrant(t *testing.T) {
 	})
 }
 
+func TestUserRenameTransferFlow(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-user-transfer"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	old := &keycloakv1alpha1.KeycloakUser{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "old-user"},
+		Spec: keycloakv1alpha1.KeycloakUserSpec{
+			Email:       "transfer@example.com",
+			Username:    "transfer",
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			IdentityProviderLink: &keycloakv1alpha1.IdentityProviderLink{
+				Alias:  "corp-oidc",
+				UserID: "sub-transfer",
+			},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, old); err != nil {
+		t.Fatalf("create old user: %v", err)
+	}
+	oldKey := client.ObjectKeyFromObject(old)
+
+	fake := newFakeKeycloakClient()
+	r, _ := newUserReconciler(fake, ns)
+	reconcileUserToSteady(t, ctx, r, oldKey)
+	old = getUser(t, ctx, oldKey)
+	if !old.Status.Created || old.Status.UserID == "" {
+		t.Fatalf("old status = %+v, want created with UserID", old.Status)
+	}
+	oldID := old.Status.UserID
+	if !fake.federated(oldID, "corp-oidc") {
+		t.Fatalf("old user should have the declared IdP link before transfer")
+	}
+
+	old.Spec.DeletionPolicy = keycloakv1alpha1.DeletionPolicyOrphan
+	if err := shared.k8sClient.Update(ctx, old); err != nil {
+		t.Fatalf("setting old deletionPolicy: %v", err)
+	}
+	fake.resetCalls()
+	if err := shared.k8sClient.Delete(ctx, old); err != nil {
+		t.Fatalf("delete old user: %v", err)
+	}
+	if _, err := reconcileUser(ctx, r, oldKey); err != nil {
+		t.Fatalf("reconcile old orphan: %v", err)
+	}
+	if gotCalls := fake.callCount(); gotCalls != 0 {
+		t.Fatalf("orphan transfer should not call Keycloak; calls were %v", fake.calls)
+	}
+	if !fake.userExists("transfer@example.com") {
+		t.Fatal("orphaned user should remain in Keycloak")
+	}
+	if !fake.federated(oldID, "corp-oidc") {
+		t.Fatal("orphaned user should keep its existing IdP link")
+	}
+
+	replacement := &keycloakv1alpha1.KeycloakUser{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "new-user"},
+		Spec: keycloakv1alpha1.KeycloakUserSpec{
+			Email:       "transfer@example.com",
+			Username:    "transfer",
+			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Adopt:       true,
+			IdentityProviderLink: &keycloakv1alpha1.IdentityProviderLink{
+				Alias:  "corp-oidc",
+				UserID: "sub-transfer",
+			},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, replacement); err != nil {
+		t.Fatalf("create replacement user: %v", err)
+	}
+	newKey := client.ObjectKeyFromObject(replacement)
+	reconcileUserToSteady(t, ctx, r, newKey)
+	replacement = getUser(t, ctx, newKey)
+	status, reason, _ := conditionStatus(replacement.Status.Conditions, ConditionReady)
+	if status != metav1.ConditionTrue || reason != ReasonAdopted {
+		t.Fatalf("replacement Ready = (%v, %v), want (True, %s)", status, reason, ReasonAdopted)
+	}
+	if replacement.Status.Created || !replacement.Status.Adopted {
+		t.Fatalf("replacement Created=%v Adopted=%v, want adopted provenance", replacement.Status.Created, replacement.Status.Adopted)
+	}
+	if replacement.Status.UserID != oldID {
+		t.Fatalf("replacement UserID = %q, want transferred ID %q", replacement.Status.UserID, oldID)
+	}
+	if !fake.federated(oldID, "corp-oidc") {
+		t.Fatal("replacement should preserve the declared IdP link")
+	}
+
+	replacement.Spec.DeletionPolicy = keycloakv1alpha1.DeletionPolicyDelete
+	if err := shared.k8sClient.Update(ctx, replacement); err != nil {
+		t.Fatalf("setting replacement deletionPolicy: %v", err)
+	}
+	fake.resetCalls()
+	if err := shared.k8sClient.Delete(ctx, replacement); err != nil {
+		t.Fatalf("delete replacement user: %v", err)
+	}
+	if _, err := reconcileUser(ctx, r, newKey); err != nil {
+		t.Fatalf("reconcile replacement delete: %v", err)
+	}
+	if fake.userExists("transfer@example.com") {
+		t.Fatal("transferred user should be deleted after explicit Delete")
+	}
+	if !fake.callsContain("DeleteUser:" + oldID) {
+		t.Fatalf("explicit Delete should delete transferred user by pinned UUID; calls were %v", fake.calls)
+	}
+}
+
 func TestUserDelete(t *testing.T) {
 	if shared == nil {
 		t.Skip("envtest not provisioned")

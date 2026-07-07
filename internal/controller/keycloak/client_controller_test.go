@@ -661,6 +661,117 @@ func TestClientReconcileReferenceGrant(t *testing.T) {
 	})
 }
 
+func TestClientRenameTransferFlow(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-client-transfer"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	old := &keycloakv1alpha1.KeycloakClient{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "old-client"},
+		Spec: keycloakv1alpha1.KeycloakClientSpec{
+			ClientID:     "https://transfer.holos.internal",
+			Type:         keycloakv1alpha1.KeycloakClientTypePublic,
+			InstanceRef:  keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			RedirectURIs: []string{"https://transfer.holos.internal/callback"},
+			ClientRoles: []keycloakv1alpha1.ClientRoleReference{{
+				ClientRef: "old-client",
+				Role:      "transfer-owner",
+			}},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, old); err != nil {
+		t.Fatalf("create old client: %v", err)
+	}
+	oldKey := client.ObjectKeyFromObject(old)
+
+	fake := newFakeKeycloakClient()
+	r, _ := newClientReconciler(fake, ns)
+	reconcileClientToSteady(t, ctx, r, oldKey)
+	old = getKClient(t, ctx, oldKey)
+	if !old.Status.Created || old.Status.ClientUUID == "" {
+		t.Fatalf("old status = %+v, want created with ClientUUID", old.Status)
+	}
+	oldID := old.Status.ClientUUID
+	if !fake.clientRoleCreated(oldID, "transfer-owner") || !fake.mapperEnsured(oldID) {
+		t.Fatalf("old client roles/mapper were not converged; calls = %v", fake.calls)
+	}
+
+	old.Spec.DeletionPolicy = keycloakv1alpha1.DeletionPolicyOrphan
+	if err := shared.k8sClient.Update(ctx, old); err != nil {
+		t.Fatalf("setting old deletionPolicy: %v", err)
+	}
+	fake.resetCalls()
+	if err := shared.k8sClient.Delete(ctx, old); err != nil {
+		t.Fatalf("delete old client: %v", err)
+	}
+	if _, err := reconcileClient(ctx, r, oldKey); err != nil {
+		t.Fatalf("reconcile old orphan: %v", err)
+	}
+	if gotCalls := fake.callCount(); gotCalls != 0 {
+		t.Fatalf("orphan transfer should not call Keycloak; calls were %v", fake.calls)
+	}
+	if !fake.clientExists("https://transfer.holos.internal") {
+		t.Fatal("orphaned client should remain in Keycloak")
+	}
+
+	replacement := &keycloakv1alpha1.KeycloakClient{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "new-client"},
+		Spec: keycloakv1alpha1.KeycloakClientSpec{
+			ClientID:     "https://transfer.holos.internal",
+			Type:         keycloakv1alpha1.KeycloakClientTypePublic,
+			InstanceRef:  keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			RedirectURIs: []string{"https://transfer.holos.internal/callback"},
+			ClientRoles: []keycloakv1alpha1.ClientRoleReference{{
+				ClientRef: "new-client",
+				Role:      "transfer-owner",
+			}},
+			Adopt: true,
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, replacement); err != nil {
+		t.Fatalf("create replacement client: %v", err)
+	}
+	newKey := client.ObjectKeyFromObject(replacement)
+	reconcileClientToSteady(t, ctx, r, newKey)
+	replacement = getKClient(t, ctx, newKey)
+	status, reason, _ := conditionStatus(replacement.Status.Conditions, ConditionReady)
+	if status != metav1.ConditionTrue || reason != ReasonAdopted {
+		t.Fatalf("replacement Ready = (%v, %v), want (True, %s)", status, reason, ReasonAdopted)
+	}
+	if replacement.Status.Created || !replacement.Status.Adopted {
+		t.Fatalf("replacement Created=%v Adopted=%v, want adopted provenance", replacement.Status.Created, replacement.Status.Adopted)
+	}
+	if replacement.Status.ClientUUID != oldID {
+		t.Fatalf("replacement ClientUUID = %q, want transferred ID %q", replacement.Status.ClientUUID, oldID)
+	}
+	if !fake.clientRoleCreated(oldID, "transfer-owner") || !fake.mapperEnsured(oldID) {
+		t.Fatalf("replacement should converge roles/mapper on transferred client; calls = %v", fake.calls)
+	}
+
+	replacement.Spec.DeletionPolicy = keycloakv1alpha1.DeletionPolicyDelete
+	if err := shared.k8sClient.Update(ctx, replacement); err != nil {
+		t.Fatalf("setting replacement deletionPolicy: %v", err)
+	}
+	fake.resetCalls()
+	if err := shared.k8sClient.Delete(ctx, replacement); err != nil {
+		t.Fatalf("delete replacement client: %v", err)
+	}
+	if _, err := reconcileClient(ctx, r, newKey); err != nil {
+		t.Fatalf("reconcile replacement delete: %v", err)
+	}
+	if fake.clientExists("https://transfer.holos.internal") {
+		t.Fatal("transferred client should be deleted after explicit Delete")
+	}
+	if !fake.callsContain("DeleteClient:" + oldID) {
+		t.Fatalf("explicit Delete should delete transferred client by pinned UUID; calls were %v", fake.calls)
+	}
+}
+
 func TestClientDelete(t *testing.T) {
 	if shared == nil {
 		t.Skip("envtest not provisioned")
