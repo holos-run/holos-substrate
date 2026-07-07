@@ -171,6 +171,15 @@ func conditionReason(org *quayv1alpha1.Organization, condType string) string {
 	return c.Reason
 }
 
+// conditionMessage returns the message of the named condition, or "" if absent.
+func conditionMessage(org *quayv1alpha1.Organization, condType string) string {
+	c := meta.FindStatusCondition(org.Status.Conditions, condType)
+	if c == nil {
+		return ""
+	}
+	return c.Message
+}
+
 // reconcileUntilStable drives Reconcile repeatedly (the first pass adds the
 // finalizer and requeues) until it returns without requeueing, or fails the test
 // after a small bound. It returns the final result/error.
@@ -1776,6 +1785,9 @@ func TestReconcileSyncedTeamsForeignMarkerIsConflict(t *testing.T) {
 	org := getOrg(ctx, t, key)
 	if got := conditionReason(org, quayv1alpha1.ConditionReady); got != quayv1alpha1.ReasonTeamConflict {
 		t.Errorf("Ready reason = %q, want %q (a foreign-marker team must not be adopted)", got, quayv1alpha1.ReasonTeamConflict)
+	}
+	if got := conditionMessage(org, quayv1alpha1.ConditionReady); !strings.Contains(got, "managed by another resource") {
+		t.Errorf("Ready message = %q, want foreign-marker remediation", got)
 	}
 	if containsString(org.Status.ManagedTeams, "team") {
 		t.Errorf("ManagedTeams = %v, must not adopt a foreign-marker team", org.Status.ManagedTeams)

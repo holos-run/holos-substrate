@@ -78,8 +78,10 @@ type SyncedTeam struct {
 	// defaults to false; without this opt-in, an unmanaged existing team is
 	// reported as a conflict. An adopted team is managed the same way as a team
 	// this resource created: its membership syncs from OIDC, its role and default
-	// repository permission are reconciled, and it is removed with the
-	// organization when the organization is deleted.
+	// repository permission are reconciled, and it is removed when this resource
+	// deletes the Quay organization. If this resource releases an adopted
+	// organization without deleting it, managed teams in that organization are left
+	// in place.
 	//
 	// +optional
 	Adopt bool `json:"adopt,omitempty"`
@@ -194,10 +196,10 @@ type OrganizationStatus struct {
 	// +optional
 	Created *bool `json:"created,omitempty"`
 
-	// ManagedTeams records the Quay team names this resource created and owns.
-	// The controller uses it to delete only teams it owns and to report a
-	// conflict when spec.syncedTeams names an existing foreign team. It is omitted
-	// when no managed teams have been recorded.
+	// ManagedTeams records the Quay team names this resource created or adopted
+	// and owns. The controller uses it to delete only teams it owns and to report
+	// a conflict when spec.syncedTeams names an existing foreign team. It is
+	// omitted when no managed teams have been recorded.
 	//
 	// +optional
 	// +listType=set

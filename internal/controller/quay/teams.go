@@ -35,10 +35,14 @@ func managedTeamMarker(org *quayv1alpha1.Organization) string {
 // Quay error: adoption of a pre-existing team requires an explicit per-team opt-in,
 // never a silent takeover, mirroring the org-level claim model.
 type teamConflictError struct {
-	team string
+	team    string
+	message string
 }
 
 func (e *teamConflictError) Error() string {
+	if e.message != "" {
+		return e.message
+	}
 	return fmt.Sprintf("Quay team %q already exists and was not created by this resource; refusing to adopt it (set adopt to claim it)", e.team)
 }
 
@@ -145,7 +149,14 @@ func (r *OrganizationReconciler) reconcileSyncedTeams(ctx context.Context, qc Or
 			// conflict; adopt can claim unmarked teams only.
 			if ownedByMarker {
 				managed[t.Name] = true
-			} else if carriesForeignManagedTeamMarker(existing.Description, org) || !t.Adopt {
+			} else if carriesForeignManagedTeamMarker(existing.Description, org) {
+				// Conflict: persist progress so far, then surface the conflict.
+				r.writeManagedTeams(org, managed)
+				return mutation, &teamConflictError{
+					team:    t.Name,
+					message: fmt.Sprintf("Quay team %q is managed by another resource; refusing to adopt it", t.Name),
+				}
+			} else if !t.Adopt {
 				// Conflict: persist progress so far, then surface the conflict.
 				r.writeManagedTeams(org, managed)
 				return mutation, &teamConflictError{team: t.Name}
