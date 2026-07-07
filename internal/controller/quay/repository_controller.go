@@ -122,8 +122,9 @@ var _ RepoClient = (*quay.Client)(nil)
 // RepositoryReconciler reconciles a quay.holos.run Repository against the
 // in-cluster Quay registry: it creates or updates the named repository inside an
 // existing Organization, configures a repo_push webhook from spec.webhook (an
-// inline url or a urlSecretRef), and on delete runs a finalizer that deletes
-// created repositories or releases adopted repositories. Repository
+// inline url or a urlSecretRef), and on delete runs a finalizer that applies
+// spec.deletionPolicy with ownership verification before deleting or releasing
+// the external repository. Repository
 // creation/configuration happens solely here; the Organization reconciler never
 // touches repositories. Status follows the same Gateway-API convention as
 // Organization (see conditions.go) and meaningful transitions emit Events.
@@ -548,9 +549,10 @@ func isControllerWebhook(n quay.Notification) bool {
 
 // ensureWebhook makes the controller-managed repo_push webhook notifications
 // converge on exactly one recorded notification delivering to url. Deletion is
-// gated by the Repository's UID-bearing title and recorded UUID, so a
-// manually-created webhook with the public prefix is not treated as owned by this
-// resource.
+// gated by the Repository's UID-bearing title and recorded UUID. During explicit
+// adoption, an exact URL match with the controller title prefix can be re-titled
+// to this Repository's UID-bearing title so an orphan-then-adopt transfer does
+// not create a duplicate webhook.
 func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient, repo *quayv1alpha1.Repository, ns, name, url string, repositoryPreviouslyReady bool) (quayMutation, error) {
 	mutation := quayMutation{}
 	notifications, err := qc.ListNotifications(ctx, ns, name)
