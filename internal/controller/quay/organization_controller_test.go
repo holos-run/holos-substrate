@@ -171,6 +171,15 @@ func conditionReason(org *quayv1alpha1.Organization, condType string) string {
 	return c.Reason
 }
 
+// conditionMessage returns the message of the named condition, or "" if absent.
+func conditionMessage(org *quayv1alpha1.Organization, condType string) string {
+	c := meta.FindStatusCondition(org.Status.Conditions, condType)
+	if c == nil {
+		return ""
+	}
+	return c.Message
+}
+
 // reconcileUntilStable drives Reconcile repeatedly (the first pass adds the
 // finalizer and requeues) until it returns without requeueing, or fails the test
 // after a small bound. It returns the final result/error.
@@ -1603,6 +1612,51 @@ func TestReconcileSyncedTeamsPreexistingUnmanagedIsConflict(t *testing.T) {
 	assertEvent(t, recorder, quayv1alpha1.ReasonTeamConflict)
 }
 
+func TestReconcileSyncedTeamsAdoptsPreexistingUnmanagedTeam(t *testing.T) {
+	ctx := t.Context()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrgWithTeams(ctx, t, ns, "adoptteam", []quayv1alpha1.SyncedTeam{
+		{
+			Name:                 "foreign",
+			OIDCGroup:            "want-group",
+			Role:                 quayv1alpha1.OrganizationTeamRoleCreator,
+			Adopt:                true,
+			RepositoryPermission: repoRole(quayv1alpha1.RepositoryRoleWrite),
+		},
+	})
+	fake := newFakeOrgClient()
+	fake.seedTeam("adoptteam", "foreign", "member", "")
+	r, _ := newReconciler(fake, ns)
+
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile adopt: %v", err)
+	}
+
+	org := getOrg(ctx, t, key)
+	if got := conditionStatus(org, quayv1alpha1.ConditionReady); got != metav1.ConditionTrue {
+		t.Errorf("Ready = %q, want True after team adoption", got)
+	}
+	if !containsString(org.Status.ManagedTeams, "foreign") {
+		t.Errorf("ManagedTeams = %v, want adopted team recorded", org.Status.ManagedTeams)
+	}
+	if role, ok := fake.teamRole("adoptteam", "foreign"); !ok || role != "creator" {
+		t.Errorf("team role = %q (exists=%v), want creator", role, ok)
+	}
+	if description, ok := fake.teamDescription("adoptteam", "foreign"); !ok || description != managedTeamMarker(org) {
+		t.Errorf("team description = %q (exists=%v), want this CR's managed marker %q", description, ok, managedTeamMarker(org))
+	}
+	if group, ok := fake.teamGroup("adoptteam", "foreign"); !ok || group != "want-group" {
+		t.Errorf("team sync = %q (synced=%v), want want-group", group, ok)
+	}
+	p, ok := fake.teamPrototype("adoptteam", "foreign")
+	if !ok || p.Role != "write" {
+		t.Errorf("default permission = %+v (exists=%v), want write", p, ok)
+	}
+}
+
 func TestReconcileSyncedTeamsUnmanagedOutsideSpecIsIgnored(t *testing.T) {
 	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
@@ -1708,15 +1762,15 @@ func TestReconcileSyncedTeamsBoundButUnmarkedIsConflict(t *testing.T) {
 
 func TestReconcileSyncedTeamsForeignMarkerIsConflict(t *testing.T) {
 	// The ownership marker embeds the CR UID, so a team carrying a DIFFERENT CR's
-	// marker (or any non-matching description) must not be healed — it is a conflict.
-	// This is the team-level analog of the org's foreign-marker conflict.
+	// marker must not be healed or adopted — it is a conflict. This is the
+	// team-level analog of the org's foreign-marker conflict.
 	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
 	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
 		t.Fatalf("creating credential secret: %v", err)
 	}
 	key := makeOrgWithTeams(ctx, t, ns, "foreignmarker", []quayv1alpha1.SyncedTeam{
-		{Name: "team", OIDCGroup: "g", Role: quayv1alpha1.OrganizationTeamRoleMember},
+		{Name: "team", OIDCGroup: "g", Role: quayv1alpha1.OrganizationTeamRoleMember, Adopt: true},
 	})
 	fake := newFakeOrgClient()
 	// Marker prefix is right but the UID is some other CR's — unforgeable, so this
@@ -1732,10 +1786,55 @@ func TestReconcileSyncedTeamsForeignMarkerIsConflict(t *testing.T) {
 	if got := conditionReason(org, quayv1alpha1.ConditionReady); got != quayv1alpha1.ReasonTeamConflict {
 		t.Errorf("Ready reason = %q, want %q (a foreign-marker team must not be adopted)", got, quayv1alpha1.ReasonTeamConflict)
 	}
+	if got := conditionMessage(org, quayv1alpha1.ConditionReady); !strings.Contains(got, "managed by another resource") {
+		t.Errorf("Ready message = %q, want foreign-marker remediation", got)
+	}
 	if containsString(org.Status.ManagedTeams, "team") {
 		t.Errorf("ManagedTeams = %v, must not adopt a foreign-marker team", org.Status.ManagedTeams)
 	}
 	assertEvent(t, recorder, quayv1alpha1.ReasonTeamConflict)
+}
+
+func TestReconcileSyncedTeamsAdoptedTeamRemovedFromSpecIsDeprovisioned(t *testing.T) {
+	ctx := t.Context()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	key := makeOrgWithTeams(ctx, t, ns, "adoptprune", []quayv1alpha1.SyncedTeam{
+		{
+			Name:                 "drop",
+			OIDCGroup:            "g",
+			Role:                 quayv1alpha1.OrganizationTeamRoleMember,
+			Adopt:                true,
+			RepositoryPermission: repoRole(quayv1alpha1.RepositoryRoleRead),
+		},
+	})
+	fake := newFakeOrgClient()
+	fake.seedTeam("adoptprune", "drop", "creator", "")
+	r, _ := newReconciler(fake, ns)
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile adopt: %v", err)
+	}
+	if _, ok := fake.teamRole("adoptprune", "drop"); !ok {
+		t.Fatal("expected adopted team to exist before removal")
+	}
+
+	updateSyncedTeams(ctx, t, key, nil)
+	if err := reconcileUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile adopted team removal: %v", err)
+	}
+
+	if _, ok := fake.teamRole("adoptprune", "drop"); ok {
+		t.Error("expected adopted team to be deleted after removal from spec")
+	}
+	if _, ok := fake.teamPrototype("adoptprune", "drop"); ok {
+		t.Error("expected adopted team's default permission to be deleted")
+	}
+	org := getOrg(ctx, t, key)
+	if containsString(org.Status.ManagedTeams, "drop") {
+		t.Errorf("ManagedTeams = %v, must not contain dropped adopted team", org.Status.ManagedTeams)
+	}
 }
 
 func TestReconcileSyncedTeamsRecoversAfterPostUpsertFailure(t *testing.T) {

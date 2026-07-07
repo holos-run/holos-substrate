@@ -434,6 +434,14 @@ func (f *fakeOrgClient) teamRole(org, team string) (string, bool) {
 	return t.Role, ok
 }
 
+// teamDescription returns a team's description and whether it exists.
+func (f *fakeOrgClient) teamDescription(org, team string) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.teams[teamKey(org, team)]
+	return t.Description, ok
+}
+
 // teamGroup returns a team's bound OIDC group and whether it is synced.
 func (f *fakeOrgClient) teamGroup(org, team string) (string, bool) {
 	f.mu.Lock()

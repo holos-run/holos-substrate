@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
 	"github.com/holos-run/holos-paas/internal/quay"
@@ -31,18 +32,18 @@ func managedTeamMarker(org *quayv1alpha1.Organization) string {
 // teamConflictError reports that a spec.syncedTeams entry names a pre-existing
 // Quay team this resource did not create. It is a sentinel the caller branches on
 // to set the TeamConflict condition (a non-Ready outcome) rather than a generic
-// Quay error: adoption of a pre-existing team is deliberately a reconcile-time
-// error, never a silent takeover, mirroring the org-level claim model.
-//
-// Adoption is an error in the reconciler only — no API field forbids it. A future
-// optional per-team `adopt bool` on SyncedTeam can flip this conflict path to
-// adoption without an API break.
+// Quay error: adoption of a pre-existing team requires an explicit per-team opt-in,
+// never a silent takeover, mirroring the org-level claim model.
 type teamConflictError struct {
-	team string
+	team    string
+	message string
 }
 
 func (e *teamConflictError) Error() string {
-	return fmt.Sprintf("Quay team %q already exists and was not created by this resource; refusing to adopt it (set a future per-team adopt to claim it)", e.team)
+	if e.message != "" {
+		return e.message
+	}
+	return fmt.Sprintf("Quay team %q already exists and was not created by this resource; refusing to adopt it (set adopt to claim it)", e.team)
 }
 
 // isTeamConflict reports whether err is (or wraps) a teamConflictError.
@@ -56,9 +57,9 @@ func isTeamConflict(err error) bool {
 // are never touched on an org this CR does not own.
 //
 // Management is non-exclusive: the controller manages exactly the teams it created
-// — those recorded in status.managedTeams plus those it creates this pass — and
-// ignores every other team in the org. A team that is neither in the spec nor in
-// status.managedTeams is left untouched.
+// or adopted — those recorded in status.managedTeams plus those it claims this
+// pass — and ignores every other team in the org. A team that is neither in the
+// spec nor in status.managedTeams is left untouched.
 //
 // Ownership and the heal rule: a desired team is owned when it is recorded in
 // status.managedTeams. To survive a lost status write after a create (the team-level
@@ -68,8 +69,9 @@ func isTeamConflict(err error) bool {
 // is the durable, server-side owner record that stands in for the lost status,
 // mirroring the holos-owner robot: because it embeds the CR UID it is unforgeable,
 // so a team that exists but lacks this CR's marker is a conflict
-// (teamConflictError), never adopted — even if it happens to be bound to the desired
-// oidcGroup.
+// (teamConflictError) unless the SyncedTeam explicitly opts in to adoption — even
+// if it happens to be bound to the desired oidcGroup. A team carrying another CR's
+// managed-team marker is always a conflict, even with adopt enabled.
 //
 // On success it rewrites org.Status.ManagedTeams to exactly the set of teams the
 // controller now manages (sorted for a stable status). On the first conflict it
@@ -128,7 +130,8 @@ func (r *OrganizationReconciler) reconcileSyncedTeams(ctx context.Context, qc Or
 		t := &org.Spec.SyncedTeams[i]
 		existing, present := teams[t.Name]
 		owned := managed[t.Name]
-		ownedBefore := owned || (present && existing.Description == managedTeamMarker(org))
+		ownedByMarker := present && existing.Description == managedTeamMarker(org)
+		ownedBefore := owned || ownedByMarker
 
 		if present && !owned {
 			// Heal-or-conflict for an existing team this CR does not yet record.
@@ -138,18 +141,30 @@ func (r *OrganizationReconciler) reconcileSyncedTeams(ctx context.Context, qc Or
 			// org's holos-owner robot stamped with ownerToken (the CR UID). The
 			// marker alone is sufficient proof this exact CR created the team (a lost
 			// status write after our own create): it cannot be forged, so a
-			// hand-created team lacks it and is NOT adopted — it is a conflict,
-			// preserving the no-adoption / non-exclusive model. Relying on
-			// the marker (not the sync binding) also makes recovery robust: a team
-			// created last pass whose sync/prototype step then failed still carries
-			// the marker, so this pass heals it rather than wedging into a false
-			// TeamConflict.
-			if existing.Description != managedTeamMarker(org) {
+			// hand-created team lacks it and must opt in with spec.syncedTeams[].adopt
+			// before it is claimed. Relying on the marker (not the sync binding) also
+			// makes recovery robust: a team created last pass whose sync/prototype step
+			// then failed still carries the marker, so this pass heals it rather than
+			// wedging into a false TeamConflict. A marker for another CR is still a
+			// conflict; adopt can claim unmarked teams only.
+			if ownedByMarker {
+				managed[t.Name] = true
+			} else if carriesForeignManagedTeamMarker(existing.Description, org) {
+				// Conflict: persist progress so far, then surface the conflict.
+				r.writeManagedTeams(org, managed)
+				return mutation, &teamConflictError{
+					team:    t.Name,
+					message: fmt.Sprintf("Quay team %q is managed by another resource; refusing to adopt it", t.Name),
+				}
+			} else if !t.Adopt {
 				// Conflict: persist progress so far, then surface the conflict.
 				r.writeManagedTeams(org, managed)
 				return mutation, &teamConflictError{team: t.Name}
+			} else {
+				// Explicit adoption of an unmarked team. The upsert below stamps this
+				// CR's managedTeamMarker before sync/prototype reconciliation.
+				ownedBefore = false
 			}
-			managed[t.Name] = true
 		}
 
 		// Record ownership immediately — before the sync/prototype steps that follow
@@ -178,6 +193,10 @@ func (r *OrganizationReconciler) reconcileSyncedTeams(ctx context.Context, qc Or
 
 	r.writeManagedTeams(org, managed)
 	return mutation, nil
+}
+
+func carriesForeignManagedTeamMarker(description string, org *quayv1alpha1.Organization) bool {
+	return strings.HasPrefix(description, managedTeamPrefix) && description != managedTeamMarker(org)
 }
 
 // ensureTeamUpserted upserts a single desired team to its role with the

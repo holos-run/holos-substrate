@@ -216,18 +216,21 @@ incomplete.
 ### Verify Organization synced teams
 
 An Organization may declare OIDC-synced Quay teams in `spec.syncedTeams` — each
-with an org `role` (`admin`/`creator`/`member`) and an optional org default
-repository permission `repositoryPermission` (`read`/`write`/`admin`) — which the
-controller reconciles into Quay after the org is provisioned ([ADR-19](../adr/ADR-19.md)
-Revision 6). To verify they reconcile:
+with an org `role` (`admin`/`creator`/`member`), optional per-team `adopt`, and
+an optional org default repository permission `repositoryPermission`
+(`read`/`write`/`admin`) — which the controller reconciles into Quay after the
+org is provisioned ([ADR-19](../adr/ADR-19.md) Revisions 6 and 11). To verify
+they reconcile:
 
 ```bash
 # The teams the controller created and manages are tracked in status:
 kubectl -n my-project get organization my-project \
   -o jsonpath='{.status.managedTeams}'   # expect the spec.syncedTeams names
 
-# A pre-existing, externally-created team named in spec.syncedTeams is NOT
-# adopted — it surfaces Ready=False with reason TeamConflict and a Warning event:
+# A pre-existing, externally-created team named in spec.syncedTeams is a conflict
+# by default. Set spec.syncedTeams[].adopt: true to claim an unmarked team; a team
+# marked for another resource still surfaces Ready=False with reason TeamConflict
+# and a Warning event:
 kubectl -n my-project get organization my-project \
   -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}'
 kubectl -n my-project describe organization my-project   # see the Warning event

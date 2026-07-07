@@ -50,8 +50,8 @@ const (
 
 // SyncedTeam declares a Quay team whose membership is synchronized from an OIDC
 // group. The controller manages the team role, optional default repository
-// permission, and sync binding. A pre-existing team not created by this resource
-// is reported as a conflict and is not adopted.
+// permission, and sync binding. A pre-existing team not managed by this resource
+// is reported as a conflict unless Adopt is true.
 type SyncedTeam struct {
 	// Name is the Quay team name to manage inside the organization. It is
 	// required, must be unique within syncedTeams, must be between 2 and 255
@@ -73,6 +73,18 @@ type SyncedTeam struct {
 	// Role is the team's organization-level Quay role. It is required with no
 	// default so administrative intent is explicit.
 	Role OrganizationTeamRole `json:"role"`
+
+	// Adopt opts in to claiming a pre-existing Quay team with the same name. It
+	// defaults to false; without this opt-in, an unmanaged existing team is
+	// reported as a conflict. An adopted team is managed the same way as a team
+	// this resource created: its membership syncs from OIDC, its role and default
+	// repository permission are reconciled, and it is removed when this resource
+	// deletes the Quay organization. If this resource releases an adopted
+	// organization without deleting it, managed teams in that organization are left
+	// in place.
+	//
+	// +optional
+	Adopt bool `json:"adopt,omitempty"`
 
 	// RepositoryPermission grants an organization default repository permission
 	// to this team. When omitted, the controller manages no default repository
@@ -184,10 +196,10 @@ type OrganizationStatus struct {
 	// +optional
 	Created *bool `json:"created,omitempty"`
 
-	// ManagedTeams records the Quay team names this resource created and owns.
-	// The controller uses it to delete only teams it owns and to report a
-	// conflict when spec.syncedTeams names an existing foreign team. It is omitted
-	// when no managed teams have been recorded.
+	// ManagedTeams records the Quay team names this resource created or adopted
+	// and owns. The controller uses it to delete only teams it owns and to report
+	// a conflict when spec.syncedTeams names an existing foreign team. It is
+	// omitted when no managed teams have been recorded.
 	//
 	// +optional
 	// +listType=set
