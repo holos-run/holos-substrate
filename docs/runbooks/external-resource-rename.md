@@ -29,10 +29,10 @@ Carry these fields verbatim to the new CR:
 | Kind | External identity fields |
 | ---- | ------------------------ |
 | `quay.holos.run/Organization` | `spec.name` |
-| `quay.holos.run/Repository` | `spec.organizationRef` and `spec.name` |
-| `keycloak.holos.run/KeycloakGroup` | `spec.path` |
-| `keycloak.holos.run/KeycloakUser` | `spec.email`, and `spec.username` when set |
-| `keycloak.holos.run/KeycloakClient` | `spec.clientId` |
+| `quay.holos.run/Repository` | `spec.name`, plus `spec.organizationRef` to the Organization CR that resolves to the same Quay organization. Carry it verbatim for a Repository-only rename; update it when transferring repositories as part of an Organization CR rename. |
+| `keycloak.holos.run/KeycloakGroup` | `spec.instanceRef` and `spec.path` |
+| `keycloak.holos.run/KeycloakUser` | `spec.instanceRef`, `spec.email`, and `spec.username` when set |
+| `keycloak.holos.run/KeycloakClient` | `spec.instanceRef` and `spec.clientId` |
 
 `KeycloakGroupMembership` has no single ownable external object to adopt. Recreate
 the membership CR under the new name. Use `deletionPolicy: Orphan` on the old CR

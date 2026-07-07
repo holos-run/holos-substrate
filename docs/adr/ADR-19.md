@@ -295,7 +295,7 @@ status:
 | Status field | Purpose |
 | --- | --- |
 | `observedGeneration` | last `spec` generation reconciled. |
-| `created` | the durable ownership marker of the claim model: `true` if this CR created the Quay org, `false` if it adopted one. The finalizer deletes the Quay org only when `created: true`. |
+| `created` | the provenance status of the claim model: `true` if this CR created the Quay org, `false` if it adopted one. Omitted `deletionPolicy` deletes created orgs and releases adopted orgs; explicit `deletionPolicy: Delete` can delete an adopted org after the server-side marker verifies this CR still owns it. |
 | `managedTeams[]` | the Quay team **names** this CR created or adopted and manages — the team-level analog of `created`. Underpins non-exclusive management (a team dropped from the spec is de-provisioned only if it appears here) and the claim model (a spec team that exists in Quay but is absent here **and** lacks this CR's durable description marker → `TeamConflict` unless the spec entry sets `adopt: true`; a team carrying this CR's marker is healed back in, not a conflict). See *Synced teams* below. |
 | `conditions[]` | Gateway-API `Accepted`/`Programmed`/`Ready` (see *Status conditions*). |
 
@@ -520,7 +520,7 @@ status:
 | --- | --- |
 | `observedGeneration` | last `spec` generation reconciled. |
 | `quayRepository` | the resolved `<org>/<repo>` path, recorded after provisioning or claiming the repository. |
-| `created` | the durable ownership marker of the Repository claim model: `true` if this CR created the Quay repository, `false` if it adopted one. The finalizer deletes the Quay repository only when `created: true`; adopted repositories are released. |
+| `created` | the provenance status of the Repository claim model: `true` if this CR created the Quay repository, `false` if it adopted one. Omitted `deletionPolicy` deletes created repositories and releases adopted repositories; explicit `deletionPolicy: Delete` can delete an adopted repository after its description marker verifies this CR still owns it. |
 | `webhookNotificationUUID` | the Quay UUID of the `repo_push` webhook notification this CR created. Webhook cleanup uses this recorded UUID plus the resource-specific webhook title, so a manually-created notification with only the public title prefix is not treated as owned by the CR. |
 | `lastValidatedTime` / `lastMutatedTime` / `lastMutationReason` / `lastDriftTime` | drift-observability timestamps and mutation classification shared with Organization. |
 | `conditions[]` | Gateway-API `Accepted`/`Programmed`/`Ready` plus the Repository-only `WebhookConfigured` (see below). |
