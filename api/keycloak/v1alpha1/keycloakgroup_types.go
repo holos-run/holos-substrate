@@ -120,11 +120,21 @@ type KeycloakGroupSpec struct {
 	// silently seized — Keycloak realm groups are a single global namespace while
 	// this CR is Kubernetes-namespaced, so without this guard a namespaced tenant
 	// CR could take over a platform or another tenant's group by path. Set adopt:
-	// true to deliberately claim such a group. An adopted group is released (the
-	// finalizer drops without deleting) rather than deleted on CR removal.
+	// true to deliberately claim such a group. When this resource is deleted, an
+	// adopted group is released unless deletionPolicy is Delete.
 	//
 	// +optional
 	Adopt bool `json:"adopt,omitempty"`
+
+	// DeletionPolicy controls how the controller handles the Keycloak group when
+	// this resource is deleted. Delete removes the group after verifying the live
+	// group still has the UUID recorded in status. Orphan leaves the group and all
+	// controller-added Keycloak side effects untouched. When omitted, a group this
+	// resource created is deleted, while an adopted group is released after
+	// pruning the roles and custodian delegation added by this resource.
+	//
+	// +optional
+	DeletionPolicy DeletionPolicy `json:"deletionPolicy,omitempty"`
 }
 
 // KeycloakGroupStatus defines the observed state of a KeycloakGroup, following

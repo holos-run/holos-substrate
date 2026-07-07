@@ -408,6 +408,7 @@ func TestGroupDelete(t *testing.T) {
 		if !fake.groupExists("projects/del/roles/owner") {
 			t.Fatalf("precondition: group should exist")
 		}
+		groupID := getGroup(t, ctx, key).Status.GroupID
 		if err := shared.k8sClient.Delete(ctx, getGroup(t, ctx, key)); err != nil {
 			t.Fatalf("delete: %v", err)
 		}
@@ -417,7 +418,7 @@ func TestGroupDelete(t *testing.T) {
 		if fake.groupExists("projects/del/roles/owner") {
 			t.Errorf("created group should be deleted in Keycloak on CR removal")
 		}
-		if !fake.callsContain("Delete:/projects/del/roles/owner") {
+		if !fake.callsContain("DeleteGroup:" + groupID) {
 			t.Errorf("expected a Keycloak delete call; calls = %v", fake.calls)
 		}
 	})
@@ -441,6 +442,7 @@ func TestGroupDelete(t *testing.T) {
 		if _, err := reconcileGroup(ctx, r, key); err != nil {
 			t.Fatalf("reconcile: %v", err)
 		}
+		groupID := getGroup(t, ctx, key).Status.GroupID
 		if err := shared.k8sClient.Delete(ctx, getGroup(t, ctx, key)); err != nil {
 			t.Fatalf("delete: %v", err)
 		}
@@ -450,8 +452,149 @@ func TestGroupDelete(t *testing.T) {
 		if !fake.groupExists("projects/del/roles/editor") {
 			t.Errorf("adopted group must NOT be deleted in Keycloak on CR removal")
 		}
-		if fake.callsContain("Delete:/projects/del/roles/editor") {
+		if fake.callsContain("DeleteGroup:" + groupID) {
 			t.Errorf("adopted group must be released, not deleted")
+		}
+	})
+
+	t.Run("orphan leaves created group and side effects untouched without Keycloak calls", func(t *testing.T) {
+		createIgnoreExists(t, ctx, &keycloakv1alpha1.KeycloakClient{
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "consumer-orphan"},
+			Spec: keycloakv1alpha1.KeycloakClientSpec{
+				ClientID:    "https://orphan-app.holos.internal",
+				Type:        keycloakv1alpha1.KeycloakClientTypePublic,
+				InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			},
+		})
+		group := &keycloakv1alpha1.KeycloakGroup{
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "del-orphan"},
+			Spec: keycloakv1alpha1.KeycloakGroupSpec{
+				Path:           "projects/del/roles/orphan",
+				InstanceRef:    keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				ClientRoles:    []keycloakv1alpha1.ClientRoleReference{{ClientRef: "consumer-orphan", Role: "del-orphan"}},
+				Custodians:     []keycloakv1alpha1.CustodianReference{{Path: "projects/del/custodians/orphan"}},
+				DeletionPolicy: keycloakv1alpha1.DeletionPolicyOrphan,
+			},
+		}
+		if err := shared.k8sClient.Create(ctx, group); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		fake := newFakeKeycloakClient("projects/del/custodians/orphan")
+		fake.seedClient("https://orphan-app.holos.internal", "orphan-client-uuid")
+		fake.seedClientRole("orphan-client-uuid", "del-orphan", "orphan-role-uuid")
+		fake.seedClient(adminPermissionsClientID, "perm-client-uuid")
+		r, _ := newGroupReconciler(fake, ns)
+		key := client.ObjectKeyFromObject(group)
+		_, _ = reconcileGroup(ctx, r, key) // finalizer
+		if _, err := reconcileGroup(ctx, r, key); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		got := getGroup(t, ctx, key)
+		gid := got.Status.GroupID
+		if gid == "" || !fake.roleAssigned(gid, "orphan-client-uuid", "del-orphan") {
+			t.Fatalf("precondition: role should be assigned on created group; calls = %v", fake.calls)
+		}
+		fake.resetCalls()
+
+		if err := shared.k8sClient.Delete(ctx, getGroup(t, ctx, key)); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if _, err := reconcileGroup(ctx, r, key); err != nil {
+			t.Fatalf("reconcile delete: %v", err)
+		}
+		if gotCalls := fake.callCount(); gotCalls != 0 {
+			t.Errorf("deletionPolicy Orphan made Keycloak calls: %v", fake.calls)
+		}
+		if !fake.groupExists("projects/del/roles/orphan") {
+			t.Errorf("orphaned group should remain in Keycloak")
+		}
+		if !fake.roleAssigned(gid, "orphan-client-uuid", "del-orphan") {
+			t.Errorf("orphaned group role assignment should remain")
+		}
+		if len(fake.fgapDeletes) != 0 {
+			t.Errorf("orphaned group custodian FGAP should not be pruned")
+		}
+	})
+
+	t.Run("adopted group with explicit delete is deleted after UUID verification", func(t *testing.T) {
+		group := &keycloakv1alpha1.KeycloakGroup{
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "del-adopted-explicit"},
+			Spec: keycloakv1alpha1.KeycloakGroupSpec{
+				Path:           "projects/del/roles/adopted-explicit",
+				InstanceRef:    keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				Adopt:          true,
+				Custodians:     []keycloakv1alpha1.CustodianReference{{Path: "projects/del/custodians/adopted-explicit"}},
+				DeletionPolicy: keycloakv1alpha1.DeletionPolicyDelete,
+			},
+		}
+		if err := shared.k8sClient.Create(ctx, group); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		fake := newFakeKeycloakClient("projects/del/roles/adopted-explicit", "projects/del/custodians/adopted-explicit")
+		fake.seedClient(adminPermissionsClientID, "perm-client-uuid")
+		r, _ := newGroupReconciler(fake, ns)
+		key := client.ObjectKeyFromObject(group)
+		_, _ = reconcileGroup(ctx, r, key) // finalizer
+		if _, err := reconcileGroup(ctx, r, key); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		if !getGroup(t, ctx, key).Status.Adopted {
+			t.Fatalf("expected adopted group")
+		}
+		groupID := getGroup(t, ctx, key).Status.GroupID
+
+		if err := shared.k8sClient.Delete(ctx, getGroup(t, ctx, key)); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if _, err := reconcileGroup(ctx, r, key); err != nil {
+			t.Fatalf("reconcile delete: %v", err)
+		}
+		if fake.groupExists("projects/del/roles/adopted-explicit") {
+			t.Errorf("adopted group with deletionPolicy Delete should be deleted")
+		}
+		if !fake.callsContain("DeleteGroup:" + groupID) {
+			t.Errorf("expected delete call for adopted group with deletionPolicy Delete; calls = %v", fake.calls)
+		}
+		if len(fake.fgapDeletes) == 0 {
+			t.Errorf("custodian FGAP should be pruned before explicit adopted delete")
+		}
+	})
+
+	t.Run("adopted group explicit delete releases out-of-band replacement", func(t *testing.T) {
+		group := &keycloakv1alpha1.KeycloakGroup{
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "del-adopted-replaced"},
+			Spec: keycloakv1alpha1.KeycloakGroupSpec{
+				Path:           "projects/del/roles/adopted-replaced",
+				InstanceRef:    keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				Adopt:          true,
+				DeletionPolicy: keycloakv1alpha1.DeletionPolicyDelete,
+			},
+		}
+		if err := shared.k8sClient.Create(ctx, group); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		fake := newFakeKeycloakClient("projects/del/roles/adopted-replaced")
+		r, _ := newGroupReconciler(fake, ns)
+		key := client.ObjectKeyFromObject(group)
+		_, _ = reconcileGroup(ctx, r, key) // finalizer
+		if _, err := reconcileGroup(ctx, r, key); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		claimedID := getGroup(t, ctx, key).Status.GroupID
+		delete(fake.groups, normPath("projects/del/roles/adopted-replaced"))
+		replacementID := fake.addGroup("projects/del/roles/adopted-replaced")
+		if replacementID == claimedID {
+			t.Fatalf("replacement should have a new UUID")
+		}
+
+		if err := shared.k8sClient.Delete(ctx, getGroup(t, ctx, key)); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if _, err := reconcileGroup(ctx, r, key); err != nil {
+			t.Fatalf("reconcile delete: %v", err)
+		}
+		if !fake.groupExists("projects/del/roles/adopted-replaced") {
+			t.Errorf("foreign replacement group must not be deleted")
 		}
 	})
 }

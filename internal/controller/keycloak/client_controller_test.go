@@ -704,3 +704,124 @@ func TestClientDelete(t *testing.T) {
 		t.Errorf("client CR still present after finalize: err = %v", err)
 	}
 }
+
+func TestClientDeletionPolicy(t *testing.T) {
+	if shared == nil {
+		t.Skip("envtest not provisioned")
+	}
+	ctx := context.Background()
+	const ns = "kc-client-delpolicy"
+	makeNamespace(t, ctx, ns)
+	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
+	readyInstance(t, ctx, ns, "kc")
+
+	t.Run("orphan leaves created client untouched without Keycloak calls", func(t *testing.T) {
+		kclient := &keycloakv1alpha1.KeycloakClient{
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "orphan"},
+			Spec: keycloakv1alpha1.KeycloakClientSpec{
+				ClientID:       "https://orphan-client.holos.internal",
+				Type:           keycloakv1alpha1.KeycloakClientTypePublic,
+				InstanceRef:    keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				DeletionPolicy: keycloakv1alpha1.DeletionPolicyOrphan,
+			},
+		}
+		if err := shared.k8sClient.Create(ctx, kclient); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		fake := newFakeKeycloakClient()
+		r, _ := newClientReconciler(fake, ns)
+		key := client.ObjectKeyFromObject(kclient)
+		reconcileClientToSteady(t, ctx, r, key)
+		if !fake.clientExists("https://orphan-client.holos.internal") {
+			t.Fatalf("precondition: client should exist")
+		}
+		fake.resetCalls()
+
+		if err := shared.k8sClient.Delete(ctx, getKClient(t, ctx, key)); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if _, err := reconcileClient(ctx, r, key); err != nil {
+			t.Fatalf("reconcile (delete): %v", err)
+		}
+		if gotCalls := fake.callCount(); gotCalls != 0 {
+			t.Errorf("deletionPolicy Orphan made Keycloak calls: %v", fake.calls)
+		}
+		if !fake.clientExists("https://orphan-client.holos.internal") {
+			t.Errorf("orphaned client should remain in Keycloak")
+		}
+	})
+
+	t.Run("adopted client with explicit delete is deleted after UUID verification", func(t *testing.T) {
+		kclient := &keycloakv1alpha1.KeycloakClient{
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "adopted-delete"},
+			Spec: keycloakv1alpha1.KeycloakClientSpec{
+				ClientID:       "https://adopted-delete.holos.internal",
+				Type:           keycloakv1alpha1.KeycloakClientTypePublic,
+				InstanceRef:    keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				Adopt:          true,
+				DeletionPolicy: keycloakv1alpha1.DeletionPolicyDelete,
+			},
+		}
+		if err := shared.k8sClient.Create(ctx, kclient); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		fake := newFakeKeycloakClient()
+		fake.seedClient("https://adopted-delete.holos.internal", "adopted-delete-uuid")
+		r, _ := newClientReconciler(fake, ns)
+		key := client.ObjectKeyFromObject(kclient)
+		reconcileClientToSteady(t, ctx, r, key)
+		if !getKClient(t, ctx, key).Status.Adopted {
+			t.Fatalf("expected adopted client")
+		}
+		fake.resetCalls()
+
+		if err := shared.k8sClient.Delete(ctx, getKClient(t, ctx, key)); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if _, err := reconcileClient(ctx, r, key); err != nil {
+			t.Fatalf("reconcile (delete): %v", err)
+		}
+		if fake.clientExists("https://adopted-delete.holos.internal") {
+			t.Errorf("adopted client with deletionPolicy Delete should be deleted")
+		}
+		if !fake.callsContain("DeleteClient:adopted-delete-uuid") {
+			t.Errorf("expected delete by verified client UUID; calls = %v", fake.calls)
+		}
+	})
+
+	t.Run("adopted client explicit delete releases out-of-band replacement", func(t *testing.T) {
+		kclient := &keycloakv1alpha1.KeycloakClient{
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "adopted-replaced"},
+			Spec: keycloakv1alpha1.KeycloakClientSpec{
+				ClientID:       "https://adopted-replaced.holos.internal",
+				Type:           keycloakv1alpha1.KeycloakClientTypePublic,
+				InstanceRef:    keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				Adopt:          true,
+				DeletionPolicy: keycloakv1alpha1.DeletionPolicyDelete,
+			},
+		}
+		if err := shared.k8sClient.Create(ctx, kclient); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		fake := newFakeKeycloakClient()
+		fake.seedClient("https://adopted-replaced.holos.internal", "claimed-client-uuid")
+		r, _ := newClientReconciler(fake, ns)
+		key := client.ObjectKeyFromObject(kclient)
+		reconcileClientToSteady(t, ctx, r, key)
+		fake.seedClient("https://adopted-replaced.holos.internal", "replacement-client-uuid")
+		fake.resetCalls()
+
+		if err := shared.k8sClient.Delete(ctx, getKClient(t, ctx, key)); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if _, err := reconcileClient(ctx, r, key); err != nil {
+			t.Fatalf("reconcile (delete): %v", err)
+		}
+		if !fake.clientExists("https://adopted-replaced.holos.internal") {
+			t.Errorf("foreign replacement client must not be deleted")
+		}
+		if fake.callsContain("DeleteClient:replacement-client-uuid") {
+			t.Errorf("replacement client must not be deleted; calls = %v", fake.calls)
+		}
+	})
+}

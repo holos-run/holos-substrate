@@ -143,11 +143,20 @@ type KeycloakClientSpec struct {
 	// namespace while this CR is Kubernetes-namespaced, a client this CR did not
 	// create and does not already own is a Conflict (Ready=False, reason Conflict)
 	// and is never silently seized or reconfigured. Set adopt: true to deliberately
-	// claim and converge such a client. An adopted client is released, never
-	// deleted, on CR removal.
+	// claim and converge such a client. When this resource is deleted, an adopted
+	// client is released unless deletionPolicy is Delete.
 	//
 	// +optional
 	Adopt bool `json:"adopt,omitempty"`
+
+	// DeletionPolicy controls how the controller handles the Keycloak client when
+	// this resource is deleted. Delete removes the client after verifying the live
+	// client still has the UUID recorded in status. Orphan leaves the client
+	// untouched. When omitted, a client this resource created is deleted, while an
+	// adopted client is released without deleting it.
+	//
+	// +optional
+	DeletionPolicy DeletionPolicy `json:"deletionPolicy,omitempty"`
 }
 
 // KeycloakClientStatus defines the observed state of a KeycloakClient, following

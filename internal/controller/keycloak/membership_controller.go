@@ -241,6 +241,12 @@ func (r *MembershipReconciler) reconcileDelete(ctx context.Context, logger logr.
 	if !controllerutil.ContainsFinalizer(membership, membershipFinalizer) {
 		return ctrl.Result{}, nil
 	}
+	if membership.Spec.DeletionPolicy == keycloakv1alpha1.DeletionPolicyOrphan {
+		r.Recorder.Event(membership, corev1.EventTypeNormal, ReasonReleased,
+			fmt.Sprintf("orphaned KeycloakGroupMembership %s/%s (deletionPolicy Orphan; no memberships removed from Keycloak)", membership.Namespace, membership.Name))
+		logger.Info("orphaned KeycloakGroupMembership", "namespace", membership.Namespace, "name", membership.Name)
+		return r.removeFinalizer(ctx, membership)
+	}
 	if len(membership.Status.ManagedMembers) == 0 || membership.Status.GroupID == "" {
 		return r.removeFinalizer(ctx, membership)
 	}

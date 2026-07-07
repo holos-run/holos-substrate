@@ -232,6 +232,22 @@ func (f *fakeKeycloakClient) DeleteGroupByPathIfExists(ctx context.Context, path
 	return nil
 }
 
+func (f *fakeKeycloakClient) DeleteGroup(ctx context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("DeleteGroup:" + id)
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	for path, groupID := range f.groups {
+		if groupID == id {
+			delete(f.groups, path)
+			return nil
+		}
+	}
+	return notFoundErr("/groups/" + id)
+}
+
 func (f *fakeKeycloakClient) FindClientByClientID(ctx context.Context, clientID string) (*keycloak.OIDCClient, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -395,6 +411,18 @@ func (f *fakeKeycloakClient) callsContain(call string) bool {
 		}
 	}
 	return false
+}
+
+func (f *fakeKeycloakClient) resetCalls() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = nil
+}
+
+func (f *fakeKeycloakClient) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
 }
 
 // groupExists reports whether the named (normalized) group path currently exists.

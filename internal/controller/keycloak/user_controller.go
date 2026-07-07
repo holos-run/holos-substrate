@@ -429,6 +429,11 @@ func (r *UserReconciler) reconcileDelete(ctx context.Context, logger logr.Logger
 	if !controllerutil.ContainsFinalizer(user, userFinalizer) {
 		return ctrl.Result{}, nil
 	}
+	if user.Spec.DeletionPolicy == keycloakv1alpha1.DeletionPolicyOrphan {
+		r.Recorder.Event(user, corev1.EventTypeNormal, ReasonReleased,
+			fmt.Sprintf("orphaned Keycloak user %q (deletionPolicy Orphan; nothing removed from Keycloak)", user.Spec.Email))
+		return r.removeFinalizer(ctx, user)
+	}
 
 	// Nothing needs Keycloak-side cleanup when the CR never created a user
 	// (rejected, blocked on a missing/not-ready instance, a denied ReferenceGrant,
@@ -437,7 +442,8 @@ func (r *UserReconciler) reconcileDelete(ctx context.Context, logger logr.Logger
 	// Drop the finalizer immediately rather than resolving a Ready instance +
 	// credential that may never resolve. A created user always needs its delete, so
 	// it is never short-circuited here.
-	if !user.Status.Created && user.Status.ManagedIdentityProvider == "" {
+	deleteAdopted := user.Spec.DeletionPolicy == keycloakv1alpha1.DeletionPolicyDelete && user.Status.Adopted
+	if !user.Status.Created && !deleteAdopted && user.Status.ManagedIdentityProvider == "" {
 		return r.removeFinalizer(ctx, user)
 	}
 
@@ -457,7 +463,39 @@ func (r *UserReconciler) reconcileDelete(ctx context.Context, logger logr.Logger
 
 	kc := r.NewClient(cred, instance.Spec.URL, instance.Spec.Realm, instance.Spec.CABundle)
 
-	// Created user → delete it; the delete cascades its IdP link.
+	if deleteAdopted {
+		if user.Status.UserID == "" {
+			return r.removeFinalizer(ctx, user)
+		}
+		current, err := kc.FindUserByEmail(ctx, user.Spec.Email)
+		recordKeycloakAPI(opFindUserByEmail, err)
+		if err != nil {
+			r.Recorder.Event(user, corev1.EventTypeWarning, ReasonKeycloakError,
+				fmt.Sprintf("verifying Keycloak user %q before cleanup: %v", user.Spec.Email, err))
+			return ctrl.Result{}, fmt.Errorf("verifying Keycloak user %q before cleanup: %w", user.Spec.Email, err)
+		}
+		if current == nil {
+			return r.removeFinalizer(ctx, user)
+		}
+		if current.ID != user.Status.UserID {
+			r.Recorder.Event(user, corev1.EventTypeNormal, ReasonReleased,
+				fmt.Sprintf("released Keycloak user %q without changes (UUID %q no longer matches the claimed UUID %q; replaced by another actor)", user.Spec.Email, current.ID, user.Status.UserID))
+			return r.removeFinalizer(ctx, user)
+		}
+		delErr := kc.DeleteUserIfExists(ctx, user.Status.UserID)
+		recordKeycloakAPI(opDeleteUser, delErr)
+		if delErr != nil {
+			r.Recorder.Event(user, corev1.EventTypeWarning, ReasonKeycloakError,
+				fmt.Sprintf("deleting Keycloak user %q: %v", user.Spec.Email, delErr))
+			return ctrl.Result{}, fmt.Errorf("deleting Keycloak user %q: %w", user.Spec.Email, delErr)
+		}
+		r.Recorder.Event(user, corev1.EventTypeNormal, "Deleted",
+			fmt.Sprintf("deleted Keycloak user %q", user.Spec.Email))
+		return r.removeFinalizer(ctx, user)
+	}
+
+	// Created user → delete it; the delete cascades its IdP link. This preserves
+	// the existing created-resource behavior for omitted deletionPolicy.
 	if user.Status.Created {
 		if user.Status.UserID != "" {
 			delErr := kc.DeleteUserIfExists(ctx, user.Status.UserID)

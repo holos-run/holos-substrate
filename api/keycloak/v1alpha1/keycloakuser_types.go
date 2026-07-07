@@ -86,11 +86,21 @@ type KeycloakUserSpec struct {
 	// false: a user this CR did not create and does not already own is a Conflict
 	// (Ready=False, reason Conflict) and is never silently seized — Keycloak realm
 	// users are a single global namespace while this CR is Kubernetes-namespaced.
-	// Set adopt: true to deliberately claim such a user. An adopted user is
-	// released, never deleted, on CR removal.
+	// Set adopt: true to deliberately claim such a user. When this resource is
+	// deleted, an adopted user is released unless deletionPolicy is Delete.
 	//
 	// +optional
 	Adopt bool `json:"adopt,omitempty"`
+
+	// DeletionPolicy controls how the controller handles the Keycloak user when
+	// this resource is deleted. Delete removes the user by the UUID recorded in
+	// status. Orphan leaves the user and any controller-added federated-identity
+	// link untouched. When omitted, a user this resource created is deleted, while
+	// an adopted user is released after pruning the federated-identity link added
+	// by this resource.
+	//
+	// +optional
+	DeletionPolicy DeletionPolicy `json:"deletionPolicy,omitempty"`
 }
 
 // KeycloakUserStatus defines the observed state of a KeycloakUser, following the

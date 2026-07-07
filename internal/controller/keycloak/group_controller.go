@@ -57,6 +57,10 @@ type GroupClient interface {
 	// DeleteGroupByPathIfExists deletes the group at the path, treating an
 	// already-absent group as success (idempotent) — the finalizer's cleanup.
 	DeleteGroupByPathIfExists(ctx context.Context, path string) error
+	// DeleteGroup deletes the group by immutable UUID. The finalizer uses this
+	// after verifying the current path still resolves to the claimed UUID, avoiding
+	// a second path lookup before a destructive delete.
+	DeleteGroup(ctx context.Context, id string) error
 
 	// FindClientByClientID returns the OIDC client whose clientId matches, or nil
 	// when none exists (an absent client is not an error). Used to resolve the
@@ -903,6 +907,11 @@ func (r *GroupReconciler) reconcileDelete(ctx context.Context, logger logr.Logge
 	if !controllerutil.ContainsFinalizer(group, groupFinalizer) {
 		return ctrl.Result{}, nil
 	}
+	if group.Spec.DeletionPolicy == keycloakv1alpha1.DeletionPolicyOrphan {
+		r.Recorder.Event(group, corev1.EventTypeNormal, ReasonReleased,
+			fmt.Sprintf("orphaned Keycloak group %q (deletionPolicy Orphan; nothing removed from Keycloak)", group.Spec.Path))
+		return r.removeFinalizer(ctx, group)
+	}
 
 	// Drop the finalizer immediately whenever there is no Keycloak-side cleanup to
 	// do, rather than resolving a Ready instance + credential (which would fail
@@ -914,7 +923,8 @@ func (r *GroupReconciler) reconcileDelete(ctx context.Context, logger logr.Logge
 	// A created group always needs its delete (and any custodian prune), so it is
 	// never short-circuited here.
 	noManaged := len(group.Status.ManagedClientRoles) == 0 && len(group.Status.ManagedCustodians) == 0
-	if !group.Status.Created && noManaged {
+	deleteAdopted := group.Spec.DeletionPolicy == keycloakv1alpha1.DeletionPolicyDelete && group.Status.Adopted
+	if !group.Status.Created && !deleteAdopted && noManaged {
 		return r.removeFinalizer(ctx, group)
 	}
 
@@ -971,10 +981,11 @@ func (r *GroupReconciler) reconcileDelete(ctx context.Context, logger logr.Logge
 		return r.removeFinalizer(ctx, group)
 	}
 
-	// Adopted group → release: prune the remaining side effect this CR added (the
-	// conferred client roles), never deleting the surviving group the platform did
-	// not create. (Custodians were already pruned above.)
-	if !group.Status.Created {
+	deleteGroup := group.Status.Created || deleteAdopted
+	if !deleteGroup {
+		// Adopted group → release: prune the remaining side effect this CR added
+		// (the conferred client roles), never deleting the surviving group the
+		// platform did not create. (Custodians were already pruned above.)
 		if err := r.pruneManagedClientRoles(ctx, kc, group, current.ID); err != nil {
 			r.Recorder.Event(group, corev1.EventTypeWarning, ReasonKeycloakError, err.Error())
 			return ctrl.Result{}, err
@@ -984,12 +995,12 @@ func (r *GroupReconciler) reconcileDelete(ctx context.Context, logger logr.Logge
 		return r.removeFinalizer(ctx, group)
 	}
 
-	// Created group → delete it; the delete cascades its own role mappings (the FGAP
-	// custodian objects were pruned above, since the group delete does not cascade
-	// those).
-	delErr := kc.DeleteGroupByPathIfExists(ctx, group.Spec.Path)
-	recordKeycloakAPI(opDeleteGroup, delErr)
-	if delErr != nil {
+	// Created group or explicitly-deleted adopted group → delete by the verified
+	// UUID, not by path. A fresh by-path lookup here would reopen the window where
+	// a foreign group recreated at the same path could be deleted.
+	delErr := kc.DeleteGroup(ctx, current.ID)
+	recordKeycloakAPI(opDeleteGroup, ignoreNotFound(delErr))
+	if delErr != nil && !keycloak.IsNotFound(delErr) {
 		r.Recorder.Event(group, corev1.EventTypeWarning, ReasonKeycloakError,
 			fmt.Sprintf("deleting Keycloak group %q: %v", group.Spec.Path, delErr))
 		return ctrl.Result{}, fmt.Errorf("deleting Keycloak group %q: %w", group.Spec.Path, delErr)
