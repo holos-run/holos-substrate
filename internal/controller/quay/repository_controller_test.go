@@ -68,11 +68,12 @@ func reconcileRepoUntilStable(ctx context.Context, t *testing.T, r *RepositoryRe
 
 // repoOpts configures makeRepo.
 type repoOpts struct {
-	visibility  quayv1alpha1.RepositoryVisibility
-	description string
-	adopt       bool
-	webhook     *quayv1alpha1.RepositoryWebhook
-	caBundle    []byte
+	visibility     quayv1alpha1.RepositoryVisibility
+	description    string
+	adopt          bool
+	deletionPolicy quayv1alpha1.DeletionPolicy
+	webhook        *quayv1alpha1.RepositoryWebhook
+	caBundle       []byte
 }
 
 // makeRepo creates a Repository CR named repoName in namespace ns owned by org
@@ -91,6 +92,7 @@ func makeRepo(ctx context.Context, t *testing.T, ns, orgRef, repoName string, op
 			Visibility:      vis,
 			Description:     opts.description,
 			Adopt:           opts.adopt,
+			DeletionPolicy:  opts.deletionPolicy,
 			Webhook:         opts.webhook,
 			CABundle:        opts.caBundle,
 		},
@@ -707,6 +709,46 @@ func TestRepositoryAdoptsExistingRepository(t *testing.T) {
 	}
 }
 
+func TestRepositoryAdoptionReusesExistingUIDTitledWebhook(t *testing.T) {
+	ctx := t.Context()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	const hook = "https://kargo.example.test/webhook/adopt-existing"
+	key := makeRepo(ctx, t, ns, "acme", "adopthook", repoOpts{
+		adopt:   true,
+		webhook: &quayv1alpha1.RepositoryWebhook{URL: ptr(hook)},
+	})
+
+	fake := newFakeRepoClient()
+	fake.repos[repoKey("acme", "adopthook")] = &fakeRepoStore{
+		isPublic:      false,
+		description:   "human repo",
+		notifications: map[string]quay.Notification{},
+	}
+	repo := getRepo(ctx, t, key)
+	existingUUID := fake.seedNotification("acme", "adopthook", repositoryWebhookTitle(repo), hook)
+	fake.seedNotification("acme", "adopthook", "holos-controller repo_push created:foreign", hook)
+
+	r, _ := newRepoReconciler(fake, ns)
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	repo = getRepo(ctx, t, key)
+	if got := repo.Status.WebhookNotificationUUID; got != existingUUID {
+		t.Fatalf("status.webhookNotificationUUID = %q, want existing UUID %q", got, existingUUID)
+	}
+	if fake.callsContain("CreateNotification:acme/adopthook:" + hook) {
+		t.Errorf("adoption should reuse existing UID-titled webhook instead of creating a duplicate; calls were %v", fake.calls)
+	}
+	if urls := fake.webhookURLs("acme", "adopthook"); len(urls) != 2 {
+		t.Errorf("webhook URLs = %v, want existing owned plus foreign hook preserved", urls)
+	}
+}
+
 func TestRepositoryAdoptStatusLossDoesNotBecomeCreated(t *testing.T) {
 	ctx := t.Context()
 	ns := makeNamespace(ctx, t)
@@ -1181,6 +1223,131 @@ func TestRepositoryDeleteReleasesAdoptedRepositoryWithoutDeleting(t *testing.T) 
 		t.Errorf("webhook URLs after release = %v, want only manual hook", urls)
 	}
 	assertEvent(t, recorder, quayv1alpha1.ReasonReleased)
+}
+
+func TestRepositoryDeleteOrphansCreatedRepository(t *testing.T) {
+	ctx := t.Context()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	const hook = "https://kargo.example.test/webhook/orphan"
+	key := makeRepo(ctx, t, ns, "acme", "orphanrepo", repoOpts{
+		description:    "kept",
+		deletionPolicy: quayv1alpha1.DeletionPolicyOrphan,
+		webhook:        &quayv1alpha1.RepositoryWebhook{URL: ptr(hook)},
+	})
+
+	fake := newFakeRepoClient()
+	r, recorder := newRepoReconciler(fake, ns)
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile create: %v", err)
+	}
+	repo := getRepo(ctx, t, key)
+	managedUUID := repo.Status.WebhookNotificationUUID
+	if managedUUID == "" {
+		t.Fatal("status.webhookNotificationUUID is empty, want recorded webhook")
+	}
+
+	if err := shared.k8sClient.Delete(ctx, repo); err != nil {
+		t.Fatalf("deleting Repository: %v", err)
+	}
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile delete: %v", err)
+	}
+
+	if fake.callsContain("DeleteRepository:acme/orphanrepo") {
+		t.Errorf("orphan policy must not delete repository; calls were %v", fake.calls)
+	}
+	if fake.callsContain("DeleteNotification:acme/orphanrepo:" + managedUUID) {
+		t.Errorf("orphan policy must not remove recorded webhook; calls were %v", fake.calls)
+	}
+	if !fake.repoExists("acme", "orphanrepo") {
+		t.Fatal("expected orphaned repository to remain in Quay")
+	}
+	st := fake.repos[repoKey("acme", "orphanrepo")]
+	if got := st.description; got != "kept" {
+		t.Errorf("description after orphan = %q, want marker stripped to kept", got)
+	}
+	if urls := fake.webhookURLs("acme", "orphanrepo"); len(urls) != 1 || urls[0] != hook {
+		t.Errorf("webhook URLs after orphan = %v, want recorded webhook preserved", urls)
+	}
+	assertEvent(t, recorder, quayv1alpha1.ReasonReleased)
+}
+
+func TestRepositoryDeleteDeletesAdoptedRepositoryWhenPolicyDeleteAndOwned(t *testing.T) {
+	ctx := t.Context()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	key := makeRepo(ctx, t, ns, "acme", "deleteadopted", repoOpts{
+		adopt:          true,
+		deletionPolicy: quayv1alpha1.DeletionPolicyDelete,
+	})
+
+	fake := newFakeRepoClient()
+	fake.repos[repoKey("acme", "deleteadopted")] = &fakeRepoStore{
+		isPublic:      false,
+		description:   "pre-existing",
+		notifications: map[string]quay.Notification{},
+	}
+	r, _ := newRepoReconciler(fake, ns)
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile adopt: %v", err)
+	}
+
+	repo := getRepo(ctx, t, key)
+	if err := shared.k8sClient.Delete(ctx, repo); err != nil {
+		t.Fatalf("deleting Repository: %v", err)
+	}
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile delete: %v", err)
+	}
+
+	if !fake.callsContain("DeleteRepository:acme/deleteadopted") {
+		t.Errorf("expected explicit Delete policy to delete owned adopted repository; calls were %v", fake.calls)
+	}
+	if fake.repoExists("acme", "deleteadopted") {
+		t.Fatal("expected adopted repository to be deleted")
+	}
+}
+
+func TestRepositoryDeletePolicyDeleteReleasesForeignMarker(t *testing.T) {
+	ctx := t.Context()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	key := makeRepo(ctx, t, ns, "acme", "deleteforeign", repoOpts{
+		deletionPolicy: quayv1alpha1.DeletionPolicyDelete,
+		webhook:        &quayv1alpha1.RepositoryWebhook{URL: ptr("https://kargo.example.test/webhook/foreign")},
+	})
+
+	fake := newFakeRepoClient()
+	r, _ := newRepoReconciler(fake, ns)
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile create: %v", err)
+	}
+	repo := getRepo(ctx, t, key)
+	fake.repos[repoKey("acme", "deleteforeign")].description = "foreign\n\n" + repositoryOwnerMarkerPrefix + repositoryOwnerMarkerCreated + ":foreign-token"
+
+	if err := shared.k8sClient.Delete(ctx, repo); err != nil {
+		t.Fatalf("deleting Repository: %v", err)
+	}
+	if err := reconcileRepoUntilStable(ctx, t, r, key); err != nil {
+		t.Fatalf("reconcile delete: %v", err)
+	}
+
+	if fake.callsContain("DeleteRepository:acme/deleteforeign") {
+		t.Errorf("foreign marker must release, not delete; calls were %v", fake.calls)
+	}
+	if !fake.repoExists("acme", "deleteforeign") {
+		t.Fatal("expected foreign-owned repository to remain in Quay")
+	}
 }
 
 func TestRepositoryDeleteWithForeignMarkerRemovesManagedWebhook(t *testing.T) {

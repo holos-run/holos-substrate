@@ -845,13 +845,19 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 		return r.removeFinalizer(ctx, repo)
 	}
 	owns := ownership.Token == repositoryOwnerToken(repo)
-	created := false
+	deleteAllowed := false
 	if repo.Status.Created != nil {
-		created = *repo.Status.Created && owns && ownership.Created
+		deleteAllowed = *repo.Status.Created && owns && ownership.Created
 	} else {
-		created = owns && ownership.Created
+		deleteAllowed = owns && ownership.Created
 	}
-	if !created {
+	if repo.Spec.DeletionPolicy == quayv1alpha1.DeletionPolicyDelete && owns {
+		deleteAllowed = true
+	}
+	if repo.Spec.DeletionPolicy == quayv1alpha1.DeletionPolicyOrphan {
+		return r.orphanRepositoryWithClient(ctx, repo, qc, ns, name)
+	}
+	if !deleteAllowed {
 		if owns {
 			return r.releaseRepositoryWithClient(ctx, repo, qc, ns, name)
 		}
@@ -889,6 +895,44 @@ func (r *RepositoryReconciler) reconcileDelete(ctx context.Context, repo *quayv1
 	r.Recorder.Event(repo, corev1.EventTypeNormal, "Deleted",
 		fmt.Sprintf("deleted Quay repository %s/%s", ns, name))
 
+	return r.removeFinalizer(ctx, repo)
+}
+
+func (r *RepositoryReconciler) orphanRepositoryWithClient(ctx context.Context, repo *quayv1alpha1.Repository, qc RepoClient, ns, name string) (ctrl.Result, error) {
+	current, err := qc.GetRepository(ctx, ns, name)
+	recordQuayAPI(opGetRepository, ignoreNotFound(err))
+	if quay.IsNotFound(err) {
+		r.Recorder.Event(repo, corev1.EventTypeNormal, quayv1alpha1.ReasonReleased,
+			fmt.Sprintf("released Quay repository %s/%s without deleting (repository already absent)", ns, name))
+		return r.removeFinalizer(ctx, repo)
+	}
+	if err != nil {
+		r.Recorder.Event(repo, corev1.EventTypeWarning, quayv1alpha1.ReasonQuayError,
+			fmt.Sprintf("reading Quay repository %s/%s for orphan release: %v", ns, name, err))
+		return ctrl.Result{}, fmt.Errorf("reading Quay repository %s/%s for orphan release: %w", ns, name, err)
+	}
+
+	mutation := quayMutation{}
+	ownership, ok := repositoryDescriptionOwnership(current.Description)
+	if ok && ownership.Token == repositoryOwnerToken(repo) {
+		releasedDescription := repositoryDescriptionWithoutOwner(current.Description)
+		err := qc.UpdateRepositoryDescription(ctx, ns, name, releasedDescription)
+		recordQuayAPI(opUpdateRepository, err)
+		if err != nil {
+			r.Recorder.Event(repo, corev1.EventTypeWarning, quayv1alpha1.ReasonQuayError,
+				fmt.Sprintf("orphaning ownership marker for Quay repository %s/%s: %v", ns, name, err))
+			return ctrl.Result{}, fmt.Errorf("orphaning ownership marker for Quay repository %s/%s: %w", ns, name, err)
+		}
+		mutation = mutation.or(quayMutation{Mutated: true})
+	}
+	if mutation.Mutated {
+		r.stampMutation(repo, false)
+		if err := r.updateStatus(ctx, repo); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	r.Recorder.Event(repo, corev1.EventTypeNormal, quayv1alpha1.ReasonReleased,
+		fmt.Sprintf("released Quay repository %s/%s without deleting (orphaned by deletionPolicy)", ns, name))
 	return r.removeFinalizer(ctx, repo)
 }
 
