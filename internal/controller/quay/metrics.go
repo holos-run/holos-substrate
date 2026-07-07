@@ -60,6 +60,7 @@ const (
 	opDeleteRepository        = "delete_repository"
 	opListNotifications       = "list_notifications"
 	opCreateNotification      = "create_notification"
+	opUpdateNotification      = "update_notification"
 	opDeleteNotification      = "delete_notification"
 	opListTeams               = "list_teams"
 	opUpsertTeam              = "upsert_team"

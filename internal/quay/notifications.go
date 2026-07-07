@@ -49,6 +49,16 @@ type createNotificationRequest struct {
 	Title       string             `json:"title,omitempty"`
 }
 
+func newNotificationRequest(url, title string) createNotificationRequest {
+	return createNotificationRequest{
+		Event:       EventRepoPush,
+		Method:      MethodWebhook,
+		Config:      NotificationConfig{URL: url},
+		EventConfig: map[string]any{},
+		Title:       title,
+	}
+}
+
 // listNotificationsResponse is the GET .../notification/ envelope.
 type listNotificationsResponse struct {
 	Notifications []Notification `json:"notifications"`
@@ -59,18 +69,19 @@ type listNotificationsResponse struct {
 // POST /api/v1/repository/{ns}/{repo}/notification/. It returns the created
 // Notification (including the UUID Quay assigns).
 func (c *Client) CreateNotification(ctx context.Context, ns, repo, url, title string) (*Notification, error) {
-	req := createNotificationRequest{
-		Event:       EventRepoPush,
-		Method:      MethodWebhook,
-		Config:      NotificationConfig{URL: url},
-		EventConfig: map[string]any{},
-		Title:       title,
-	}
+	req := newNotificationRequest(url, title)
 	out := &Notification{}
 	if err := c.doJSON(ctx, http.MethodPost, notificationsPath(ns, repo), req, out); err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// UpdateNotification updates the repo_push webhook notification identified by
+// uuid on repository ns/repo to deliver to url and carry title.
+func (c *Client) UpdateNotification(ctx context.Context, ns, repo, uuid, webhookURL, title string) error {
+	path := notificationsPath(ns, repo) + url.PathEscape(uuid)
+	return c.doJSON(ctx, http.MethodPut, path, newNotificationRequest(webhookURL, title), nil)
 }
 
 // ListNotifications returns all notifications configured on repository ns/repo

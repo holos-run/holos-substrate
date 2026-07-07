@@ -1343,20 +1343,22 @@ func TestRepositoryAdoptAfterOrphanDoesNotDuplicateWebhook(t *testing.T) {
 	if newUUID == "" {
 		t.Fatal("replacement webhook UUID is empty, want claimed webhook recorded")
 	}
-	if newUUID == oldUUID {
-		t.Fatalf("replacement webhook UUID = old UUID %q, want a current UID-titled replacement", oldUUID)
+	if newUUID != oldUUID {
+		t.Fatalf("replacement webhook UUID = %q, want transferred UUID %q", newUUID, oldUUID)
 	}
 	if urls := fake.webhookURLs("acme", "transferrepo"); len(urls) != 1 || urls[0] != hook {
 		t.Fatalf("webhook URLs after replacement adopt = %v, want one claimed hook", urls)
 	}
-	if _, ok := fake.repos[repoKey("acme", "transferrepo")].notifications[oldUUID]; ok {
-		t.Fatalf("old webhook %q should have been replaced", oldUUID)
-	}
 	if got := fake.repos[repoKey("acme", "transferrepo")].notifications[newUUID].Title; got != repositoryWebhookTitle(replacement) {
 		t.Fatalf("replacement webhook title = %q, want %q", got, repositoryWebhookTitle(replacement))
 	}
-	if !fake.callsContain("CreateNotification:acme/transferrepo:" + hook) {
-		t.Fatalf("replacement adopt should create a current UID-titled webhook; calls after adopt were %v", fake.calls[before:])
+	for _, call := range fake.calls[before:] {
+		if call == "CreateNotification:acme/transferrepo:"+hook {
+			t.Fatalf("replacement adopt should retitle the transferred webhook, not create a duplicate; calls after adopt were %v", fake.calls[before:])
+		}
+	}
+	if !fake.callsContain("UpdateNotification:acme/transferrepo:" + oldUUID + ":" + hook) {
+		t.Fatalf("replacement adopt should retitle the transferred webhook; calls after adopt were %v", fake.calls[before:])
 	}
 }
 

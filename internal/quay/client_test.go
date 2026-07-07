@@ -552,6 +552,32 @@ func TestCreateNotification(t *testing.T) {
 	}
 }
 
+func TestUpdateNotification(t *testing.T) {
+	h := &recordingHandler{
+		t: t, wantMethod: http.MethodPut, wantPath: "/api/v1/repository/acme/web/notification/abc-123",
+		status: http.StatusOK,
+	}
+	c, _ := newTestClient(t, h)
+
+	if err := c.UpdateNotification(t.Context(), "acme", "web", "abc-123", "https://kargo.example/webhook", "kargo"); err != nil {
+		t.Fatalf("UpdateNotification: %v", err)
+	}
+	assertCommonRequest(t, h, true)
+	if h.gotBody["event"] != "repo_push" || h.gotBody["method"] != "webhook" {
+		t.Errorf("body event/method = %+v", h.gotBody)
+	}
+	cfg, ok := h.gotBody["config"].(map[string]any)
+	if !ok || cfg["url"] != "https://kargo.example/webhook" {
+		t.Errorf("body config = %v", h.gotBody["config"])
+	}
+	if _, ok := h.gotBody["eventConfig"]; !ok {
+		t.Error("body should carry eventConfig")
+	}
+	if h.gotBody["title"] != "kargo" {
+		t.Errorf("body title = %v", h.gotBody["title"])
+	}
+}
+
 func TestListNotifications(t *testing.T) {
 	h := &recordingHandler{
 		t: t, wantMethod: http.MethodGet, wantPath: "/api/v1/repository/acme/web/notification/",

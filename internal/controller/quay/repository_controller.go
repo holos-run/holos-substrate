@@ -82,6 +82,9 @@ type RepoClient interface {
 	// CreateNotification creates a repo_push webhook notification delivering to
 	// url, labeled title.
 	CreateNotification(ctx context.Context, ns, repo, url, title string) (*quay.Notification, error)
+	// UpdateNotification updates an existing repo_push webhook notification by
+	// uuid to deliver to url, labeled title.
+	UpdateNotification(ctx context.Context, ns, repo, uuid, url, title string) error
 	// DeleteNotificationIfExists deletes the notification by uuid, treating an
 	// already-absent response as success (idempotent).
 	DeleteNotificationIfExists(ctx context.Context, ns, repo, uuid string) error
@@ -557,26 +560,31 @@ func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient,
 	}
 
 	recordedUUID := repo.Status.WebhookNotificationUUID
-	matched := false
+	keepUUID := ""
 	for _, n := range notifications {
+		if n.Config.URL == url && isManagedWebhook(repo, n) {
+			keepUUID = n.UUID
+			repo.Status.WebhookNotificationUUID = n.UUID
+			break
+		}
+	}
+	for _, n := range notifications {
+		if n.UUID == keepUUID {
+			continue
+		}
 		if !isManagedWebhook(repo, n) && n.UUID != recordedUUID {
-			if recordedUUID == "" && repo.Spec.Adopt && n.Config.URL == url && isControllerWebhook(n) {
-				delErr := qc.DeleteNotificationIfExists(ctx, ns, name, n.UUID)
-				recordQuayAPI(opDeleteNotification, delErr)
-				if delErr != nil {
-					return mutation, fmt.Errorf("deleting transferred Quay notification %s on %s/%s: %w", n.UUID, ns, name, delErr)
+			if keepUUID == "" && recordedUUID == "" && repo.Spec.Adopt && n.Config.URL == url && isControllerWebhook(n) {
+				updateErr := qc.UpdateNotification(ctx, ns, name, n.UUID, url, repositoryWebhookTitle(repo))
+				recordQuayAPI(opUpdateNotification, updateErr)
+				if updateErr != nil {
+					return mutation, fmt.Errorf("claiming transferred Quay notification %s on %s/%s: %w", n.UUID, ns, name, updateErr)
 				}
+				keepUUID = n.UUID
+				repo.Status.WebhookNotificationUUID = n.UUID
 				mutation = mutation.or(quayMutation{Mutated: true, HealedDrift: repositoryPreviouslyReady})
 			}
 			// Not recorded as ours and does not carry this resource's UID-bearing
 			// title. Treat it as foreign.
-			continue
-		}
-		if !matched && n.Config.URL == url && isManagedWebhook(repo, n) {
-			// Keep exactly one correct notification. If status lost the UUID, recover it
-			// from the UID-bearing title.
-			repo.Status.WebhookNotificationUUID = n.UUID
-			matched = true
 			continue
 		}
 		// The recorded notification is stale, lacks this resource's UID-bearing title,
@@ -592,7 +600,7 @@ func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient,
 		}
 		mutation = mutation.or(quayMutation{Mutated: true, HealedDrift: repositoryPreviouslyReady})
 	}
-	if matched {
+	if keepUUID != "" {
 		return mutation, nil
 	}
 
