@@ -558,11 +558,15 @@ func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient,
 
 	recordedUUID := repo.Status.WebhookNotificationUUID
 	matched := false
-	existingControllerWebhook := false
 	for _, n := range notifications {
 		if !isManagedWebhook(repo, n) && n.UUID != recordedUUID {
-			if recordedUUID == "" && n.Config.URL == url && isControllerWebhook(n) {
-				existingControllerWebhook = true
+			if recordedUUID == "" && repo.Spec.Adopt && n.Config.URL == url && isControllerWebhook(n) {
+				delErr := qc.DeleteNotificationIfExists(ctx, ns, name, n.UUID)
+				recordQuayAPI(opDeleteNotification, delErr)
+				if delErr != nil {
+					return mutation, fmt.Errorf("deleting transferred Quay notification %s on %s/%s: %w", n.UUID, ns, name, delErr)
+				}
+				mutation = mutation.or(quayMutation{Mutated: true, HealedDrift: repositoryPreviouslyReady})
 			}
 			// Not recorded as ours and does not carry this resource's UID-bearing
 			// title. Treat it as foreign.
@@ -589,9 +593,6 @@ func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient,
 		mutation = mutation.or(quayMutation{Mutated: true, HealedDrift: repositoryPreviouslyReady})
 	}
 	if matched {
-		return mutation, nil
-	}
-	if existingControllerWebhook {
 		return mutation, nil
 	}
 

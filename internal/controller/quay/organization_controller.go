@@ -677,7 +677,7 @@ func (r *OrganizationReconciler) reconcileDelete(ctx context.Context, org *quayv
 			fmt.Sprintf("verifying ownership marker for Quay organization %q: %v", org.Spec.Name, err))
 		return ctrl.Result{}, fmt.Errorf("verifying ownership marker for Quay organization %q: %w", org.Spec.Name, err)
 	}
-	shouldDelete := owns && (policy == quayv1alpha1.DeletionPolicyDelete || (policy == "" && statusCreated(org) && markerCreated))
+	shouldDelete := owns && (policy == quayv1alpha1.DeletionPolicyDelete || (policy == "" && markerCreated))
 	if !owns {
 		eventType := corev1.EventTypeNormal
 		if policy == quayv1alpha1.DeletionPolicyDelete {

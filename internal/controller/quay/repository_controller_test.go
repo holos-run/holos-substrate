@@ -1339,19 +1339,24 @@ func TestRepositoryAdoptAfterOrphanDoesNotDuplicateWebhook(t *testing.T) {
 	if got := repoConditionStatus(replacement, quayv1alpha1.ConditionReady); got != metav1.ConditionTrue {
 		t.Fatalf("replacement Ready = %q, want True", got)
 	}
-	if got := replacement.Status.WebhookNotificationUUID; got != "" {
-		t.Fatalf("replacement webhook UUID = %q, want empty because old UID-titled hook is not claimed", got)
+	newUUID := replacement.Status.WebhookNotificationUUID
+	if newUUID == "" {
+		t.Fatal("replacement webhook UUID is empty, want claimed webhook recorded")
+	}
+	if newUUID == oldUUID {
+		t.Fatalf("replacement webhook UUID = old UUID %q, want a current UID-titled replacement", oldUUID)
 	}
 	if urls := fake.webhookURLs("acme", "transferrepo"); len(urls) != 1 || urls[0] != hook {
-		t.Fatalf("webhook URLs after replacement adopt = %v, want one preserved hook", urls)
+		t.Fatalf("webhook URLs after replacement adopt = %v, want one claimed hook", urls)
 	}
-	for _, call := range fake.calls[before:] {
-		if call == "CreateNotification:acme/transferrepo:"+hook {
-			t.Fatalf("replacement adopt created a duplicate webhook; calls were %v", fake.calls[before:])
-		}
+	if _, ok := fake.repos[repoKey("acme", "transferrepo")].notifications[oldUUID]; ok {
+		t.Fatalf("old webhook %q should have been replaced", oldUUID)
 	}
-	if _, ok := fake.repos[repoKey("acme", "transferrepo")].notifications[oldUUID]; !ok {
-		t.Fatalf("old webhook %q was not preserved", oldUUID)
+	if got := fake.repos[repoKey("acme", "transferrepo")].notifications[newUUID].Title; got != repositoryWebhookTitle(replacement) {
+		t.Fatalf("replacement webhook title = %q, want %q", got, repositoryWebhookTitle(replacement))
+	}
+	if !fake.callsContain("CreateNotification:acme/transferrepo:" + hook) {
+		t.Fatalf("replacement adopt should create a current UID-titled webhook; calls after adopt were %v", fake.calls[before:])
 	}
 }
 
