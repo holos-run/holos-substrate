@@ -356,10 +356,14 @@ func (r *OrganizationReconciler) reconcileExisting(ctx context.Context, logger l
 			markerMutated := false
 			desired := organizationOwnerToken(org, created)
 			if robot.Description != desired {
-				if err := r.replaceOwnerMarker(ctx, qc, org, desired); err != nil {
-					return r.fail(ctx, org, err, false)
+				mutated, err := r.replaceOwnerMarker(ctx, qc, org, robot.Description, desired)
+				if err != nil {
+					if mutated {
+						r.stampMutation(org, false)
+					}
+					return r.fail(ctx, org, err, mutated)
 				}
-				markerMutated = true
+				markerMutated = mutated
 			}
 			return r.reconcileOwned(ctx, logger, qc, org, actual, created, markerMutated)
 		}
@@ -456,24 +460,26 @@ func (r *OrganizationReconciler) ensureOwnerMarker(ctx context.Context, qc OrgCl
 	if uid != ownerToken(org) {
 		return false, fmt.Errorf("ownership marker on Quay organization %q holds a foreign token; refusing to claim", org.Spec.Name)
 	}
-	if err := r.replaceOwnerMarker(ctx, qc, org, token); err != nil {
-		return false, err
-	}
-	return true, nil
+	return r.replaceOwnerMarker(ctx, qc, org, robot.Description, token)
 }
 
-func (r *OrganizationReconciler) replaceOwnerMarker(ctx context.Context, qc OrgClient, org *quayv1alpha1.Organization, token string) error {
+func (r *OrganizationReconciler) replaceOwnerMarker(ctx context.Context, qc OrgClient, org *quayv1alpha1.Organization, oldToken, newToken string) (bool, error) {
 	delErr := qc.DeleteOrganizationRobotIfExists(ctx, org.Spec.Name, ownerRobotShortname)
 	recordQuayAPI(opDeleteOrganizationRobot, delErr)
 	if delErr != nil {
-		return fmt.Errorf("replacing ownership marker on Quay organization %q: deleting old marker: %w", org.Spec.Name, delErr)
+		return false, fmt.Errorf("replacing ownership marker on Quay organization %q: deleting old marker: %w", org.Spec.Name, delErr)
 	}
-	createErr := qc.CreateOrganizationRobot(ctx, org.Spec.Name, ownerRobotShortname, token)
+	createErr := qc.CreateOrganizationRobot(ctx, org.Spec.Name, ownerRobotShortname, newToken)
 	recordQuayAPI(opCreateOrganizationRobot, ignoreConflict(createErr))
 	if createErr != nil {
-		return fmt.Errorf("replacing ownership marker on Quay organization %q: creating new marker: %w", org.Spec.Name, createErr)
+		restoreErr := qc.CreateOrganizationRobot(ctx, org.Spec.Name, ownerRobotShortname, oldToken)
+		recordQuayAPI(opCreateOrganizationRobot, ignoreConflict(restoreErr))
+		if restoreErr != nil {
+			return true, fmt.Errorf("replacing ownership marker on Quay organization %q: creating new marker: %w; restoring old marker: %v", org.Spec.Name, createErr, restoreErr)
+		}
+		return true, fmt.Errorf("replacing ownership marker on Quay organization %q: creating new marker: %w", org.Spec.Name, createErr)
 	}
-	return nil
+	return true, nil
 }
 
 // conflict records a terminal Conflict condition for an org owned by another
@@ -618,12 +624,11 @@ func organizationReady(org *quayv1alpha1.Organization) bool {
 // Synced teams need no separate finalizer: deleting the Quay org cascades its
 // teams (and their default-permission prototypes), so the existing org delete is
 // sufficient cleanup for a created org. Adopted-org edge case: when the org is
-// released rather than deleted (status.Created false), the synced teams this
-// controller created inside it are intentionally NOT individually deleted — the
-// platform did not create the org and non-destructive release is the contract
-// (mirroring the org-level claim model: an adopted org is never mutated on
-// release), so the teams remain on the surviving org. This deliberate tradeoff can
-// leave controller-created teams (OIDC-synced, possibly with default repository
+// released rather than deleted (status.Created false), the finalizer strips this
+// CR's org-level marker but does not individually delete synced teams this
+// controller created inside the surviving org. The platform did not create the org
+// and non-destructive release is the contract. This deliberate tradeoff can leave
+// controller-created teams (OIDC-synced, possibly with default repository
 // permissions) behind on an adopted org, i.e. stale access grants an operator must
 // clean up out of band. The alternative — deprovisioning status.managedTeams before
 // releasing — would mutate an org the platform does not own. (Dropping a team from

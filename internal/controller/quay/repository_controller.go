@@ -539,6 +539,10 @@ func isManagedWebhook(repo *quayv1alpha1.Repository, n quay.Notification) bool {
 	return n.Event == quay.EventRepoPush && n.Method == quay.MethodWebhook && n.Title == repositoryWebhookTitle(repo)
 }
 
+func isControllerWebhook(n quay.Notification) bool {
+	return n.Event == quay.EventRepoPush && n.Method == quay.MethodWebhook && strings.HasPrefix(n.Title, webhookTitlePrefix+" ")
+}
+
 // ensureWebhook makes the controller-managed repo_push webhook notifications
 // converge on exactly one recorded notification delivering to url. Deletion is
 // gated by the Repository's UID-bearing title and recorded UUID, so a
@@ -554,8 +558,12 @@ func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient,
 
 	recordedUUID := repo.Status.WebhookNotificationUUID
 	matched := false
+	existingControllerWebhook := false
 	for _, n := range notifications {
 		if !isManagedWebhook(repo, n) && n.UUID != recordedUUID {
+			if recordedUUID == "" && n.Config.URL == url && isControllerWebhook(n) {
+				existingControllerWebhook = true
+			}
 			// Not recorded as ours and does not carry this resource's UID-bearing
 			// title. Treat it as foreign.
 			continue
@@ -581,6 +589,9 @@ func (r *RepositoryReconciler) ensureWebhook(ctx context.Context, qc RepoClient,
 		mutation = mutation.or(quayMutation{Mutated: true, HealedDrift: repositoryPreviouslyReady})
 	}
 	if matched {
+		return mutation, nil
+	}
+	if existingControllerWebhook {
 		return mutation, nil
 	}
 

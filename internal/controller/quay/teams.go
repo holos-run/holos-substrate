@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
 	"github.com/holos-run/holos-paas/internal/quay"
@@ -26,6 +27,10 @@ const managedTeamPrefix = "managed by holos-controller "
 // guessable description string is not sufficient proof of ownership).
 func managedTeamMarker(org *quayv1alpha1.Organization) string {
 	return managedTeamPrefix + ownerToken(org)
+}
+
+func hasManagedTeamMarker(description string) bool {
+	return strings.HasPrefix(description, managedTeamPrefix)
 }
 
 // teamConflictError reports that a spec.syncedTeams entry names a pre-existing
@@ -143,9 +148,11 @@ func (r *OrganizationReconciler) reconcileSyncedTeams(ctx context.Context, qc Or
 			// the marker (not the sync binding) also makes recovery robust: a team
 			// created last pass whose sync/prototype step then failed still carries
 			// the marker, so this pass heals it rather than wedging into a false
-			// TeamConflict. Adoption stays a reconcile-time error only; a future
-			// per-team adopt can flip this conflict path without an API break.
-			if existing.Description != managedTeamMarker(org) {
+			// TeamConflict. When the Organization itself is being explicitly adopted,
+			// a Holos-managed team marker from a prior orphaned CR is also accepted
+			// and re-stamped below; the org-level adoption is the explicit transfer
+			// signal for rename flows.
+			if existing.Description != managedTeamMarker(org) && !(org.Spec.Adopt && hasManagedTeamMarker(existing.Description)) {
 				// Conflict: persist progress so far, then surface the conflict.
 				r.writeManagedTeams(org, managed)
 				return mutation, &teamConflictError{team: t.Name}

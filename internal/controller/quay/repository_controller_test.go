@@ -1276,6 +1276,85 @@ func TestRepositoryDeleteOrphansCreatedRepository(t *testing.T) {
 	assertEvent(t, recorder, quayv1alpha1.ReasonReleased)
 }
 
+func TestRepositoryAdoptAfterOrphanDoesNotDuplicateWebhook(t *testing.T) {
+	ctx := t.Context()
+	ns := makeNamespace(ctx, t)
+	if err := shared.k8sClient.Create(ctx, newCredentialSecret(ns, "holos-controller-quay-creds")); err != nil {
+		t.Fatalf("creating credential secret: %v", err)
+	}
+	makeReadyOrg(ctx, t, ns, "acme")
+	const hook = "https://kargo.example.test/webhook/transfer"
+	old := &quayv1alpha1.Repository{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "old-repo"},
+		Spec: quayv1alpha1.RepositorySpec{
+			OrganizationRef: "acme",
+			Name:            "transferrepo",
+			Visibility:      quayv1alpha1.RepositoryVisibilityPrivate,
+			DeletionPolicy:  quayv1alpha1.DeletionPolicyOrphan,
+			Webhook:         &quayv1alpha1.RepositoryWebhook{URL: ptr(hook)},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, old); err != nil {
+		t.Fatalf("creating old Repository: %v", err)
+	}
+	oldKey := client.ObjectKeyFromObject(old)
+
+	fake := newFakeRepoClient()
+	r, _ := newRepoReconciler(fake, ns)
+	if err := reconcileRepoUntilStable(ctx, t, r, oldKey); err != nil {
+		t.Fatalf("reconcile old repo: %v", err)
+	}
+	old = getRepo(ctx, t, oldKey)
+	oldUUID := old.Status.WebhookNotificationUUID
+	if oldUUID == "" {
+		t.Fatal("old repository did not record a webhook UUID")
+	}
+	if err := shared.k8sClient.Delete(ctx, old); err != nil {
+		t.Fatalf("deleting old Repository: %v", err)
+	}
+	if err := reconcileRepoUntilStable(ctx, t, r, oldKey); err != nil {
+		t.Fatalf("reconcile old orphan: %v", err)
+	}
+
+	replacement := &quayv1alpha1.Repository{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "new-repo"},
+		Spec: quayv1alpha1.RepositorySpec{
+			OrganizationRef: "acme",
+			Name:            "transferrepo",
+			Visibility:      quayv1alpha1.RepositoryVisibilityPrivate,
+			Adopt:           true,
+			Webhook:         &quayv1alpha1.RepositoryWebhook{URL: ptr(hook)},
+		},
+	}
+	if err := shared.k8sClient.Create(ctx, replacement); err != nil {
+		t.Fatalf("creating replacement Repository: %v", err)
+	}
+	newKey := client.ObjectKeyFromObject(replacement)
+	before := len(fake.calls)
+	if err := reconcileRepoUntilStable(ctx, t, r, newKey); err != nil {
+		t.Fatalf("reconcile replacement adopt: %v", err)
+	}
+
+	replacement = getRepo(ctx, t, newKey)
+	if got := repoConditionStatus(replacement, quayv1alpha1.ConditionReady); got != metav1.ConditionTrue {
+		t.Fatalf("replacement Ready = %q, want True", got)
+	}
+	if got := replacement.Status.WebhookNotificationUUID; got != "" {
+		t.Fatalf("replacement webhook UUID = %q, want empty because old UID-titled hook is not claimed", got)
+	}
+	if urls := fake.webhookURLs("acme", "transferrepo"); len(urls) != 1 || urls[0] != hook {
+		t.Fatalf("webhook URLs after replacement adopt = %v, want one preserved hook", urls)
+	}
+	for _, call := range fake.calls[before:] {
+		if call == "CreateNotification:acme/transferrepo:"+hook {
+			t.Fatalf("replacement adopt created a duplicate webhook; calls were %v", fake.calls[before:])
+		}
+	}
+	if _, ok := fake.repos[repoKey("acme", "transferrepo")].notifications[oldUUID]; !ok {
+		t.Fatalf("old webhook %q was not preserved", oldUUID)
+	}
+}
+
 func TestRepositoryDeleteDeletesAdoptedRepositoryWhenPolicyDeleteAndOwned(t *testing.T) {
 	ctx := t.Context()
 	ns := makeNamespace(ctx, t)

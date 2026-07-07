@@ -71,6 +71,10 @@ type fakeOrgClient struct {
 	// robotCreateErr, when non-nil, is returned by CreateOrganizationRobot — used
 	// to simulate a failed marker stamp.
 	robotCreateErr error
+	// robotCreateErrs, when non-empty, is consumed by CreateOrganizationRobot
+	// before robotCreateErr so tests can fail one marker write and let a later
+	// restore succeed.
+	robotCreateErrs []error
 	// robotGetErr, when non-nil, is returned by GetOrganizationRobot.
 	robotGetErr error
 
@@ -199,6 +203,13 @@ func (f *fakeOrgClient) CreateOrganizationRobot(ctx context.Context, org, shortn
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("CreateRobot:" + org + ":" + description)
+	if len(f.robotCreateErrs) > 0 {
+		err := f.robotCreateErrs[0]
+		f.robotCreateErrs = f.robotCreateErrs[1:]
+		if err != nil {
+			return err
+		}
+	}
 	if f.robotCreateErr != nil {
 		return f.robotCreateErr
 	}
