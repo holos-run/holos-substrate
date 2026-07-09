@@ -42,7 +42,7 @@ holos/
 The only registered cluster is **`k3d-holos`**, the local development
 cluster — [docs/local-cluster.md](../docs/local-cluster.md) is the
 quick-start guide for creating it and applying the platform to it. The MVP
-demo target is a single Apple Silicon Mac ([ADR-7](../docs/adr/ADR-7.md)).
+demo target is a single Apple Silicon Mac ([ADR-7](../docs/adr/archive/ADR-7.md)).
 
 A production deployment area is planned but not yet established: production
 clusters will be registered alongside `k3d-holos` in
@@ -836,7 +836,7 @@ kubectl -n keycloak run psql-verify --rm -i --restart=Never \
 ### Deployment: Kargo + client-side ORAS publish
 
 The platform's deployment path is owned by **Kargo** plus a client-side
-**ORAS publish workflow** ([ADR-16](../docs/adr/ADR-16.md)): rendered
+**ORAS publish workflow** ([ADR-16](../docs/adr/archive/ADR-16.md)): rendered
 manifests are packaged and pushed to the in-cluster Quay registry as OCI
 artifacts (see
 [docs/oci-publish-workflow.md](docs/oci-publish-workflow.md)), and Kargo
@@ -863,14 +863,14 @@ collection-driven [`components/project/`](components/project/buildplan.cue) and
 [`components/application/`](components/application/buildplan.cue) components — the
 generalization of the formerly hand-authored scaffold (the bespoke
 `components/my-project` was deleted). It lays down everything one project needs to
-receive Kargo-driven OCI delivery ([ADR-16](../docs/adr/ADR-16.md)) and is the
+receive Kargo-driven OCI delivery ([ADR-16](../docs/adr/archive/ADR-16.md)) and is the
 template for a future self-service `ProjectRequest` (below). How to register
 your own project and app — the `owners` map, the app `project`/`image`/`port`
 fields, the env-prefixed namespace model and the bare-`<name>` control
 namespace, the primitive-role → Quay-team and → app-client binding, and the
 `scripts/apply-projects` workflow — is the authoring guide
 [docs/project-and-application-templates.md](docs/project-and-application-templates.md)
-([ADR-21](../docs/adr/ADR-21.md), `Implemented`). Its rendered resources are:
+([ADR-21](../docs/adr/archive/ADR-21.md), `Implemented`). Its rendered resources are:
 
 - a **Namespace** (`my-project`) — registered centrally in
   [`namespaces.cue`](namespaces.cue), **not** emitted by the component (per

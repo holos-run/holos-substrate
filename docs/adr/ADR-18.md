@@ -68,7 +68,7 @@ and that the later, more detailed ADRs build on.
   distinction and the manual `platform-automation` org bootstrap. The controller
   this ADR names is that "future Quay Resource Controller."
 - [ADR-16 — Kargo-Driven Promotion with a Client-Side CLI Build-and-Publish
-  (ORAS) Workflow](ADR-16.md): the deployment half of the developer experience —
+  (ORAS) Workflow](archive/ADR-16.md): the deployment half of the developer experience —
   Holos renders the platform, the rendered manifests are packaged as an OCI
   artifact, Kargo promotes, and Argo CD syncs. This ADR records the
   rendered-manifest GitOps model that ADR-16's pipeline operates within, and the
@@ -205,7 +205,7 @@ pattern**, the same pattern the rest of the platform already uses:
    manifests.
 2. **Argo CD syncs the rendered manifests.** Those manifests are delivered to
    the cluster through Argo CD, packaged and promoted by the
-   [ADR-16](ADR-16.md) pipeline (a Kustomize-built OCI artifact, watched by Kargo,
+   [ADR-16](archive/ADR-16.md) pipeline (a Kustomize-built OCI artifact, watched by Kargo,
    pinned by digest in the Argo CD `Application`'s `targetRevision`).
 3. **The controller's CRDs are referenced by those manifests and reconciled
    in-cluster.** A project's rendered manifests include custom resources from the
@@ -269,7 +269,7 @@ controller ships, and the controller is what closes it.
      resource never inlines repository creation.
 3. **The developer experience is delivered via the GitOps rendered-manifest
    pattern, to start:** Holos renders CUE collections to manifests, Argo CD syncs
-   them (via the [ADR-16](ADR-16.md) pipeline), and the controller's CRDs —
+   them (via the [ADR-16](archive/ADR-16.md) pipeline), and the controller's CRDs —
    referenced by those rendered manifests — are reconciled in-cluster.
 4. **This controller is the "future Quay Resource Controller"** referenced by
    [ADR-15](ADR-15.md) Revisions 4–5 and the

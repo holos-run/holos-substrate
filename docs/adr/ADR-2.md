@@ -30,8 +30,8 @@ tracked independently.
 - [Kubernetes Resource Model (KRM)](https://github.com/kubernetes/design-proposals-archive/blob/main/architecture/resource-management.md)
 - Related principle ADRs, which refine and depend on the decisions here:
   - [ADR-3 — Authorization via Kubernetes RBAC and Group Membership](ADR-3.md)
-  - [ADR-4 — Multi-Tenancy](ADR-4.md)
-  - [ADR-5 — Chargeback, Quotas, and Limits (GCP Model)](ADR-5.md)
+  - [ADR-4 — Multi-Tenancy](archive/ADR-4.md)
+  - [ADR-5 — Chargeback, Quotas, and Limits (GCP Model)](archive/ADR-5.md)
 
 ## Design
 
@@ -57,9 +57,9 @@ detail in their own ADRs so each can carry its own status and revision history:
 - **Authorization** uses Kubernetes RBAC, with access obtained through group
   membership — see [ADR-3](ADR-3.md).
 - **Multi-tenancy** is a first-class requirement of the API — see
-  [ADR-4](ADR-4.md).
+  [ADR-4](archive/ADR-4.md).
 - **Chargeback, quotas, and limits** follow the GCP model — see
-  [ADR-5](ADR-5.md).
+  [ADR-5](archive/ADR-5.md).
 
 ## Decision
 
@@ -71,8 +71,8 @@ detail in their own ADRs so each can carry its own status and revision history:
    specify the reasons the KRM is not fit for purpose, so the decision can be
    re-evaluated as the KRM evolves.
 4. The platform additionally adopts the principles specified in
-   [ADR-3](ADR-3.md) (authorization), [ADR-4](ADR-4.md) (multi-tenancy), and
-   [ADR-5](ADR-5.md) (chargeback, quotas, and limits). These ADRs depend on and
+   [ADR-3](ADR-3.md) (authorization), [ADR-4](archive/ADR-4.md) (multi-tenancy), and
+   [ADR-5](archive/ADR-5.md) (chargeback, quotas, and limits). These ADRs depend on and
    refine the principles established here.
 
 ## Consequences

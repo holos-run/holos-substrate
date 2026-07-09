@@ -1,5 +1,10 @@
 # End-to-End MVP Deployment Flow: Two Registry-Event Loops
 
+> **Archived (PaaS era).** This ADR records a decision made for the Holos PaaS
+> prototype and was archived during the Holos Substrate rebrand. It is kept for the
+> historical record; see the [active decision log](../README.md)
+> for the ADRs that govern the substrate.
+
 | Metadata | Value                            |
 | -------- | -------------------------------- |
 | Date     | 2026-06-12                       |
@@ -32,8 +37,8 @@ experience** — what happens, hop by hop, between a product engineer's
 `docker push` and the new version rolling out. The second half of that path —
 rendering CUE, publishing the rendered manifests as an OCI artifact, and Argo
 CD syncing it — exists only as deferred notes in ADR-11 and as research
-([Argo CD OCI report](../research/argocd-oci-image-tag-updates.md),
-[render+publish report](../research/rendered-manifests-publish-pipeline.md)).
+([Argo CD OCI report](../../research/argocd-oci-image-tag-updates.md),
+[render+publish report](../../research/rendered-manifests-publish-pipeline.md)).
 
 What is the authoritative end-to-end flow of the Holos PaaS MVP, and how do
 its two halves connect? This flow is the core functionality of the MVP; this
@@ -48,11 +53,11 @@ ADR records it as a single design, centered on the sequence diagram below.
 - [ADR-9 — Webhook Receiver: Thin NATS Ingress](ADR-9.md)
 - [ADR-10 — Webhook Subscriber: Parse and Dispatch](ADR-10.md)
 - [ADR-11 — Deployer Task Subscriber and the Application Resource](ADR-11.md)
-- [ADR-2 — Core Platform Principles](ADR-2.md) (the KRM is the primary API)
-- [Research: Handling Image-Tag Updates in Argo CD with an OCI Manifest Source](../research/argocd-oci-image-tag-updates.md)
+- [ADR-2 — Core Platform Principles](../ADR-2.md) (the KRM is the primary API)
+- [Research: Handling Image-Tag Updates in Argo CD with an OCI Manifest Source](../../research/argocd-oci-image-tag-updates.md)
   — concludes Argo CD syncs rendered manifests from an OCI artifact and the
   pipeline sets `Application.targetRevision`
-- [Research: Performing the Re-render + ORAS Publish Step in the Event-Driven Pipeline](../research/rendered-manifests-publish-pipeline.md)
+- [Research: Performing the Re-render + ORAS Publish Step in the Event-Driven Pipeline](../../research/rendered-manifests-publish-pipeline.md)
   — concludes a dedicated render-task subscriber owns `holos render` + ORAS
   publish; specifies consumer tuning, idempotency, and credentials
 - [ORAS](https://oras.land/) — pushes the rendered-manifests directory as an
@@ -192,7 +197,7 @@ carries the application identity (name/namespace), repository, tag, and an
 idempotency key derived from the source event.
 
 **Render (step 5).** The render subscriber is the dedicated slow stage from
-the [render+publish report](../research/rendered-manifests-publish-pipeline.md).
+the [render+publish report](../../research/rendered-manifests-publish-pipeline.md).
 It resolves the pushed tag to its immutable digest, then runs
 `holos render platform --inject app_image=<repo>@<digest>` so the rendered
 YAML pins the exact image. For the MVP the platform CUE configuration is
@@ -233,7 +238,7 @@ those annotations against the freshly resolved inputs:
 [ADR-8](ADR-8.md)'s immutable-tag preference makes the mismatch case the
 exception, but the digest comparison keeps the pipeline correct even for
 mutable tags. The input-addressed tagging scheme from the
-[render+publish report](../research/rendered-manifests-publish-pipeline.md)
+[render+publish report](../../research/rendered-manifests-publish-pipeline.md)
 (`render-<config-digest>-<image-digest>`) is the recorded alternative if
 mirrored tags prove confusing once the platform config becomes its own OCI
 artifact. Either way, loop 2 deploys the **digest**, so a stale tag can
@@ -281,7 +286,7 @@ remains deferred is Git write-back, not OCI delivery.
 
 ### Why loop 2 is webhook-driven
 
-The [render+publish report](../research/rendered-manifests-publish-pipeline.md)
+The [render+publish report](../../research/rendered-manifests-publish-pipeline.md)
 sketched the render subscriber publishing the deployer task directly
 (render → `tasks.deploy`, no second webhook). This ADR instead routes loop 2
 through the registry notification, deliberately:

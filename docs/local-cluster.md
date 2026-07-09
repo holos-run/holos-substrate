@@ -17,7 +17,7 @@ This is the foundation for the Holos PaaS MVP — see
 for the full milestone plan.
 
 > **Platform note:** `scripts/local-dns` is macOS-only. The MVP demo target is
-> an Apple Silicon Mac (see [ADR-7](adr/ADR-7.md)). Linux users must configure
+> an Apple Silicon Mac (see [ADR-7](adr/archive/ADR-7.md)). Linux users must configure
 > dnsmasq or systemd-resolved themselves to resolve `*.holos.internal` to
 > `127.0.0.1`.
 
@@ -151,7 +151,7 @@ Quay, which needs the holos Quay **organization** configured first. On a freshly
 rebuilt cluster that organization does not exist yet, so doing the publish from
 `scripts/apply` would race the Quay setup and fail (HOL-1379). The remaining
 bootstrap is therefore a **fully-scripted sequence** of separate steps (HOL-1380,
-[ADR-16 Rev 4](adr/ADR-16.md)) that `scripts/apply` prints on completion. Run them
+[ADR-16 Rev 4](adr/archive/ADR-16.md)) that `scripts/apply` prints on completion. Run them
 **in order**:
 
 ```bash
@@ -382,7 +382,7 @@ Confirm the pushed tag in the Quay UI under that namespace (repositories
 auto-created by push are private).
 
 > **Docker trust note:** on the MVP target — OrbStack on Apple silicon
-> ([ADR-7](adr/ADR-7.md)) — OrbStack syncs the macOS keychain trust store
+> ([ADR-7](adr/archive/ADR-7.md)) — OrbStack syncs the macOS keychain trust store
 > into its Docker daemon, so the mkcert root installed by
 > `scripts/local-ca` is already trusted and `docker push` just works. With
 > Docker Desktop instead place the CA at

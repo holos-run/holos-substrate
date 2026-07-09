@@ -16,9 +16,9 @@
 This report researches the state-of-the-art, open-source, Kubernetes-native
 methods for updating a deployed application's **image tag** in **Argo CD**, under
 the constraints the Holos PaaS MVP imposes. It exists to **inform the ADRs** for
-the deployment pipeline — primarily [ADR-11](../adr/ADR-11.md) (deployer) and
-[ADR-8](../adr/ADR-8.md) (registry/tagging), and the pipeline overview in
-[ADR-6](../adr/ADR-6.md).
+the deployment pipeline — primarily [ADR-11](../adr/archive/ADR-11.md) (deployer) and
+[ADR-8](../adr/archive/ADR-8.md) (registry/tagging), and the pipeline overview in
+[ADR-6](../adr/archive/ADR-6.md).
 
 ## Constraints (the problem framed for our context)
 
@@ -38,8 +38,8 @@ There are **two** OCI artifacts in play, and conflating them causes most of the
 confusion in this space:
 
 1. The **application image** — e.g. the KubeRay app container
-   ([ADR-7](../adr/ADR-7.md)), pushed to a registry with a tag
-   ([ADR-8](../adr/ADR-8.md)). Its tag *is* the version.
+   ([ADR-7](../adr/archive/ADR-7.md)), pushed to a registry with a tag
+   ([ADR-8](../adr/archive/ADR-8.md)). Its tag *is* the version.
 2. The **rendered-manifests artifact** — the fully-rendered YAML produced by
    `holos render`, packaged as an OCI artifact (via ORAS) and synced by Argo CD
    as its Application source.
@@ -81,7 +81,7 @@ to change in fully-rendered YAML.
 **What it is.** Use Argo CD's first-class OCI source: the `Application` points at
 `oci://…` with `targetRevision` set to the rendered-manifests artifact's tag or
 digest. When a new app image is deployed, the **holos-controller deployer**
-([ADR-11](../adr/ADR-11.md)) patches the Argo CD `Application` resource's
+([ADR-11](../adr/archive/ADR-11.md)) patches the Argo CD `Application` resource's
 `targetRevision` to the new artifact version. No extra deployment components; no
 Git.
 
@@ -92,7 +92,7 @@ artifact, and syncs.
 
 **Why it's picked.**
 - **Most Kubernetes-native and fewest moving parts** — the update is an ordinary
-  CR write, which the deployer already performs in [ADR-11](../adr/ADR-11.md)
+  CR write, which the deployer already performs in [ADR-11](../adr/archive/ADR-11.md)
   ("for the MVP the deployer can simply update the Application resource").
 - **No GitHub dependency** by construction — the source of truth for "which
   version is live" is the `Application.targetRevision`, set in-cluster.
@@ -106,7 +106,7 @@ artifact, and syncs.
 - Directly patching the Argo CD `Application` is **imperative**: if Argo CD's own
   Application manifests are themselves GitOps-managed later, the patched
   `targetRevision` must be reconciled with that source (this is precisely the Git
-  write-back that the MVP defers — see [ADR-11](../adr/ADR-11.md)).
+  write-back that the MVP defers — see [ADR-11](../adr/archive/ADR-11.md)).
 - The controller must own the logic to map "new app image tag → manifests
   artifact version," including re-rendering/publishing the artifact if that is
   not done upstream.
@@ -137,11 +137,11 @@ registries. So a Git-free Kargo flow is: Warehouse detects the new image →
   no-GitHub constraint without giving up an auditable promotion record (Freight
   history lives in cluster state).
 - **Grows into the deferred roadmap.** Kargo's stages, verification, and manual
-  approval gates map directly onto [ADR-11](../adr/ADR-11.md)'s deferred
+  approval gates map directly onto [ADR-11](../adr/archive/ADR-11.md)'s deferred
   **separation-of-duty** control and onto a future multi-environment promotion
   story — adopting it for the MVP buys optionality.
 - Handles **OCI retagging** natively, which fits a registry-centric
-  ([ADR-8](../adr/ADR-8.md)) pipeline.
+  ([ADR-8](../adr/archive/ADR-8.md)) pipeline.
 
 **Limitations / honest caveats.**
 - **Heaviest of the three** — a new controller and a new mental model
@@ -181,7 +181,7 @@ candidate under our constraint.
   Updater's Git-free method **has nothing to act on**.
 - It would only fit if we **retained a thin Helm/Kustomize image-override layer**
   in Argo CD instead of fully-rendered manifests — which **contradicts the Holos
-  rendered-manifests pattern** ([ADR-6](../adr/ADR-6.md)). Its `git` method *can*
+  rendered-manifests pattern** ([ADR-6](../adr/archive/ADR-6.md)). Its `git` method *can*
   update rendered manifests, but that **reintroduces the GitHub dependency the
   MVP forbids.**
 - Its `argocd`-method changes are also **"pseudo-persistent"** (lost if the
@@ -209,12 +209,12 @@ Documented here so the choice not to lead with it is explicit and revisitable.
 For the MVP, **lead with Option 1**: Argo CD native OCI source with the
 holos-controller deployer updating the `Application`'s `targetRevision`. It is the
 smallest, most Kubernetes-native change, it has **no GitHub dependency**, and it
-is the literal realization of [ADR-11](../adr/ADR-11.md)'s "the deployer can
+is the literal realization of [ADR-11](../adr/archive/ADR-11.md)'s "the deployer can
 simply update the Application resource."
 
 **Keep Option 2 (Kargo) as the designated growth path.** When the milestone needs
 registry-watching, multi-stage promotion, or the deferred separation-of-duty gate
-([ADR-11](../adr/ADR-11.md)), adopt Kargo's `Warehouse` + `argocd-update`
+([ADR-11](../adr/archive/ADR-11.md)), adopt Kargo's `Warehouse` + `argocd-update`
 (Git-free) rather than building those primitives in the controller.
 
 **Do not adopt Option 3 (Image Updater) for the rendered-manifests path**, because
@@ -224,16 +224,16 @@ a Helm/Kustomize image-override layer.
 
 ## How this informs the ADRs
 
-- **[ADR-6](../adr/ADR-6.md) (pipeline):** the terminal stage targets Argo CD via
+- **[ADR-6](../adr/archive/ADR-6.md) (pipeline):** the terminal stage targets Argo CD via
   an **OCI manifest source**, not Git; the MVP is GitHub-independent end to end.
-- **[ADR-8](../adr/ADR-8.md) (registry/tagging):** there are **two** artifacts —
+- **[ADR-8](../adr/archive/ADR-8.md) (registry/tagging):** there are **two** artifacts —
   the app image and the rendered-manifests OCI artifact; prefer **immutable
   digests** so `targetRevision` is exact. The registry is the source of truth for
   the version.
-- **[ADR-10](../adr/ADR-10.md) (subscriber):** the deployer-task message should
+- **[ADR-10](../adr/archive/ADR-10.md) (subscriber):** the deployer-task message should
   carry enough to resolve the **manifests artifact version** (digest/tag), not
   just the app image tag, so the deployer can set `targetRevision`.
-- **[ADR-11](../adr/ADR-11.md) (deployer):** adopt **Option 1** for the MVP —
+- **[ADR-11](../adr/archive/ADR-11.md) (deployer):** adopt **Option 1** for the MVP —
   patch the Argo CD `Application.targetRevision` to the new OCI artifact. Record
   **Kargo** as the chosen mechanism for the **deferred** Git write-back and
   separation-of-duty work, and record **why Image Updater is not used** with

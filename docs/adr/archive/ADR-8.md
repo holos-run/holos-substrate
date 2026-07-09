@@ -1,5 +1,10 @@
 # Container Registry and Image Tagging
 
+> **Archived (PaaS era).** This ADR records a decision made for the Holos PaaS
+> prototype and was archived during the Holos Substrate rebrand. It is kept for the
+> historical record; see the [active decision log](../README.md)
+> for the ADRs that govern the substrate.
+
 | Metadata | Value                                |
 | -------- | ------------------------------------ |
 | Date     | 2026-06-09                           |
@@ -27,7 +32,7 @@ rest of the pipeline?
 - [ADR-9 — Webhook Receiver: Thin NATS Ingress](ADR-9.md) (consumes the push
   webhook)
 - [OCI Distribution Spec](https://github.com/opencontainers/distribution-spec)
-- [Research: Handling Image-Tag Updates in Argo CD with an OCI Manifest Source](../research/argocd-oci-image-tag-updates.md)
+- [Research: Handling Image-Tag Updates in Argo CD with an OCI Manifest Source](../../research/argocd-oci-image-tag-updates.md)
   (the two-artifact model and digest pinning)
 
 ## Design
@@ -60,7 +65,7 @@ pivot; it prompts the client-side render that publishes the rendered-manifests
 artifact, and *that* publish is what the Kargo `Warehouse` observes.
 
 The research on Argo CD OCI delivery
-([report](../research/argocd-oci-image-tag-updates.md)) draws out a distinction
+([report](../../research/argocd-oci-image-tag-updates.md)) draws out a distinction
 this milestone must carry forward: there are **two** OCI artifacts — the
 **application image** (this ADR) and the **rendered-manifests artifact** that
 Argo CD syncs ([ADR-11](ADR-11.md)). Because Holos bakes the application image

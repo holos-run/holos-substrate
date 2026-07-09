@@ -1,5 +1,10 @@
 # MVP Heroku-Style Deployment Pipeline
 
+> **Archived (PaaS era).** This ADR records a decision made for the Holos PaaS
+> prototype and was archived during the Holos Substrate rebrand. It is kept for the
+> historical record; see the [active decision log](../README.md)
+> for the ADRs that govern the substrate.
+
 | Metadata | Value                         |
 | -------- | ----------------------------- |
 | Date     | 2026-06-09                    |
@@ -33,7 +38,7 @@ its own status and revision history.
 
 ## Context / References
 
-- [ADR-2 — Core Platform Principles](ADR-2.md) — the KRM is the primary API; the
+- [ADR-2 — Core Platform Principles](../ADR-2.md) — the KRM is the primary API; the
   deployer ultimately reconciles a custom resource.
 - [ADR-1 — Project Resource](ADR-1.md) — the tenant that owns an application and
   its deployments.
@@ -48,7 +53,7 @@ its own status and revision history.
   publish** stage between parse and deploy (six stages total)
 - [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream)
 - [JetStream WorkQueue retention](https://docs.nats.io/nats-concepts/jetstream/streams#retentionpolicy)
-- [Research: Handling Image-Tag Updates in Argo CD with an OCI Manifest Source](../research/argocd-oci-image-tag-updates.md)
+- [Research: Handling Image-Tag Updates in Argo CD with an OCI Manifest Source](../../research/argocd-oci-image-tag-updates.md)
   (how the terminal stage reaches Argo CD without Git)
 
 ## Design

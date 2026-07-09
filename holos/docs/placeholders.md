@@ -12,7 +12,7 @@ deferred git-source projection.** ArgoCD is installed (the `argocd-crds` and
 `argocd` components, [`components/argocd/`](../components/argocd/argocd.cue),
 UI at `https://argocd.holos.internal`), and the platform's own rendered
 manifests are now reconciled by ArgoCD from an **OCI App-of-Apps over the
-`holos-substrate-config:dev` config bundle** (HOL-1373, [ADR-16 Rev 3](../../docs/adr/ADR-16.md)):
+`holos-substrate-config:dev` config bundle** (HOL-1373, [ADR-16 Rev 3](../../docs/adr/archive/ADR-16.md)):
 
 - The committed `holos/deploy/` tree is published as one OCI bundle
   (`holos-substrate-config:dev`, mutable tag) by `scripts/publish-config`
@@ -69,7 +69,7 @@ flip it to deliver the platform — the OCI App-of-Apps already does that.
 ## Project/Application templates: deferred follow-ups
 
 The collection-driven Project and Application components
-([ADR-21](../../docs/adr/ADR-21.md), `Implemented` as of HOL-1358 — see the
+([ADR-21](../../docs/adr/archive/ADR-21.md), `Implemented` as of HOL-1358 — see the
 [authoring guide](project-and-application-templates.md)) ship the one-line
 self-service registration and a single wired delivery path. ADR-21's
 "scaffold all envs, wire one delivery path" scope leaves three follow-ups
@@ -231,10 +231,10 @@ local cluster guide.
 Two earlier placeholders covered the NATS event-driven deployment pipeline: the
 unauthenticated `nats` JetStream backbone (NKEY/credentials auth deferred) and
 the thin webhook receiver's deferred edge signature verification
-([ADR-9](../../docs/adr/ADR-9.md)/[ADR-10](../../docs/adr/ADR-10.md)).
+([ADR-9](../../docs/adr/archive/ADR-9.md)/[ADR-10](../../docs/adr/archive/ADR-10.md)).
 
 That pipeline was **retired in HOL-1241**: ADR-9/10/11/14 are now `Deprecated`
-and superseded by [ADR-16](../../docs/adr/ADR-16.md), and the
+and superseded by [ADR-16](../../docs/adr/archive/ADR-16.md), and the
 `nats`/`webhook-receiver`/`webhook-subscriber` components, their Go code, and the
 `wss://nats.holos.internal` debug endpoint were removed. Deployment is now
 driven by Kargo plus the client-side build-and-publish workflow

@@ -309,7 +309,7 @@ anchor is injected.
 
 ### caBundle injection vs. the `projects` App-of-Apps (the OCI bootstrap)
 
-The App-of-Apps OCI bootstrap (HOL-1373, [ADR-16 Rev 3](../adr/ADR-16.md);
+The App-of-Apps OCI bootstrap (HOL-1373, [ADR-16 Rev 3](../adr/archive/ADR-16.md);
 split per-project in HOL-1382, Rev 6) reconciles the project/application resources
 — including each project's Quay `Organization` and each app's `Repository` — from
 an OCI bundle: as of HOL-1382 each project has its **own** per-project

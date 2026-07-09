@@ -25,7 +25,7 @@ it create new organizations).
 > CRDs ([ADR-19](../adr/ADR-19.md), `Status: Implemented`) reconcile the
 > **org/repo/webhook** provisioning in-cluster, retiring the data-plane parts of
 > the hand procedure below. The proposed Holos Project and Application components
-> ([ADR-21](../adr/ADR-21.md)) are what would emit those CRDs per project/app.
+> ([ADR-21](../adr/archive/ADR-21.md)) are what would emit those CRDs per project/app.
 > Note the credential this runbook produces is **not** one of those CRDs: the
 > controller *reads* this OAuth-Application token from the
 > **`holos-controller-quay-creds` Secret in the `holos-controller` namespace**

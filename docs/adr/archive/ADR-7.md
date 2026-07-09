@@ -1,5 +1,10 @@
 # KubeRay Reference Workload on k3d
 
+> **Archived (PaaS era).** This ADR records a decision made for the Holos PaaS
+> prototype and was archived during the Holos Substrate rebrand. It is kept for the
+> historical record; see the [active decision log](../README.md)
+> for the ADRs that govern the substrate.
+
 | Metadata | Value                          |
 | -------- | ------------------------------ |
 | Date     | 2026-06-09                     |

@@ -36,7 +36,7 @@ group (`keycloak.holos.run`) for the per-project, tenant-facing identity
 primitives a product engineer needs to self-service.
 
 The concrete, motivating use case is **project group management**. A logical
-project `my-project` ([ADR-1](ADR-1.md)) needs the GCP-style primitive-role
+project `my-project` ([ADR-1](archive/ADR-1.md)) needs the GCP-style primitive-role
 triad — `owner` / `editor` / `viewer` — expressed as Keycloak groups whose
 membership surfaces, in the shared OIDC `groups` claim, as the values
 `my-project-owner` / `my-project-editor` / `my-project-viewer`. Those exact claim
@@ -110,8 +110,8 @@ later implementation issues.
   one. ADR-3's authorization *model* is unchanged — RBAC bindings with `Group`
   subjects, membership a custodian approves; this ADR only changes **who
   provisions the groups and runs the approval**.
-- [ADR-1 — Project resource](ADR-1.md) and [ADR-21 — Holos Project/Application
-  components](ADR-21.md): the logical Project tenant whose `owner`/`editor`/
+- [ADR-1 — Project resource](archive/ADR-1.md) and [ADR-21 — Holos Project/Application
+  components](archive/ADR-21.md): the logical Project tenant whose `owner`/`editor`/
   `viewer` primitive roles these groups realize, and the (proposed) CUE components
   that would **emit** these Keycloak CRs alongside the Quay
   [ADR-19](ADR-19.md) resources for each project.
@@ -1522,7 +1522,7 @@ that work.
   disjoint ownership safe despite the global-realm / namespaced-CRD tension —
   config-cli's no-delete posture alone would not. Keeping the reserved set in sync
   is itself an implementation guard rail.
-- **Foundation for the Project/Application components ([ADR-21](ADR-21.md)).** These
+- **Foundation for the Project/Application components ([ADR-21](archive/ADR-21.md)).** These
   Keycloak CRs are the identity resources a project's rendered manifests would emit
   alongside the Quay [ADR-19](ADR-19.md) resources; ADR-21 generalizes the
   `my-project` scaffold to emit both halves per project. Advancing this ADR past

@@ -51,7 +51,7 @@ This ADR documents the resulting behavior.
 - [ADR-3 — Authorization via Kubernetes RBAC and group membership](ADR-3.md):
   the platform's authz model keys on Keycloak group membership; the `groups`
   claim is the shared currency between the realm and the relying parties.
-- [ADR-8 — Container registry and image tagging](ADR-8.md): the registry this
+- [ADR-8 — Container registry and image tagging](archive/ADR-8.md): the registry this
   ADR adds SSO to.
 - The Argo CD OIDC client (`publicClient: true`, PKCE S256), reconciled by the
   same `keycloak-config` Job, is the model this integration follows

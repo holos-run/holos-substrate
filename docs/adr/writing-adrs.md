@@ -55,6 +55,29 @@ A new ADR starts as `Proposed`. Once agreed upon it becomes `Approved`, then
 no longer the recommended approach becomes `Deprecated` but is kept for the
 historical record — do not delete ADRs.
 
+## Archiving
+
+Archiving is how the do-not-delete rule is honored when a whole era of
+decisions stops governing the project. When an ADR's subject matter no longer
+applies — not merely a superseded approach (that is `Deprecated`), but a
+decision for a product direction the project has moved away from — move it
+into [archive/](archive/README.md) with `git mv` so history follows the file,
+and:
+
+1. Add a top-of-file blockquote noting the ADR is archived and why, linking
+   back to the [active index](README.md). Leave its status and revision
+   tables unchanged.
+2. Fix relative links in both directions: links from the archived ADR to kept
+   files gain a `../` prefix, and links from kept files to the archived ADR
+   point at `archive/ADR-<n>.md`.
+3. Move its index row from the active table in [README.md](README.md) to the
+   *Archived* table.
+
+The PaaS-era ADRs archived during the Holos Substrate rebrand are the worked
+example; see [archive/README.md](archive/README.md). Archived ADRs are never
+revised except to fix links; a new decision that supersedes an archived one is
+recorded in a new ADR, not in the archive.
+
 ## Conventions
 
 - One decision per ADR. If you find yourself making two unrelated decisions,

@@ -1,5 +1,10 @@
 # Kargo-Driven Promotion with a Client-Side CLI Build-and-Publish (ORAS) Workflow
 
+> **Archived (PaaS era).** This ADR records a decision made for the Holos PaaS
+> prototype and was archived during the Holos Substrate rebrand. It is kept for the
+> historical record; see the [active decision log](../README.md)
+> for the ADRs that govern the substrate.
+
 | Metadata | Value                                              |
 | -------- | -------------------------------------------------- |
 | Date     | 2026-06-14                                         |
@@ -31,7 +36,7 @@ in-cluster services** plus a NATS JetStream backbone before a single application
 can deploy.
 
 The decisive constraint surfaced during the render+publish research
-([report](../research/rendered-manifests-publish-pipeline.md), §2.4): **OSS Kargo
+([report](../../research/rendered-manifests-publish-pipeline.md), §2.4): **OSS Kargo
 cannot host the Holos render step.** Kargo's built-in render steps are
 `kustomize-build` and `helm-template` only, its `oci-push` step copies or retags
 *existing* artifacts but cannot package a local directory of rendered YAML, and
@@ -61,12 +66,12 @@ pivot.
   message-schema ADRs whose in-cluster components are eschewed/deferred under this
   pivot (now `Deprecated`). The `Application`-as-deploy-target concept from
   [ADR-11](ADR-11.md) survives the pivot (see Design).
-- [Research: Performing the Re-render + ORAS Publish Step in the Event-Driven Pipeline](../research/rendered-manifests-publish-pipeline.md)
+- [Research: Performing the Re-render + ORAS Publish Step in the Event-Driven Pipeline](../../research/rendered-manifests-publish-pipeline.md)
   — §2.4 establishes that OSS Kargo's `oci-push` only copies existing artifacts
   and that custom render steps are enterprise-only; §2.6–2.7 verify
   `holos render platform --inject` and ORAS directory push; the comparison table
   names Kargo as the registry-watch/promote growth path.
-- [Research: Handling Image-Tag Updates in Argo CD with an OCI Manifest Source](../research/argocd-oci-image-tag-updates.md)
+- [Research: Handling Image-Tag Updates in Argo CD with an OCI Manifest Source](../../research/argocd-oci-image-tag-updates.md)
   — Argo CD ≥ 3.1 consuming an OCI source by **digest** in `targetRevision`; the
   two-artifact model (application image vs. rendered-manifests artifact).
 - [Kargo](https://docs.kargo.io/) — `Warehouse`/`Freight`/`Stage` and the
@@ -91,7 +96,7 @@ build-and-publish workflow** on the client side, not in the cluster:
 2. Render the platform with the new image injected:
    `holos render platform --inject app_image=<repo>@sha256:<digest>` (the verified
    tag-injection mechanism — see the
-   [render+publish report](../research/rendered-manifests-publish-pipeline.md)
+   [render+publish report](../../research/rendered-manifests-publish-pipeline.md)
    §2.6). Inject the **digest-pinned** reference so the rendered YAML is exact.
 3. **Package the rendered output as a Kustomize-built OCI artifact**, then
    `oras push` it to the application's rendered-manifests repository.
@@ -151,7 +156,7 @@ In the cluster, **Kargo** watches the registry and promotes:
 - A Kargo **`Stage`** runs an **`argocd-update`** promotion step that patches the
   Argo CD `Application`'s **`targetRevision`** to the new artifact's immutable
   digest. Argo CD then syncs the rendered manifests from the OCI source
-  ([argocd-oci report](../research/argocd-oci-image-tag-updates.md)). Two Kargo
+  ([argocd-oci report](../../research/argocd-oci-image-tag-updates.md)). Two Kargo
   prerequisites must be set up for this step to take effect, and the
   implementation phase must honor them:
   - **The target Argo CD `Application` authorizes the Stage** via the
@@ -200,7 +205,7 @@ of a second, complementary OCI delivery path added in HOL-1373: an Argo CD
   digest and pushes an immutable input-addressed tag to `holos-paas-manifests`
   for Kargo; this one bundles the reviewed platform render under one stable
   handle for Argo CD to bootstrap the whole platform from. See
-  [holos/docs/oci-publish-workflow.md](../../holos/docs/oci-publish-workflow.md)
+  [holos/docs/oci-publish-workflow.md](../../../holos/docs/oci-publish-workflow.md)
   (*Platform config bundle*).
 - **Two AppProjects — system vs. tenant separation.** Two Argo CD
   `AppProject`s split platform delivery by trust scope (the `argocd-projects`
@@ -262,7 +267,7 @@ of a second, complementary OCI delivery path added in HOL-1373: an Argo CD
 This bootstrap **supersedes the deferred per-component `git`-source projection**
 (`userDefinedBuildPlan`'s `argoAppDisabled` flip) **for the platform**: platform
 self-delivery is now the OCI App-of-Apps, not a git-source Application per
-component. See [holos/docs/placeholders.md](../../holos/docs/placeholders.md)
+component. See [holos/docs/placeholders.md](../../../holos/docs/placeholders.md)
 (*ArgoCD gitops delivery*).
 
 ### What is eschewed / deferred
@@ -286,7 +291,7 @@ build-and-publish ORAS workflow plus Kargo:
   are out of scope of this ADR.)
 
 These documents are kept for the historical record and marked `Deprecated`, per
-[writing-adrs.md](writing-adrs.md) — ADRs are never deleted.
+[writing-adrs.md](../writing-adrs.md) — ADRs are never deleted.
 
 ## Decision
 

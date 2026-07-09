@@ -16,7 +16,7 @@
 
 A project's resources today are entirely **platform-rendered**: a one-line
 registration in `holos/projects/<name>.cue` drives the Project component
-([ADR-21](ADR-21.md)), which renders the project's control-plane custom
+([ADR-21](archive/ADR-21.md)), which renders the project's control-plane custom
 resources — the `keycloak.holos.run` role/custodian groups, the owner
 `KeycloakUser`, the project `KeycloakClient`, the Quay `Organization`, and the
 Kargo/Argo CD wiring — into the bare `<name>` control namespace, applied by
@@ -44,7 +44,7 @@ grant is a control-plane resource the project owner manages.
 - [ADR-3 — Authorization via Kubernetes RBAC and Group Membership](ADR-3.md):
   access is group membership approved by custodians; RBAC bindings with
   `Group` subjects map membership to access.
-- [ADR-1 — Project Resource](ADR-1.md): the Project tenant and its
+- [ADR-1 — Project Resource](archive/ADR-1.md): the Project tenant and its
   `owner`/`editor`/`viewer` primitive roles.
 - [ADR-20 — Keycloak API Group](ADR-20.md): the `KeycloakGroup` (role and
   custodian trees, FGAP v2 custodian delegation), the `KeycloakUser`
@@ -66,7 +66,7 @@ grant is a control-plane resource the project owner manages.
   write a `KeycloakUser` could join any user to any group with no consent
   from the group's owner. This ADR builds its grant path on that Kind and
   does not redefine it; the ADR-20 revision owns the spec.
-- [ADR-21 — Holos Project and Application Components](ADR-21.md): the
+- [ADR-21 — Holos Project and Application Components](archive/ADR-21.md): the
   rendered scaffold this ADR layers the owner-managed plane on top of,
   including the owner RoleBinding (the built-in `admin` ClusterRole bound to
   the `projects/<name>/roles/owner` group in the bare `<name>` namespace).
@@ -113,7 +113,7 @@ bare `<name>` control namespace as the rendered control-plane CRs — one
 legible home for a project's control plane regardless of which plane wrote
 each object. The existing machinery already accommodates them:
 
-- The owner RoleBinding ([ADR-21](ADR-21.md)) binds the
+- The owner RoleBinding ([ADR-21](archive/ADR-21.md)) binds the
   `projects/<name>/roles/owner` group to the built-in `admin` ClusterRole in
   that namespace.
 - The `keycloak-instance` component's `ReferenceGrant` already authorizes
@@ -324,7 +324,7 @@ write**:
 
 ### What the rendered `owners` map means now
 
-The registration's `owners` map ([ADR-21](ADR-21.md)) remains the **standing
+The registration's `owners` map ([ADR-21](archive/ADR-21.md)) remains the **standing
 owner set**: the bootstrap grant that exists before any owner can act, and
 the platform's durable record of who ultimately holds the project. Under
 HOL-1457 it renders as `KeycloakGroupMembership` CRs seeding the owners into
@@ -358,7 +358,7 @@ are idempotent, and each CR manages its own member edges independently.
 ## Decision
 
 1. **Project resources are laid out in three planes**: the platform-rendered
-   scaffold (git-owned, [ADR-21](ADR-21.md)), the owner-managed control plane
+   scaffold (git-owned, [ADR-21](archive/ADR-21.md)), the owner-managed control plane
    (KRM CRs in the bare `<name>` control namespace), and identity-system
    day-2 operations (FGAP v2 custodians, [ADR-20](ADR-20.md)).
 2. **Control-plane resources are the project owner's management surface — a

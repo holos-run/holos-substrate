@@ -9,8 +9,8 @@ holos-paas needs to host several cooperating Go services alongside the Holos
 CUE configuration: Kubernetes controllers reconciling a related set of custom
 resources (the platform API), a reverse proxy that authenticates requests via
 OIDC and forwards them with Kubernetes impersonation headers, the NATS webhook
-receiver/subscriber/deployer pipeline ([ADR-6](../adr/ADR-6.md) through
-[ADR-11](../adr/ADR-11.md)), and small reconcilers for Keycloak group
+receiver/subscriber/deployer pipeline ([ADR-6](../adr/archive/ADR-6.md) through
+[ADR-11](../adr/archive/ADR-11.md)), and small reconcilers for Keycloak group
 membership and Quay self-service resources. How do the highest quality
 projects in this space lay out their repositories, and which patterns fit a
 rendered-manifests (Holos) workflow?

@@ -22,13 +22,13 @@ rendered-manifests OCI artifact that Argo CD syncs?
 
 **Recommendation: add a dedicated render-task subscriber as its own stage in the
 existing NATS JetStream pipeline.** The webhook subscriber
-([ADR-10](../adr/ADR-10.md)) stays a thin parser that emits a *render task*; a
+([ADR-10](../adr/archive/ADR-10.md)) stays a thin parser that emits a *render task*; a
 new subscriber consumes it from its own WorkQueue stream, runs
 `holos render platform --inject <app-image-tag>` against platform CUE
 configuration sourced from an OCI artifact (or baked into its container image —
 no GitHub), packages `deploy/` with ORAS (the `oras-go/v2` library, in-process),
 pushes the rendered-manifests artifact, resolves its digest, and publishes the
-*deployer task* carrying that digest; the deployer ([ADR-11](../adr/ADR-11.md))
+*deployer task* carrying that digest; the deployer ([ADR-11](../adr/archive/ADR-11.md))
 remains a tiny, idempotent KRM patcher that sets the Argo CD
 `Application.targetRevision`. This is verified feasible: `holos render platform`
 supports `--inject key=value` CUE tag injection (confirmed in the holos source
@@ -198,7 +198,7 @@ reproducibility (§4.5).
    the push verb but not the trigger). So the comparison is really about *where
    our code runs*, not *whether to write it*.
 2. **Inline-in-an-existing-subscriber (A/B) saves one deployment but couples
-   mismatched workloads.** [ADR-9](../adr/ADR-9.md)/[ADR-10](../adr/ADR-10.md)'s
+   mismatched workloads.** [ADR-9](../adr/archive/ADR-9.md)/[ADR-10](../adr/archive/ADR-10.md)'s
    whole design argument is decoupling fast ingress from slow downstream; a
    multi-minute CUE render inside the parse stage recreates exactly the
    head-of-line blocking the WorkQueue was introduced to prevent. B is worse on
@@ -224,8 +224,8 @@ reproducibility (§4.5).
 ### 4.1 Which subscriber
 
 **A new, dedicated render-task subscriber** — not the webhook subscriber (keep
-[ADR-10](../adr/ADR-10.md) thin: parse, normalize, dispatch) and not the
-deployer (keep [ADR-11](../adr/ADR-11.md) a single idempotent KRM write). It is
+[ADR-10](../adr/archive/ADR-10.md) thin: parse, normalize, dispatch) and not the
+deployer (keep [ADR-11](../adr/archive/ADR-11.md) a single idempotent KRM write). It is
 "an existing subscriber pattern" in the architectural sense: the same
 Go-binary-consuming-a-WorkQueue shape as ADR-10/11, on the same JetStream
 backbone, fed by the queue the webhook subscriber already publishes to. The
@@ -320,11 +320,11 @@ map of app→digest, or per-app tags.)
   Same input → same artifact, achieved by check-then-render rather than by
   hoping for bit-reproducibility. Semantically the artifact remains
   content-addressed *downstream*: the DeployTask and `targetRevision` carry the
-  immutable **digest**, satisfying [ADR-8](../adr/ADR-8.md)'s digest-pinning
+  immutable **digest**, satisfying [ADR-8](../adr/archive/ADR-8.md)'s digest-pinning
   preference.
 - The DeployTask carries the idempotency key; the deployer's patch is naturally
   idempotent (same `targetRevision` value → no-op), satisfying
-  [ADR-11](../adr/ADR-11.md)'s "converge, not oscillate."
+  [ADR-11](../adr/archive/ADR-11.md)'s "converge, not oscillate."
 
 ### 4.6 Ack semantics for a slow consumer
 
@@ -373,8 +373,8 @@ options A/B cannot achieve.
 | Registry push transient failure | `Nak()` with delay → redelivery with backoff, up to MaxDeliver. |
 | MaxDeliver exhausted | `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.<stream>.<consumer>` advisory; capture into the DLQ stream. **Caveat:** advisories carry only sequence metadata, and there are open reports of message loss with WorkQueue retention + R3 + max-deliver ([nats-server #7817](https://github.com/nats-io/nats-server/issues/7817)) — hence the explicit-DLQ-publish-then-Term pattern above is the primary mechanism, advisories the backstop. |
 | Subscriber crash mid-render | AckWait expires (no more InProgress) → redelivery; tag-exists check makes the retry cheap if push had completed. |
-| Stale/duplicate webhook (redelivered raw event upstream) | Idempotency key from [ADR-10](../adr/ADR-10.md) + tag-exists fast path → re-publish same DeployTask → deployer no-op. |
-| Renders pile up under burst | WorkQueue absorbs the backlog by design ([ADR-6](../adr/ADR-6.md)/[ADR-9](../adr/ADR-9.md)); MaxAckPending=1 + coalescing keeps the renderer at one render at a time on the latest version. |
+| Stale/duplicate webhook (redelivered raw event upstream) | Idempotency key from [ADR-10](../adr/archive/ADR-10.md) + tag-exists fast path → re-publish same DeployTask → deployer no-op. |
+| Renders pile up under burst | WorkQueue absorbs the backlog by design ([ADR-6](../adr/archive/ADR-6.md)/[ADR-9](../adr/archive/ADR-9.md)); MaxAckPending=1 + coalescing keeps the renderer at one render at a time on the latest version. |
 
 ### 4.9 How the deployer sets `targetRevision`
 
@@ -392,28 +392,28 @@ is exact.
 
 ## 5. Implications for the ADRs
 
-- **[ADR-6](../adr/ADR-6.md) (pipeline):** the MVP pipeline gains a sixth stage
+- **[ADR-6](../adr/archive/ADR-6.md) (pipeline):** the MVP pipeline gains a sixth stage
   between parse and deploy: **render & publish**. The seam is, as everywhere
   else, a durable WorkQueue subject. The "five stages" enumeration and the
   diagram should be updated; the deferral language in ADR-6/11 ("GitOps
   reconciliation … deferred") is partially superseded — *Git* write-back stays
   deferred, but *re-render + OCI publish* moves into the MVP, because without it
   a new app tag has no rendered-manifests artifact to point Argo CD at.
-- **[ADR-8](../adr/ADR-8.md) (registry):** now **three** artifacts live in the
+- **[ADR-8](../adr/archive/ADR-8.md) (registry):** now **three** artifacts live in the
   registry: app image, rendered-manifests artifact, and (option 2) the
   platform-config artifact. The registry needs push credentials for the render
   subscriber and the planning note should add: repository layout/naming for the
   manifests and config artifacts, and the input-addressed tagging convention
   `render-<config>-<image>`.
-- **[ADR-9](../adr/ADR-9.md) (receiver):** unchanged.
-- **[ADR-10](../adr/ADR-10.md) (webhook subscriber):** the subscriber's output
+- **[ADR-9](../adr/archive/ADR-9.md) (receiver):** unchanged.
+- **[ADR-10](../adr/archive/ADR-10.md) (webhook subscriber):** the subscriber's output
   message becomes (or is joined by) a **RenderTask**, not a deploy-ready task —
   it cannot know the manifests artifact digest, which only exists after
   rendering. The planning note's requirement to "carry enough to resolve the
   rendered-manifests artifact version" is satisfied structurally: the render
   stage *produces* that version. ADR-10 should also state explicitly that the
   subscriber performs **no rendering** (the thin-stage rationale).
-- **[ADR-11](../adr/ADR-11.md) (deployer):** the deployer consumes the render
+- **[ADR-11](../adr/archive/ADR-11.md) (deployer):** the deployer consumes the render
   stage's DeployTask and patches `targetRevision` to the digest — confirming the
   prior research's Option 1 and giving it its missing piece ("the controller
   must own the logic to map new app image tag → manifests artifact version,

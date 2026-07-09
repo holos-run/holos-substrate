@@ -40,7 +40,8 @@ identity store (`AUTHENTICATION_TYPE: OIDC`), which removed the local `admin` us
 and the headless token-mint path, so an operator follows the
 [Quay Resource Controller credentials runbook](../runbooks/quay-resource-controller-credentials.md)
 to mint a superuser OAuth-Application credential and click through the rest. The
-[`my-project` delivery scaffold](../../holos/components/my-project/buildplan.cue)
+`my-project` delivery scaffold (since generalized into the collection-driven
+[project component](../../holos/components/project/buildplan.cue))
 documents the surface that procedure must cover: it emits the Kargo control plane
 and the Argo CD Application but **explicitly defers** the Quay org, repo, and
 `repo_push` webhook registration "to a future Quay Resource Controller." The
@@ -98,9 +99,9 @@ the docker-push-to-deploy goal, not a complete model of Quay's API.
   records the second binary/image (`cmd/holos-controller`, `Dockerfile.controller`)
   and the conventional-kubebuilder `main.go` carve-out from the Fisk CLI
   guardrail (ADR-17) the controller manager process is built with.
-- [ADR-8 — Container registry and image tagging](ADR-8.md): the registry these
+- [ADR-8 — Container registry and image tagging](archive/ADR-8.md): the registry these
   CRDs provision orgs and repositories in.
-- [ADR-16 — Kargo-Driven Promotion](ADR-16.md): the promotion pipeline a
+- [ADR-16 — Kargo-Driven Promotion](archive/ADR-16.md): the promotion pipeline a
   Repository's `repo_push` webhook feeds — a push notifies a Kargo `Warehouse`.
   **Boundary (AC #7):** the `quay.holos.run` *API group* takes no Kargo
   dependency; the webhook URL is delivered to the Repository as an opaque
@@ -432,7 +433,7 @@ themselves, their membership custodians, and the per-project OIDC client/role
 model — is **future work**, specified in the proposed
 [ADR-20](ADR-20.md) (the Keycloak API group: per-project Client, `owner`/`editor`/`viewer`
 Client Roles, and custodian-managed Group creation/membership) and
-[ADR-21](ADR-21.md) (the Holos Project/Application components that would emit the
+[ADR-21](archive/ADR-21.md) (the Holos Project/Application components that would emit the
 Organization with its `syncedTeams` alongside the Keycloak groups). Until those
 land, the OIDC groups are provisioned by hand (or do not yet exist) and the
 Organization's `syncedTeams` references them **by name** — which is precisely why
@@ -528,7 +529,7 @@ status:
 ### Webhook: `url` vs `urlSecretRef`
 
 The Repository's optional `webhook` registers a Quay `repo_push` notification so a
-push notifies a downstream receiver (the Kargo `Warehouse`, [ADR-16](ADR-16.md)).
+push notifies a downstream receiver (the Kargo `Warehouse`, [ADR-16](archive/ADR-16.md)).
 The target URL is supplied **exactly one** of two ways, enforced by a CEL
 `+kubebuilder:validation:XValidation` on the `webhook` object:
 

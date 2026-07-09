@@ -1,5 +1,10 @@
 # Chargeback, Quotas, and Limits (GCP Model)
 
+> **Archived (PaaS era).** This ADR records a decision made for the Holos PaaS
+> prototype and was archived during the Holos Substrate rebrand. It is kept for the
+> historical record; see the [active decision log](../README.md)
+> for the ADRs that govern the substrate.
+
 | Metadata | Value                  |
 |----------|------------------------|
 | Date     | 2026-06-06             |
@@ -22,7 +27,7 @@ cognitively expensive for consumers to reason about?
 
 ## References
 
-- [ADR-2 — Core Platform Principles](ADR-2.md)
+- [ADR-2 — Core Platform Principles](../ADR-2.md)
 - [ADR-1 — Project Resource](ADR-1.md) (the tenant these are scoped to)
 - [ADR-4 — Multi-Tenancy](ADR-4.md)
 - [GCP: Working with quotas](https://cloud.google.com/docs/quotas)
@@ -81,4 +86,4 @@ controls.
   for each is specified in follow-up ADRs that build on this decision.
 - Quota and limit enforcement depends on reliable `Project` identity from
   [ADR-1](ADR-1.md) / [ADR-4](ADR-4.md) and is authorized through
-  [ADR-3](ADR-3.md).
+  [ADR-3](../ADR-3.md).

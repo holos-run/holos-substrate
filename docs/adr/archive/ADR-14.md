@@ -1,5 +1,10 @@
 # Message Schemas via ConnectRPC Protobuf Definitions
 
+> **Archived (PaaS era).** This ADR records a decision made for the Holos PaaS
+> prototype and was archived during the Holos Substrate rebrand. It is kept for the
+> historical record; see the [active decision log](../README.md)
+> for the ADRs that govern the substrate.
+
 | Metadata | Value                            |
 | -------- | -------------------------------- |
 | Date     | 2026-06-13                       |
@@ -49,16 +54,16 @@ through NATS JetStream, and what tool produces it?
   "define the deployer task message schema … a stable, versioned contract")
 - [ADR-11 — Deployer Task Subscriber and the Application Resource](ADR-11.md)
   (consumes the deploy task)
-- [ADR-12 — Repository Layout for Multiple Go Services](ADR-12.md) (single Go
+- [ADR-12 — Repository Layout for Multiple Go Services](../ADR-12.md) (single Go
   module; all implementation under `internal/`)
 - [ADR-13 — End-to-End MVP Deployment Flow](ADR-13.md) (names the `RenderTask`
   and `DeployTask` messages and the `tasks.render` / `tasks.deploy` subjects)
-- [holos/README.md — NATS JetStream backbone and connection contract](../../holos/README.md#nats-jetstream-backbone-and-connection-contract)
+- [holos/README.md — NATS JetStream backbone and connection contract](../../../holos/README.md#nats-jetstream-backbone-and-connection-contract)
   (the subject hierarchy and stream definitions)
 - [ConnectRPC](https://connectrpc.com/), [Protocol Buffers](https://protobuf.dev/),
   and [buf](https://buf.build/docs) — the schema toolchain
 - **Prior art:** holos-console is a Go + React application built **over
-  ConnectRPC** ([heroku-onramp-demo.md](../demo/heroku-onramp-demo.md)); the buf
+  ConnectRPC** ([heroku-onramp-demo.md](../../demo/heroku-onramp-demo.md)); the buf
   module layout, code generation, and lint/breaking-change checks are already an
   organization-wide convention. Recent console work (e.g. the `ResolveScopedTemplates`
   RPC) adds messages by editing `.proto` and regenerating.
@@ -103,7 +108,7 @@ by hand.**
   a build output kept in sync by a `make generate` target and verified by a CI
   diff-clean check (the same pattern `scripts/render` uses for rendered
   manifests).
-- **Layout follows [ADR-12](ADR-12.md).** The single module keeps `.proto`
+- **Layout follows [ADR-12](../ADR-12.md).** The single module keeps `.proto`
   sources under `proto/holos/paas/…` with a `buf.yaml` module and `buf.gen.yaml`
   at the repository root; generated Go lands under `internal/gen/…`, consistent
   with ADR-12's rule that all implementation lives under `internal/`.
@@ -131,9 +136,9 @@ by hand.**
 ### The MVP message set
 
 Three messages cover the MVP's two-loop flow ([ADR-13](ADR-13.md)). The
-committed
-[`proto/holos/paas/pipeline/v1alpha1/pipeline.proto`](../../proto/holos/paas/pipeline/v1alpha1/pipeline.proto)
-is the source of truth and authoritative on field names and numbers; the
+committed `proto/holos/paas/pipeline/v1alpha1/pipeline.proto` (removed with
+the NATS pipeline retirement, HOL-1241; see git history) was the source of
+truth and authoritative on field names and numbers; the
 following reproduce it. Note each task message carries an in-band
 `int32 schema_version = 1` so a consumer can fail closed on an unknown version
 even though the package path is the coarse version.
@@ -232,7 +237,7 @@ resolution are deferred (ADR-13).
    message as the typed parse target; this ADR does not change ADR-9's framing.
 4. Messages live in the versioned package **`holos.paas.pipeline.v1alpha1`**,
    with `.proto` under `proto/` and generated Go under `internal/gen/`, per
-   [ADR-12](ADR-12.md).
+   [ADR-12](../ADR-12.md).
 5. The MVP message set is **`QuayRepositoryPush`, `RenderTask`, and
    `DeployTask`**. Schema evolution follows protobuf compatibility rules,
    enforced by `buf breaking` in CI.

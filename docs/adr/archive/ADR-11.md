@@ -1,5 +1,10 @@
 # Deployer Task Subscriber and the Application Resource
 
+> **Archived (PaaS era).** This ADR records a decision made for the Holos PaaS
+> prototype and was archived during the Holos Substrate rebrand. It is kept for the
+> historical record; see the [active decision log](../README.md)
+> for the ADRs that govern the substrate.
+
 | Metadata | Value                 |
 | -------- | --------------------- |
 | Date     | 2026-06-09            |
@@ -28,20 +33,20 @@
 The subscriber emits a deployer task message ([ADR-10](ADR-10.md)) carrying the
 application and the image version to deploy. Something must act on it and make
 the new version the desired state. What does the deployer do for the MVP, and how
-does it relate to the KRM ([ADR-2](ADR-2.md)) and to production-grade GitOps?
+does it relate to the KRM ([ADR-2](../ADR-2.md)) and to production-grade GitOps?
 
 ## Context / References
 
 - [ADR-6 — MVP Heroku-Style Deployment Pipeline](ADR-6.md)
 - [ADR-10 — Webhook Subscriber: Parse and Dispatch](ADR-10.md) (produces the
   deployer task)
-- [ADR-2 — Core Platform Principles](ADR-2.md) (the KRM is the primary API)
+- [ADR-2 — Core Platform Principles](../ADR-2.md) (the KRM is the primary API)
 - [ADR-1 — Project Resource](ADR-1.md) (the tenant that owns the `Application`)
 - [ADR-13 — End-to-End MVP Deployment Flow: Two Registry-Event Loops](ADR-13.md)
   — the end-to-end flow this deployer terminates; moves the OCI
   rendered-manifests delivery described below from deferred into MVP scope
 - [Holos](https://holos.run/) — `holos render platform` as the GitOps render step
-- [Research: Handling Image-Tag Updates in Argo CD with an OCI Manifest Source](../research/argocd-oci-image-tag-updates.md)
+- [Research: Handling Image-Tag Updates in Argo CD with an OCI Manifest Source](../../research/argocd-oci-image-tag-updates.md)
   — informs the deferred GitOps mechanism below
 
 ## Design
@@ -50,13 +55,13 @@ The deployer task subscriber consumes deployer task messages and, for the MVP,
 **updates an `Application` resource** to the new version — the
 configuration-image version produced by the render stage
 ([ADR-13](ADR-13.md)). The `Application` is a custom resource
-([ADR-2](ADR-2.md)) owned by a `Project` ([ADR-1](ADR-1.md)); writing the new
+([ADR-2](../ADR-2.md)) owned by a `Project` ([ADR-1](ADR-1.md)); writing the new
 version to its `spec` makes that version the desired state, and the
 controller's reconcilers drive the cluster to match — for the MVP by patching
 the Argo CD `Application`'s **`targetRevision`** to the new artifact digest,
 so Argo CD syncs the rendered manifests from the **OCI artifact** (Argo CD
 native OCI source, no Git write-back), per the research
-([report](../research/argocd-oci-image-tag-updates.md)) and
+([report](../../research/argocd-oci-image-tag-updates.md)) and
 [ADR-13](ADR-13.md). Keeping the deployer's job to "update one KRM resource"
 keeps this stage small and idempotent.
 
@@ -93,13 +98,13 @@ Two layers are **deliberately deferred** beyond the MVP:
    to the new configuration-image version ([ADR-13](ADR-13.md)); the controller
    reconciles the cluster to that resource by patching the Argo CD
    `Application`'s `targetRevision`.
-2. The `Application` is a **KRM custom resource** ([ADR-2](ADR-2.md)) owned by a
+2. The `Application` is a **KRM custom resource** ([ADR-2](../ADR-2.md)) owned by a
    `Project` ([ADR-1](ADR-1.md)). Its detailed schema is to be specified in a
    follow-up ADR (see the planning note).
 3. **OCI rendered-manifests delivery is MVP scope** ([ADR-13](ADR-13.md)): Argo
    CD syncs rendered manifests from an **OCI artifact** and the controller
    updates the Argo CD `Application`'s `targetRevision`, per the
-   [research report](../research/argocd-oci-image-tag-updates.md) — GitHub-
+   [research report](../../research/argocd-oci-image-tag-updates.md) — GitHub-
    independent by construction. **Git write-back** — unify current into desired
    state and commit the rendered manifests — is **deferred** beyond the MVP.
 4. **Separation-of-duty gating** for production promotion (e.g. a +1 chat
@@ -110,7 +115,7 @@ Two layers are **deliberately deferred** beyond the MVP:
 - The MVP closes the loop — a pushed tag becomes a running version — with the
   smallest possible terminal stage: a single KRM write.
 - Modeling the deploy target as an `Application` resource keeps the platform
-  Kubernetes-native ([ADR-2](ADR-2.md)) and reuses the controller's
+  Kubernetes-native ([ADR-2](../ADR-2.md)) and reuses the controller's
   reconciliation, RBAC, and audit surfaces.
 - Writing the resource directly bypasses Git as the source of truth; the
   deferred Git write-back loop (automated commit of the rendered manifests) is

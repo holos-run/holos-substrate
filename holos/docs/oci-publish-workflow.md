@@ -264,7 +264,7 @@ script, `scripts/apply-platform-app-of-apps`** (HOL-1382, split out of the forme
 **organization** (the public `holos-substrate-config` repository and a push-capable Quay
 robot credential) configured first; on a freshly rebuilt cluster that organization
 does not exist yet, so publishing from `scripts/apply` raced the manual Quay setup
-and failed (HOL-1379, [ADR-16 Rev 4](../../docs/adr/ADR-16.md)). The repository is
+and failed (HOL-1379, [ADR-16 Rev 4](../../docs/adr/archive/ADR-16.md)). The repository is
 **public** (HOL-1381), so Argo CD pulls the bundle **anonymously** — no pull
 credential, and the `argocd-projects` component registers it with Argo CD via a
 credential-less repository Secret (carrying only `url`/`type`/`insecure`) committed
@@ -367,7 +367,7 @@ byte-identical artifact digests across re-pushes (tar/gzip timestamps mean the
 same content can yield a different artifact digest), which is exactly why the
 fast path reuses the existing artifact rather than re-pushing. `targetRevision`
 carries the immutable *digest* the push reports (consistent with
-[ADR-8](../../docs/adr/ADR-8.md)'s digest-pinning preference). Override the
+[ADR-8](../../docs/adr/archive/ADR-8.md)'s digest-pinning preference). Override the
 computed tag with `ARTIFACT_TAG=…` only when you deliberately want to break this
 guarantee.
 
@@ -483,7 +483,7 @@ docker rm -f reg
 
 The artifact this workflow publishes is consumed by Kargo, which drives the
 rollout that the in-cluster NATS deployer subscriber used to drive
-([ADR-16](../../docs/adr/ADR-16.md)). For the spike this is wired end-to-end for
+([ADR-16](../../docs/adr/archive/ADR-16.md)). For the spike this is wired end-to-end for
 **one** representative application — the **echo** sample workload
 ([`components/echo/`](../components/echo/buildplan.cue)) — across two components:
 
@@ -651,7 +651,7 @@ created by either script and must be provisioned by hand:
 - the `my-project/my-project-config` **repository** and its `repo_push` webhook —
   reconcilable by a `quay.holos.run` Repository CR, but that CR is **not** emitted
   by the component yet (the proposed Holos Project/Application components,
-  [ADR-21](../../docs/adr/ADR-21.md), would emit it);
+  [ADR-21](../../docs/adr/archive/ADR-21.md), would emit it);
 - the **push robot**, the **Argo CD repository (pull) Secret** in `argocd`, and
   the **Kargo image-credential Secret** the Warehouse authenticates registry tag
   discovery with — these are **not** modeled by the `quay.holos.run` CRDs at all
