@@ -2,7 +2,7 @@
 # (ADR-23, HOL-1385). Included from the root Makefile.
 #
 # Every target here is namespaced authenticator-* so it never collides with the
-# holos-paas targets (build, test, docker-build, publish, ...) or the
+# shared root Makefile targets (test, publish, config-push, ...) or the
 # holos-controller targets (controller-*), and it does not touch scripts/apply,
 # scripts/render, or scripts/publish. As of HOL-1386 it includes controller-gen
 # code-generation targets (authenticator-generate / authenticator-manifests) for
@@ -11,7 +11,7 @@
 
 # Container image coordinates for the authenticator. Defaults target the local
 # k3d in-cluster registry so a pushed image is pullable by the cluster (mirrors
-# the holos-paas IMAGE_* and the CONTROLLER_IMAGE_* defaults).
+# the CONTROLLER_IMAGE_* defaults in Makefile.controller).
 AUTHENTICATOR_IMAGE_REPO ?= quay.holos.internal/holos/holos-authenticator
 AUTHENTICATOR_IMAGE_TAG  ?= dev
 AUTHENTICATOR_IMAGE      ?= $(AUTHENTICATOR_IMAGE_REPO):$(AUTHENTICATOR_IMAGE_TAG)
@@ -165,8 +165,8 @@ authenticator-docker-build: ## Build the authenticator image for $(AUTHENTICATOR
 authenticator-docker-push: ## Build for $(AUTHENTICATOR_PLATFORM) and push $(AUTHENTICATOR_IMAGE) to the registry.
 	docker buildx build --platform $(AUTHENTICATOR_PLATFORM) $(call oci-build-args,AUTHENTICATOR) -f Dockerfile.authenticator -t $(AUTHENTICATOR_IMAGE) --push .
 
-# Multi-arch authenticator image index. Mirrors the root docker-buildx pair and
-# reuses the same shared $(BUILDX_BUILDER), since all services produce identical
+# Multi-arch authenticator image index. Mirrors controller-docker-buildx and
+# reuses the same shared $(BUILDX_BUILDER), since both services produce identical
 # cross-compiled output from one docker-container builder. No QEMU is required —
 # Dockerfile.authenticator pins the builder stage to $BUILDPLATFORM and
 # cross-compiles via the Go toolchain.
@@ -175,8 +175,8 @@ authenticator-docker-push: ## Build for $(AUTHENTICATOR_PLATFORM) and push $(AUT
 # docker-buildx-builder target (defined in the root Makefile, visible here via
 # the include) rather than duplicating the guard. A single owner of the shared
 # builder keeps the host-network/driver guard in one place and means a parallel
-# `make -j docker-buildx authenticator-docker-buildx` cannot race two recipes
-# creating/removing the same builder.
+# `make -j controller-docker-buildx authenticator-docker-buildx` cannot race two
+# recipes creating/removing the same builder.
 .PHONY: authenticator-docker-buildx-builder
 authenticator-docker-buildx-builder: docker-buildx-builder ## Ensure the shared docker-container buildx builder $(BUILDX_BUILDER) exists.
 

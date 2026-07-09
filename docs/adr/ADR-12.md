@@ -15,6 +15,7 @@
 | 4        | 2026-06-14 | @jeffmccune | The CLI is built with Fisk, not Cobra ([ADR-17](ADR-17.md)); the command tree lives in `internal/cli` |
 | 5        | 2026-06-17 | @jeffmccune | The first concrete controller API group is `quay.holos.run` ([ADR-18](ADR-18.md)), refining the `registry.holos.run` illustration below; the multi-group `<group>.holos.run` convention is unchanged |
 | 6        | 2026-06-18 | @jeffmccune | The Holos Controller (HOL-1309..HOL-1313, [ADR-18](ADR-18.md)/[ADR-19](ADR-19.md)) ships as a **second binary and image** (`cmd/holos-controller` + `Dockerfile.controller`) **within the same single module** — a bounded exception to Option A's one-binary/one-image rule for a process with a different lifecycle (controller-runtime manager). Its conventional-kubebuilder `main.go` (stdlib `flag` + zap) is a recorded **carve-out from the Fisk-only CLI guardrail** ([ADR-17](ADR-17.md)), which stays scoped to the user-facing `holos-paas` CLI. The single-module decision and `api/<group>/<version>` layout are unchanged |
+| 7        | 2026-07-09 | @jeffmccune | The prototype `holos-paas` multi-service binary, its container image, and its Fisk CLI are **removed** (HOL-1541): `cmd/holos-paas/`, `internal/cli/`, the root `Dockerfile`, and the `github.com/choria-io/fisk` dependency are deleted. **Two service binaries remain** — `cmd/holos-controller` (+ `Dockerfile.controller`) and `cmd/holos-authenticator` (+ `Dockerfile.authenticator`). The single-module decision, the `api/<group>/<version>` conventions, and the `internal/` layout are unchanged |
 
 > **Note (rev 3):** The NATS webhook receiver, subscriber, and deployer named
 > below as motivating services were retired in HOL-1241 — deployment moved to
@@ -25,6 +26,20 @@
 > `internal/`) is unchanged and still governs; the service names and
 > `internal/` example paths in the sections below are the decision-time
 > illustration, not a current inventory.
+
+> **Note (rev 7):** The prototype `holos-paas` multi-service binary itself was
+> removed in HOL-1541: `cmd/holos-paas/`, `internal/cli/`, and the root
+> `Dockerfile` no longer exist. Option A's "one binary, one image" framing in
+> the options analysis, the layout tree's `Dockerfile`/`cmd/holos-paas/`
+> entries, and the "load-bearing choices" describing the `holos-paas`
+> subcommands below are the **decision-time illustration**, not the current
+> inventory. What still governs is the single root module, the
+> `api/<group>/<version>` multi-group conventions, and all implementation
+> under `internal/`; the layout is now realized by **two service binaries** —
+> `cmd/holos-controller` (+ `Dockerfile.controller`, the Revision 6 exception)
+> and `cmd/holos-authenticator` (+ `Dockerfile.authenticator`, [ADR-23](ADR-23.md))
+> — each its own image. The Fisk CLI convention ([ADR-17](ADR-17.md)) has no
+> remaining subject and is now `Deprecated`.
 
 ## Context and Problem Statement
 

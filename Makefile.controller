@@ -2,14 +2,14 @@
 # (ADR-18, HOL-1309). Included from the root Makefile.
 #
 # Every target here is namespaced controller-* so it never collides with the
-# existing holos-paas targets (build, test, docker-build, publish, ...) and does
+# shared root Makefile targets (test, publish, config-push, ...) and does
 # not touch scripts/apply, scripts/render, or scripts/publish. controller-gen
 # and kustomize are pinned and installed under bin/, the standard kubebuilder
 # convention, so generation is reproducible without a system-wide install.
 
 # Container image coordinates for the controller. Defaults target the local k3d
-# in-cluster registry so a pushed image is pullable by the cluster (mirrors the
-# holos-paas IMAGE_* defaults in the root Makefile).
+# in-cluster registry so a pushed image is pullable by the cluster (see
+# docs/local-cluster.md).
 CONTROLLER_IMAGE_REPO ?= quay.holos.internal/holos/holos-controller
 CONTROLLER_IMAGE_TAG  ?= dev
 CONTROLLER_IMAGE      ?= $(CONTROLLER_IMAGE_REPO):$(CONTROLLER_IMAGE_TAG)
@@ -104,7 +104,7 @@ controller-manifests-build: kustomize-tool ## Render config/deploy/holos-control
 # The controller-{install,deploy,undeploy} targets are the isolated install
 # entrypoints. They wrap kubectl apply/delete against the service-specific
 # kustomize bases and deliberately never invoke scripts/apply, scripts/render, or
-# any holos-paas target. The holos-controller Namespace is owned centrally by
+# any shared root Makefile target. The holos-controller Namespace is owned centrally by
 # holos/namespaces.cue and must already exist before deploying the manager.
 #
 # controller-install applies only the holos-controller CRDs, so the API groups
@@ -175,8 +175,8 @@ controller-test: controller-fmt controller-vet envtest-tool ## Run controller, A
 		go test -race ./api/... ./cmd/holos-controller/... ./internal/quay/... ./internal/keycloak/... ./internal/controller/... ./internal/referencegrant/...
 
 # Image targets use buildx so the builder stage runs on the native host and the
-# Go toolchain cross-compiles to $(CONTROLLER_PLATFORM) — mirrors the holos-paas
-# docker-build/docker-push pattern but with the controller Dockerfile. Both
+# Go toolchain cross-compiles to $(CONTROLLER_PLATFORM) — no target-architecture
+# emulation is required. Both
 # build a single-$(CONTROLLER_PLATFORM) image; for a multi-arch manifest list
 # spanning $(CONTROLLER_MULTIARCH_PLATFORMS) use the controller-docker-buildx
 # target below.
@@ -191,7 +191,7 @@ controller-docker-build: ## Build the controller image for $(CONTROLLER_PLATFORM
 controller-docker-push: ## Build for $(CONTROLLER_PLATFORM) and push $(CONTROLLER_IMAGE) to the registry.
 	docker buildx build --platform $(CONTROLLER_PLATFORM) $(call oci-build-args,CONTROLLER) -f Dockerfile.controller -t $(CONTROLLER_IMAGE) --push .
 
-# Multi-arch controller image index. Mirrors the root docker-buildx pair and
+# Multi-arch controller image index. Mirrors authenticator-docker-buildx and
 # reuses the same shared $(BUILDX_BUILDER), since both services produce identical
 # cross-compiled output from one docker-container builder. No QEMU is required —
 # Dockerfile.controller pins the builder stage to $BUILDPLATFORM and
@@ -201,8 +201,8 @@ controller-docker-push: ## Build for $(CONTROLLER_PLATFORM) and push $(CONTROLLE
 # docker-buildx-builder target (defined in the root Makefile, visible here via
 # the include) rather than duplicating the guard. A single owner of the shared
 # builder keeps the host-network/driver guard in one place and means a parallel
-# `make -j docker-buildx controller-docker-buildx` cannot race two recipes
-# creating/removing the same builder. The host-network rationale and the local
+# `make -j controller-docker-buildx authenticator-docker-buildx` cannot race two
+# recipes creating/removing the same builder. The host-network rationale and the local
 # registry TLS-trust note live on that root target (docs/build-registry.md,
 # docs/local-cluster.md).
 .PHONY: controller-docker-buildx-builder

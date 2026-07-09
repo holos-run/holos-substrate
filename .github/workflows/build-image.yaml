@@ -21,19 +21,19 @@ on:
   workflow_call:
     inputs:
       image:
-        description: Short image name (e.g. holos-paas), used as the ghcr repo leaf.
+        description: Short image name (e.g. holos-controller), used as the ghcr repo leaf.
         required: true
         type: string
       make_target:
-        description: The multi-arch make target to drive the build (e.g. docker-buildx).
+        description: The multi-arch make target to drive the build (e.g. controller-docker-buildx).
         required: true
         type: string
       repo_var:
-        description: Make variable that sets the image repo (e.g. IMAGE_REPO).
+        description: Make variable that sets the image repo (e.g. CONTROLLER_IMAGE_REPO).
         required: true
         type: string
       tag_var:
-        description: Make variable that sets the image tag (e.g. IMAGE_TAG).
+        description: Make variable that sets the image tag (e.g. CONTROLLER_IMAGE_TAG).
         required: true
         type: string
       ref:
@@ -164,11 +164,12 @@ jobs:
       # static caller inputs), quoted, so nothing is interpolated into the
       # script body.
       #
-      # IMAGE_NAME (not IMAGE) deliberately avoids the root Makefile's `IMAGE ?=
-      # $(IMAGE_REPO):$(IMAGE_TAG)` variable: a shell env var named IMAGE counts
-      # as "already defined" for `?=`, so it would shadow the computed value and
-      # the build would tag a bare `holos-paas` (-> docker.io/library/holos-paas,
-      # a 401). The repo/tag are set via the target's own REPO_VAR/TAG_VAR.
+      # IMAGE_NAME (not IMAGE) deliberately avoids colliding with any Makefile
+      # `?=` image variable: a shell env var of the same name counts as
+      # "already defined" for `?=`, so it would shadow the computed value and
+      # the build would tag a bare `holos-controller` (->
+      # docker.io/library/holos-controller, a 401). The repo/tag are set via
+      # the target's own REPO_VAR/TAG_VAR.
       - name: Build and push
         env:
           MAKE_TARGET: ${{ inputs.make_target }}
