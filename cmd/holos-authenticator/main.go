@@ -35,9 +35,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	authenticatorv1alpha1 "github.com/holos-run/holos-paas/api/authenticator/v1alpha1"
-	"github.com/holos-run/holos-paas/internal/authenticator"
-	authenticatorctrl "github.com/holos-run/holos-paas/internal/controller/authenticator"
+	authenticatorv1alpha1 "github.com/holos-run/holos-substrate/api/authenticator/v1alpha1"
+	"github.com/holos-run/holos-substrate/internal/authenticator"
+	authenticatorctrl "github.com/holos-run/holos-substrate/internal/controller/authenticator"
 )
 
 // RBAC the authenticator needs: leader-election leases and event recording, plus

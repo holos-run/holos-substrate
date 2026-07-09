@@ -19,7 +19,7 @@ import (
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 
-	authenticatorv1alpha1 "github.com/holos-run/holos-paas/api/authenticator/v1alpha1"
+	authenticatorv1alpha1 "github.com/holos-run/holos-substrate/api/authenticator/v1alpha1"
 )
 
 const (

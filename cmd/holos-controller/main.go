@@ -29,11 +29,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	keycloakv1alpha1 "github.com/holos-run/holos-paas/api/keycloak/v1alpha1"
-	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
-	securityv1alpha1 "github.com/holos-run/holos-paas/api/security/v1alpha1"
-	keycloakcontroller "github.com/holos-run/holos-paas/internal/controller/keycloak"
-	quaycontroller "github.com/holos-run/holos-paas/internal/controller/quay"
+	keycloakv1alpha1 "github.com/holos-run/holos-substrate/api/keycloak/v1alpha1"
+	quayv1alpha1 "github.com/holos-run/holos-substrate/api/quay/v1alpha1"
+	securityv1alpha1 "github.com/holos-run/holos-substrate/api/security/v1alpha1"
+	keycloakcontroller "github.com/holos-run/holos-substrate/internal/controller/keycloak"
+	quaycontroller "github.com/holos-run/holos-substrate/internal/controller/quay"
 )
 
 // RBAC the manager needs once the reconcilers land (HOL-1311, HOL-1312): full

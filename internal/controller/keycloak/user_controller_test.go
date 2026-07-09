@@ -11,8 +11,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	keycloakv1alpha1 "github.com/holos-run/holos-paas/api/keycloak/v1alpha1"
-	securityv1alpha1 "github.com/holos-run/holos-paas/api/security/v1alpha1"
+	keycloakv1alpha1 "github.com/holos-run/holos-substrate/api/keycloak/v1alpha1"
+	securityv1alpha1 "github.com/holos-run/holos-substrate/api/security/v1alpha1"
 )
 
 type legacyManagedGroupsReader struct {

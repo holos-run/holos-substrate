@@ -9,7 +9,7 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
+	quayv1alpha1 "github.com/holos-run/holos-substrate/api/quay/v1alpha1"
 )
 
 // TestResolveWebhookURL is a fast unit test for the inline-vs-secretRef webhook

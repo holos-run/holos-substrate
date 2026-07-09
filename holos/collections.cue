@@ -1,8 +1,8 @@
 package holos
 
 import (
-	proj "github.com/holos-run/holos-paas/holos/projects"
-	appcoll "github.com/holos-run/holos-paas/holos/apps"
+	proj "github.com/holos-run/holos-substrate/holos/projects"
+	appcoll "github.com/holos-run/holos-substrate/holos/apps"
 )
 
 // collections.cue is the ANCESTOR/IMPORT WIRING for the two well-known CUE

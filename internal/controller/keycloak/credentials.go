@@ -5,8 +5,8 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	keycloakv1alpha1 "github.com/holos-run/holos-paas/api/keycloak/v1alpha1"
-	ctrlshared "github.com/holos-run/holos-paas/internal/controller/shared"
+	keycloakv1alpha1 "github.com/holos-run/holos-substrate/api/keycloak/v1alpha1"
+	ctrlshared "github.com/holos-run/holos-substrate/internal/controller/shared"
 )
 
 // Credential Secret keys. The Keycloak admin credential Secret carries the

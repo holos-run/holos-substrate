@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/holos-run/holos-paas/internal/quay"
+	"github.com/holos-run/holos-substrate/internal/quay"
 )
 
 // fakeOrgClient is a recording, in-memory stand-in for the Quay organization API

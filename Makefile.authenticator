@@ -32,7 +32,7 @@ AUTHENTICATOR_MULTIARCH_PLATFORMS ?= linux/amd64,linux/arm64
 # prefix those helpers dereference.
 AUTHENTICATOR_IMAGE_TITLE         ?= holos-authenticator
 AUTHENTICATOR_IMAGE_DESCRIPTION   ?= The Holos Authenticator (ADR-23) — an Istio gRPC ext_authz authorizer for OIDC-to-Kubernetes impersonation for the Holos PaaS.
-AUTHENTICATOR_IMAGE_DOCUMENTATION ?= https://github.com/holos-run/holos-paas/blob/main/docs/runbooks/holos-authenticator.md
+AUTHENTICATOR_IMAGE_DOCUMENTATION ?= https://github.com/holos-run/holos-substrate/blob/main/docs/runbooks/holos-authenticator.md
 
 # Code generation (HOL-1386). controller-gen is pinned and installed under bin/
 # exactly as Makefile.controller does — the same pinned version and bin/ location,

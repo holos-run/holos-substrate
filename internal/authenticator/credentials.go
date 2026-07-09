@@ -10,7 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	authenticatorv1alpha1 "github.com/holos-run/holos-paas/api/authenticator/v1alpha1"
+	authenticatorv1alpha1 "github.com/holos-run/holos-substrate/api/authenticator/v1alpha1"
 )
 
 // credentialKeyToken is the conventional Secret key holding the backend's

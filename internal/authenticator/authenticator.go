@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	authenticatorv1alpha1 "github.com/holos-run/holos-paas/api/authenticator/v1alpha1"
+	authenticatorv1alpha1 "github.com/holos-run/holos-substrate/api/authenticator/v1alpha1"
 )
 
 // Identity is the resolved Kubernetes identity for a validated token: the

@@ -10,7 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
+	quayv1alpha1 "github.com/holos-run/holos-substrate/api/quay/v1alpha1"
 )
 
 const maxWebhookURLLength = 2048

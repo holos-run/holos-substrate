@@ -23,7 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
-	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
+	quayv1alpha1 "github.com/holos-run/holos-substrate/api/quay/v1alpha1"
 )
 
 // validTestCABundle generates a real, parseable PEM-encoded x509 certificate so

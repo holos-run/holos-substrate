@@ -21,10 +21,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	keycloakv1alpha1 "github.com/holos-run/holos-paas/api/keycloak/v1alpha1"
-	ctrlshared "github.com/holos-run/holos-paas/internal/controller/shared"
-	"github.com/holos-run/holos-paas/internal/keycloak"
-	"github.com/holos-run/holos-paas/internal/referencegrant"
+	keycloakv1alpha1 "github.com/holos-run/holos-substrate/api/keycloak/v1alpha1"
+	ctrlshared "github.com/holos-run/holos-substrate/internal/controller/shared"
+	"github.com/holos-run/holos-substrate/internal/keycloak"
+	"github.com/holos-run/holos-substrate/internal/referencegrant"
 )
 
 // groupFinalizer guards Keycloak-side cleanup: while it is present, deleting the

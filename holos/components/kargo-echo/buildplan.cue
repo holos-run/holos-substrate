@@ -169,7 +169,7 @@ let STAGE_RESOURCE = kargostage.#Stage & {
 // STANDALONE here rather than through the userDefinedBuildPlan gitops projection
 // (the argoAppDisabled flip in components/user-defined-build-plan.cue) for a
 // deliberate reason: that projection emits an Application with a GIT source
-// (repoURL https://github.com/holos-run/holos-paas, targetRevision main) for the
+// (repoURL https://github.com/holos-run/holos-substrate, targetRevision main) for the
 // deferred whole-platform gitops delivery (holos/docs/placeholders.md).  Kargo's
 // pipeline needs the opposite — an OCI source whose targetRevision is the
 // rendered-manifests artifact digest (holos/docs/argocd-application-source.md) —

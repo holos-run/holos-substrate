@@ -24,9 +24,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
-	ctrlshared "github.com/holos-run/holos-paas/internal/controller/shared"
-	"github.com/holos-run/holos-paas/internal/quay"
+	quayv1alpha1 "github.com/holos-run/holos-substrate/api/quay/v1alpha1"
+	ctrlshared "github.com/holos-run/holos-substrate/internal/controller/shared"
+	"github.com/holos-run/holos-substrate/internal/quay"
 )
 
 // repositoryFinalizer guards Quay-side cleanup of the repository (and its

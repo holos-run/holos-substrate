@@ -1,4 +1,4 @@
-module github.com/holos-run/holos-paas
+module github.com/holos-run/holos-substrate
 
 go 1.25.0
 

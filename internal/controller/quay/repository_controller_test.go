@@ -16,8 +16,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
-	"github.com/holos-run/holos-paas/internal/quay"
+	quayv1alpha1 "github.com/holos-run/holos-substrate/api/quay/v1alpha1"
+	"github.com/holos-run/holos-substrate/internal/quay"
 )
 
 // newRepoReconciler builds a RepositoryReconciler wired to the envtest client and

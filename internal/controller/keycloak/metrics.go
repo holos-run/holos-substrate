@@ -4,8 +4,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
-	ctrlshared "github.com/holos-run/holos-paas/internal/controller/shared"
-	"github.com/holos-run/holos-paas/internal/keycloak"
+	ctrlshared "github.com/holos-run/holos-substrate/internal/controller/shared"
+	"github.com/holos-run/holos-substrate/internal/keycloak"
 )
 
 // Custom controller metrics (AC #3). These supplement controller-runtime's

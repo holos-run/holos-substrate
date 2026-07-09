@@ -28,7 +28,7 @@
 // scope.  See projects/projects.cue and collections.cue for the wiring rationale.
 package apps
 
-import proj "github.com/holos-run/holos-paas/holos/projects"
+import proj "github.com/holos-run/holos-substrate/holos/projects"
 
 // #DNSLabel is the RFC 1123 DNS-label pattern (identical to the projects
 // package's), validating each app name at render time.

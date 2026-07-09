@@ -5,8 +5,8 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
-	ctrlshared "github.com/holos-run/holos-paas/internal/controller/shared"
+	quayv1alpha1 "github.com/holos-run/holos-substrate/api/quay/v1alpha1"
+	ctrlshared "github.com/holos-run/holos-substrate/internal/controller/shared"
 )
 
 // Credential Secret keys. The Quay superuser OAuth-Application credential Secret

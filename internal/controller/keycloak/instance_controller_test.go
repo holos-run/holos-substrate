@@ -12,7 +12,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	keycloakv1alpha1 "github.com/holos-run/holos-paas/api/keycloak/v1alpha1"
+	keycloakv1alpha1 "github.com/holos-run/holos-substrate/api/keycloak/v1alpha1"
 )
 
 // makeNamespace creates a namespace with the given name, tolerating an

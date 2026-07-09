@@ -6,7 +6,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/holos-run/holos-paas/internal/quay"
+	"github.com/holos-run/holos-substrate/internal/quay"
 )
 
 // fakeRepoStore is the in-memory state a fakeRepoClient maintains for one

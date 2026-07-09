@@ -14,8 +14,8 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
-	"github.com/holos-run/holos-paas/internal/quay"
+	quayv1alpha1 "github.com/holos-run/holos-substrate/api/quay/v1alpha1"
+	"github.com/holos-run/holos-substrate/internal/quay"
 )
 
 // makeNamespace creates a uniquely-named namespace so each test's Organization,

@@ -3,7 +3,7 @@ package authenticator
 import (
 	"sync"
 
-	authenticatorv1alpha1 "github.com/holos-run/holos-paas/api/authenticator/v1alpha1"
+	authenticatorv1alpha1 "github.com/holos-run/holos-substrate/api/authenticator/v1alpha1"
 )
 
 // Entry is the resolved, ready-to-serve configuration for a single Backend,

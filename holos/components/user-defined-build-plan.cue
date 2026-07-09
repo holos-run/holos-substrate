@@ -103,7 +103,7 @@ userDefinedBuildPlan: {
 			project: string | *"default"
 			source: {
 				path:           string | *"holos/deploy/clusters/\(clusterName)/components/\(userDefinedBuildPlan.metadata.name)"
-				repoURL:        string | *"https://github.com/holos-run/holos-paas"
+				repoURL:        string | *"https://github.com/holos-run/holos-substrate"
 				targetRevision: string | *"main"
 			}
 		}

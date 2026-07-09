@@ -10,7 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	securityv1alpha1 "github.com/holos-run/holos-paas/api/security/v1alpha1"
+	securityv1alpha1 "github.com/holos-run/holos-substrate/api/security/v1alpha1"
 )
 
 // testScheme builds a scheme with the security.holos.run types registered so the
