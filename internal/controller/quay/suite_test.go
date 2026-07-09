@@ -72,7 +72,7 @@ var shared *testEnv
 // controller-test make target does this, and so does the dedicated CI step.
 //
 // When KUBEBUILDER_ASSETS is unset the package is skipped rather than failed, so
-// the repo-wide `go test ./...` (the holos-paas Go job, which does not provision
+// the repo-wide `go test ./...` (the CI Go job, which does not provision
 // envtest) stays green: it cannot stand up a kube-apiserver and is not the job
 // that owns these tests. The envtest-backed reconcile tests run under
 // `make controller-test`, which both the developer workflow and CI invoke with

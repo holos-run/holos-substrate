@@ -29,7 +29,7 @@ CONTROLLER_MULTIARCH_PLATFORMS ?= linux/amd64,linux/arm64
 # the LABEL-vs-index-annotation rationale). CONTROLLER is the make-variable
 # prefix those helpers dereference.
 CONTROLLER_IMAGE_TITLE         ?= holos-controller
-CONTROLLER_IMAGE_DESCRIPTION   ?= The Holos Controller (ADR-18) — a Kubernetes controller reconciling the quay.holos.run and keycloak.holos.run API groups for the Holos PaaS.
+CONTROLLER_IMAGE_DESCRIPTION   ?= The Holos Controller (ADR-18) — a Kubernetes controller reconciling the quay.holos.run and keycloak.holos.run API groups for Holos Substrate.
 CONTROLLER_IMAGE_DOCUMENTATION ?= https://github.com/holos-run/holos-substrate/blob/main/docs/runbooks/holos-controller.md
 
 # Pinned tool versions and locations. bin/ is gitignored (root .gitignore /bin/).

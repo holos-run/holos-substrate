@@ -61,7 +61,7 @@ type ReferenceGrantTo struct {
 }
 
 // ReferenceGrantSpec identifies a cross-namespace relationship that is trusted
-// for the Holos PaaS. It mirrors gateway.networking.k8s.io ReferenceGrantSpec:
+// by the platform. It mirrors gateway.networking.k8s.io ReferenceGrantSpec:
 // it permits objects matching From, in their respective namespaces, to reference
 // objects matching To in the ReferenceGrant's own namespace. A reference is
 // allowed only if some grant in the target namespace pairs a matching From with

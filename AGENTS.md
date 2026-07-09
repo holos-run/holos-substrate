@@ -1,8 +1,12 @@
 # Holos Substrate
 
-The Holos Substrate: Kubernetes-native building blocks — the
-`quay.holos.run` and `keycloak.holos.run` custom resources, the
-`security.holos.run` `ReferenceGrant`, and the Holos Authenticator —
+The Holos Substrate: the substrate building blocks for the
+[holos](https://holos.run/) open source platform, implemented as
+Kubernetes custom resources — the `quay.holos.run` and
+`keycloak.holos.run` CRDs reconciled by `holos-controller`, the
+`security.holos.run` `ReferenceGrant` cross-namespace authorization
+convention, and the Holos Authenticator (`holos-authenticator`, an Istio
+gRPC `ext_authz` controller for OIDC → Kubernetes impersonation) —
 managed entirely through the Kubernetes API and rendered with the
 [Holos](https://holos.run/) rendered-manifests pattern.
 
@@ -14,7 +18,7 @@ a single-module Go monorepo with two service binaries (`cmd/holos-controller`
 and `cmd/holos-authenticator`), kubebuilder multi-group API conventions
 (`api/<group>/<version>`), all implementation under `internal/`, and the
 Holos CUE deployment configuration and policy under `holos/`. The prototype
-`holos-paas` multi-service binary and its Fisk CLI were removed (HOL-1541,
+multi-service binary and its Fisk CLI were removed (HOL-1541,
 ADR-12 Rev 7). Read ADR-12
 before adding a service, an API group, or moving directories. The evidence
 behind the layout is in
@@ -291,9 +295,9 @@ components have been removed. Git history preserves them.
   resource status, claim/adopt/release ownership, dependency watches, status
   patching, and mutation/drift stamping guardrails.
 - [docs/research/](docs/research/) — research reports informing decisions.
-- [docs/archive/](docs/archive/README.md) — PaaS-era documents (demos, the
-  MVP milestone plan, retired-pipeline research) archived during the Holos
-  Substrate rebrand.
+- [docs/archive/](docs/archive/README.md) — prototype-era documents (demos,
+  the MVP milestone plan, retired-pipeline research) archived during the
+  Holos Substrate rebrand.
 - [docs/local-cluster.md](docs/local-cluster.md) — the quick-start guide:
   create the local k3d cluster with DNS and trusted TLS, then apply the
   platform — the Layer 0 foundation and the Layer 1 services (Postgres,
@@ -518,7 +522,7 @@ components have been removed. Git history preserves them.
 - Go code lives in the single root module `github.com/holos-run/holos-substrate`
   laid out per [ADR-12](docs/adr/ADR-12.md): the two service binaries under
   `cmd/holos-controller/` and `cmd/holos-authenticator/` and all
-  implementation under `internal/`. The prototype `holos-paas` multi-service
+  implementation under `internal/`. The prototype multi-service
   binary and its Fisk CLI were removed (HOL-1541, ADR-12 Rev 7). `make test`
   (gofmt, `go vet`, then the
   race-enabled test suite) is the entry point; the `Go` job in

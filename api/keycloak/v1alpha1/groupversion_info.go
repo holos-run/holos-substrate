@@ -2,7 +2,7 @@
 // version v1alpha1.
 //
 // The group models the per-project, tenant-facing Keycloak identity primitives
-// the Holos PaaS provisions on a project's behalf — KeycloakInstance (a
+// the platform provisions on a project's behalf — KeycloakInstance (a
 // centrally-managed reference to one Keycloak target), KeycloakGroup,
 // KeycloakGroupMembership, KeycloakUser, and KeycloakClient — as Kubernetes
 // custom resources reconciled by the holos-controller (ADR-18, ADR-20). It is

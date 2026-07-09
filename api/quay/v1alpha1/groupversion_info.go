@@ -1,6 +1,6 @@
 // Package v1alpha1 contains the API types for quay.holos.run/v1alpha1.
 //
-// The group models the in-cluster Quay registry data plane the Holos PaaS
+// The group models the in-cluster Quay registry data plane the platform
 // provisions on a project's behalf as Kubernetes custom resources reconciled by
 // the holos-controller. The API currently exposes Organizations and
 // Repositories. Resources express their only external coupling to Quay through a

@@ -22,6 +22,7 @@
 | 10       | 2026-06-27 | @jeffmccune | UID + extra-fields extension (HOL-1419) — additive `spec.oidc.uidClaim` → `Impersonate-Uid` and `spec.oidc.extra[]` → `Impersonate-Extra-<key>`, both single-valued overwrite headers (no Lua split), completing the four impersonation dimensions (below) |
 | 11       | 2026-07-01 | @jeffmccune | Delegated impersonation (`kubectl --as` passthrough, HOL-1429/HOL-1430/HOL-1433) — additive `spec.impersonation` (`groups` allowlist + actor attribution extras, later renamed and tightened by Rev 12); inbound `Impersonate-*` is no longer *always* denied but is the self-vs-delegated **mode switch**; an authorized actor's target passes through, target authz is delegated to the impersonator SA's API-server RBAC, and the AC6 rule disables the actor-derived self identity in delegated mode (below) |
 | 12       | 2026-07-03 | @jeffmccune | Delegated impersonation cleanup (HOL-1448/HOL-1449/HOL-1450/HOL-1451) — rename the actor attribution field to `spec.impersonation.extra`, scope extras by mode (`oidc.extra` in self mode only, `impersonation.extra` in delegated mode only), deny every inbound `Impersonate-Extra-*` fail-closed in both modes, remove cross-field extra-key overlap validation, and promote delegated allow/deny decisions to Info-level audit logs (below) |
+| 13       | 2026-07-09 | @jeffmccune | Holos Substrate rebrand (HOL-1546): references to the removed prototype binary are dropped from the prose (ADR-12 Rev 7). No decision change. |
 
 ## As-built (Revision 2)
 
@@ -796,7 +797,7 @@ stub — and records this design; later phases flip the relevant `Status` to
   `authenticator.holos.run` CRDs (HOL-1386) adopt this contract.
 - [ADR-12 — Repository layout](ADR-12.md): the single-module monorepo with one
   binary per service under `cmd/`. `cmd/holos-authenticator` is a new service
-  binary under that layout, alongside `cmd/holos-paas` and `cmd/holos-controller`.
+  binary under that layout, alongside `cmd/holos-controller`.
 
 ## Design
 
@@ -975,8 +976,8 @@ dependency footprint legible.
 
 ## Consequences
 
-- **A new service to build and operate.** `holos-authenticator` is a third
-  service binary alongside `holos-paas` and `holos-controller`, with its own
+- **A new service to build and operate.** `holos-authenticator` is a
+  service binary alongside `holos-controller`, with its own
   image, deploy surface, and lifecycle. The isolated `authenticator-*` build
   targets and the discrete Images-workflow job keep it from colliding with the
   existing services, at the cost of one more thing to release.

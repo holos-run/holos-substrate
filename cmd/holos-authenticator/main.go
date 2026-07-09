@@ -6,12 +6,11 @@
 // Envoy forwards each request to the API server with no other reverse proxy in
 // the path.
 //
-// Like holos-controller (ADR-18) and unlike holos-paas (a Fisk multi-service
-// CLI, ADR-17), this binary uses the conventional kubebuilder wiring — the
-// standard library flag package plus controller-runtime's zap log flags —
-// because that is the idiom every controller-runtime manager and operator
-// tutorial assumes, and it keeps the manager legible to the kubebuilder
-// toolchain. Fisk is for the user-facing CLI, not the manager process.
+// Like holos-controller (ADR-18), this binary uses the conventional
+// kubebuilder wiring — the standard library flag package plus
+// controller-runtime's zap log flags — because that is the idiom every
+// controller-runtime manager and operator tutorial assumes, and it keeps the
+// manager legible to the kubebuilder toolchain.
 //
 // The scaffold (HOL-1385) starts the manager, serves health and Prometheus
 // metrics endpoints, and runs the ext_authz gRPC server as a manager.Runnable

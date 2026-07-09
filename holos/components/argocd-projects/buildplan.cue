@@ -117,8 +117,8 @@ let PLATFORM_PROJECT = {
 		// repo is listed in full for the system-owned Application that may source
 		// from it.
 		//
-		// Rename migration (HOL-1543): the legacy holos-paas-config /
-		// holos-paas-manifests repo URLs are deliberately NOT kept here.  On a
+		// Rename migration (HOL-1543): the legacy pre-rename config / manifests
+		// repo URLs are deliberately NOT kept here.  On a
 		// cluster upgraded across the rename, Applications still sourcing the
 		// legacy repo become unauthorized (InvalidSpecError, "repository not
 		// permitted") until scripts/apply-platform-app-of-apps publishes the

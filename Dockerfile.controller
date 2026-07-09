@@ -1,7 +1,6 @@
 # Build the holos-controller binary (ADR-18). Two stages: a golang builder that
-# cross-compiles a static binary, and a distroless non-root runtime. This mirrors
-# the sibling holos-paas Dockerfile; the controller has no UI and no cgo, so there
-# is no Node/UI stage.
+# cross-compiles a static binary, and a distroless non-root runtime. The
+# controller has no UI and no cgo, so there is no Node/UI stage.
 # Pin the builder to the native build platform (BUILDPLATFORM) and let the Go
 # toolchain cross-compile to the requested TARGETOS/TARGETARCH so the same
 # Dockerfile builds linux/arm64 (the Apple Silicon k3d cluster) from any host.

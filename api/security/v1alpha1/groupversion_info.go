@@ -1,7 +1,7 @@
 // Package v1alpha1 contains the API types for the security.holos.run API group,
 // version v1alpha1.
 //
-// The group models cross-namespace authorization policy for the Holos PaaS
+// The group models cross-namespace authorization policy for the platform
 // (ADR-22). Its sole Kind is ReferenceGrant, a Gateway-API-style declarative
 // policy that permits an object in one namespace to be referenced by an object
 // in another. Like upstream gateway.networking.k8s.io ReferenceGrant, it has no
