@@ -17,8 +17,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	reconcilepkg "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	authenticatorv1alpha1 "github.com/holos-run/holos-paas/api/authenticator/v1alpha1"
-	"github.com/holos-run/holos-paas/internal/authenticator"
+	authenticatorv1alpha1 "github.com/holos-run/holos-substrate/api/authenticator/v1alpha1"
+	"github.com/holos-run/holos-substrate/internal/authenticator"
 )
 
 // BackendReconciler reconciles an authenticator.holos.run Backend: it performs

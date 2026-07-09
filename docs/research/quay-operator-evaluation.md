@@ -3,7 +3,7 @@
 Research date: 2026-06-16.
 
 **Base commit.** This report was researched against `main` at commit
-[`d2a85ff`](https://github.com/holos-run/holos-paas/commit/d2a85ff7735b4b044452f522db5df539d0113397)
+[`d2a85ff`](https://github.com/holos-run/holos-substrate/commit/d2a85ff7735b4b044452f522db5df539d0113397)
 (`d2a85ff7735b4b044452f522db5df539d0113397`). Every deep link into this
 repository below is pinned to that commit so the referenced lines stay stable
 as the tree evolves. Upstream Quay Operator links are pinned to the
@@ -104,18 +104,18 @@ Quay is deployed as a plain `apps/v1` `Deployment` rendered from CUE, with no
 operator and no `QuayRegistry` CRD. A repository-wide grep for `QuayRegistry` /
 `quay-operator` returns nothing; the buildplan itself notes "Quay has no
 operator to seed a first user"
-([`quay/buildplan.cue#L507-L511`](https://github.com/holos-run/holos-paas/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/quay/buildplan.cue#L507-L511)).
+([`quay/buildplan.cue#L507-L511`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/quay/buildplan.cue#L507-L511)).
 
 | Concern | Current implementation | Deep link (pinned to `d2a85ff`) |
 |---|---|---|
-| Image / version | `quay.io/projectquay/quay:3.17.3`, multi-arch (incl. arm64 for Apple-silicon k3d) | [`quay/buildplan.cue#L36-L45`](https://github.com/holos-run/holos-paas/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/quay/buildplan.cue#L36-L45) |
-| `config.yaml` template | Rendered constant, substituted at init time | [`quay/buildplan.cue#L236-L280`](https://github.com/holos-run/holos-paas/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/quay/buildplan.cue#L236-L280) |
-| Storage (blobs) | `LocalStorage` → 5Gi `ReadWriteOnce` PVC, storageClass omitted so it binds k3s `local-path` | [`quay/buildplan.cue#L250-L255`](https://github.com/holos-run/holos-paas/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/quay/buildplan.cue#L250-L255), [`#L860-L878`](https://github.com/holos-run/holos-paas/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/quay/buildplan.cue#L860-L878) |
-| Database | CNPG `Cluster` `quay-db`, 1 instance, local-path PVC; app reads the CNPG-generated `quay-db-app` Secret URI | [`cnpg-clusters/buildplan.cue#L36-L90`](https://github.com/holos-run/holos-paas/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/cnpg-clusters/buildplan.cue#L36-L90) |
-| Redis | Single ephemeral Deployment, in-cluster only | [`quay/buildplan.cue#L739-L823`](https://github.com/holos-run/holos-paas/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/quay/buildplan.cue#L739-L823) |
-| Encryption keys | `quay-secret-keys` Secret (`SECRET_KEY`, `DATABASE_SECRET_KEY`), create-if-absent Job | [`quay/buildplan.cue#L311-L345`](https://github.com/holos-run/holos-paas/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/quay/buildplan.cue#L311-L345) |
-| Admin/superuser credential | `quay-admin-bootstrap` Job POSTs the one-shot `/api/v1/user/initialize` and stores a non-expiring superuser OAuth token in the `quay-initial-admin` Secret (key `token`) | [`quay/buildplan.cue#L507-L617`](https://github.com/holos-run/holos-paas/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/quay/buildplan.cue#L507-L617) |
-| OIDC (Keycloak SSO) | Confidential client, no PKCE; `quay-oidc` client secret bootstrapped into both namespaces | [`quay/buildplan.cue#L262-L273`](https://github.com/holos-run/holos-paas/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/quay/buildplan.cue#L262-L273), [ADR-15](../adr/ADR-15.md) |
+| Image / version | `quay.io/projectquay/quay:3.17.3`, multi-arch (incl. arm64 for Apple-silicon k3d) | [`quay/buildplan.cue#L36-L45`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/quay/buildplan.cue#L36-L45) |
+| `config.yaml` template | Rendered constant, substituted at init time | [`quay/buildplan.cue#L236-L280`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/quay/buildplan.cue#L236-L280) |
+| Storage (blobs) | `LocalStorage` → 5Gi `ReadWriteOnce` PVC, storageClass omitted so it binds k3s `local-path` | [`quay/buildplan.cue#L250-L255`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/quay/buildplan.cue#L250-L255), [`#L860-L878`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/quay/buildplan.cue#L860-L878) |
+| Database | CNPG `Cluster` `quay-db`, 1 instance, local-path PVC; app reads the CNPG-generated `quay-db-app` Secret URI | [`cnpg-clusters/buildplan.cue#L36-L90`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/cnpg-clusters/buildplan.cue#L36-L90) |
+| Redis | Single ephemeral Deployment, in-cluster only | [`quay/buildplan.cue#L739-L823`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/quay/buildplan.cue#L739-L823) |
+| Encryption keys | `quay-secret-keys` Secret (`SECRET_KEY`, `DATABASE_SECRET_KEY`), create-if-absent Job | [`quay/buildplan.cue#L311-L345`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/quay/buildplan.cue#L311-L345) |
+| Admin/superuser credential | `quay-admin-bootstrap` Job POSTs the one-shot `/api/v1/user/initialize` and stores a non-expiring superuser OAuth token in the `quay-initial-admin` Secret (key `token`) | [`quay/buildplan.cue#L507-L617`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/quay/buildplan.cue#L507-L617) |
+| OIDC (Keycloak SSO) | Confidential client, no PKCE; `quay-oidc` client secret bootstrapped into both namespaces | [`quay/buildplan.cue#L262-L273`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/quay/buildplan.cue#L262-L273), [ADR-15](../adr/ADR-15.md) |
 
 ### How orgs / repos / robots / webhooks are provisioned today
 
@@ -126,25 +126,25 @@ with the `quay-initial-admin` token:
 
 - `scripts/quay-init` bootstraps the shared `holos` org, a push robot, the
   `creators` team, and an in-cluster pull Secret — `/api/v1/user/initialize`
-  ([`scripts/quay-init#L237`](https://github.com/holos-run/holos-paas/blob/d2a85ff7735b4b044452f522db5df539d0113397/scripts/quay-init#L237)),
+  ([`scripts/quay-init#L237`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/scripts/quay-init#L237)),
   `/api/v1/organization/`
-  ([`#L271-L283`](https://github.com/holos-run/holos-paas/blob/d2a85ff7735b4b044452f522db5df539d0113397/scripts/quay-init#L271-L283)),
+  ([`#L271-L283`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/scripts/quay-init#L271-L283)),
   robots
-  ([`#L297-L310`](https://github.com/holos-run/holos-paas/blob/d2a85ff7735b4b044452f522db5df539d0113397/scripts/quay-init#L297-L310)),
+  ([`#L297-L310`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/scripts/quay-init#L297-L310)),
   team membership
-  ([`#L332-L364`](https://github.com/holos-run/holos-paas/blob/d2a85ff7735b4b044452f522db5df539d0113397/scripts/quay-init#L332-L364)).
+  ([`#L332-L364`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/scripts/quay-init#L332-L364)).
 - The **`my-project` delivery scaffold** is the reference instance and the
   template for the future self-service `ProjectRequest`. Its bootstrap Job
   creates the org/repo/robot, grants pull permission, and **registers the
   `repo_push` notification webhook pointing at the Kargo receiver URL** — all
   create-if-absent, all via the REST API:
   - org/repo/robot/permission:
-    [`my-project/buildplan.cue#L553-L593`](https://github.com/holos-run/holos-paas/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/my-project/buildplan.cue#L553-L593)
+    [`my-project/buildplan.cue#L553-L593`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/my-project/buildplan.cue#L553-L593)
   - reads the Kargo receiver URL from `ProjectConfig.status` then `POST`s the
     `repo_push` webhook to `/api/v1/repository/{repo}/notification/`:
-    [`#L649-L685`](https://github.com/holos-run/holos-paas/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/my-project/buildplan.cue#L649-L685)
+    [`#L649-L685`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/my-project/buildplan.cue#L649-L685)
   - the Kargo `ProjectConfig` with the matching `webhookReceivers[].quay`:
-    [`#L314-L333`](https://github.com/holos-run/holos-paas/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/my-project/buildplan.cue#L314-L333)
+    [`#L314-L333`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/my-project/buildplan.cue#L314-L333)
 
 This webhook → `Warehouse` wiring (Quay `repo_push` → Kargo receiver →
 `Freight` → `Stage` promotion) is the mechanism Goal 2 asks for. It is built
@@ -237,7 +237,7 @@ bundle — the
 That `DB_URI` would point at the *same* CNPG `quay-db` cluster the repo already
 runs. So for Goal 5 the operator adds nothing: CNPG is `unmanaged` Postgres
 either way, and the current approach already wires exactly that
-([`cnpg-clusters/buildplan.cue#L36-L90`](https://github.com/holos-run/holos-paas/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/cnpg-clusters/buildplan.cue#L36-L90)).
+([`cnpg-clusters/buildplan.cue#L36-L90`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/cnpg-clusters/buildplan.cue#L36-L90)).
 
 ## 3. The `herve4m/quay-api-operator` (layer 2): the data-plane operator
 
@@ -499,10 +499,10 @@ repo's "revise the existing ADR" convention.
 
 Repository (pinned to commit `d2a85ff7735b4b044452f522db5df539d0113397`):
 
-- [`holos/components/quay/buildplan.cue`](https://github.com/holos-run/holos-paas/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/quay/buildplan.cue)
-- [`holos/components/cnpg-clusters/buildplan.cue`](https://github.com/holos-run/holos-paas/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/cnpg-clusters/buildplan.cue)
-- [`holos/components/my-project/buildplan.cue`](https://github.com/holos-run/holos-paas/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/my-project/buildplan.cue)
-- [`scripts/quay-init`](https://github.com/holos-run/holos-paas/blob/d2a85ff7735b4b044452f522db5df539d0113397/scripts/quay-init)
+- [`holos/components/quay/buildplan.cue`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/quay/buildplan.cue)
+- [`holos/components/cnpg-clusters/buildplan.cue`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/cnpg-clusters/buildplan.cue)
+- [`holos/components/my-project/buildplan.cue`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/my-project/buildplan.cue)
+- [`scripts/quay-init`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/scripts/quay-init)
 - [ADR-2](../adr/ADR-2.md), [ADR-15](../adr/ADR-15.md), [ADR-16](../adr/ADR-16.md)
 
 Quay Operator — layer 1 (`quay/quay-operator`, `master` / release branches):

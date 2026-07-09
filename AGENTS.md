@@ -514,7 +514,7 @@ components have been removed. Git history preserves them.
 - Deployment configuration and policy are CUE rendered with
   `holos render platform`; `scripts/render` renders and verifies the
   committed `holos/deploy/` tree is diff-clean.
-- Go code lives in the single root module `github.com/holos-run/holos-paas`
+- Go code lives in the single root module `github.com/holos-run/holos-substrate`
   laid out per [ADR-12](docs/adr/ADR-12.md): the two service binaries under
   `cmd/holos-controller/` and `cmd/holos-authenticator/` and all
   implementation under `internal/`. The prototype `holos-paas` multi-service

@@ -11,8 +11,8 @@ package quay
 import (
 	"time"
 
-	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
-	ctrlshared "github.com/holos-run/holos-paas/internal/controller/shared"
+	quayv1alpha1 "github.com/holos-run/holos-substrate/api/quay/v1alpha1"
+	ctrlshared "github.com/holos-run/holos-substrate/internal/controller/shared"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )

@@ -21,7 +21,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	securityv1alpha1 "github.com/holos-run/holos-paas/api/security/v1alpha1"
+	securityv1alpha1 "github.com/holos-run/holos-substrate/api/security/v1alpha1"
 )
 
 // FromRef identifies the referrer: the object that holds the cross-namespace

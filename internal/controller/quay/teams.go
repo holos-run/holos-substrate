@@ -8,8 +8,8 @@ import (
 	"slices"
 	"strings"
 
-	quayv1alpha1 "github.com/holos-run/holos-paas/api/quay/v1alpha1"
-	"github.com/holos-run/holos-paas/internal/quay"
+	quayv1alpha1 "github.com/holos-run/holos-substrate/api/quay/v1alpha1"
+	"github.com/holos-run/holos-substrate/internal/quay"
 )
 
 // managedTeamPrefix is the human-readable prefix of the description stamped on

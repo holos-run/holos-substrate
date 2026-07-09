@@ -17,8 +17,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	authenticatorv1alpha1 "github.com/holos-run/holos-paas/api/authenticator/v1alpha1"
-	"github.com/holos-run/holos-paas/internal/authenticator"
+	authenticatorv1alpha1 "github.com/holos-run/holos-substrate/api/authenticator/v1alpha1"
+	"github.com/holos-run/holos-substrate/internal/authenticator"
 )
 
 // validJWKS builds a JWKS document carrying a freshly-generated RSA public key,

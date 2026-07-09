@@ -263,7 +263,7 @@ replaced the direct apply: every component still renders with
 projection emits no `Application` resources until that projection is enabled
 (see [docs/placeholders.md](docs/placeholders.md#argocd-gitops-delivery)).
 That deferred projection emits a **git**-source Application per component
-(`repoURL: https://github.com/holos-run/holos-paas`, `targetRevision: main`,
+(`repoURL: https://github.com/holos-run/holos-substrate`, `targetRevision: main`,
 `path: holos/deploy/...`) and is distinct from the **hand-authored** sample
 `Application`s the Kargo delivery pipelines own — `echo` (the spike) and
 `my-project` (see [The `my-project` delivery scaffold](#the-my-project-delivery-scaffold))

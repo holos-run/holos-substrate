@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/holos-run/holos-paas/internal/keycloak"
+	"github.com/holos-run/holos-substrate/internal/keycloak"
 )
 
 // fakeKeycloakClient is a recording, in-memory stand-in for the Keycloak Admin

@@ -10,7 +10,7 @@
 # list, so a docker-container builder is required. Defining the name once here,
 # before the includes below, keeps the builder-bootstrap targets pointed at the
 # same builder.
-BUILDX_BUILDER ?= holos-paas-multiarch
+BUILDX_BUILDER ?= holos-substrate-multiarch
 
 # VERSION is the build version stamped into both service binaries at link time
 # via -ldflags (see the controller-build / authenticator-build targets) and
@@ -39,8 +39,8 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 # symptom this addresses). source/url/license/vendor are identical across the
 # two images; title/description/documentation are per-image and defined beside
 # each image's coordinates in Makefile.controller / Makefile.authenticator.
-OCI_SOURCE   ?= https://github.com/holos-run/holos-paas
-OCI_URL      ?= https://github.com/holos-run/holos-paas
+OCI_SOURCE   ?= https://github.com/holos-run/holos-substrate
+OCI_URL      ?= https://github.com/holos-run/holos-substrate
 OCI_LICENSES ?= Apache-2.0
 OCI_VENDOR   ?= Open Infrastructure Services LLC
 

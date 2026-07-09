@@ -14,8 +14,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
-	authenticatorv1alpha1 "github.com/holos-run/holos-paas/api/authenticator/v1alpha1"
-	"github.com/holos-run/holos-paas/internal/authenticator"
+	authenticatorv1alpha1 "github.com/holos-run/holos-substrate/api/authenticator/v1alpha1"
+	"github.com/holos-run/holos-substrate/internal/authenticator"
 )
 
 // testEnv holds the shared envtest control plane and client each test reuses.

@@ -128,7 +128,7 @@ holos-paas/
 ├── AGENTS.md                  # entry point for coding agents; indexes docs
 ├── Dockerfile                 # one multi-stage build → one image
 ├── Makefile                   # build, test, codegen, k3d targets
-├── go.mod                     # single module: github.com/holos-run/holos-paas
+├── go.mod                     # single module: github.com/holos-run/holos-substrate
 ├── cmd/
 │   └── holos-paas/
 │       └── main.go            # entry point → internal/cli (Fisk root, ADR-17)
@@ -196,7 +196,7 @@ The load-bearing choices:
 Option A's "one binary, one image" choice is the default, not an absolute. The
 **Holos Controller** ([ADR-18](ADR-18.md), [ADR-19](ADR-19.md); shipped in
 HOL-1309..HOL-1313) is a deliberate, bounded exception within the **same single
-module** `github.com/holos-run/holos-paas`:
+module** `github.com/holos-run/holos-substrate`:
 
 - **A second binary and image.** `cmd/holos-controller/main.go` builds to its own
   container image via **`Dockerfile.controller`** (a two-stage cross-compile →
