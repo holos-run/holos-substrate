@@ -1,5 +1,10 @@
 # Webhook Subscriber: Parse and Dispatch
 
+> **Archived (PaaS era).** This ADR records a decision made for the Holos PaaS
+> prototype and was archived during the Holos Substrate rebrand. It is kept for the
+> historical record; see the [active decision log](../README.md)
+> for the ADRs that govern the substrate.
+
 | Metadata | Value                     |
 | -------- | ------------------------- |
 | Date     | 2026-06-09                |
@@ -82,7 +87,7 @@ Two simplifications are **deliberately deferred**:
 > set the Argo CD `Application`'s `targetRevision` — the render stage
 > *produces* that version and the config-image push event carries it back
 > through this subscriber; see the
-> [research report](../research/argocd-oci-image-tag-updates.md) and
+> [research report](../../research/argocd-oci-image-tag-updates.md) and
 > [ADR-13](ADR-13.md). Also define the task subject/stream and its retention,
 > the parser for the chosen registry's payload ([ADR-8](ADR-8.md)),
 > idempotency keys so a redelivered raw event does not double-dispatch, and
@@ -125,7 +130,7 @@ The `DeployTask` field table, the durability/retry story (durable consumer on
 `WEBHOOKS`, ack-after-publish, bounded `Nak` redelivery, `Term`-and-log on poison
 messages, and `Nats-Msg-Id` publish dedupe), and the verification steps are
 documented in
-[holos/README.md](../../holos/README.md#webhook-subscriber-and-deploytask-contract).
+[holos/README.md](../../../holos/README.md#webhook-subscriber-and-deploytask-contract).
 
 Three pieces of the eventual design are **explicitly deferred** pending the
 `Application` resource and the deployer ([ADR-11](ADR-11.md)):

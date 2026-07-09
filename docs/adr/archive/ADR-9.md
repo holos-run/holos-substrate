@@ -1,5 +1,10 @@
 # Webhook Receiver: Thin NATS Ingress
 
+> **Archived (PaaS era).** This ADR records a decision made for the Holos PaaS
+> prototype and was archived during the Holos Substrate rebrand. It is kept for the
+> historical record; see the [active decision log](../README.md)
+> for the ADRs that govern the substrate.
+
 | Metadata | Value                  |
 | -------- | ---------------------- |
 | Date     | 2026-06-09             |
@@ -76,7 +81,7 @@ available.
 >   `nats-stream-bootstrap` Job ([ADR-6](ADR-6.md)). Explicit size/age limits,
 >   the duplicate window, and the consumer configuration are owned by the NATS
 >   backbone and subscriber issues — see the
->   [stream definitions](../../holos/README.md#nats-jetstream-backbone-and-connection-contract).
+>   [stream definitions](../../../holos/README.md#nats-jetstream-backbone-and-connection-contract).
 > - **Body + headers framing.** The raw request body is published verbatim as
 >   the NATS message payload (no parsing). A small, provider-agnostic allowlist
 >   of HTTP headers is copied onto the message as NATS headers
@@ -104,7 +109,7 @@ available.
 >   Moving verification to the edge (reject forged senders before publishing) is
 >   tracked as [HOL-1200](https://linear.app/holos-run/issue/HOL-1200) and
 >   stubbed in
->   [placeholders.md](../../holos/docs/placeholders.md#webhook-edge-signature-verification).
+>   [placeholders.md](../../../holos/docs/placeholders.md#webhook-edge-signature-verification).
 
 ## Decision
 

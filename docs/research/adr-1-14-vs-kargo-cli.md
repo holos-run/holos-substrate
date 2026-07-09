@@ -468,10 +468,10 @@ pipeline or Kargo. The pivot costs nothing here.
 
 ## Sources
 
-- Internal: [ADR-6](../adr/ADR-6.md), [ADR-9](../adr/ADR-9.md),
-  [ADR-10](../adr/ADR-10.md), [ADR-11](../adr/ADR-11.md),
-  [ADR-13](../adr/ADR-13.md), [ADR-14](../adr/ADR-14.md),
-  [ADR-1](../adr/ADR-1.md)–[ADR-5](../adr/ADR-5.md), [ADR-12](../adr/ADR-12.md),
+- Internal: [ADR-6](../adr/archive/ADR-6.md), [ADR-9](../adr/archive/ADR-9.md),
+  [ADR-10](../adr/archive/ADR-10.md), [ADR-11](../adr/archive/ADR-11.md),
+  [ADR-13](../adr/archive/ADR-13.md), [ADR-14](../adr/archive/ADR-14.md),
+  [ADR-1](../adr/archive/ADR-1.md)–[ADR-5](../adr/archive/ADR-5.md), [ADR-12](../adr/ADR-12.md),
   [ADR-15](../adr/ADR-15.md); [argocd-oci-image-tag-updates.md](argocd-oci-image-tag-updates.md);
   [rendered-manifests-publish-pipeline.md](rendered-manifests-publish-pipeline.md);
   [holos/docs/argocd-application-source.md](../../holos/docs/argocd-application-source.md);

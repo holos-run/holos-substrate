@@ -492,7 +492,7 @@ dependency — rather than something that has to be built from zero.
      option that could retire bespoke reconciler code.
 
 If/when either operator is adopted, capture the decision in a new revision of
-[ADR-16](../adr/ADR-16.md) (Quay's role in delivery) or a dedicated ADR, per the
+[ADR-16](../adr/archive/ADR-16.md) (Quay's role in delivery) or a dedicated ADR, per the
 repo's "revise the existing ADR" convention.
 
 ## Sources
@@ -503,7 +503,7 @@ Repository (pinned to commit `d2a85ff7735b4b044452f522db5df539d0113397`):
 - [`holos/components/cnpg-clusters/buildplan.cue`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/cnpg-clusters/buildplan.cue)
 - [`holos/components/my-project/buildplan.cue`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/holos/components/my-project/buildplan.cue)
 - [`scripts/quay-init`](https://github.com/holos-run/holos-substrate/blob/d2a85ff7735b4b044452f522db5df539d0113397/scripts/quay-init)
-- [ADR-2](../adr/ADR-2.md), [ADR-15](../adr/ADR-15.md), [ADR-16](../adr/ADR-16.md)
+- [ADR-2](../adr/ADR-2.md), [ADR-15](../adr/ADR-15.md), [ADR-16](../adr/archive/ADR-16.md)
 
 Quay Operator — layer 1 (`quay/quay-operator`, `master` / release branches):
 

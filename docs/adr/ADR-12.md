@@ -11,15 +11,15 @@
 | -------- | ---------- | ----------- | -------------------------------------------------------- |
 | 1        | 2026-06-10 | @jeffmccune | Initial design                                           |
 | 2        | 2026-06-11 | @jeffmccune | Add `holos/deploy/` and `holos/docs/` to the layout tree |
-| 3        | 2026-06-14 | @jeffmccune | Note the NATS webhook receiver/subscriber/deployer were retired (HOL-1241, [ADR-16](ADR-16.md)); the single-module/single-binary layout decision stands |
-| 4        | 2026-06-14 | @jeffmccune | The CLI is built with Fisk, not Cobra ([ADR-17](ADR-17.md)); the command tree lives in `internal/cli` |
+| 3        | 2026-06-14 | @jeffmccune | Note the NATS webhook receiver/subscriber/deployer were retired (HOL-1241, [ADR-16](archive/ADR-16.md)); the single-module/single-binary layout decision stands |
+| 4        | 2026-06-14 | @jeffmccune | The CLI is built with Fisk, not Cobra ([ADR-17](archive/ADR-17.md)); the command tree lives in `internal/cli` |
 | 5        | 2026-06-17 | @jeffmccune | The first concrete controller API group is `quay.holos.run` ([ADR-18](ADR-18.md)), refining the `registry.holos.run` illustration below; the multi-group `<group>.holos.run` convention is unchanged |
-| 6        | 2026-06-18 | @jeffmccune | The Holos Controller (HOL-1309..HOL-1313, [ADR-18](ADR-18.md)/[ADR-19](ADR-19.md)) ships as a **second binary and image** (`cmd/holos-controller` + `Dockerfile.controller`) **within the same single module** — a bounded exception to Option A's one-binary/one-image rule for a process with a different lifecycle (controller-runtime manager). Its conventional-kubebuilder `main.go` (stdlib `flag` + zap) is a recorded **carve-out from the Fisk-only CLI guardrail** ([ADR-17](ADR-17.md)), which stays scoped to the user-facing `holos-paas` CLI. The single-module decision and `api/<group>/<version>` layout are unchanged |
+| 6        | 2026-06-18 | @jeffmccune | The Holos Controller (HOL-1309..HOL-1313, [ADR-18](ADR-18.md)/[ADR-19](ADR-19.md)) ships as a **second binary and image** (`cmd/holos-controller` + `Dockerfile.controller`) **within the same single module** — a bounded exception to Option A's one-binary/one-image rule for a process with a different lifecycle (controller-runtime manager). Its conventional-kubebuilder `main.go` (stdlib `flag` + zap) is a recorded **carve-out from the Fisk-only CLI guardrail** ([ADR-17](archive/ADR-17.md)), which stays scoped to the user-facing `holos-paas` CLI. The single-module decision and `api/<group>/<version>` layout are unchanged |
 | 7        | 2026-07-09 | @jeffmccune | The prototype `holos-paas` multi-service binary, its container image, and its Fisk CLI are **removed** (HOL-1541): `cmd/holos-paas/`, `internal/cli/`, the root `Dockerfile`, and the `github.com/choria-io/fisk` dependency are deleted. **Two service binaries remain** — `cmd/holos-controller` (+ `Dockerfile.controller`) and `cmd/holos-authenticator` (+ `Dockerfile.authenticator`). The single-module decision, the `api/<group>/<version>` conventions, and the `internal/` layout are unchanged |
 
 > **Note (rev 3):** The NATS webhook receiver, subscriber, and deployer named
 > below as motivating services were retired in HOL-1241 — deployment moved to
-> Kargo plus the client-side ORAS publish workflow ([ADR-16](ADR-16.md)), and
+> Kargo plus the client-side ORAS publish workflow ([ADR-16](archive/ADR-16.md)), and
 > the `internal/webhook` / `internal/nats` packages were deleted. The layout
 > **decision** this ADR records (Option A: single module, single multi-service
 > binary, kubebuilder multi-group conventions, all implementation under
@@ -38,7 +38,7 @@
 > under `internal/`; the layout is now realized by **two service binaries** —
 > `cmd/holos-controller` (+ `Dockerfile.controller`, the Revision 6 exception)
 > and `cmd/holos-authenticator` (+ `Dockerfile.authenticator`, [ADR-23](ADR-23.md))
-> — each its own image. The Fisk CLI convention ([ADR-17](ADR-17.md)) has no
+> — each its own image. The Fisk CLI convention ([ADR-17](archive/ADR-17.md)) has no
 > remaining subject and is now `Deprecated`.
 
 ## Context and Problem Statement
@@ -47,7 +47,7 @@ holos-paas must host several cooperating Go services alongside the Holos CUE
 configuration that renders the platform's manifests: controllers reconciling
 a related set of custom resources (the platform API per [ADR-2](ADR-2.md)),
 the NATS webhook receiver, webhook subscriber, and deployer
-([ADR-9](ADR-9.md), [ADR-10](ADR-10.md), [ADR-11](ADR-11.md)), a reverse
+([ADR-9](archive/ADR-9.md), [ADR-10](archive/ADR-10.md), [ADR-11](archive/ADR-11.md)), a reverse
 proxy that authenticates requests through OIDC and uses Kubernetes
 impersonation headers to grant developers `kubectl` access
 ([ADR-3](ADR-3.md)), and small reconcilers for Keycloak group membership and
@@ -210,7 +210,7 @@ module** `github.com/holos-run/holos-substrate`:
   `holos-paas` targets. The single-module rule is unchanged — both binaries share
   one `go.mod` and the `api/<group>/<version>` tree.
 - **Conventional-kubebuilder `main.go` is a carve-out from the Fisk guardrail.**
-  [ADR-17](ADR-17.md) requires the user-facing **`holos-paas` CLI** to be built
+  [ADR-17](archive/ADR-17.md) requires the user-facing **`holos-paas` CLI** to be built
   with **Fisk, not Cobra**, for LLM-legible help and introspection. The
   controller's `main.go` instead uses the conventional kubebuilder shape —
   stdlib **`flag`** plus controller-runtime **`zap`** flags
@@ -254,7 +254,7 @@ lifecycle differs from the user-facing CLI's.
   the split is the additive "promote a component to its own image" path this ADR's
   *A future split stays cheap* consequence anticipated, not a reshape of the tree.
 - **Two CLI styles, by design:** the `holos-paas` CLI is Fisk
-  ([ADR-17](ADR-17.md)); the controller manager's `main.go` is conventional
+  ([ADR-17](archive/ADR-17.md)); the controller manager's `main.go` is conventional
   kubebuilder (stdlib `flag` + zap). The carve-out is recorded so the Fisk
   guardrail is not misread as forbidding the standard controller-runtime entry
   point — it governs the interactive CLI, not a manager process.

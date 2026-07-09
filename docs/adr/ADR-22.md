@@ -19,7 +19,7 @@
 
 As the platform grows beyond the `quay.holos.run` group ([ADR-19](ADR-19.md))
 into the Keycloak group ([ADR-20](ADR-20.md)) and the logical Project/Application
-model ([ADR-21](ADR-21.md)), `holos.run` custom resources increasingly need to
+model ([ADR-21](archive/ADR-21.md)), `holos.run` custom resources increasingly need to
 **reference one another across namespace boundaries**. A `keycloak.holos.run`
 `User`, `Group`, or `Client` in a project namespace must name the
 `KeycloakInstance` that owns its realm — and that instance lives in a platform
@@ -50,7 +50,7 @@ reconciler land in later CRD-implementation issues.
   (the group/kind, optionally `name`, of the *local* objects that may be
   referenced). A cross-namespace reference with **no matching grant is denied**.
   This is the From/To shape this ADR mirrors.
-- [ADR-21 — Holos Project and Application Components](ADR-21.md): already
+- [ADR-21 — Holos Project and Application Components](archive/ADR-21.md): already
   contains the authoritative discussion of Gateway-API `ReferenceGrant`
   semantics — **a grant lives in the *referent* namespace** and authorizes
   cross-namespace **object references** (an `HTTPRoute`'s `backendRefs`, a
@@ -520,7 +520,7 @@ The two deliberate deviations are:
   instance in another namespace cannot proceed until a referent-namespace owner
   has created the matching grant. This is the intended safety trade — no silent
   cross-tenant access — but it is an extra, deliberate provisioning step (one the
-  Project component in [ADR-21](ADR-21.md) already anticipates emitting per
+  Project component in [ADR-21](archive/ADR-21.md) already anticipates emitting per
   project).
 - **A new API group and reconciler to build.** The `security.holos.run` group,
   the `ReferenceGrant` CRD, and the grant-checking logic each referrer's
@@ -555,6 +555,6 @@ The two deliberate deviations are:
   kinds now exist in the platform — Gateway API's (route/backend/certificate
   references) and `security.holos.run`'s (`holos.run` CR-to-CR references).
   Documentation and component code must name the group explicitly so the two are
-  never conflated; [ADR-21](ADR-21.md) already keeps the route-attachment
+  never conflated; [ADR-21](archive/ADR-21.md) already keeps the route-attachment
   (`allowedRoutes`) and object-reference (`ReferenceGrant`) mechanisms distinct,
   and this ADR extends that discipline to the group boundary.

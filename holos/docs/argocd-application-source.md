@@ -2,7 +2,7 @@
 
 The chosen source pattern for delivering applications in the MVP — the
 sample app (Layer 3) and Kargo's `argocd-update` promotion step
-([ADR-16](../../docs/adr/ADR-16.md)) both consume this contract. (The
+([ADR-16](../../docs/adr/archive/ADR-16.md)) both consume this contract. (The
 original NATS deployment subscriber, ADR-11, was retired in HOL-1241;
 Kargo now writes the `targetRevision`.) The decision itself was made in
 [Research: Handling Image-Tag Updates in Argo CD with an OCI Manifest Source](../../docs/research/argocd-oci-image-tag-updates.md)
@@ -18,7 +18,7 @@ to the in-cluster **Quay** registry. An Argo CD `Application` points at the
 artifact with an `oci://` `repoURL`; `targetRevision` selects the artifact
 **tag or digest**. Rolling out a new version is a single Kubernetes `PATCH`
 of `Application.spec.source.targetRevision` — no Git dependency anywhere
-([ADR-6](../../docs/adr/ADR-6.md)). Argo CD ≥ 3.1 is required for the
+([ADR-6](../../docs/adr/archive/ADR-6.md)). Argo CD ≥ 3.1 is required for the
 native OCI source; the argocd component pins 3.x (HOL-1186).
 
 ## Artifact layout
@@ -40,7 +40,7 @@ expanded tarball — `.` when the manifests sit at the tarball root.
 
 Prefer **immutable digests** (`sha256:…`) for anything a controller sets:
 the digest is exact, auditable "what's deployed" state, and the registry is
-the source of truth for versions ([ADR-8](../../docs/adr/ADR-8.md)). Tags
+the source of truth for versions ([ADR-8](../../docs/adr/archive/ADR-8.md)). Tags
 are acceptable for human-driven smoke tests. Resolve a tag to its digest at
 publish time:
 
@@ -48,7 +48,7 @@ publish time:
 oras resolve quay.holos.internal/holos/<repo>:<tag>
 ```
 
-Kargo's `argocd-update` promotion step ([ADR-16](../../docs/adr/ADR-16.md))
+Kargo's `argocd-update` promotion step ([ADR-16](../../docs/adr/archive/ADR-16.md))
 rolls out a new version by patching the digest (equivalent to):
 
 ```bash
@@ -59,7 +59,7 @@ kubectl -n argocd patch application <name> --type merge \
 **The one mutable-tag exception — the App-of-Apps bootstrap.** The platform
 App-of-Apps roots and their children deliberately track the **mutable
 `holos-substrate-config:dev` tag** rather than a digest (HOL-1373,
-[ADR-16 Rev 3](../../docs/adr/ADR-16.md)):
+[ADR-16 Rev 3](../../docs/adr/archive/ADR-16.md)):
 
 ```yaml
 spec:
@@ -209,7 +209,7 @@ kubectl get applications.argoproj.io -n argocd
 
 A ServiceAccount granted RBAC on `applications.argoproj.io` can patch
 `spec.source.targetRevision` directly — this is Kargo's write path: its
-`argocd-update` promotion step ([ADR-16](../../docs/adr/ADR-16.md)) sets the
+`argocd-update` promotion step ([ADR-16](../../docs/adr/archive/ADR-16.md)) sets the
 field to the promoted Freight's digest. (The original NATS deployment
 subscriber, ADR-11, was retired in HOL-1241.)
 
@@ -224,7 +224,7 @@ imperative.
 
 Platform self-delivery is now wired: the **OCI App-of-Apps** over the
 `holos-substrate-config:dev` bundle reconciles the platform's own rendered manifests
-([ADR-16 Rev 4](../../docs/adr/ADR-16.md),
+([ADR-16 Rev 4](../../docs/adr/archive/ADR-16.md),
 [oci-publish-workflow.md](oci-publish-workflow.md)). `scripts/apply` brings Argo
 CD up and stops at the bootstrap floor; the separate
 `scripts/apply-platform-app-of-apps` then publishes the bundle and applies the

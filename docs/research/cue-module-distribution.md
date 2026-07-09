@@ -69,7 +69,7 @@ from the minimal distribution to the job-scheduling/workflow use cases (§6).
    native OCI Application sources in v3.1 (Aug 2025); Flux's OCIRepository is
    GA since 2.6 (May 2025) with built-in cosign/notation verification. Kargo
    (v1.10) is the purpose-built promoter over OCI artifacts. The rendered
-   manifest pattern this platform already implements ([ADR-16](../adr/ADR-16.md))
+   manifest pattern this platform already implements ([ADR-16](../adr/archive/ADR-16.md))
    is now the mainstream position, shipped natively upstream (Argo CD's Source
    Hydrator).
 
@@ -470,7 +470,7 @@ capping the vendor-dependence risk §1's rug-pull history warns about.
 
 ### 3.1 The rendered manifest pattern went mainstream
 
-The pattern this platform adopted in [ADR-16](../adr/ADR-16.md) — render
+The pattern this platform adopted in [ADR-16](../adr/archive/ADR-16.md) — render
 manifests in CI or locally, ship the final plain YAML as the immutable desired
 state — is now the mainstream position. Akuity's
 [rendered manifests post](https://akuity.io/blog/the-rendered-manifests-pattern)
@@ -509,7 +509,7 @@ pipeline and the runtime-secret guardrail (`holos/docs/secret-handling.md`).
   steps including `argocd-update` and v1.10's `argocd-wait`, and Stage
   `spec.verification` runs Argo Rollouts `AnalysisTemplate`s for
   metric-driven progressive delivery — the machinery the roadmap's
-  `ci → qa → prod` chain (deferred in [ADR-21](../adr/ADR-21.md)) will use.
+  `ci → qa → prod` chain (deferred in [ADR-21](../adr/archive/ADR-21.md)) will use.
   Kargo has no generic "arbitrary OCI artifact" subscription type; this
   platform's pattern (subscribe to the rendered-manifest artifact repo as an
   image subscription with digest strategy) is the working approach.
@@ -537,7 +537,7 @@ from Git merge rights to registry push rights plus signature verification —
 which is why signing (§2.4) and Kubernetes RBAC over the Application objects
 are prerequisites, not niceties. This platform already implements exactly this
 shape: `scripts/publish` → ORAS push → Kargo Freight → `argocd-update`
-([ADR-16](../adr/ADR-16.md)), and the per-project App-of-Apps roots pull
+([ADR-16](../adr/archive/ADR-16.md)), and the per-project App-of-Apps roots pull
 public OCI bundles anonymously. What remains for the roadmap is packaging the
 flow as a first-class CLI verb for product engineers (§6, Phase 3).
 
@@ -620,12 +620,12 @@ Phase 4 (§6).
 ## 4. Design recommendations
 
 The platform's existing architecture already implements several load-bearing
-pieces: rendered manifests via Holos ([ADR-16](../adr/ADR-16.md)), everything
+pieces: rendered manifests via Holos ([ADR-16](../adr/archive/ADR-16.md)), everything
 modeled as Kubernetes resources ([ADR-2](../adr/ADR-2.md)), transparent
 generic controllers with policy pushed to admission control
 ([ADR-20](../adr/ADR-20.md) Rev 7, HOL-1476), Gateway-API-style status on
 every CR ([ADR-22](../adr/ADR-22.md)), and collection-driven Project/
-Application components ([ADR-21](../adr/ADR-21.md)). The recommendations
+Application components ([ADR-21](../adr/archive/ADR-21.md)). The recommendations
 below extend that base into a package ecosystem.
 
 ### 4.1 The package unit: a CUE module exporting schema, component, and mixins
@@ -1131,5 +1131,5 @@ the [Argo CD OCI user guide](https://argo-cd.readthedocs.io/en/latest/user-guide
 the [Kargo docs](https://docs.kargo.io/),
 [monitoring mixins](https://monitoring.mixins.dev/),
 [Kueue](https://kueue.sigs.k8s.io/docs/overview/), and the repository's own
-[ADR-16](../adr/ADR-16.md), [ADR-18](../adr/ADR-18.md) through
+[ADR-16](../adr/archive/ADR-16.md), [ADR-18](../adr/ADR-18.md) through
 [ADR-24](../adr/ADR-24.md).

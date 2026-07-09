@@ -1,5 +1,10 @@
 # Fisk for the holos-paas CLI
 
+> **Archived (PaaS era).** This ADR records a decision made for the Holos PaaS
+> prototype and was archived during the Holos Substrate rebrand. It is kept for the
+> historical record; see the [active decision log](../README.md)
+> for the ADRs that govern the substrate.
+
 | Metadata | Value                |
 |----------|----------------------|
 | Date     | 2026-06-14           |
@@ -10,7 +15,7 @@
 | Revision | Date       | Author       | Info           |
 |----------|------------|--------------|----------------|
 | 1        | 2026-06-14 | @jeffmccune  | Initial design |
-| 2        | 2026-07-09 | @jeffmccune  | The prototype `holos-paas` binary and its Fisk CLI were removed (HOL-1541, [ADR-12](ADR-12.md) Rev 7): `cmd/holos-paas/`, `internal/cli/`, the `docs/cli-guardrails.md` guardrail this ADR references, and the `github.com/choria-io/fisk` dependency were deleted. This ADR has no remaining subject and is now `Deprecated`; it is kept for the historical record should a user-facing CLI return |
+| 2        | 2026-07-09 | @jeffmccune  | The prototype `holos-paas` binary and its Fisk CLI were removed (HOL-1541, [ADR-12](../ADR-12.md) Rev 7): `cmd/holos-paas/`, `internal/cli/`, the `docs/cli-guardrails.md` guardrail this ADR references, and the `github.com/choria-io/fisk` dependency were deleted. This ADR has no remaining subject and is now `Deprecated`; it is kept for the historical record should a user-facing CLI return |
 
 ## Context and Problem Statement
 
@@ -33,7 +38,7 @@ convention for adding new commands is unambiguous?
 `kingpin`, used across [Choria](https://choria.io/) and the NATS CLI
 (`nats`). It is the CLI toolkit behind the same NATS architecture-and-design
 convention this repository's ADRs follow (see
-[docs/adr/README.md](README.md)). Beyond the kingpin feature set, Fisk adds
+[docs/adr/README.md](../README.md)). Beyond the kingpin feature set, Fisk adds
 capabilities aimed squarely at machine and agent consumption:
 
 - **`--help-llm` / `LLMFORMAT=1`** — emit the entire command tree as Markdown
@@ -100,7 +105,7 @@ command as the template: a help string on the command, a `HelpLong` block for
 detail, a `Cheat` for the task-oriented summary, and a documented help string
 with a `PlaceHolder` on every flag. This convention was recorded as a guardrail
 in `docs/cli-guardrails.md` and indexed in
-[AGENTS.md](../../AGENTS.md) so agents apply it. (Both the CLI and the
+[AGENTS.md](../../../AGENTS.md) so agents apply it. (Both the CLI and the
 guardrail document were removed in HOL-1541 — see Revision 2 above.)
 
 ## Consequences

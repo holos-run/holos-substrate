@@ -14,7 +14,7 @@ acceptance criteria — that the decisions feed into.
 - **Demo target:** runnable end to end on a single Apple Silicon Mac (k3d).
 
 > **Superseded — deployment pivoted to Kargo + a client-side CLI/ORAS publish
-> workflow ([ADR-16](../adr/ADR-16.md)).** The original NATS event-driven
+> workflow ([ADR-16](../adr/archive/ADR-16.md)).** The original NATS event-driven
 > pipeline below (M0 backbone, M3 webhook receiver, M4 webhook subscriber, M5
 > deployer) is **deferred / not used**: ADR-9/10/11/14 are now `Deprecated`,
 > and in HOL-1241 the receiver/subscriber/deployer code and the
@@ -23,7 +23,7 @@ acceptance criteria — that the decisions feed into.
 > (`make publish`) rendering + Kustomize-packaging + `oras push`ing rendered
 > manifests, a Kargo `Warehouse`/`Stage` watching that artifact, and an
 > `argocd-update` promotion pointing the Argo CD `Application` at the new
-> digest. See [ADR-16](../adr/ADR-16.md),
+> digest. See [ADR-16](../adr/archive/ADR-16.md),
 > [holos/docs/oci-publish-workflow.md](../../holos/docs/oci-publish-workflow.md),
 > and the **Kargo Spike** milestone (HOL-1236). The M0/M3/M4/M5 sections below
 > are retained for historical context only.
@@ -45,16 +45,16 @@ acceptance criteria — that the decisions feed into.
 
 | # | Milestone                         | ADR                          | Depends on |
 |---|-----------------------------------|------------------------------|------------|
-| 0 | Pipeline backbone (NATS JetStream) — **superseded by [ADR-16](../adr/ADR-16.md)** | [ADR-6](../adr/ADR-6.md)     | —          |
-| 1 | KubeRay reference workload        | [ADR-7](../adr/ADR-7.md)     | M0         |
-| 2 | Registry & image tagging          | [ADR-8](../adr/ADR-8.md)     | M1         |
-| 3 | Webhook receiver (thin ingress) — **superseded by [ADR-16](../adr/ADR-16.md)** | [ADR-9](../adr/ADR-9.md)     | M0, M2     |
-| 4 | Webhook subscriber (parse/dispatch) — **superseded by [ADR-16](../adr/ADR-16.md)**| [ADR-10](../adr/ADR-10.md)  | M3         |
-| 5 | Deployer & Application resource — **superseded by [ADR-16](../adr/ADR-16.md)**    | [ADR-11](../adr/ADR-11.md)  | M4, M1     |
+| 0 | Pipeline backbone (NATS JetStream) — **superseded by [ADR-16](../adr/archive/ADR-16.md)** | [ADR-6](../adr/archive/ADR-6.md)     | —          |
+| 1 | KubeRay reference workload        | [ADR-7](../adr/archive/ADR-7.md)     | M0         |
+| 2 | Registry & image tagging          | [ADR-8](../adr/archive/ADR-8.md)     | M1         |
+| 3 | Webhook receiver (thin ingress) — **superseded by [ADR-16](../adr/archive/ADR-16.md)** | [ADR-9](../adr/archive/ADR-9.md)     | M0, M2     |
+| 4 | Webhook subscriber (parse/dispatch) — **superseded by [ADR-16](../adr/archive/ADR-16.md)**| [ADR-10](../adr/archive/ADR-10.md)  | M3         |
+| 5 | Deployer & Application resource — **superseded by [ADR-16](../adr/archive/ADR-16.md)**    | [ADR-11](../adr/archive/ADR-11.md)  | M4, M1     |
 
 The original critical path was M0 → M2 → M3 → M4 → M5. M3/M4/M5 (the NATS
 receiver → subscriber → deployer path) are **superseded** by the Kargo + CLI/ORAS
-workflow ([ADR-16](../adr/ADR-16.md)); the live deploy loop is the **Kargo
+workflow ([ADR-16](../adr/archive/ADR-16.md)); the live deploy loop is the **Kargo
 Spike** milestone (HOL-1236). M1 (workload) and M2 (registry) remain. The NATS
 backbone (M0) was removed with the pipeline.
 
@@ -62,21 +62,21 @@ backbone (M0) was removed with the pipeline.
 
 ## M0 — Pipeline backbone (NATS JetStream)
 
-> **Superseded by [ADR-16](../adr/ADR-16.md) (deferred / not used).** The NATS
+> **Superseded by [ADR-16](../adr/archive/ADR-16.md) (deferred / not used).** The NATS
 > JetStream backbone existed only to couple the receiver → subscriber → deployer
 > pipeline, all now `Deprecated` (ADR-9/10/11/14). In HOL-1241 the `nats` Holos
 > component, its WEBHOOKS/TASKS streams, and the `wait_nats()` apply gate were
 > removed; deployment is now Kargo + the client-side CLI/ORAS workflow. The
 > "Status: delivered" note below is historical.
 
-**ADR:** [ADR-6 — MVP Heroku-Style Deployment Pipeline](../adr/ADR-6.md)
+**ADR:** [ADR-6 — MVP Heroku-Style Deployment Pipeline](../adr/archive/ADR-6.md)
 **Goal:** the event-driven substrate every other milestone plugs into.
 
 **Status: delivered, then retired (HOL-1241).** The `nats` component rendered
 a file-backed JetStream `StatefulSet` and a bootstrap `Job` that created the
 two WorkQueue streams, integrated into `scripts/apply` with a `wait_nats()`
 gate (HOL-1192, HOL-1193). The subject naming convention followed
-[ADR-13](../adr/ADR-13.md) (`webhooks.quay` on `WEBHOOKS`, `tasks.render` /
+[ADR-13](../adr/archive/ADR-13.md) (`webhooks.quay` on `WEBHOOKS`, `tasks.render` /
 `tasks.deploy` on `TASKS`). All of this was removed in HOL-1241 — see the
 superseded note above.
 
@@ -84,7 +84,7 @@ superseded note above.
 
 - Stood up a single-replica NATS JetStream `StatefulSet` usable from k3d,
   with file-backed persistence on a local-path PVC.
-- Subject/stream naming convention decided in [ADR-13](../adr/ADR-13.md) and
+- Subject/stream naming convention decided in [ADR-13](../adr/archive/ADR-13.md) and
   documented as the platform contract in `holos/README.md`.
 - Established the durable, file-backed **WorkQueue** streams `WEBHOOKS`
   (`webhooks.>`) and `TASKS` (`tasks.>`), created idempotently by the
@@ -106,7 +106,7 @@ pipeline was retired in HOL-1241.
 
 ## M1 — KubeRay reference workload
 
-**ADR:** [ADR-7 — KubeRay Reference Workload on k3d](../adr/ADR-7.md)
+**ADR:** [ADR-7 — KubeRay Reference Workload on k3d](../adr/archive/ADR-7.md)
 **Goal:** a real workload (KubeRay) that exercises the pipeline end to end,
 built with a multi-stage container build and runnable on Apple Silicon k3d.
 
@@ -129,13 +129,13 @@ minimums):
 
 ## M2 — Registry & image tagging
 
-**ADR:** [ADR-8 — Container Registry and Image Tagging](../adr/ADR-8.md)
+**ADR:** [ADR-8 — Container Registry and Image Tagging](../adr/archive/ADR-8.md)
 **Goal:** publish the image with a tag (the tag *is* the version) so a new
 version is publishable and pullable.
 
 > **Note (HOL-1241):** the original plan made a tag push *observable via a
 > webhook* feeding the NATS receiver. That trigger path was superseded by
-> [ADR-16](../adr/ADR-16.md): the client-side `scripts/publish` workflow renders
+> [ADR-16](../adr/archive/ADR-16.md): the client-side `scripts/publish` workflow renders
 > and `oras push`es the manifests artifact, and a Kargo `Warehouse` watches the
 > registry for new artifacts. The registry/tagging substrate below stands; the
 > webhook trigger does not.
@@ -149,20 +149,20 @@ version is publishable and pullable.
 **Acceptance criteria:**
 
 - Pushing a new tag is publishable and the artifact is discoverable (now by a
-  Kargo `Warehouse`, per [ADR-16](../adr/ADR-16.md)).
+  Kargo `Warehouse`, per [ADR-16](../adr/archive/ADR-16.md)).
 - k3d can pull the pushed image with the configured credentials.
 
 ---
 
 ## M3 — Webhook receiver (thin NATS ingress)
 
-> **Superseded by [ADR-16](../adr/ADR-16.md) (deferred / not used).** ADR-9 is
+> **Superseded by [ADR-16](../adr/archive/ADR-16.md) (deferred / not used).** ADR-9 is
 > `Deprecated`; the `webhook-receiver` subcommand, its HTTP handler, and the
 > `webhook-receiver` Holos component were removed in HOL-1241. There is no
 > inbound webhook ingress in the MVP — deployment is driven by the client-side
 > `scripts/publish` workflow and Kargo. Retained below for historical context.
 
-**ADR:** [ADR-9 — Webhook Receiver: Thin NATS Ingress](../adr/ADR-9.md)
+**ADR:** [ADR-9 — Webhook Receiver: Thin NATS Ingress](../adr/archive/ADR-9.md)
 **Goal:** a thin HTTP endpoint that writes the **raw** webhook body to the NATS
 WorkQueue stream and acks the sender — no parsing.
 
@@ -202,13 +202,13 @@ Edge signature verification is a deferred future enhancement
 
 ## M4 — Webhook subscriber (parse & dispatch)
 
-> **Superseded by [ADR-16](../adr/ADR-16.md) (deferred / not used).** ADR-10 is
+> **Superseded by [ADR-16](../adr/archive/ADR-16.md) (deferred / not used).** ADR-10 is
 > `Deprecated`; the `webhook-subscriber` subcommand, its `internal/` packages,
 > and the `webhook-subscriber` Holos component were removed in HOL-1241. Parsing
 > a registry push into a deploy is now the client-side `scripts/publish`
 > workflow feeding a Kargo `Warehouse`. Retained below for historical context.
 
-**ADR:** [ADR-10 — Webhook Subscriber: Parse and Dispatch](../adr/ADR-10.md)
+**ADR:** [ADR-10 — Webhook Subscriber: Parse and Dispatch](../adr/archive/ADR-10.md)
 **Goal:** consume raw events, parse them, and publish one well-known **deployer
 task** message to the processor subject.
 
@@ -232,20 +232,20 @@ task** message to the processor subject.
 
 ## M5 — Deployer & Application resource
 
-> **Superseded by [ADR-16](../adr/ADR-16.md) (deferred / not used).** ADR-11 is
+> **Superseded by [ADR-16](../adr/archive/ADR-16.md) (deferred / not used).** ADR-11 is
 > `Deprecated`; the deployer task subscriber was never built and the NATS path
 > was retired in HOL-1241. A Kargo `Stage` promotion now runs `argocd-update` to
 > set the Argo CD `Application`'s `targetRevision` to the published Freight
 > digest. Retained below for historical context.
 
-**ADR:** [ADR-11 — Deployer Task Subscriber and the Application Resource](../adr/ADR-11.md)
+**ADR:** [ADR-11 — Deployer Task Subscriber and the Application Resource](../adr/archive/ADR-11.md)
 **Goal:** consume deployer tasks and update the `Application` resource to the new
 version; the controller reconciles the cluster to it.
 
 **Planning hints / work to flesh out:**
 
 - Specify the `Application` custom resource (`spec`/`status`, version
-  representation, `Project` ownership per [ADR-1](../adr/ADR-1.md)) — likely its
+  representation, `Project` ownership per [ADR-1](../adr/archive/ADR-1.md)) — likely its
   own ADR.
 - Deployer consumer/ack semantics and idempotency (no resource thrash on
   redelivery).
@@ -276,10 +276,10 @@ version; the controller reconciles the cluster to it.
 These are decided-as-deferred in the ADRs; create them as backlog issues, not
 MVP milestones:
 
-- **User-feedback body queue** with a quantity-based limit ([ADR-10](../adr/ADR-10.md)).
+- **User-feedback body queue** with a quantity-based limit ([ADR-10](../adr/archive/ADR-10.md)).
 - **GitOps production pipeline:** current→desired unification, `holos render
-  platform`, automated commit ([ADR-11](../adr/ADR-11.md)).
-- **Separation-of-duty control** for production promotion ([ADR-11](../adr/ADR-11.md)).
+  platform`, automated commit ([ADR-11](../adr/archive/ADR-11.md)).
+- **Separation-of-duty control** for production promotion ([ADR-11](../adr/archive/ADR-11.md)).
 
 ## Definition of done (MVP demo)
 

@@ -1,7 +1,7 @@
 # Project and Application Templates — Authoring Guide
 
 The platform's self-service "docker push to deploy" experience
-([ADR-21](../../docs/adr/ADR-21.md)) is collection-driven: a product engineer
+([ADR-21](../../docs/adr/archive/ADR-21.md)) is collection-driven: a product engineer
 stands up a project, or an application within one, by adding **one entry** to a
 well-known CUE collection. Two Holos components render the full set of resources
 that compose a Project or an Application from those entries:
@@ -15,7 +15,7 @@ that compose a Project or an Application from those entries:
 
 `my-project` is the reference instance: as of HOL-1357 it is produced **entirely**
 by these two components (the bespoke `holos/components/my-project/` component was
-deleted). Read this guide, then [ADR-21](../../docs/adr/ADR-21.md) for the design
+deleted). Read this guide, then [ADR-21](../../docs/adr/archive/ADR-21.md) for the design
 rationale.
 
 ## Register a project
@@ -76,7 +76,7 @@ The `#App` schema ([`holos/apps/apps.cue`](../apps/apps.cue)) requires:
 
 A project supports **zero to many** applications; each app binds to exactly one
 project via `project` (GCP-model containment — the project *is* the namespace
-security boundary, [ADR-1](../../docs/adr/ADR-1.md)/[ADR-21](../../docs/adr/ADR-21.md)).
+security boundary, [ADR-1](../../docs/adr/archive/ADR-1.md)/[ADR-21](../../docs/adr/archive/ADR-21.md)).
 
 ## The env-prefixed namespace model
 
@@ -275,11 +275,11 @@ fallback) until the Kargo receiver URL is published into a Secret the
 
 ## See also
 
-- [ADR-21](../../docs/adr/ADR-21.md) — the design record (Project ≈ Namespace,
+- [ADR-21](../../docs/adr/archive/ADR-21.md) — the design record (Project ≈ Namespace,
   the resource set, the worked example, the deferred follow-ons).
 - [ADR-19](../../docs/adr/ADR-19.md) / [ADR-20](../../docs/adr/ADR-20.md) — the
   Quay and Keycloak API groups the templates emit CRs for.
-- [ADR-1](../../docs/adr/ADR-1.md) — the GCP Project tenant model.
+- [ADR-1](../../docs/adr/archive/ADR-1.md) — the GCP Project tenant model.
 - [`holos/README.md`](../README.md#the-my-project-delivery-scaffold) — the
   `my-project` reference instance orientation.
 - [oci-publish-workflow.md](oci-publish-workflow.md) — the publish loop the

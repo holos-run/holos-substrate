@@ -1,5 +1,10 @@
 # Multi-Tenancy
 
+> **Archived (PaaS era).** This ADR records a decision made for the Holos PaaS
+> prototype and was archived during the Holos Substrate rebrand. It is kept for the
+> historical record; see the [active decision log](../README.md)
+> for the ADRs that govern the substrate.
+
 | Metadata | Value              |
 | -------- | ------------------ |
 | Date     | 2026-06-06         |
@@ -22,9 +27,9 @@ that a first-class requirement?
 
 ## References
 
-- [ADR-2 — Core Platform Principles](ADR-2.md)
+- [ADR-2 — Core Platform Principles](../ADR-2.md)
 - [ADR-1 — Project Resource](ADR-1.md) (the tenant model adopted here)
-- [ADR-3 — Authorization via Kubernetes RBAC and Group Membership](ADR-3.md)
+- [ADR-3 — Authorization via Kubernetes RBAC and Group Membership](../ADR-3.md)
 - [ADR-5 — Chargeback, Quotas, and Limits (GCP Model)](ADR-5.md)
 
 ## Design
@@ -32,7 +37,7 @@ that a first-class requirement?
 Multi-tenancy is a first-class requirement of the platform API. Every resource
 type and controller is designed so that it can be attributed to, and isolated
 by, a tenant. The tenant is the unit that authorization is granted against (see
-[ADR-3](ADR-3.md)) and that accounting, quotas, and limits are applied against
+[ADR-3](../ADR-3.md)) and that accounting, quotas, and limits are applied against
 (see [ADR-5](ADR-5.md)); consistent tenant identity is therefore a shared
 concern across these principles.
 
@@ -60,7 +65,7 @@ follow-ups.
   outset; a design that cannot be scoped to a `Project` is not acceptable without
   an ADR justifying the exception.
 - Tenant identity is a shared contract consumed by authorization
-  ([ADR-3](ADR-3.md)) and by chargeback, quotas, and limits
+  ([ADR-3](../ADR-3.md)) and by chargeback, quotas, and limits
   ([ADR-5](ADR-5.md)); all three resolve "tenant" to the `Project`
   ([ADR-1](ADR-1.md)).
 - The tenant is now a concrete resource — the `Project` — but its detailed

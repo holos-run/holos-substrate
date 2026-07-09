@@ -15,7 +15,7 @@ service-management teams layer policy and dashboards on top of the same flow.
 > **This demo describes a target experience, not shipped behavior.**
 > `holos-controller` currently has **no implemented resource types** — only API
 > group/scheme registration (`api/v1alpha1`). The `Project` resource at the heart
-> of this on-ramp is **`Proposed`** in [ADR-1 — Project Resource](../adr/ADR-1.md)
+> of this on-ramp is **`Proposed`** in [ADR-1 — Project Resource](../adr/archive/ADR-1.md)
 > and is not yet built. All five platform ADRs are `Proposed`, not implemented.
 > Read this as the experience the controller is being built toward.
 
@@ -149,9 +149,9 @@ You will need:
 ### 1a. Define the Project (the tenant) — [Aspirational]
 
 The **Project** is the platform's tenant. Per
-[ADR-1 — Project Resource](../adr/ADR-1.md) it is adopted directly from the GCP
+[ADR-1 — Project Resource](../adr/archive/ADR-1.md) it is adopted directly from the GCP
 Project: the unit of ownership, isolation, access control, quotas, and chargeback
-([ADR-4 — Multi-Tenancy](../adr/ADR-4.md)). A developer's images are tagged
+([ADR-4 — Multi-Tenancy](../adr/archive/ADR-4.md)). A developer's images are tagged
 under their Project, and everything the platform does for that app is scoped to
 it.
 
@@ -167,7 +167,7 @@ spec:
   # owners, quotas, and limits attach here (GCP-style — see ADR-5).
 ```
 
-> [ADR-1](../adr/ADR-1.md) deliberately **defers** whether `Project` is
+> [ADR-1](../adr/archive/ADR-1.md) deliberately **defers** whether `Project` is
 > cluster-scoped or namespace-scoped, plus its full `spec`/`status` schema. This
 > tutorial keeps the Project generic and does not assume a scope.
 
@@ -312,12 +312,12 @@ what does it cost?*
 - **holos-console** — the Holos web console (Go + React over ConnectRPC). The
   target view lists **Projects**, their health, and **quota / chargeback** usage
   per tenant. The Project/quota/chargeback wiring is **[Aspirational]** (it
-  depends on [ADR-1](../adr/ADR-1.md) and
-  [ADR-5 — Chargeback, Quotas, and Limits (GCP Model)](../adr/ADR-5.md)).
+  depends on [ADR-1](../adr/archive/ADR-1.md) and
+  [ADR-5 — Chargeback, Quotas, and Limits (GCP Model)](../adr/archive/ADR-5.md)).
 - **ArgoCD UI** — sync status, health, and rollout history per Application.
   **[Runnable today]**
 - **Grafana** — per-Project health and **cost / chargeback**, presented in the
-  GCP model from [ADR-5](../adr/ADR-5.md) (allocation vs. rate quotas, per-Project
+  GCP model from [ADR-5](../adr/archive/ADR-5.md) (allocation vs. rate quotas, per-Project
   scope, adjustable defaults). Pair with OpenCost for cost attribution.
   **[Runnable today]**
 - **Service catalog / ownership** — optionally surface ownership and on-call via
@@ -395,11 +395,11 @@ currently `Proposed`.
 
 | Demo beat | ADR | What it demonstrates |
 |-----------|-----|----------------------|
-| Image tagged to a Project; Project owns the app | [ADR-1 — Project Resource](../adr/ADR-1.md) | The tenant model, adopted from the GCP Project (scope deferred). |
+| Image tagged to a Project; Project owns the app | [ADR-1 — Project Resource](../adr/archive/ADR-1.md) | The tenant model, adopted from the GCP Project (scope deferred). |
 | Project, rendered manifests, ArgoCD Applications are all Kubernetes resources | [ADR-2 — Core Platform Principles](../adr/ADR-2.md) | KRM is the primary API; no bespoke interface. |
 | Access granted by group → RBAC | [ADR-3 — Authorization via Kubernetes RBAC and Group Membership](../adr/ADR-3.md) | Authz reuses Kubernetes RBAC; no second system. |
-| Whole flow is per-Project (isolation, ownership) | [ADR-4 — Multi-Tenancy](../adr/ADR-4.md) | Multi-tenancy is first-class. |
-| Per-Project cost/quota in dashboards | [ADR-5 — Chargeback, Quotas, and Limits (GCP Model)](../adr/ADR-5.md) | Near-real-time chargeback and GCP-model quotas/limits. |
+| Whole flow is per-Project (isolation, ownership) | [ADR-4 — Multi-Tenancy](../adr/archive/ADR-4.md) | Multi-tenancy is first-class. |
+| Per-Project cost/quota in dashboards | [ADR-5 — Chargeback, Quotas, and Limits (GCP Model)](../adr/archive/ADR-5.md) | Near-real-time chargeback and GCP-model quotas/limits. |
 
 ---
 
@@ -409,7 +409,7 @@ currently `Proposed`.
   from Git (ArgoCD prunes the workload), delete demo Kyverno policies, and remove
   the registry webhook. No `Project` CRD exists to delete.
 - **Next steps:** track the `Project` design in
-  [ADR-1 — Project Resource](../adr/ADR-1.md); explore the
+  [ADR-1 — Project Resource](../adr/archive/ADR-1.md); explore the
   [Holos docs](https://holos.run/docs/) and the
   [bank-of-holos](https://github.com/holos-run/bank-of-holos) reference platform;
   and review the [Kargo docs](https://docs.kargo.io/) for the promotion path.
