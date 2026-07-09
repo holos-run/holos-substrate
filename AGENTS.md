@@ -9,10 +9,12 @@ through the Kubernetes API and rendered with the
 
 The authoritative layout is defined in
 [ADR-12 — Repository Layout for Multiple Go Services](docs/adr/ADR-12.md):
-a single-module Go monorepo with one multi-service binary (`cmd/holos-paas`,
-one subcommand per service), kubebuilder multi-group API conventions
+a single-module Go monorepo with two service binaries (`cmd/holos-controller`
+and `cmd/holos-authenticator`), kubebuilder multi-group API conventions
 (`api/<group>/<version>`), all implementation under `internal/`, and the
-Holos CUE deployment configuration and policy under `holos/`. Read ADR-12
+Holos CUE deployment configuration and policy under `holos/`. The prototype
+`holos-paas` multi-service binary and its Fisk CLI were removed (HOL-1541,
+ADR-12 Rev 7). Read ADR-12
 before adding a service, an API group, or moving directories. The evidence
 behind the layout is in
 [Research: Repository Layouts for Multiple Go Services](docs/research/go-multi-service-repo-layout.md).
@@ -78,34 +80,35 @@ This supersedes the deferred per-component `argoAppDisabled` git-source projecti
 [holos/docs/placeholders.md](holos/docs/placeholders.md) (*ArgoCD gitops delivery*).
 
 ```text
-cmd/holos-paas/            # the multi-service binary (Fisk root command, ADR-17)
-internal/cli/              # the Fisk command tree (one register* func per command)
+cmd/holos-controller/      # the Holos Controller manager (ADR-18)
+cmd/holos-authenticator/   # the Holos Authenticator (ADR-23)
 internal/                  # all implementation
-Makefile                   # go fmt/vet/test and the container image targets
-Dockerfile                 # two-stage cross-compile → distroless runtime
+Makefile                   # shared go fmt/vet/test and publish targets
+Dockerfile.controller      # two-stage cross-compile → distroless runtime
+Dockerfile.authenticator   # two-stage cross-compile → distroless runtime
 holos/                     # Holos CUE deployment configuration and policy
 ```
 
-All three service images (`holos-paas`, `holos-controller`,
-`holos-authenticator` — the last [ADR-23](docs/adr/ADR-23.md), HOL-1385) have
-multi-arch `make` targets — `make docker-buildx` / `make controller-docker-buildx`
+Both service images (`holos-controller`, `holos-authenticator` — the latter
+[ADR-23](docs/adr/ADR-23.md), HOL-1385) have
+multi-arch `make` targets — `make controller-docker-buildx`
 (HOL-1333) / `make authenticator-docker-buildx` — that build and push a single
 OCI image index spanning `linux/amd64` and `linux/arm64` via a shared
 `docker-container` buildx builder (`make docker-buildx-builder` bootstraps it; no
 QEMU, the Go toolchain cross-compiles from `$BUILDPLATFORM`). The
-single-`PLATFORM` `docker-build`/`docker-push` targets remain for local-cluster
-use. The manual
+single-platform `*-docker-build`/`*-docker-push` targets remain for
+local-cluster use. The manual
 [`.github/workflows/images.yaml`](.github/workflows/images.yaml) **Images**
 workflow (HOL-1334) publishes the multi-arch images from CI — `workflow_dispatch`
 only (never on push/PR/tag), with each image a **discrete job** (an `image`
-input selects `all`/`holos-paas`/`holos-controller`/`holos-authenticator`, where
-`all` builds all three and any single value builds only that one) sharing the
+input selects `all`/`holos-controller`/`holos-authenticator`, where
+`all` builds both and any single value builds only that one) sharing the
 reusable
 [`build-image.yaml`](.github/workflows/build-image.yaml) workflow, gated behind a
 `publish-images` GitHub Environment, taking `ref`/`tag` inputs and pushing to
-`ghcr.io/<owner>/holos-{paas,controller,authenticator}`. It drives the same
+`ghcr.io/<owner>/holos-{controller,authenticator}`. It drives the same
 buildx make targets, so the build logic is single-sourced.
-See [README.md](README.md) (*Container image* → *Multi-arch images* /
+See [README.md](README.md) (*Container images* → *Multi-arch images* /
 *Publishing images from CI*).
 
 The earlier NATS event-driven deployment pipeline — the **webhook receiver**
@@ -286,10 +289,6 @@ components have been removed. Git history preserves them.
   documentation style, forward-compatible unreleased API shapes, external
   resource status, claim/adopt/release ownership, dependency watches, status
   patching, and mutation/drift stamping guardrails.
-- [docs/cli-guardrails.md](docs/cli-guardrails.md) — **binding guardrail** for
-  the holos-paas CLI: every command, subcommand, and flag is added with Fisk
-  (not Cobra), in `internal/cli`, following the `deploy` command as the
-  template ([ADR-17](docs/adr/ADR-17.md)). Read it before touching the CLI.
 - [docs/planning/holos-paas-mvp-milestones.md](docs/planning/holos-paas-mvp-milestones.md)
   — the MVP plan; mirrors the Linear *Holos PaaS* project milestones.
 - [docs/research/](docs/research/) — research reports informing decisions.
@@ -516,18 +515,14 @@ components have been removed. Git history preserves them.
   `holos render platform`; `scripts/render` renders and verifies the
   committed `holos/deploy/` tree is diff-clean.
 - Go code lives in the single root module `github.com/holos-run/holos-paas`
-  laid out per [ADR-12](docs/adr/ADR-12.md): the multi-service binary under
-  `cmd/holos-paas/` (one subcommand per service) and all
-  implementation under `internal/`. `make test` (gofmt, `go vet`, then the
+  laid out per [ADR-12](docs/adr/ADR-12.md): the two service binaries under
+  `cmd/holos-controller/` and `cmd/holos-authenticator/` and all
+  implementation under `internal/`. The prototype `holos-paas` multi-service
+  binary and its Fisk CLI were removed (HOL-1541, ADR-12 Rev 7). `make test`
+  (gofmt, `go vet`, then the
   race-enabled test suite) is the entry point; the `Go` job in
   [.github/workflows/ci.yaml](.github/workflows/ci.yaml) runs it alongside
   `golangci-lint`.
-- The CLI is built with **Fisk, not Cobra** ([ADR-17](docs/adr/ADR-17.md)) so
-  commands, subcommands, and flags are self-documenting and legible to AI
-  coding agents (`--help-llm`, `--fisk-introspect`, cheats). Add every command
-  and flag with Fisk in `internal/cli`, following the `deploy` command as the
-  template — see [docs/cli-guardrails.md](docs/cli-guardrails.md). Never
-  reintroduce Cobra or `pflag`.
 - Label and annotation keys owned by the platform configuration layer —
   aspects of the holos configuration itself, independent of site-specific
   configuration — default to the `holos.run` domain (e.g.

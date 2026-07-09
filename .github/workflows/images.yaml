@@ -10,9 +10,9 @@ name: Images
 #
 # Discrete per-image jobs. Each image is built by its own job that calls the
 # reusable build-image.yaml workflow. The `image` input selects which to run, so
-# you can publish holos-paas, holos-controller, or holos-authenticator
-# individually, or all of them with `all` — building one never forces another.
-# The shared build/publish/validation logic lives once in build-image.yaml.
+# you can publish holos-controller or holos-authenticator individually, or both
+# of them with `all` — building one never forces another. The shared
+# build/publish/validation logic lives once in build-image.yaml.
 #
 # Security model (enforced in build-image.yaml, which is resolved from this same
 # trusted commit — not from the caller-supplied `ref`):
@@ -48,7 +48,6 @@ on:
         type: choice
         options:
           - all
-          - holos-paas
           - holos-controller
           - holos-authenticator
       ref:
@@ -88,21 +87,6 @@ permissions:
   packages: write
 
 jobs:
-  holos-paas:
-    if: ${{ inputs.image == 'holos-paas' || inputs.image == 'all' }}
-    uses: ./.github/workflows/build-image.yaml
-    permissions:
-      contents: read
-      packages: write
-    with:
-      image: holos-paas
-      make_target: docker-buildx
-      repo_var: IMAGE_REPO
-      tag_var: IMAGE_TAG
-      ref: ${{ inputs.ref }}
-      tag: ${{ inputs.tag }}
-      registry: ${{ inputs.registry }}
-
   holos-controller:
     if: ${{ inputs.image == 'holos-controller' || inputs.image == 'all' }}
     uses: ./.github/workflows/build-image.yaml

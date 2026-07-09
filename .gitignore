@@ -17,12 +17,12 @@ coverage.*
 *.coverprofile
 profile.cov
 
-# Compiled binary output (Makefile `build` target writes bin/holos-paas).
+# Compiled binary output (the controller-build / authenticator-build targets
+# and the pinned kubebuilder tools write under bin/).
 /bin/
 
 # Root-level service binaries from an ad-hoc `go build` (the Makefile targets
 # write to bin/; a stray `go build ./cmd/<svc>` defaults the output here).
-/holos-paas
 /holos-controller
 /holos-authenticator
 
