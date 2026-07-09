@@ -129,7 +129,7 @@ version-bump-minor: ## Tag an annotated minor-version bump (vX.Y.0).
 # app image digest, package the rendered manifests through Kustomize, and oras
 # push the result as an OCI artifact (see holos/docs/oci-publish-workflow.md).
 # APP_IMAGE is required (tag or digest); PUBLISH_REPO defaults to the in-cluster
-# Quay manifests repo, mirroring the IMAGE_REPO default above.
+# Quay manifests repo (quay.holos.internal, see docs/local-cluster.md).
 PUBLISH_REPO ?= quay.holos.internal/holos/holos-paas-manifests
 .PHONY: publish
 publish: ## Render, Kustomize-package, and oras push the manifests artifact (set APP_IMAGE=<ref>).
@@ -140,11 +140,12 @@ publish: ## Render, Kustomize-package, and oras push the manifests artifact (set
 # committed holos/deploy/ tree AS-IS into a single OCI artifact (no render, no
 # digest injection, no Kustomize) and publish it under a mutable :dev tag as the
 # platform-config bundle the App-of-Apps bootstrap consumes (HOL-1373/HOL-1374).
-# The build/push split mirrors docker-build/docker-push: config-build produces a
-# local tarball with NO network I/O; config-push oras-pushes it. This bundle is
-# distinct from the publish target above (per-app, input-addressed manifests for
-# Kargo) — see holos/docs/oci-publish-workflow.md. CONFIG_REPO/CONFIG_TAG default
-# to the in-cluster Quay config repo, mirroring the IMAGE_REPO default.
+# The build/push split mirrors the service *-docker-build/*-docker-push pairs:
+# config-build produces a local tarball with NO network I/O; config-push
+# oras-pushes it. This bundle is distinct from the publish target above
+# (per-app, input-addressed manifests for Kargo) — see
+# holos/docs/oci-publish-workflow.md. CONFIG_REPO/CONFIG_TAG default to the
+# in-cluster Quay config repo.
 CONFIG_REPO ?= quay.holos.internal/holos/holos-paas-config
 CONFIG_TAG  ?= dev
 .PHONY: config-build

@@ -165,8 +165,8 @@ authenticator-docker-build: ## Build the authenticator image for $(AUTHENTICATOR
 authenticator-docker-push: ## Build for $(AUTHENTICATOR_PLATFORM) and push $(AUTHENTICATOR_IMAGE) to the registry.
 	docker buildx build --platform $(AUTHENTICATOR_PLATFORM) $(call oci-build-args,AUTHENTICATOR) -f Dockerfile.authenticator -t $(AUTHENTICATOR_IMAGE) --push .
 
-# Multi-arch authenticator image index. Mirrors the root docker-buildx pair and
-# reuses the same shared $(BUILDX_BUILDER), since all services produce identical
+# Multi-arch authenticator image index. Mirrors controller-docker-buildx and
+# reuses the same shared $(BUILDX_BUILDER), since both services produce identical
 # cross-compiled output from one docker-container builder. No QEMU is required —
 # Dockerfile.authenticator pins the builder stage to $BUILDPLATFORM and
 # cross-compiles via the Go toolchain.
@@ -175,8 +175,8 @@ authenticator-docker-push: ## Build for $(AUTHENTICATOR_PLATFORM) and push $(AUT
 # docker-buildx-builder target (defined in the root Makefile, visible here via
 # the include) rather than duplicating the guard. A single owner of the shared
 # builder keeps the host-network/driver guard in one place and means a parallel
-# `make -j docker-buildx authenticator-docker-buildx` cannot race two recipes
-# creating/removing the same builder.
+# `make -j controller-docker-buildx authenticator-docker-buildx` cannot race two
+# recipes creating/removing the same builder.
 .PHONY: authenticator-docker-buildx-builder
 authenticator-docker-buildx-builder: docker-buildx-builder ## Ensure the shared docker-container buildx builder $(BUILDX_BUILDER) exists.
 
