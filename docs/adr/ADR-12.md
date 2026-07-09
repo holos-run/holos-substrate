@@ -27,6 +27,20 @@
 > `internal/` example paths in the sections below are the decision-time
 > illustration, not a current inventory.
 
+> **Note (rev 7):** The prototype `holos-paas` multi-service binary itself was
+> removed in HOL-1541: `cmd/holos-paas/`, `internal/cli/`, and the root
+> `Dockerfile` no longer exist. Option A's "one binary, one image" framing in
+> the options analysis, the layout tree's `Dockerfile`/`cmd/holos-paas/`
+> entries, and the "load-bearing choices" describing the `holos-paas`
+> subcommands below are the **decision-time illustration**, not the current
+> inventory. What still governs is the single root module, the
+> `api/<group>/<version>` multi-group conventions, and all implementation
+> under `internal/`; the layout is now realized by **two service binaries** —
+> `cmd/holos-controller` (+ `Dockerfile.controller`, the Revision 6 exception)
+> and `cmd/holos-authenticator` (+ `Dockerfile.authenticator`, [ADR-23](ADR-23.md))
+> — each its own image. The Fisk CLI convention ([ADR-17](ADR-17.md)) has no
+> remaining subject and is now `Deprecated`.
+
 ## Context and Problem Statement
 
 holos-paas must host several cooperating Go services alongside the Holos CUE

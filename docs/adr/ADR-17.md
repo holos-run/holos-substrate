@@ -4,12 +4,13 @@
 |----------|----------------------|
 | Date     | 2026-06-14           |
 | Author   | @jeffmccune          |
-| Status   | `Partially Implemented` |
+| Status   | `Deprecated`         |
 | Tags     | cli, conventions, agents, build |
 
 | Revision | Date       | Author       | Info           |
 |----------|------------|--------------|----------------|
 | 1        | 2026-06-14 | @jeffmccune  | Initial design |
+| 2        | 2026-07-09 | @jeffmccune  | The prototype `holos-paas` binary and its Fisk CLI were removed (HOL-1541, [ADR-12](ADR-12.md) Rev 7): `cmd/holos-paas/`, `internal/cli/`, the `docs/cli-guardrails.md` guardrail this ADR references, and the `github.com/choria-io/fisk` dependency were deleted. This ADR has no remaining subject and is now `Deprecated`; it is kept for the historical record should a user-facing CLI return |
 
 ## Context and Problem Statement
 
@@ -97,9 +98,10 @@ remaining a conventional, well-documented human CLI. Remove Cobra.
 Every new subcommand and flag MUST be added with Fisk, following the `deploy`
 command as the template: a help string on the command, a `HelpLong` block for
 detail, a `Cheat` for the task-oriented summary, and a documented help string
-with a `PlaceHolder` on every flag. This convention is recorded as a guardrail
-in [docs/cli-guardrails.md](../cli-guardrails.md) and indexed in
-[AGENTS.md](../../AGENTS.md) so agents apply it.
+with a `PlaceHolder` on every flag. This convention was recorded as a guardrail
+in `docs/cli-guardrails.md` and indexed in
+[AGENTS.md](../../AGENTS.md) so agents apply it. (Both the CLI and the
+guardrail document were removed in HOL-1541 — see Revision 2 above.)
 
 ## Consequences
 
@@ -108,9 +110,10 @@ in [docs/cli-guardrails.md](../cli-guardrails.md) and indexed in
   Cobra-specific code is required; the current CLI had no service subcommands
   yet, so the migration surface was the root command only.
 - **New convention, enforced socially.** The guardrail in
-  `docs/cli-guardrails.md` (indexed in AGENTS.md) binds humans and agents to add
-  commands and flags with Fisk. There is no compiler enforcement; reviewers and
-  the agent guardrails carry it.
+  `docs/cli-guardrails.md` (indexed in AGENTS.md) bound humans and agents to add
+  commands and flags with Fisk. There was no compiler enforcement; reviewers and
+  the agent guardrails carried it. (The guardrail document was removed with the
+  CLI in HOL-1541.)
 - **Agent legibility.** The CLI now exposes machine-formatted help and JSON
   Schema introspection, so agents can drive it as a structured tool.
 - **`deploy` depends on `scripts/publish`.** The subcommand intentionally shells
