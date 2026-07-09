@@ -4,7 +4,7 @@
 # This is the client-side "build and publish" workflow that replaces the
 # in-cluster render-task subscriber (see
 # holos/docs/oci-publish-workflow.md and
-# docs/research/rendered-manifests-publish-pipeline.md).  Given an app image
+# docs/archive/rendered-manifests-publish-pipeline.md).  Given an app image
 # reference (tag or digest) and a target OCI repository, it:
 #
 #   1. resolves the app image tag -> digest (oras resolve) so the rendered
