@@ -1025,7 +1025,13 @@ wait_argocd() {
 #      registration Secret — the component no longer renders it and a plain
 #      apply never prunes, so on an upgraded cluster the stale registration
 #      (old repo URL, possibly still carrying the HOL-1381-era robot
-#      credential keys) would linger in Argo CD.
+#      credential keys) would linger in Argo CD.  Removing the registration
+#      before the App-of-Apps handoff is deliberate and safe: the platform
+#      AppProject no longer authorizes the legacy repo either, so Applications
+#      still sourcing it are already blocked from syncing (a read-only state —
+#      Argo CD never prunes an Application whose source repo is not
+#      permitted), and scripts/apply-platform-app-of-apps (step 4 in the
+#      epilogue below) re-points them at the renamed bundle.
 #   2. HOL-1381 migration: delete the retired holos-paas-config-robot SOURCE
 #      Secret and the holos-paas-config-repo-bootstrap Job +
 #      ServiceAccount/Role/RoleBinding, none of which the component renders
@@ -1268,6 +1274,9 @@ organization and hand reconciliation off to Argo CD (HOL-1380):
      organization (step 3) and the robot push credential it describes; Argo CD
      pulls the public bundle anonymously (no pull credential needed).  This is the
      clean cut line: the platform is fully bootstrapped here.
+     NOTE (upgrade across the holos-paas -> holos-substrate rename): existing
+     Applications still sourcing the legacy config repo stay unauthorized (no
+     sync; workloads untouched) until this step re-points them.
 
   5. scripts/apply-projects-app-of-apps   (tenant projects; independent of step 4)
      For EACH registered project, build+push its per-project OCI config bundle and

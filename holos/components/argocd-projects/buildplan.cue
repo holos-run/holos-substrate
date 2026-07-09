@@ -116,6 +116,18 @@ let PLATFORM_PROJECT = {
 		// for a project that whitelists cluster-scoped resources).  The manifests
 		// repo is listed in full for the system-owned Application that may source
 		// from it.
+		//
+		// Rename migration (HOL-1543): the legacy holos-paas-config /
+		// holos-paas-manifests repo URLs are deliberately NOT kept here.  On a
+		// cluster upgraded across the rename, Applications still sourcing the
+		// legacy repo become unauthorized (InvalidSpecError, "repository not
+		// permitted") until scripts/apply-platform-app-of-apps publishes the
+		// renamed bundle and re-points them.  That gap is read-only — Argo CD
+		// refuses to sync an Application whose source repo is not permitted; it
+		// never prunes or modifies the running workloads — and the documented
+		// bootstrap order (docs/local-cluster.md, the scripts/apply epilogue)
+		// closes it.  Keeping the old URL authorized would leave a live legacy
+		// source the rename exists to remove.
 		sourceRepos: [
 			CONFIG_REPO_OCI,
 			MANIFESTS_REPO_OCI,
