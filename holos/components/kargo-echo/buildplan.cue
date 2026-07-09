@@ -61,7 +61,7 @@ let WAREHOUSE = "manifests"
 // argocd-update matches the Application source by EXACT repoURL string, so the
 // two forms below must stay consistent with each other and with the publish
 // workflow's default.
-let MANIFESTS_REPO = "quay.holos.internal/holos/holos-paas-manifests"
+let MANIFESTS_REPO = "quay.holos.internal/holos/holos-substrate-manifests"
 let MANIFESTS_REPO_OCI = "oci://\(MANIFESTS_REPO)"
 
 // MANIFESTS_TAG_REGEX matches the input-addressed tags scripts/publish mints:

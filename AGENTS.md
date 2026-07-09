@@ -33,7 +33,7 @@ The **platform itself** (as distinct from per-app delivery above) is reconciled
 by Argo CD from an **App-of-Apps over an OCI config bundle** ([ADR-16](docs/adr/ADR-16.md)
 Rev 3–4, HOL-1373/HOL-1378/HOL-1379): `scripts/publish-config` (`make config-build`/`config-push`)
 tars the committed `holos/deploy/` tree as-is under the mutable
-`holos-paas-config:dev` tag, and the **platform** root Argo CD `Application`
+`holos-substrate-config:dev` tag, and the **platform** root Argo CD `Application`
 (`platform-bootstrap`, under the **`platform`** AppProject) reconciles the system
 components from it. `scripts/apply` brings Argo CD up imperatively (the bootstrap
 floor) and **stops there**, with Quay and Keycloak ready for manual setup; the
@@ -42,13 +42,13 @@ chicken-and-egg handoff (Argo CD must exist before it self-manages) is a
 publishes the bundle and applies the platform root (the "clean cut line": the
 platform is fully bootstrapped there, HOL-1382). The split (HOL-1379) breaks a
 rebuild-time race: publishing needs the holos Quay **organization** (the public
-`holos-paas-config` repository and a push-capable Quay robot credential) configured
+`holos-substrate-config` repository and a push-capable Quay robot credential) configured
 first, which does not exist on a freshly rebuilt cluster, so `scripts/apply` would
 race the manual Quay setup and fail. `scripts/apply` prints the manual-setup
 guidance, and `scripts/apply-platform-app-of-apps` explicitly depends on that Quay
-org being configured. The `holos-paas-config` repository is **public** (HOL-1381,
+org being configured. The `holos-substrate-config` repository is **public** (HOL-1381,
 [ADR-16](docs/adr/ADR-16.md) Rev 5), so Argo CD pulls the bundle **anonymously** —
-there is no `holos-paas-config-robot` pull credential or repository-credential
+there is no `holos-substrate-config-robot` pull credential or repository-credential
 bootstrap Job; the `argocd-projects` component instead commits a credential-less
 repository registration Secret (only `url`/`type`/`insecure`, no secret material).
 
@@ -437,7 +437,7 @@ components have been removed. Git history preserves them.
   required push credentials. Replaces the deferred in-cluster render
   subscriber. Also documents the **platform config bundle** (`scripts/publish-config`
   / `make config-build`/`config-push`): the committed `holos/deploy/` tree tarred
-  as-is under the mutable `holos-paas-config:dev` tag, the **platform App-of-Apps**
+  as-is under the mutable `holos-substrate-config:dev` tag, the **platform App-of-Apps**
   that consumes it (the `platform-bootstrap` root + per-component children, the
   sync-wave bootstrap ordering, the "Always" `:dev` re-pull mechanism), and how the
   separate `scripts/apply-platform-app-of-apps` wires the publish + root-Application

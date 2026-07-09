@@ -12,10 +12,10 @@ deferred git-source projection.** ArgoCD is installed (the `argocd-crds` and
 `argocd` components, [`components/argocd/`](../components/argocd/argocd.cue),
 UI at `https://argocd.holos.internal`), and the platform's own rendered
 manifests are now reconciled by ArgoCD from an **OCI App-of-Apps over the
-`holos-paas-config:dev` config bundle** (HOL-1373, [ADR-16 Rev 3](../../docs/adr/ADR-16.md)):
+`holos-substrate-config:dev` config bundle** (HOL-1373, [ADR-16 Rev 3](../../docs/adr/ADR-16.md)):
 
 - The committed `holos/deploy/` tree is published as one OCI bundle
-  (`holos-paas-config:dev`, mutable tag) by `scripts/publish-config`
+  (`holos-substrate-config:dev`, mutable tag) by `scripts/publish-config`
   (`make config-build`/`config-push`).
 - The **platform** root `Application` (`platform-bootstrap`, AppProject
   **`platform`**) reconciles the system components from this bundle, tracking
@@ -52,7 +52,7 @@ flip it to deliver the platform — the OCI App-of-Apps already does that.
 > shape both for Kargo to patch and for the OCI-bundle bootstrap. It is distinct
 > from the Argo CD `Application`s that deliver the platform and apps today, all of
 > which carry an **OCI** source: the **platform App-of-Apps root** above
-> (`platform-bootstrap`, sourcing `holos-paas-config:dev`) plus each project's
+> (`platform-bootstrap`, sourcing `holos-substrate-config:dev`) plus each project's
 > per-project `<project>-control-plane`/`<project>-workload` roots (sourcing
 > `holos/<project>-config:dev`, HOL-1382);
 > the **hand-authored** Kargo-driven pipeline Applications — `echo`

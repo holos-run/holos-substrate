@@ -39,9 +39,9 @@
 #                    digest before rendering.  Defaults to $APP_IMAGE.
 #   [oci-repo]       The OCI repository to push the manifests artifact to
 #                    (no tag/digest suffix), e.g.
-#                    quay.holos.internal/holos/holos-paas-manifests.
+#                    quay.holos.internal/holos/holos-substrate-manifests.
 #                    Defaults to $PUBLISH_REPO, then to
-#                    quay.holos.internal/holos/holos-paas-manifests.
+#                    quay.holos.internal/holos/holos-substrate-manifests.
 #
 # Environment overrides:
 #   APP_IMAGE        Default app image reference when the positional arg is
@@ -124,7 +124,7 @@ fi
 # Inputs
 # ---------------------------------------------------------------------------
 APP_IMAGE="${1:-${APP_IMAGE:-}}"
-PUBLISH_REPO="${2:-${PUBLISH_REPO:-quay.holos.internal/holos/holos-paas-manifests}}"
+PUBLISH_REPO="${2:-${PUBLISH_REPO:-quay.holos.internal/holos/holos-substrate-manifests}}"
 
 if [[ -z "${APP_IMAGE}" ]]; then
   echo "ERROR: no app image reference given." >&2

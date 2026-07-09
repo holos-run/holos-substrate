@@ -157,7 +157,7 @@ ROLLOUT_TIMEOUT_SECONDS="$(duration_seconds "${ROLLOUT_TIMEOUT}")" || exit 1
 # during bootstrap — so appending the pair keeps the established order
 # stable.  argocd-projects trails argocd: it ships the platform/projects
 # AppProjects (argoproj.io custom resources, so the Argo CD CRDs and controller
-# must be established first) plus the credential-less holos-paas-config
+# must be established first) plus the credential-less holos-substrate-config
 # repository registration Secret — committed and applied directly, since the
 # public repository (HOL-1381) needs no robot pull credential, only the
 # non-sensitive insecure/type settings.  kargo-crds and kargo close the sequence: CRDs before the controllers
@@ -1013,39 +1013,29 @@ wait_argocd() {
     rollout status statefulset/argocd-application-controller --timeout="${ROLLOUT_TIMEOUT}"
 }
 
-# argocd-projects: idempotent HOL-1381 migration cleanup, run BEFORE the
-# component apply.  The holos-paas-config repository is now public and the
-# argocd-projects component renders a CREDENTIAL-LESS repository registration
-# Secret (holos-paas-config, stringData name/url/type/insecure — no
-# username/password).  On a cluster upgraded from the prior robot-credential
-# bootstrap this cleanup is what actually REMOVES the pull-credential dependency:
+# argocd-projects: idempotent legacy-name migration cleanup, run BEFORE the
+# component apply.  Every resource deleted here exists only under its LEGACY
+# "holos-paas-*" name on a cluster upgraded from before the rename, so these
+# names deliberately keep the old spelling — they are deletion targets, not
+# live references:
 #
-#   1. The old holos-paas-config Secret was created by the retired bootstrap Job
-#      with data.username/password set by a DIFFERENT field manager.  A
-#      server-side apply of the new credential-less manifest MERGES — it sets
-#      name/url/type/insecure but does NOT remove the username/password keys it
-#      never owned, so the robot credential would linger and Argo CD would keep
-#      pulling authenticated.  Delete the Secret if it still carries either
-#      credential key; the component apply that follows recreates it
-#      credential-less (a momentary gap, immediately re-applied in this same run).
-#      A Secret that is already credential-less (fresh cluster, or a prior cleaned
-#      apply) is left untouched, so the registration is not needlessly churned.
-#   2. Delete the retired holos-paas-config-robot SOURCE Secret and the
-#      holos-paas-config-repo-bootstrap Job + ServiceAccount/Role/RoleBinding,
-#      none of which the component renders anymore (a plain apply never prunes).
+#   1. HOL-1543 rename: the credential-less repository registration Secret is
+#      now named holos-substrate-config (registering the renamed public
+#      holos-substrate-config repository).  Delete the old holos-paas-config
+#      registration Secret — the component no longer renders it and a plain
+#      apply never prunes, so on an upgraded cluster the stale registration
+#      (old repo URL, possibly still carrying the HOL-1381-era robot
+#      credential keys) would linger in Argo CD.
+#   2. HOL-1381 migration: delete the retired holos-paas-config-robot SOURCE
+#      Secret and the holos-paas-config-repo-bootstrap Job +
+#      ServiceAccount/Role/RoleBinding, none of which the component renders
+#      anymore.
 #
-# --ignore-not-found makes every step a no-op on a fresh cluster, so this is safe
-# to run on every apply.
+# --ignore-not-found makes every step a no-op on a fresh cluster, so this is
+# safe to run on every apply.
 pre_argocd_projects() {
-  if kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
-    get secret holos-paas-config --request-timeout=10s \
-    -o jsonpath='{.data.username}{.data.password}' 2>/dev/null | grep -q .; then
-    echo "    HOL-1381 migration: removing stale robot credential from the" \
-      "holos-paas-config repository Secret (recreated credential-less below)."
-    kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
-      delete secret holos-paas-config --ignore-not-found
-  fi
   kubectl --context "${KUBE_CONTEXT}" --namespace argocd delete \
+    secret/holos-paas-config \
     secret/holos-paas-config-robot \
     job/holos-paas-config-repo-bootstrap \
     serviceaccount/holos-paas-config-repo-bootstrap \
@@ -1241,8 +1231,8 @@ echo "All platform components applied (imperative bootstrap floor)."
 # ready for manual setup.
 #
 # Handing ongoing reconciliation off to Argo CD requires publishing the
-# holos-paas-config:dev bundle to the in-cluster Quay registry — which needs the
-# holos Quay ORGANIZATION (the holos-paas-config repository and a push credential)
+# holos-substrate-config:dev bundle to the in-cluster Quay registry — which needs the
+# holos Quay ORGANIZATION (the holos-substrate-config repository and a push credential)
 # to be configured first.  On a freshly rebuilt cluster that organization does not
 # exist yet, so attempting the publish from this script would race the Quay setup
 # and fail (the rebuild-time race HOL-1379 breaks).  The remaining bootstrap steps
@@ -1267,13 +1257,13 @@ organization and hand reconciliation off to Argo CD (HOL-1380):
 
   3. scripts/apply-holos-quay-organization
      Apply the 'holos' Quay Organization + the public 'holos-controller' and
-     'holos-paas-config' repositories (reconciled by the controller).  It prints
+     'holos-substrate-config' repositories (reconciled by the controller).  It prints
      how to obtain the Quay ROBOT account you need to PUSH the controller image
      and the App-of-Apps config bundle (both repositories are public, so PULLS —
      including Argo CD's bundle pull — are anonymous and need no credential).
 
   4. scripts/apply-platform-app-of-apps
-     Publish holos-paas-config:dev and apply the PLATFORM root Application, handing
+     Publish holos-substrate-config:dev and apply the PLATFORM root Application, handing
      ongoing SYSTEM reconciliation to Argo CD.  Depends on the holos Quay
      organization (step 3) and the robot push credential it describes; Argo CD
      pulls the public bundle anonymously (no pull credential needed).  This is the

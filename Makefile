@@ -1,4 +1,4 @@
-# holos-paas root Makefile: the shared go fmt/vet/test entry points, the OCI
+# holos-substrate root Makefile: the shared go fmt/vet/test entry points, the OCI
 # metadata helpers, and the publish/config-bundle targets. The two service
 # binaries keep their targets isolated in Makefile.controller and
 # Makefile.authenticator (see ADR-12).
@@ -130,7 +130,7 @@ version-bump-minor: ## Tag an annotated minor-version bump (vX.Y.0).
 # push the result as an OCI artifact (see holos/docs/oci-publish-workflow.md).
 # APP_IMAGE is required (tag or digest); PUBLISH_REPO defaults to the in-cluster
 # Quay manifests repo (quay.holos.internal, see docs/local-cluster.md).
-PUBLISH_REPO ?= quay.holos.internal/holos/holos-paas-manifests
+PUBLISH_REPO ?= quay.holos.internal/holos/holos-substrate-manifests
 .PHONY: publish
 publish: ## Render, Kustomize-package, and oras push the manifests artifact (set APP_IMAGE=<ref>).
 	@test -n "$(APP_IMAGE)" || { echo "ERROR: set APP_IMAGE=<registry>/<app>:<tag> or <registry>/<app>@sha256:<digest>"; exit 1; }
@@ -146,7 +146,7 @@ publish: ## Render, Kustomize-package, and oras push the manifests artifact (set
 # (per-app, input-addressed manifests for Kargo) — see
 # holos/docs/oci-publish-workflow.md. CONFIG_REPO/CONFIG_TAG default to the
 # in-cluster Quay config repo.
-CONFIG_REPO ?= quay.holos.internal/holos/holos-paas-config
+CONFIG_REPO ?= quay.holos.internal/holos/holos-substrate-config
 CONFIG_TAG  ?= dev
 .PHONY: config-build
 config-build: ## Bundle holos/deploy/ into a local OCI artifact tarball (no network).

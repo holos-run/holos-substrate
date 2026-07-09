@@ -14,5 +14,5 @@ spec:
             discoveryLimit: 20
             imageSelectionStrategy: Lexical
             insecureSkipTLSVerify: true
-            repoURL: quay.holos.internal/holos/holos-paas-manifests
+            repoURL: quay.holos.internal/holos/holos-substrate-manifests
             strictSemvers: true

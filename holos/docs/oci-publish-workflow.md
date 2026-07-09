@@ -58,7 +58,7 @@ scripts/publish quay.holos.internal/holos/echo:v1
 # By digest, to an explicit target repo:
 scripts/publish \
   quay.holos.internal/holos/echo@sha256:9afa…5ba \
-  quay.holos.internal/holos/holos-paas-manifests
+  quay.holos.internal/holos/holos-substrate-manifests
 
 # Via make (APP_IMAGE required; PUBLISH_REPO optional):
 make publish APP_IMAGE=quay.holos.internal/holos/echo:v1
@@ -72,13 +72,13 @@ On success the script prints progress and the consumption hint to **stderr** and
 the bare artifact digest to **stdout**:
 
 ```
-Published quay.holos.internal/holos/holos-paas-manifests@sha256:1a88…dad (tag render-6727d8e9f33c-9afa9311ba1d)
+Published quay.holos.internal/holos/holos-substrate-manifests@sha256:1a88…dad (tag render-6727d8e9f33c-9afa9311ba1d)
 Consume it as an Argo CD OCI source by digest:
-  repoURL:        oci://quay.holos.internal/holos/holos-paas-manifests
+  repoURL:        oci://quay.holos.internal/holos/holos-substrate-manifests
   targetRevision: sha256:1a88…dad
 ```
 
-## Platform config bundle (`holos-paas-config`)
+## Platform config bundle (`holos-substrate-config`)
 
 Distinct from the per-app `scripts/publish` path above, the **platform config
 bundle** packages the **whole rendered `holos/deploy/` tree as-is** into one OCI
@@ -93,7 +93,7 @@ It is deliberately **not** `scripts/publish`:
 | --- | --- | --- |
 | Input | `holos render platform --inject app_image=…` (re-renders) | the **committed** `holos/deploy/` tree, **as-is** (no render) |
 | Packaging | Kustomize `build` → one flat `manifests.yaml` | a straight `tar` of the deploy tree (no Kustomize) |
-| Repo | `quay.holos.internal/holos/holos-paas-manifests` | `quay.holos.internal/holos/holos-paas-config` |
+| Repo | `quay.holos.internal/holos/holos-substrate-manifests` | `quay.holos.internal/holos/holos-substrate-config` |
 | Tag | immutable, input-addressed `render-<config12>-<appimage12>` | mutable `dev` |
 | Consumer | Kargo `Warehouse` → per-app delivery | Argo CD App-of-Apps → platform bootstrap |
 | Layer media type | `application/vnd.oci.image.layer.v1.tar+gzip` | same |
@@ -109,11 +109,11 @@ depends on it and `oras push`es it:
 # Build the local artifact tarball (holos/deploy.tar.gz, gitignored). No network.
 make config-build
 
-# Build (if stale) then push to quay.holos.internal/holos/holos-paas-config:dev.
+# Build (if stale) then push to quay.holos.internal/holos/holos-substrate-config:dev.
 make config-push
 
 # Override the target. CONFIG_REPO is the bare repo; CONFIG_TAG the tag.
-make config-push CONFIG_REPO=localhost:5099/holos/holos-paas-config CONFIG_TAG=dev
+make config-push CONFIG_REPO=localhost:5099/holos/holos-substrate-config CONFIG_TAG=dev
 
 # The script directly (the Make targets are thin wrappers):
 scripts/publish-config --build                       # tar holos/deploy/
@@ -142,7 +142,7 @@ per-component subpath with:
 ```yaml
 spec:
   source:
-    repoURL: oci://quay.holos.internal/holos/holos-paas-config
+    repoURL: oci://quay.holos.internal/holos/holos-substrate-config
     targetRevision: dev   # the mutable bootstrap tag (or pin a digest)
     path: clusters/k3d-holos/components/<component>
 ```
@@ -169,7 +169,7 @@ renders into `clusters/k3d-holos/components/app-of-apps/`:
 
 - **A root `Application` `platform-bootstrap`** (`application-bootstrap.yaml`) —
   `spec.project: platform` (the AppProject `argocd-projects` stood up in
-  HOL-1375), source `oci://quay.holos.internal/holos/holos-paas-config` at
+  HOL-1375), source `oci://quay.holos.internal/holos/holos-substrate-config` at
   `targetRevision: dev`, and `source.path:
   clusters/k3d-holos/components/app-of-apps/children` with
   `directory.recurse: true`. It reconciles **only** the `children/` subdirectory,
@@ -257,11 +257,11 @@ exclusion here and in the component comments).
 
 `scripts/apply` brings the foundation + Argo CD + Kargo up imperatively (the
 bootstrap floor) and **stops there**, with Quay and Keycloak ready for manual
-setup. The PLATFORM handoff — publishing `holos-paas-config:dev` and applying the
+setup. The PLATFORM handoff — publishing `holos-substrate-config:dev` and applying the
 **platform** root `Application` (`platform-bootstrap`) above — is a **separate
 script, `scripts/apply-platform-app-of-apps`** (HOL-1382, split out of the former
 `scripts/apply-app-of-apps`), because the publish needs the holos Quay
-**organization** (the public `holos-paas-config` repository and a push-capable Quay
+**organization** (the public `holos-substrate-config` repository and a push-capable Quay
 robot credential) configured first; on a freshly rebuilt cluster that organization
 does not exist yet, so publishing from `scripts/apply` raced the manual Quay setup
 and failed (HOL-1379, [ADR-16 Rev 4](../../docs/adr/ADR-16.md)). The repository is
@@ -282,7 +282,7 @@ forces the root against a known-current `:dev`).
 
 Tenant projects are bootstrapped **separately and independently** from the platform
 (HOL-1382): there is no longer one global `projects-bootstrap` root over the shared
-`holos-paas-config` bundle. Instead, `scripts/apply-projects-app-of-apps` enumerates
+`holos-substrate-config` bundle. Instead, `scripts/apply-projects-app-of-apps` enumerates
 the registered projects (`holos cue export ./holos/projects | jq -r '.projects |
 keys[]'`) and, for **each** project, calls `scripts/apply-project-app-of-apps
 <project>`, which:
@@ -328,9 +328,9 @@ tar tzf holos/deploy.tar.gz | head    # clusters/k3d-holos/components/...
 
 # 2. Against a throwaway local registry, push and round-trip it.
 docker run -d --name reg -p 5099:5000 registry:2
-DIGEST=$(make -s config-push CONFIG_REPO=localhost:5099/holos/holos-paas-config)
+DIGEST=$(make -s config-push CONFIG_REPO=localhost:5099/holos/holos-substrate-config)
 oras manifest fetch --plain-http \
-  localhost:5099/holos/holos-paas-config:dev | jq '.layers[].mediaType'
+  localhost:5099/holos/holos-substrate-config:dev | jq '.layers[].mediaType'
 #   "application/vnd.oci.image.layer.v1.tar+gzip"
 docker rm -f reg
 ```
@@ -427,7 +427,7 @@ reachability):
 ```yaml
 spec:
   source:
-    repoURL: oci://quay.holos.internal/holos/holos-paas-manifests
+    repoURL: oci://quay.holos.internal/holos/holos-substrate-manifests
     targetRevision: sha256:1a88…dad   # the digest scripts/publish printed
     path: .                           # manifests sit at the tarball root
 ```
@@ -454,25 +454,25 @@ oras push --plain-http localhost:5099/holos/echo:v1 \
 
 # 2. Publish the rendered manifests for that image.
 DIGEST=$(scripts/publish localhost:5099/holos/echo:v1 \
-  localhost:5099/holos/holos-paas-manifests)
+  localhost:5099/holos/holos-substrate-manifests)
 
 # 3. The artifact exists by digest, with the expected single tar+gzip layer.
 oras manifest fetch --plain-http \
-  localhost:5099/holos/holos-paas-manifests@"$DIGEST" \
+  localhost:5099/holos/holos-substrate-manifests@"$DIGEST" \
   | jq '.layers[].mediaType'   # "application/vnd.oci.image.layer.v1.tar+gzip"
 
 # 4. The published manifests carry the injected app image digest.
 oras pull --plain-http -o out \
-  localhost:5099/holos/holos-paas-manifests@"$DIGEST"
+  localhost:5099/holos/holos-substrate-manifests@"$DIGEST"
 tar xzf out/manifests.tar.gz -O | grep 'image:.*echo@sha256'
 
 # 5. Re-running with the same inputs is idempotent: the same input-addressed
 #    tag is produced.  Capture the tag from each run's stderr and compare.
 scripts/publish localhost:5099/holos/echo:v1 \
-  localhost:5099/holos/holos-paas-manifests 2>&1 >/dev/null \
+  localhost:5099/holos/holos-substrate-manifests 2>&1 >/dev/null \
   | grep -oE 'render-[0-9a-f]{12}-[0-9a-f]{12}'   # tag run A
 scripts/publish localhost:5099/holos/echo:v1 \
-  localhost:5099/holos/holos-paas-manifests 2>&1 >/dev/null \
+  localhost:5099/holos/holos-substrate-manifests 2>&1 >/dev/null \
   | grep -oE 'render-[0-9a-f]{12}-[0-9a-f]{12}'   # tag run B == tag run A
 
 # 6. Clean up.
@@ -502,7 +502,7 @@ rollout that the in-cluster NATS deployer subscriber used to drive
   pipeline itself:
   - a **`Warehouse`** (`freightCreationPolicy: Automatic`, `interval: 1m`) with
     an `image` subscription to the bare rendered-manifests repo
-    `quay.holos.internal/holos/holos-paas-manifests`, scoped by
+    `quay.holos.internal/holos/holos-substrate-manifests`, scoped by
     `allowTags: ^render-[0-9a-f]{12}-[0-9a-f]{12}$` to the input-addressed tags
     this workflow mints. It uses `imageSelectionStrategy: Lexical`, not SemVer
     (the tags are not semver) and not NewestBuild (ORAS rendered-manifests
@@ -513,9 +513,9 @@ rollout that the in-cluster NATS deployer subscriber used to drive
     `helm-template`. No in-promotion `kustomize-build` is needed: this workflow
     already ran `kustomize build` client-side and pushed finished manifests, so
     the Stage only repoints the Application's OCI `targetRevision` to the
-    Freight's **digest** (`${{ imageFrom("…/holos-paas-manifests").Digest }}`).
+    Freight's **digest** (`${{ imageFrom("…/holos-substrate-manifests").Digest }}`).
   - the target Argo CD **`Application`** (`echo`, in `argocd`) with an **OCI**
-    source (`oci://…/holos-paas-manifests`) and the
+    source (`oci://…/holos-substrate-manifests`) and the
     `kargo.akuity.io/authorized-stage: kargo-echo:test` annotation authorizing
     the Stage to patch it. It is authored standalone rather than through the
     `userDefinedBuildPlan` gitops projection (the `argoAppDisabled` flip in
@@ -564,7 +564,7 @@ uncommitted** credential Secrets are required (the repo's runtime-secret posture
 
    ```bash
    kubectl --context k3d-holos -n kargo-echo create secret generic quay-manifests-creds \
-     --from-literal=repoURL=quay.holos.internal/holos/holos-paas-manifests \
+     --from-literal=repoURL=quay.holos.internal/holos/holos-substrate-manifests \
      --from-literal=username=holos+robot \
      --from-literal=password='<robot token>'
    kubectl --context k3d-holos -n kargo-echo label secret quay-manifests-creds \

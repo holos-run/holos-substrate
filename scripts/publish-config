@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Bundle the rendered platform manifests under holos/deploy/ into a single OCI
 # artifact and publish it as the platform-config bundle the App-of-Apps
-# bootstrap consumes (quay.holos.internal/holos/holos-paas-config:dev).
+# bootstrap consumes (quay.holos.internal/holos/holos-substrate-config:dev).
 #
 # This is the PRODUCER side of the App-of-Apps bootstrap (HOL-1373/HOL-1374): a
 # straight tar of the committed holos/deploy/ tree under a mutable :dev tag, for
@@ -11,7 +11,7 @@
 #   - No render, no digest injection, no Kustomize.  scripts/publish renders the
 #     platform with an injected app image digest, Kustomize-packages it, and
 #     pushes an input-addressed `render-<config12>-<appimage12>` tag into
-#     holos-paas-manifests for the Kargo-driven app delivery.  This script does
+#     holos-substrate-manifests for the Kargo-driven app delivery.  This script does
 #     NONE of that — it tars the holos/deploy/ tree AS-IS so Argo CD child
 #     Applications can select per-component subpaths
 #     (clusters/k3d-holos/components/<component>) via `source.path`.
@@ -43,13 +43,13 @@
 #   [oci-repo[:tag]] The target OCI reference.  Either a bare repo (the :tag is
 #                    taken from $CONFIG_TAG, default `dev`) or a repo:tag.
 #                    Defaults to $CONFIG_REPO:$CONFIG_TAG, then to
-#                    quay.holos.internal/holos/holos-paas-config:dev.
+#                    quay.holos.internal/holos/holos-substrate-config:dev.
 #                    Used by --push (and accepted but unused by --build, so a
 #                    caller can pass the same args to both steps).
 #
 # Environment overrides:
 #   CONFIG_REPO      Default target OCI repository (no tag suffix).
-#                    Default quay.holos.internal/holos/holos-paas-config.
+#                    Default quay.holos.internal/holos/holos-substrate-config.
 #   CONFIG_TAG       Default tag.  Default `dev`.
 #   ARTIFACT_TARBALL Path to the build/push artifact tarball.
 #                    Default holos/deploy.tar.gz (gitignored).
@@ -87,7 +87,7 @@ DEPLOY_DIR="${REPO_ROOT}/holos/deploy"
 ARTIFACT_TARBALL="${ARTIFACT_TARBALL:-${REPO_ROOT}/holos/deploy.tar.gz}"
 
 # Target OCI coordinates.  CONFIG_REPO is the bare repo; CONFIG_TAG the tag.
-CONFIG_REPO="${CONFIG_REPO:-quay.holos.internal/holos/holos-paas-config}"
+CONFIG_REPO="${CONFIG_REPO:-quay.holos.internal/holos/holos-substrate-config}"
 CONFIG_TAG="${CONFIG_TAG:-dev}"
 
 usage() {
@@ -96,7 +96,7 @@ Usage:
   scripts/publish-config --build [oci-repo[:tag]]   # tar holos/deploy/ (no network)
   scripts/publish-config --push  [oci-repo[:tag]]   # oras push the built artifact
 
-Defaults: CONFIG_REPO=quay.holos.internal/holos/holos-paas-config CONFIG_TAG=dev
+Defaults: CONFIG_REPO=quay.holos.internal/holos/holos-substrate-config CONFIG_TAG=dev
 See the header of this script and holos/docs/oci-publish-workflow.md.
 EOF
 }

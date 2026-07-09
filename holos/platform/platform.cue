@@ -20,7 +20,7 @@ clusters: "k3d-holos": _
 //
 // See https://holos.run/docs/api/author/v1alpha6/#Platform
 platform: {
-	name: "holos-paas"
+	name: "holos-substrate"
 
 	for CLUSTER in clusters {
 		components: {
@@ -408,7 +408,7 @@ platform: {
 
 			// argocd-projects establishes the Argo CD project separation
 			// between the platform "system" and the tenant "projects" and
-			// registers the holos-paas-config OCI repository with Argo CD
+			// registers the holos-substrate-config OCI repository with Argo CD
 			// (HOL-1375, the App-of-Apps bootstrap parent HOL-1373).  It emits
 			// two AppProjects — platform (owns all system components, may
 			// create cluster-scoped resources) and projects (owns the
@@ -502,7 +502,7 @@ platform: {
 			// (HOL-1376, parent HOL-1373): a root Argo CD Application (the
 			// App-of-Apps) assigned to the platform AppProject (argocd-projects,
 			// HOL-1375) that fans out one child Application per SYSTEM component,
-			// every child pulling the holos-paas-config OCI bundle at the mutable
+			// every child pulling the holos-substrate-config OCI bundle at the mutable
 			// :dev tag (HOL-1374) and carrying an ascending
 			// argocd.argoproj.io/sync-wave mirroring the scripts/apply dependency
 			// order.  It is the LAST system component and caps the "system" set —
@@ -568,7 +568,7 @@ platform: {
 			// `holos` Organization and the public `holos-controller` Repository the
 			// Holos Controller reconciles (HOL-1380).  It is the bootstrap home of
 			// the controller image and the App-of-Apps config bundle (in the
-			// holos-paas-config repo).  Like project/application/keycloak-instance it
+			// holos-substrate-config repo).  Like project/application/keycloak-instance it
 			// is render-here / apply-separately — its Organization and Repository
 			// carry a per-cluster caBundle injected at apply time
 			// (scripts/apply-holos-quay-organization), so it is EXCLUDED from the
@@ -590,7 +590,7 @@ platform: {
 			// Kargo/Quay/Keycloak CRs) and <project>-workload (the service-owner-
 			// applied app workload) — each pulling that project's OWN OCI config
 			// bundle (oci://quay.holos.internal/holos/<project>-config:dev) rather
-			// than the single shared holos-paas-config bundle.  This is the "clean
+			// than the single shared holos-substrate-config bundle.  This is the "clean
 			// cut line" HOL-1382 asks for: the platform App-of-Apps (app-of-apps)
 			// bootstraps the system, and each project is bootstrapped separately by
 			// its own per-project roots, built/pushed/applied by

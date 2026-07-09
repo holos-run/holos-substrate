@@ -146,7 +146,7 @@ curl https://echo.holos.internal/
 
 `scripts/apply` **stops at the bootstrap floor** — with Quay and Keycloak up —
 and does **not** itself perform the App-of-Apps handoff. Handing reconciliation to
-ArgoCD requires publishing the `holos-paas-config:dev` bundle to the in-cluster
+ArgoCD requires publishing the `holos-substrate-config:dev` bundle to the in-cluster
 Quay, which needs the holos Quay **organization** configured first. On a freshly
 rebuilt cluster that organization does not exist yet, so doing the publish from
 `scripts/apply` would race the Quay setup and fail (HOL-1379). The remaining
@@ -170,7 +170,7 @@ scripts/apply-holos-controller
 #    Quay ROBOT account you need for the pushes in step 4.
 scripts/apply-holos-quay-organization
 
-# 4. Publish holos-paas-config:dev and apply the PLATFORM root Application,
+# 4. Publish holos-substrate-config:dev and apply the PLATFORM root Application,
 #    handing ongoing SYSTEM reconciliation to ArgoCD.  This is the clean cut
 #    line: the platform is fully bootstrapped here.
 scripts/apply-platform-app-of-apps
@@ -190,21 +190,21 @@ describes — a Quay **robot** you create in the `holos` org:
 
 - **Host-side push auth** for the bundle push — `ORAS_USERNAME` / `ORAS_PASSWORD`
   or a prior `oras login quay.holos.internal` (`scripts/publish-config` reads
-  those, **not** any in-cluster Secret). The `holos-paas-config` repository is
+  those, **not** any in-cluster Secret). The `holos-substrate-config` repository is
   pre-created by `scripts/apply-holos-quay-organization`, so the robot needs only
   **write** (push) access.
 
-No **pull** credential is needed: the `holos-paas-config` repository is **public**
+No **pull** credential is needed: the `holos-substrate-config` repository is **public**
 (HOL-1381), so Argo CD pulls the bundle **anonymously**. The `argocd-projects`
 component registers the repository with Argo CD via a credential-less repository
 Secret (only `url`/`type`/`insecure`) the floor already applied — there is no
-`holos-paas-config-robot` source Secret and no repository-credential bootstrap Job.
+`holos-substrate-config-robot` source Secret and no repository-credential bootstrap Job.
 
 `scripts/apply-platform-app-of-apps` resolves the chicken-and-egg — ArgoCD cannot
 reconcile the platform from the OCI config bundle until ArgoCD itself is running —
 by running **after** the floor brings ArgoCD up:
 
-1. It publishes the **`holos-paas-config:dev`** bundle (a tar of the committed
+1. It publishes the **`holos-substrate-config:dev`** bundle (a tar of the committed
    `holos/deploy/` tree, `scripts/publish-config`).
 2. It applies the **platform root ArgoCD `Application`** `platform-bootstrap`
    (the system components, ArgoCD project `platform`), which then tracks `:dev`

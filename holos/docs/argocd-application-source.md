@@ -58,13 +58,13 @@ kubectl -n argocd patch application <name> --type merge \
 
 **The one mutable-tag exception — the App-of-Apps bootstrap.** The platform
 App-of-Apps roots and their children deliberately track the **mutable
-`holos-paas-config:dev` tag** rather than a digest (HOL-1373,
+`holos-substrate-config:dev` tag** rather than a digest (HOL-1373,
 [ADR-16 Rev 3](../../docs/adr/ADR-16.md)):
 
 ```yaml
 spec:
   source:
-    repoURL: oci://quay.holos.internal/holos/holos-paas-config
+    repoURL: oci://quay.holos.internal/holos/holos-substrate-config
     targetRevision: dev   # the mutable bootstrap tag — re-pushing it rolls the platform
 ```
 
@@ -131,13 +131,13 @@ non-sensitive registration fields:
 apiVersion: v1
 kind: Secret
 metadata:
-  name: holos-paas-config
+  name: holos-substrate-config
   namespace: argocd
   labels:
     argocd.argoproj.io/secret-type: repository
 stringData:
-  name: holos-paas-config
-  url: oci://quay.holos.internal/holos/holos-paas-config
+  name: holos-substrate-config
+  url: oci://quay.holos.internal/holos/holos-substrate-config
   type: oci
   insecure: "true"
 ```
@@ -146,11 +146,11 @@ stringData:
 of authentication), so the Secret still exists — but with **no secret
 material** it is rendered and committed directly to the deploy tree rather
 than assembled at runtime by a bootstrap Job. This is exactly how the
-**App-of-Apps platform config bundle** (`holos-paas-config`) is registered:
+**App-of-Apps platform config bundle** (`holos-substrate-config`) is registered:
 the `holos-quay-organization` component makes that repository public
 (HOL-1381), so the `argocd-projects` component renders this credential-less
 registration Secret and the platform no longer depends on a
-`holos-paas-config-robot` pull credential. See the *Project Delivery
+`holos-substrate-config-robot` pull credential. See the *Project Delivery
 Scaffold* / App-of-Apps guidance in the repo root `AGENTS.md`.
 
 ## How the repo-server reaches Quay (in-cluster reachability)
@@ -223,7 +223,7 @@ ServiceEntry is the only committed piece — it depends on nothing
 imperative.
 
 Platform self-delivery is now wired: the **OCI App-of-Apps** over the
-`holos-paas-config:dev` bundle reconciles the platform's own rendered manifests
+`holos-substrate-config:dev` bundle reconciles the platform's own rendered manifests
 ([ADR-16 Rev 4](../../docs/adr/ADR-16.md),
 [oci-publish-workflow.md](oci-publish-workflow.md)). `scripts/apply` brings Argo
 CD up and stops at the bootstrap floor; the separate

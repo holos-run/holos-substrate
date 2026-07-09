@@ -6,7 +6,7 @@ package holos
 // that fanned out EVERY project's manifests into ONE pair of root Applications
 // PER registered project, each pulling that project's OWN OCI config bundle
 // (oci://quay.holos.internal/holos/<project>-config:dev) rather than the single
-// shared holos-paas-config bundle.  This is the "clean cut line" HOL-1382 asks
+// shared holos-substrate-config bundle.  This is the "clean cut line" HOL-1382 asks
 // for: the PLATFORM App-of-Apps (components/app-of-apps) bootstraps the system,
 // and each project is bootstrapped separately by its own per-project roots —
 // built, pushed, and applied by scripts/apply-project-app-of-apps (control plane)

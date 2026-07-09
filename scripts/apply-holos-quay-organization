@@ -7,11 +7,11 @@
 # a fresh cluster:
 #   * the holos-controller container image (the public holos-controller repo this
 #     script creates); and
-#   * the App-of-Apps platform config bundle (the public holos-paas-config repo
+#   * the App-of-Apps platform config bundle (the public holos-substrate-config repo
 #     this script also creates, so the push robot needs only write and Argo CD
 #     pulls the bundle anonymously — HOL-1381, see scripts/apply-platform-app-of-apps).
 #
-# Both the holos-controller and holos-paas-config Repositories are PUBLIC
+# Both the holos-controller and holos-substrate-config Repositories are PUBLIC
 # (world-pullable), and the org binds an
 # OIDC-synced Quay team to the realm's `authenticated` default group with org role
 # `creator` + an org default `write` permission — so every authenticated user can
@@ -229,18 +229,18 @@ gate_ready() {
 NS="holos-controller"
 gate_ready "${NS}" "organization.quay.holos.run/holos" || exit 1
 gate_ready "${NS}" "repository.quay.holos.run/holos-controller" || exit 1
-gate_ready "${NS}" "repository.quay.holos.run/holos-paas-config" || exit 1
+gate_ready "${NS}" "repository.quay.holos.run/holos-substrate-config" || exit 1
 
 cat <<EOF
 
 ============================================================================
 The holos Quay organization is provisioned: organization 'holos', the public
-'holos-controller' repository, and the public 'holos-paas-config' bundle
+'holos-controller' repository, and the public 'holos-substrate-config' bundle
 repository.  All authenticated users may push and pull.
 
 NEXT: obtain a Quay ROBOT account to PUSH the OCI artifacts that flow through this
 org — the holos-controller image, the platform App-of-Apps config bundle
-(holos-paas-config), AND each project's per-project config bundle
+(holos-substrate-config), AND each project's per-project config bundle
 (holos/<project>-config, one per registered project, also managed above, HOL-1382).
 All of these repositories already exist (managed above), so the robot needs only
 WRITE (push) access — no repo-create rights.  Automated pushes use a robot
@@ -250,7 +250,7 @@ repositories are public, so PULLS — including Argo CD's bundle pull — are an
 
   1. In https://quay.holos.internal, open the 'holos' organization and create a
      Robot account (e.g. holos+robot), then grant it EXPLICIT WRITE on EVERY
-     repository in the org — holos-controller, holos-paas-config, AND each
+     repository in the org — holos-controller, holos-substrate-config, AND each
      <project>-config bundle repo (e.g. my-project-config) — via each repo's
      Settings > User and Robot Permissions (set the robot to "Write").  Grant WRITE
      on each new <project>-config repo as projects are added.

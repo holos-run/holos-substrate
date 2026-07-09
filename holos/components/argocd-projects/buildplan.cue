@@ -6,7 +6,7 @@ import "list"
 // platform "system" and the tenant "projects", and registers the platform
 // config OCI repository with Argo CD (HOL-1375, parent HOL-1373 — the
 // App-of-Apps bootstrap).  It is the consumer-side counterpart to the
-// holos-paas-config OCI bundle the producer phase publishes (HOL-1374): later
+// holos-substrate-config OCI bundle the producer phase publishes (HOL-1374): later
 // phases (HOL-1376/HOL-1377) add the Applications that reference these two
 // AppProjects and pull from this repository.  This phase introduces NO
 // Applications — only the two AppProjects and the repository credential — so it
@@ -14,13 +14,13 @@ import "list"
 //
 // Two AppProjects:
 //   - platform owns every system component.  Its sourceRepos authorize the
-//     holos-paas-config bundle (and the per-app holos-paas-manifests repo the
+//     holos-substrate-config bundle (and the per-app holos-substrate-manifests repo the
 //     echo/Kargo pipeline already uses); its destinations permit ALL namespaces
 //     on the in-cluster API server; and — unlike a tenant project — it allows
 //     BOTH namespace- and cluster-scoped resources (group:"*"/kind:"*"), because
 //     the system components own CRDs, ClusterRoles, and Namespaces.
 //   - projects owns the single top-level App-of-Apps that bootstraps tenant
-//     projects (HOL-1377).  It is scoped to EXACTLY the holos-paas-config bundle
+//     projects (HOL-1377).  It is scoped to EXACTLY the holos-substrate-config bundle
 //     (sourceRepos), permits the argocd namespace plus all tenant namespaces
 //     (every other platform namespace denied), and whitelists EXACTLY the one
 //     cluster-scoped kind the project component emits (the Kargo Project) — NOT
@@ -45,16 +45,16 @@ import "list"
 let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 
 // CONFIG_REPO is the platform config OCI repository the App-of-Apps bootstrap
-// pulls from (HOL-1374 publishes holos-paas-config:dev to it).  The BARE form is
+// pulls from (HOL-1374 publishes holos-substrate-config:dev to it).  The BARE form is
 // the registry/repo path; the oci:// form is what an Argo CD Application source
 // repoURL and the repository credential Secret's url take.  Keep both consistent
 // with scripts/publish-config's CONFIG_REPO default and oci-publish-workflow.md.
-let CONFIG_REPO = "quay.holos.internal/holos/holos-paas-config"
+let CONFIG_REPO = "quay.holos.internal/holos/holos-substrate-config"
 let CONFIG_REPO_OCI = "oci://\(CONFIG_REPO)"
 
 // CONFIG_REPO_BASE is the OCI repository PREFIX the platform config bundles live
 // under: the platform-owned `holos` Quay org.  The PLATFORM config bundle is
-// <CONFIG_REPO_BASE>/holos-paas-config (CONFIG_REPO above); each PROJECT's
+// <CONFIG_REPO_BASE>/holos-substrate-config (CONFIG_REPO above); each PROJECT's
 // per-project config bundle (HOL-1382) is <CONFIG_REPO_BASE>/<project>-config.
 // Keep consistent with project-app-of-apps's CONFIG_REPO_BASE and
 // scripts/apply-project-app-of-apps's CONFIG_REPO_BASE.
@@ -74,7 +74,7 @@ let PROJECT_BUNDLE_OCI = {for NAME, _ in projects {(NAME): "oci://\(CONFIG_REPO_
 // echo/Kargo delivery pipeline publishes to (components/kargo-echo).  The
 // platform AppProject authorizes it too so a system-owned Application may also
 // source from it; the oci:// form matches the Application source repoURL string.
-let MANIFESTS_REPO_OCI = "oci://quay.holos.internal/holos/holos-paas-manifests"
+let MANIFESTS_REPO_OCI = "oci://quay.holos.internal/holos/holos-substrate-manifests"
 
 // IN_CLUSTER is the in-cluster Kubernetes API server destination every Argo CD
 // Application in these projects targets.
@@ -112,7 +112,7 @@ let PLATFORM_PROJECT = {
 		// Argo CD matches an Application's source by EXACT repoURL string and
 		// selects the tag/digest via targetRevision — it does NOT suffix-match the
 		// repoURL — so the config repo is listed by its exact oci:// URL (a '*'
-		// suffix would also authorize sibling repos like holos-paas-config-backdoor
+		// suffix would also authorize sibling repos like holos-substrate-config-backdoor
 		// for a project that whitelists cluster-scoped resources).  The manifests
 		// repo is listed in full for the system-owned Application that may source
 		// from it.
@@ -141,7 +141,7 @@ let PLATFORM_PROJECT = {
 //
 // Owns the single top-level App-of-Apps that bootstraps tenant projects (the
 // projects component, HOL-1377) and its two child Applications (projects-project,
-// projects-application).  Scoped (sourceRepos) to EXACTLY the holos-paas-config
+// projects-application).  Scoped (sourceRepos) to EXACTLY the holos-substrate-config
 // bundle the projects App-of-Apps pulls the project/application manifests from —
 // HOL-1377 narrowed it from the prior oci://quay.holos.internal/*/* wildcard (see
 // the sourceRepos rationale below for why the wildcard was unsafe once the argocd
@@ -251,19 +251,19 @@ let PROJECTS_PROJECT = {
 
 // --- Repository registration ----------------------------------------------
 //
-// Registers the holos-paas-config OCI repository with Argo CD via a repository
+// Registers the holos-substrate-config OCI repository with Argo CD via a repository
 // Secret in the argocd namespace (labeled
 // argocd.argoproj.io/secret-type: repository).
 //
 // The repository is PUBLIC (HOL-1381): holos-quay-organization sets the
-// holos-paas-config Repository's visibility to `public`, so Argo CD's repo-server
+// holos-substrate-config Repository's visibility to `public`, so Argo CD's repo-server
 // pulls the App-of-Apps bundle ANONYMOUSLY.  This Secret therefore carries NO
 // username/password — no robot pull credential, no secret MATERIAL — so unlike
 // the prior create-if-absent robot bootstrap it is rendered and COMMITTED
 // directly to the deploy tree (the Runtime Secret Handling guardrail forbids
 // committing a Secret's MATERIAL; this Secret has none, only the non-sensitive
 // registration constants).  Making the repo public removes the dependency on the
-// holos-paas-config-robot SOURCE Secret and the bootstrap Job + RBAC entirely.
+// holos-substrate-config-robot SOURCE Secret and the bootstrap Job + RBAC entirely.
 //
 // The Secret still exists because Argo CD needs the per-repository
 // `insecure: "true"` setting even for an anonymous pull: the in-cluster Quay
@@ -275,7 +275,7 @@ let PROJECTS_PROJECT = {
 // let `insecure` drop) is the deferred node-level registry trust placeholder.
 
 // REPO_SECRET is the argocd-format repository registration Secret.
-let REPO_SECRET = "holos-paas-config"
+let REPO_SECRET = "holos-substrate-config"
 
 // The credential-less repository registration.  stringData carries only the
 // non-sensitive constants (name/url/type/insecure) — there is no
