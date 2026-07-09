@@ -1,5 +1,10 @@
 # Research: Performing the Re-render + ORAS Publish Step in the Event-Driven Pipeline
 
+> **Archived (PaaS era).** This document was written for the Holos PaaS
+> prototype and was archived during the Holos Substrate rebrand. It is kept
+> for the historical record; see [docs/](../) for the documentation that
+> covers the substrate.
+
 | Metadata | Value                                        |
 |----------|----------------------------------------------|
 | Date     | 2026-06-09                                   |
@@ -8,7 +13,7 @@
 | Tags     | holos, oras, oci, render, nats, research     |
 
 > Follow-up to
-> [Research: Handling Image-Tag Updates in Argo CD with an OCI Manifest Source](argocd-oci-image-tag-updates.md),
+> [Research: Handling Image-Tag Updates in Argo CD with an OCI Manifest Source](../research/argocd-oci-image-tag-updates.md),
 > which concluded Argo CD should sync rendered manifests from an OCI artifact
 > and the deployer should set `Application.targetRevision`. That left a gap:
 > *who produces the new rendered-manifests artifact when a new app image tag
@@ -71,7 +76,7 @@ and authenticates via docker config, `--creds`, or cloud `--provider`
 `OCIRepository` can pin to tags, semver, or digests. Maturity: high. Fit: the
 *packaging* half is directly reusable (the `flux` CLI is a fine alternative to
 `oras` as the push tool), but the *sync* engine in our architecture is Argo CD,
-not Flux, per the [prior research report](argocd-oci-image-tag-updates.md); and
+not Flux, per the [prior research report](../research/argocd-oci-image-tag-updates.md); and
 Flux says nothing about *who triggers* the render — people run it from CI. Note
 the cheatsheet does **not** document reproducible/deterministic tarball digests,
 and the `org.opencontainers.image.created` annotation means re-pushing identical
@@ -378,7 +383,7 @@ options A/B cannot achieve.
 
 ### 4.9 How the deployer sets `targetRevision`
 
-Unchanged from the [prior research](argocd-oci-image-tag-updates.md)/ADR-11
+Unchanged from the [prior research](../research/argocd-oci-image-tag-updates.md)/ADR-11
 direction, now with a concrete input: the DeployTask carries
 `manifestsArtifact: oci://registry/rendered-manifests@sha256:<digest>` (plus the
 human-readable tag `T` for status display). The deployer patches the Argo CD
@@ -463,4 +468,4 @@ not benchmarks.
 - [OneUptime — OCI artifact build & push in CI for Flux](https://oneuptime.com/blog/post/2026-03-13-oci-artifact-build-push-ci-flux-cd/view)
 - [DigitalOcean — Tekton + Argo CD on Kubernetes](https://www.digitalocean.com/community/developer-center/kubernetes-ci-cd-using-tekton-argo-cd-and-knative-serverless-applications)
 - [Argo Events — triggers](https://argoproj.github.io/argo-events/sensors/triggers/build-your-own-trigger/)
-- Prior internal research: [argocd-oci-image-tag-updates.md](argocd-oci-image-tag-updates.md)
+- Prior internal research: [argocd-oci-image-tag-updates.md](../research/argocd-oci-image-tag-updates.md)

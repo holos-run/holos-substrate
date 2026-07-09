@@ -1,9 +1,10 @@
-# Holos PaaS
+# Holos Substrate
 
-A Kubernetes-native platform delivering a minimum viable Heroku
-experience — push a tagged image, get a deploy — managed entirely through
-the Kubernetes API and rendered with the [Holos](https://holos.run/)
-rendered-manifests pattern.
+Kubernetes-native building blocks for platform identity and registry
+management — the `quay.holos.run` and `keycloak.holos.run` custom
+resources, the `security.holos.run` `ReferenceGrant`, and the Holos
+Authenticator — managed entirely through the Kubernetes API and rendered
+with the [Holos](https://holos.run/) rendered-manifests pattern.
 
 ## Quick Start
 

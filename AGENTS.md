@@ -1,8 +1,9 @@
-# holos-paas
+# Holos Substrate
 
-The Holos PaaS: a Kubernetes-native platform delivering a minimum viable
-Heroku experience — push a tagged image, get a deploy — managed entirely
-through the Kubernetes API and rendered with the
+The Holos Substrate: Kubernetes-native building blocks — the
+`quay.holos.run` and `keycloak.holos.run` custom resources, the
+`security.holos.run` `ReferenceGrant`, and the Holos Authenticator —
+managed entirely through the Kubernetes API and rendered with the
 [Holos](https://holos.run/) rendered-manifests pattern.
 
 ## Repository layout
@@ -289,10 +290,10 @@ components have been removed. Git history preserves them.
   documentation style, forward-compatible unreleased API shapes, external
   resource status, claim/adopt/release ownership, dependency watches, status
   patching, and mutation/drift stamping guardrails.
-- [docs/planning/holos-paas-mvp-milestones.md](docs/planning/holos-paas-mvp-milestones.md)
-  — the MVP plan; mirrors the Linear *Holos PaaS* project milestones.
 - [docs/research/](docs/research/) — research reports informing decisions.
-- [docs/demo/](docs/demo/README.md) — demo walkthroughs.
+- [docs/archive/](docs/archive/README.md) — PaaS-era documents (demos, the
+  MVP milestone plan, retired-pipeline research) archived during the Holos
+  Substrate rebrand.
 - [docs/local-cluster.md](docs/local-cluster.md) — the quick-start guide:
   create the local k3d cluster with DNS and trusted TLS, then apply the
   platform — the Layer 0 foundation and the Layer 1 services (Postgres,
@@ -343,7 +344,7 @@ components have been removed. Git history preserves them.
   guardrail checklist for adding a new PKCE client (`argocd`/`kargo` use `S256`;
   the confidential `quay` client is the lone no-PKCE exception, HOL-1317).
 - [holos/docs/argocd-application-source.md](holos/docs/argocd-application-source.md)
-  — the MVP Argo CD `Application` source pattern: OCI rendered-manifests
+  — the Argo CD `Application` source pattern: OCI rendered-manifests
   artifacts in the in-cluster Quay registry, the repository credential
   Secret shape, and how the repo-server reaches Quay.
 - [holos/docs/kargo-keycloak-oidc.md](holos/docs/kargo-keycloak-oidc.md) — the
@@ -449,7 +450,7 @@ components have been removed. Git history preserves them.
   `<project>-control-plane` root) and the service owner's
   `scripts/apply-project-workload-app-of-apps <project>` (HOL-1382).
 - [holos/docs/placeholders.md](holos/docs/placeholders.md) — stubs for
-  out-of-MVP-scope concerns: ArgoCD gitops delivery (the `argoAppDisabled`
+  deferred-scope concerns: ArgoCD gitops delivery (the `argoAppDisabled`
   flip), observability dashboards, the Gateway route-attachment policy,
   Keycloak realm reconciliation, Quay OIDC login, node-level registry
   trust for in-cluster pulls, NATS in-cluster authentication, production

@@ -61,7 +61,7 @@ rendered-manifests pattern, without slowing down the MVP?
   — survey of Kargo, Argo CD, Crossplane, Pinniped, cert-manager,
   external-secrets, Cluster API, and Flux; this ADR's option set and the
   evidence behind the decision come from that report.
-- [Holos PaaS MVP milestones](../planning/holos-paas-mvp-milestones.md) and
+- [Holos PaaS MVP milestones](../archive/holos-paas-mvp-milestones.md) and
   the Linear *Holos PaaS* project (Layer 0 Cluster Foundation → Layer 1
   Platform Services → Layer 2 PaaS Core → Layer 3 User Workloads → Demo
   Walkthrough, target 2026-06-30).

@@ -5,7 +5,7 @@ contents API on the projects' default branches.
 
 ## Question
 
-holos-paas needs to host several cooperating Go services alongside the Holos
+The Holos Substrate repository needs to host several cooperating Go services alongside the Holos
 CUE configuration: Kubernetes controllers reconciling a related set of custom
 resources (the platform API), a reverse proxy that authenticates requests via
 OIDC and forwards them with Kubernetes impersonation headers, the NATS webhook
@@ -32,7 +32,7 @@ rendered-manifests (Holos) workflow?
 
 ### Kargo (github.com/akuity/kargo)
 
-The closest analog to holos-paas: an event-driven promotion/deployment
+The closest analog to this repository: an event-driven promotion/deployment
 control plane with CRDs, controllers, webhook servers, and an API server.
 
 - **One product container image.** A single `cmd/controlplane` binary named
@@ -188,7 +188,7 @@ manager with one package per control loop under `pkg/controller/`.
    existed.
 3. **Generated CRDs land in the deployment artifact** (Kargo → Helm chart;
    Argo CD → `manifests/`; kubebuilder → `config/crd`). Codegen output is
-   wired into whatever renders the manifests — for holos-paas, that is a
+   wired into whatever renders the manifests — for this repository, that is a
    Holos component.
 4. **Auxiliary integrations are controllers, not CLIs.** Pinniped manages
    even its own impersonation proxy with a controller. The equivalent here:
@@ -199,7 +199,7 @@ manager with one package per control loop under `pkg/controller/`.
    dependency pruning for binaries injected into user workloads — and both
    carry heavy, permanent coordination costs.
 
-## Candidate layouts for holos-paas
+## Candidate layouts for this repository
 
 - **Option A — Single module, single binary, subcommand-per-service**
   (Kargo/Crossplane/Pinniped shape): kubebuilder multi-group conventions,
@@ -211,7 +211,7 @@ manager with one package per control loop under `pkg/controller/`.
 - **Option C — Multi-module monorepo**: root module plus `api/` module now
   (and possibly per-service modules), `go.work` for development.
 - **Option D — Polyrepo** (Flux shape): keep/extend `holos-controller` as a
-  separate repo, one repo per service, holos-paas holds only CUE.
+  separate repo, one repo per service, this repository holds only CUE.
 
-The ranking of these options against the Holos PaaS MVP milestone goals and
+The ranking of these options against the project's goals at the time and
 the decision are recorded in [ADR-12](../adr/ADR-12.md).

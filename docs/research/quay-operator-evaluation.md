@@ -21,7 +21,7 @@ goals and acceptance criteria.
 
 ## Question
 
-holos-paas currently deploys and manages [Quay](https://www.projectquay.io/)
+This repository currently deploys and manages [Quay](https://www.projectquay.io/)
 with hand-authored CUE manifests plus create-if-absent bootstrap Jobs, no
 operator. Two follow-up questions are judged against the same six goals:
 
@@ -329,7 +329,7 @@ resource that registers the Quay → Kargo `repo_push` webhook already exists of
 the shelf.** What it does *not* yet do is read the Kargo receiver URL from
 `ProjectConfig.status` for you — `config.url` is a literal, so the
 URL-discovery glue the `my-project` Job performs (read `ProjectConfig.status`,
-then POST) would still be holos-paas's responsibility, e.g. a small reconciler
+then POST) would still be this platform's responsibility, e.g. a small reconciler
 or templating step that fills in `config.url`.
 
 ### Maintenance / quality (Goal 6) — the decisive caveat
@@ -427,7 +427,7 @@ The two questions resolve to **two layers** that should not be conflated:
    the `infra.quay_configuration` collection beneath it is.
 
 Goals 1 and 2 — the reason both issues exist — live entirely in layer 2. The
-holos-paas-authored `Repository`/`ProjectRequest` CRD + reconciler that
+platform-authored `Repository`/`ProjectRequest` CRD + reconciler that
 [ADR-2](../adr/ADR-2.md) foreshadows (and that the `my-project` scaffold
 prototypes imperatively today) is still the destination. The new information is
 that `herve4m/quay-api-operator` is the **closest existing implementation of that
@@ -458,14 +458,14 @@ dependency — rather than something that has to be built from zero.
      the `connSecretRef` model (credentials in Secrets, produced by one CR and
      consumed by others), the `Robot` → `.dockerconfigjson` Secret shape, and the
      `Notification` `repo_push`/`webhook` field set — when building the
-     holos-paas `Repository`/`ProjectRequest` reconciler. The underlying
+     platform `Repository`/`ProjectRequest` reconciler. The underlying
      `infra.quay_configuration` (redhat-cop) collection is a sound, mature
      reference for the exact REST calls.
    - **Optionally prototype with it.** It is a fast way to validate the
      CR-driven data-plane end-to-end on a laptop (no OLM, doesn't disturb the
      current Quay) before committing to a hand-written Go reconciler.
 
-3. **Invest the next increment in a holos-paas `Repository` (and
+3. **Invest the next increment in a platform-owned `Repository` (and
    `ProjectRequest`) CRD + reconciler** that calls Quay's REST API to create the
    org/repo/robot and register the `repo_push` webhook against the project's
    Kargo `Warehouse` receiver URL — promoting the imperative `my-project`
@@ -474,7 +474,7 @@ dependency — rather than something that has to be built from zero.
    promise of Goal 3 regardless of the layer-1 choice. Whether that reconciler is
    hand-written in Go or composes `herve4m/quay-api-operator`'s CRDs as an
    internal backend is an implementation decision to make at design time, weighing
-   Goal 6 against build cost — but the holos-paas-owned, single-intent
+   Goal 6 against build cost — but the platform-owned, single-intent
    `ProjectRequest` API surface should be ours either way, per ADR-2.
 
 4. **Re-evaluation triggers (record, do not act now):**
@@ -488,7 +488,7 @@ dependency — rather than something that has to be built from zero.
      and a changelog (it already publishes versioned images and an OLM bundle), a
      stable (`v1`) non-personal API group, adoption by redhat-cop or comparable
      governance, and broader usage. At that point
-     adopting it (or backing the holos-paas reconciler with it) becomes a strong
+     adopting it (or backing the platform reconciler with it) becomes a strong
      option that could retire bespoke reconciler code.
 
 If/when either operator is adopted, capture the decision in a new revision of

@@ -1,5 +1,10 @@
 # Holos PaaS MVP — Project Plan & Milestones
 
+> **Archived (PaaS era).** This document was written for the Holos PaaS
+> prototype and was archived during the Holos Substrate rebrand. It is kept
+> for the historical record; see [docs/](../) for the documentation that
+> covers the substrate.
+
 A project planning document for the **minimum viable Heroku experience**: a
 developer or coding agent builds an app, pushes a tagged image, and the new
 version is deployed automatically.

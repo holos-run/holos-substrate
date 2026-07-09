@@ -1,6 +1,6 @@
-# Argo CD Application Source: the MVP OCI Pattern
+# Argo CD Application Source: the OCI Pattern
 
-The chosen source pattern for delivering applications in the MVP — the
+The chosen source pattern for delivering applications — the
 sample app (Layer 3) and Kargo's `argocd-update` promotion step
 ([ADR-16](../../docs/adr/archive/ADR-16.md)) both consume this contract. (The
 original NATS deployment subscriber, ADR-11, was retired in HOL-1241;
@@ -118,7 +118,7 @@ same concern as the
 [node-level registry trust placeholder](placeholders.md#node-level-registry-trust-for-in-cluster-pulls);
 revisit both together. The credential is still encrypted in transit — TLS
 to whichever workload answers the mesh VIP, unauthenticated — which rests
-on trusting the cluster network, acceptable for the local MVP.
+on trusting the cluster network, acceptable for the local development cluster.
 
 ### Public repositories: a credential-less registration
 

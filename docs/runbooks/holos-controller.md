@@ -8,8 +8,7 @@ Organization and Repository resources ([ADR-19](../adr/ADR-19.md)) use, and the
 ([ADR-20](../adr/ADR-20.md)) use. The controller installs to the
 **`holos-controller`**
 namespace and is built/deployed with the isolated `controller-*` make targets
-(`Makefile.controller`), separate from `scripts/apply`, `scripts/render`, and the
-`holos-paas` image.
+(`Makefile.controller`), separate from `scripts/apply` and `scripts/render`.
 
 This runbook covers the superuser-token assumption — *a superuser-account OAuth
 Application token authenticates all controller-managed Quay operations* — and how
@@ -162,7 +161,7 @@ that is never committed, the same pattern as the `my-project` Organization).
 ## Deploy and verify the controller
 
 The controller's lifecycle is driven by the isolated `controller-*` targets — they
-never touch `scripts/apply`/`scripts/render` or the `holos-paas` image:
+never touch `scripts/apply` or `scripts/render`:
 
 ```bash
 make controller-manifests        # regenerate CRDs + RBAC from Go markers

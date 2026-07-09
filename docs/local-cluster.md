@@ -12,11 +12,12 @@ CloudNativePG-managed Postgres, Keycloak with the `holos` realm at
 `https://quay.holos.internal`, and Argo CD at
 `https://argocd.holos.internal`.
 
-This is the foundation for the Holos PaaS MVP — see
-[Holos PaaS MVP Milestones](planning/holos-paas-mvp-milestones.md)
-for the full milestone plan.
+This is the substrate's local development and verification cluster: the
+environment the `quay.holos.run` and `keycloak.holos.run` controllers and
+the Holos Authenticator are developed and exercised against.
 
-> **Platform note:** `scripts/local-dns` is macOS-only. The MVP demo target is
+> **Platform note:** `scripts/local-dns` is macOS-only. The default
+> development target is
 > an Apple Silicon Mac (see [ADR-7](adr/archive/ADR-7.md)). Linux users must configure
 > dnsmasq or systemd-resolved themselves to resolve `*.holos.internal` to
 > `127.0.0.1`.
@@ -381,7 +382,7 @@ docker push quay.holos.internal/<namespace>/sample:test
 Confirm the pushed tag in the Quay UI under that namespace (repositories
 auto-created by push are private).
 
-> **Docker trust note:** on the MVP target — OrbStack on Apple silicon
+> **Docker trust note:** on the default development target — OrbStack on Apple silicon
 > ([ADR-7](adr/archive/ADR-7.md)) — OrbStack syncs the macOS keychain trust store
 > into its Docker daemon, so the mkcert root installed by
 > `scripts/local-ca` is already trusted and `docker push` just works. With

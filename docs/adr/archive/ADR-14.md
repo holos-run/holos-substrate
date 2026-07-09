@@ -63,7 +63,7 @@ through NATS JetStream, and what tool produces it?
 - [ConnectRPC](https://connectrpc.com/), [Protocol Buffers](https://protobuf.dev/),
   and [buf](https://buf.build/docs) — the schema toolchain
 - **Prior art:** holos-console is a Go + React application built **over
-  ConnectRPC** ([heroku-onramp-demo.md](../../demo/heroku-onramp-demo.md)); the buf
+  ConnectRPC** ([heroku-onramp-demo.md](../../archive/heroku-onramp-demo.md)); the buf
   module layout, code generation, and lint/breaking-change checks are already an
   organization-wide convention. Recent console work (e.g. the `ResolveScopedTemplates`
   RPC) adds messages by editing `.proto` and regenerating.

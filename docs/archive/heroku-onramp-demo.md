@@ -1,5 +1,10 @@
 # Heroku-Style On-Ramp to an Existing Kubernetes Platform
 
+> **Archived (PaaS era).** This document was written for the Holos PaaS
+> prototype and was archived during the Holos Substrate rebrand. It is kept
+> for the historical record; see [docs/](../) for the documentation that
+> covers the substrate.
+
 Turn a `docker push` into a running application on a Kubernetes platform that
 already runs **ArgoCD** and is **planning to adopt Kargo** — using
 [Holos](https://holos.run) and its rendered-manifests pattern as the on-ramp.

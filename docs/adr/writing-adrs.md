@@ -1,7 +1,7 @@
 # Writing ADRs
 
 This guide explains how to write an Architecture Decision Record (ADR) for
-holos-paas. The format follows the
+the Holos Substrate. The format follows the
 [NATS architecture-and-design](https://github.com/nats-io/nats-architecture-and-design)
 convention, scoped to ADR documents only. Read this before adding or changing an
 ADR.

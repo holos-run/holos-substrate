@@ -6,8 +6,9 @@ projects' GitHub releases.
 
 ## Question
 
-The Holos PaaS is a Kubernetes-native platform whose primary customers are
-product engineers building AI products, with the Kubernetes API as the
+The Holos platform is Kubernetes-native, built from substrate building
+blocks whose primary consumers are platform and product engineers, with the
+Kubernetes API as the
 platform's first-class interface ([ADR-2](../adr/ADR-2.md)). We are building a
 distribution of CNCF software, and a distribution needs a packaging system:
 a way for platform engineers, SRE teams, security teams, and product engineers
@@ -764,7 +765,7 @@ packages' output.**
   schemas, components, mixins) are published with `cue mod publish` —
   artifactType `application/vnd.cue.module.v1+json` — and consumed at render
   time via MVS. *Rendered-manifest bundles* (deploy artifacts: the existing
-  `holos-paas-config`, per-project `<project>-config`, and per-app artifacts)
+  `holos-substrate-config`, per-project `<project>-config`, and per-app artifacts)
   are pushed with ORAS using the generic
   `application/vnd.oci.image.layer.v1.tar+gzip` layer type Argo CD accepts by
   default, exactly as `scripts/publish`/`scripts/publish-config` do today.
@@ -821,7 +822,7 @@ structure lives in packages and admission policy.**
 3. **A render service, eventually, for self-service and the web path**
    (deferred, consciously). Today rendering is client-side by design
    (ADR-16's decisive constraint was that OSS Kargo cannot host the Holos
-   render step). A future `holos-paas render` server-side service — a Job
+   render step). A future server-side render service — a Job
    template or a small service that renders a profile at a pinned module set
    and pushes the bundle — is the enabling piece for both the ProjectRequest
    self-service arc (ADR-24) and a web UI's "preview this change" affordance.
@@ -848,7 +849,7 @@ and the registry is the only artifact channel.**
 - The low-friction CLI flow already exists in pieces:
   `scripts/publish` renders and pushes a bundle; the App-of-Apps roots are
   OCI-source Applications; Kargo moves `targetRevision`. Packaged as a single
-  CLI verb (`holos-paas deploy`, Fisk per ADR-17: render profile → ORAS push →
+  CLI verb (a future `deploy` command: render profile → ORAS push →
   server-side-apply one Application), a product engineer deploys without
   Git — authenticated by their kubeconfig, authorized by the same RBAC that
   governs every other write to their project namespaces, with the Holos
@@ -873,7 +874,7 @@ and the registry is the only artifact channel.**
   where a consumer needs source-time signature enforcement *today* with no
   verifier hop, use Flux `OCIRepository.spec.verify` (§3.2), and treat the
   Argo direct path as blocked until Argo CD grows OCI-source verification
-  (watched upstream). The `holos-paas deploy` verb implements (a): it signs on
+  (watched upstream). The future `deploy` verb implements (a): it signs on
   push, waits for the verifier's copy, and applies an Application pinned to
   the verified digest — one extra hop, no unverified bundle ever reconciled.
 - The audit posture: registry history + cosign signatures + Kubernetes audit
@@ -1044,7 +1045,7 @@ the operators that give those CRs meaning:
 
 ### Phase 3 — delivery ergonomics
 
-- **The Git-bypass CLI verb** (§4.7): `holos-paas deploy` — render, push
+- **The Git-bypass CLI verb** (§4.7): a future `deploy` command — render, push
   (signed), wait for the verifier's copy into the Argo-consumable repository,
   apply the Application pinned to the verified digest — the
   docker-push-to-deploy experience generalized to configuration, without
