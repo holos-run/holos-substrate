@@ -46,7 +46,10 @@ to the template above.
 These ADRs record decisions made for the Holos PaaS prototype. They were
 moved to [archive/](archive/README.md) during the Holos Substrate rebrand and
 are kept for the historical record — see the archive README for the
-convention.
+convention. Archiving scopes the *decision* to the PaaS product direction;
+machinery some of them describe (notably the ADR-16 delivery workflow and the
+ADR-21 Project/Application components) remains operational under `holos/`
+until the substrate re-records or retires it.
 
 | Index             | Tags                  | Description                                                        |
 |-------------------|-----------------------|-------------------------------------------------------------------|

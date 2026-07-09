@@ -40,7 +40,8 @@ identity store (`AUTHENTICATION_TYPE: OIDC`), which removed the local `admin` us
 and the headless token-mint path, so an operator follows the
 [Quay Resource Controller credentials runbook](../runbooks/quay-resource-controller-credentials.md)
 to mint a superuser OAuth-Application credential and click through the rest. The
-[`my-project` delivery scaffold](../../holos/components/my-project/buildplan.cue)
+`my-project` delivery scaffold (since generalized into the collection-driven
+[project component](../../holos/components/project/buildplan.cue))
 documents the surface that procedure must cover: it emits the Kargo control plane
 and the Argo CD Application but **explicitly defers** the Quay org, repo, and
 `repo_push` webhook registration "to a future Quay Resource Controller." The

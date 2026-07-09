@@ -136,9 +136,9 @@ by hand.**
 ### The MVP message set
 
 Three messages cover the MVP's two-loop flow ([ADR-13](ADR-13.md)). The
-committed
-[`proto/holos/paas/pipeline/v1alpha1/pipeline.proto`](../../../proto/holos/paas/pipeline/v1alpha1/pipeline.proto)
-is the source of truth and authoritative on field names and numbers; the
+committed `proto/holos/paas/pipeline/v1alpha1/pipeline.proto` (removed with
+the NATS pipeline retirement, HOL-1241; see git history) was the source of
+truth and authoritative on field names and numbers; the
 following reproduce it. Note each task message carries an in-band
 `int32 schema_version = 1` so a consumer can fail closed on an unknown version
 even though the package path is the coarse version.
