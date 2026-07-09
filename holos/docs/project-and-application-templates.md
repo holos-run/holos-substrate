@@ -1,7 +1,8 @@
 # Project and Application Templates — Authoring Guide
 
-The platform's self-service "docker push to deploy" experience
-([ADR-21](../../docs/adr/archive/ADR-21.md)) is collection-driven: a product engineer
+The substrate's end-to-end development and demo delivery path — a `docker push`
+becomes a running app on the local platform
+([ADR-21](../../docs/adr/archive/ADR-21.md)) — is collection-driven: an engineer
 stands up a project, or an application within one, by adding **one entry** to a
 well-known CUE collection. Two Holos components render the full set of resources
 that compose a Project or an Application from those entries:
@@ -234,7 +235,7 @@ The following are **deferred** (see [placeholders.md](placeholders.md) →
   secrets is provisioned by hand.
 - The self-service **`ProjectRequest` API** (ADR-1/ADR-21 left open): today a
   registration is a reviewed pull request adding a collection entry, not a
-  generated-on-request tenant.
+  generated-on-request project.
 
 Also note: the app Quay `Repository`'s `repo_push` webhook **registration** is
 omitted in the current phase (the Warehouse polls the config repo as the

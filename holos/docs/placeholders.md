@@ -1,6 +1,6 @@
-# Placeholders — Out of MVP Scope
+# Placeholders — Deferred Scope
 
-Stubs for concerns deliberately deferred beyond the MVP, so future work has a
+Stubs for concerns deliberately deferred, so future work has a
 clear home. Each entry states the intent and where the work will land — no
 speculative design. When an item is implemented, replace its stub with a link
 to the real documentation.
@@ -206,7 +206,7 @@ re-render/apply. The seeded superusers are the two Keycloak realm users
 
 Why deferred: closing the gap means a claim-driven superuser reconciler (Quay
 exposes no such hook today, so it would be custom automation against Quay's
-admin API), which is out of MVP scope. The full role/superuser model and the
+admin API), which is deferred. The full role/superuser model and the
 client pattern are documented in
 [keycloak-clients.md](keycloak-clients.md) (see *The Quay-superuser limitation
 (not automatic)*); the operator-facing summary is the **Superusers** bullet in

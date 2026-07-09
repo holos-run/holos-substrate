@@ -56,7 +56,7 @@ until the substrate re-records or retires it.
 | [ADR-1](archive/ADR-1.md) | api, multi-tenancy    | Project resource: the platform tenant, adopted from the GCP Project |
 | [ADR-4](archive/ADR-4.md) | api, multi-tenancy    | The platform API must support multiple tenants                    |
 | [ADR-5](archive/ADR-5.md) | api, billing, quotas  | Chargeback, quotas, and limits following the GCP model            |
-| [ADR-6](archive/ADR-6.md) | pipeline, mvp, nats   | **Deprecated** (superseded by ADR-16) — Six-stage MVP Heroku-style deployment pipeline on a NATS JetStream backbone |
+| [ADR-6](archive/ADR-6.md) | pipeline, mvp, nats   | **Deprecated** (superseded by ADR-16) — Six-stage push-to-deploy MVP pipeline on a NATS JetStream backbone |
 | [ADR-7](archive/ADR-7.md) | workload, build       | KubeRay reference workload on k3d (Apple Silicon), multi-stage build |
 | [ADR-8](archive/ADR-8.md) | registry, build, kargo, oci | Container registry and image tagging; the tag is the version; the rendered-manifests artifact push is watched by a Kargo `Warehouse` (ADR-16) |
 | [ADR-9](archive/ADR-9.md) | webhook, nats, ingress | **Deprecated** (see ADR-16) — Thin webhook receiver posting raw bodies to a NATS WorkQueue; not used / deferred in favor of a Kargo registry watch |

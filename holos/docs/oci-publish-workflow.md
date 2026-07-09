@@ -13,8 +13,8 @@ This is the **client-side half of the Kargo pivot** (parent HOL-1236). It
 of a NATS-driven subscriber re-rendering and pushing inside the cluster, the
 render + package + push step now runs from the CLI, and the next phase's Kargo
 Warehouse watches the artifact this workflow produces. See the original
-subscriber design — now superseded for the MVP — in
-[Research: rendered-manifests publish pipeline](../../docs/research/rendered-manifests-publish-pipeline.md)
+subscriber design — now superseded — in
+[Research: rendered-manifests publish pipeline](../../docs/archive/rendered-manifests-publish-pipeline.md)
 (§4.4 tag injection and §4.5 input-addressed idempotency are the directly
 reusable parts, now run from the CLI rather than a subscriber).
 

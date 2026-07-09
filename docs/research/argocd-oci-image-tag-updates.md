@@ -9,13 +9,13 @@
 
 > **Follow-up:** this report leaves open who *produces* the rendered-manifests
 > artifact when a new app image arrives. That question is answered in
-> [Research: Performing the Re-render + ORAS Publish Step in the Event-Driven Pipeline](rendered-manifests-publish-pipeline.md).
+> [Research: Performing the Re-render + ORAS Publish Step in the Event-Driven Pipeline](../archive/rendered-manifests-publish-pipeline.md).
 
 ## Purpose
 
 This report researches the state-of-the-art, open-source, Kubernetes-native
 methods for updating a deployed application's **image tag** in **Argo CD**, under
-the constraints the Holos PaaS MVP imposes. It exists to **inform the ADRs** for
+the constraints the platform imposed at the time. It exists to **inform the ADRs** for
 the deployment pipeline — primarily [ADR-11](../adr/archive/ADR-11.md) (deployer) and
 [ADR-8](../adr/archive/ADR-8.md) (registry/tagging), and the pipeline overview in
 [ADR-6](../adr/archive/ADR-6.md).

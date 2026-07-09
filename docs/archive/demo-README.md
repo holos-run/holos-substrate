@@ -1,5 +1,10 @@
 # Holos PaaS — Demos
 
+> **Archived (PaaS era).** This document was written for the Holos PaaS
+> prototype and was archived during the Holos Substrate rebrand. It is kept
+> for the historical record; see [docs/](../) for the documentation that
+> covers the substrate.
+
 Self-guided tutorials and walkthroughs for holos-paas. These are
 **demonstration and learning material, not decision records** — for design
 decisions and their rationale, see the

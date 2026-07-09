@@ -36,7 +36,7 @@ in-cluster services** plus a NATS JetStream backbone before a single application
 can deploy.
 
 The decisive constraint surfaced during the render+publish research
-([report](../../research/rendered-manifests-publish-pipeline.md), §2.4): **OSS Kargo
+([report](../../archive/rendered-manifests-publish-pipeline.md), §2.4): **OSS Kargo
 cannot host the Holos render step.** Kargo's built-in render steps are
 `kustomize-build` and `helm-template` only, its `oci-push` step copies or retags
 *existing* artifacts but cannot package a local directory of rendered YAML, and
@@ -66,7 +66,7 @@ pivot.
   message-schema ADRs whose in-cluster components are eschewed/deferred under this
   pivot (now `Deprecated`). The `Application`-as-deploy-target concept from
   [ADR-11](ADR-11.md) survives the pivot (see Design).
-- [Research: Performing the Re-render + ORAS Publish Step in the Event-Driven Pipeline](../../research/rendered-manifests-publish-pipeline.md)
+- [Research: Performing the Re-render + ORAS Publish Step in the Event-Driven Pipeline](../../archive/rendered-manifests-publish-pipeline.md)
   — §2.4 establishes that OSS Kargo's `oci-push` only copies existing artifacts
   and that custom render steps are enterprise-only; §2.6–2.7 verify
   `holos render platform --inject` and ORAS directory push; the comparison table
@@ -96,7 +96,7 @@ build-and-publish workflow** on the client side, not in the cluster:
 2. Render the platform with the new image injected:
    `holos render platform --inject app_image=<repo>@sha256:<digest>` (the verified
    tag-injection mechanism — see the
-   [render+publish report](../../research/rendered-manifests-publish-pipeline.md)
+   [render+publish report](../../archive/rendered-manifests-publish-pipeline.md)
    §2.6). Inject the **digest-pinned** reference so the rendered YAML is exact.
 3. **Package the rendered output as a Kustomize-built OCI artifact**, then
    `oras push` it to the application's rendered-manifests repository.

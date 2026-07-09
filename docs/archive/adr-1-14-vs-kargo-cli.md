@@ -1,5 +1,10 @@
 # Research: The Custom NATS Pipeline (ADR 1–14) vs. a CLI + Kargo + Argo CD
 
+> **Archived (PaaS era).** This document was written for the Holos PaaS
+> prototype and was archived during the Holos Substrate rebrand. It is kept
+> for the historical record; see [docs/](../) for the documentation that
+> covers the substrate.
+
 | Metadata | Value                                                        |
 |----------|--------------------------------------------------------------|
 | Date     | 2026-06-14                                                   |
@@ -40,7 +45,7 @@ It evaluates both against the MVP's four stated goals, recommends a direction,
 and records the rationale and trade-offs. It builds directly on two prior
 reports that already studied the delivery mechanism:
 
-- [Research: Handling Image-Tag Updates in Argo CD with an OCI Manifest Source](argocd-oci-image-tag-updates.md)
+- [Research: Handling Image-Tag Updates in Argo CD with an OCI Manifest Source](../research/argocd-oci-image-tag-updates.md)
   — concluded "native OCI + controller patch" for the MVP, with **"Kargo as the
   designated growth path."**
 - [Research: Performing the Re-render + ORAS Publish Step](rendered-manifests-publish-pipeline.md)
@@ -472,7 +477,7 @@ pipeline or Kargo. The pivot costs nothing here.
   [ADR-10](../adr/archive/ADR-10.md), [ADR-11](../adr/archive/ADR-11.md),
   [ADR-13](../adr/archive/ADR-13.md), [ADR-14](../adr/archive/ADR-14.md),
   [ADR-1](../adr/archive/ADR-1.md)–[ADR-5](../adr/archive/ADR-5.md), [ADR-12](../adr/ADR-12.md),
-  [ADR-15](../adr/ADR-15.md); [argocd-oci-image-tag-updates.md](argocd-oci-image-tag-updates.md);
+  [ADR-15](../adr/ADR-15.md); [argocd-oci-image-tag-updates.md](../research/argocd-oci-image-tag-updates.md);
   [rendered-manifests-publish-pipeline.md](rendered-manifests-publish-pipeline.md);
   [holos/docs/argocd-application-source.md](../../holos/docs/argocd-application-source.md);
   [holos/docs/placeholders.md](../../holos/docs/placeholders.md);

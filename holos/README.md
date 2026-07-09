@@ -41,8 +41,8 @@ holos/
 
 The only registered cluster is **`k3d-holos`**, the local development
 cluster — [docs/local-cluster.md](../docs/local-cluster.md) is the
-quick-start guide for creating it and applying the platform to it. The MVP
-demo target is a single Apple Silicon Mac ([ADR-7](../docs/adr/archive/ADR-7.md)).
+quick-start guide for creating it and applying the platform to it. The
+default development target is a single Apple Silicon Mac ([ADR-7](../docs/adr/archive/ADR-7.md)).
 
 A production deployment area is planned but not yet established: production
 clusters will be registered alongside `k3d-holos` in
@@ -629,8 +629,8 @@ the issuer in-cluster: the component ships a `ServiceEntry` that makes
 backchannel re-enters through the same Gateway→Keycloak path browsers use
 and the `iss` claim matches the configured issuer. The backchannel sets
 `oidc.tls.insecure.skip.verify: "true"` to accept the per-machine
-mkcert/local-CA cert the shared Gateway serves on that hop — a local-only MVP
-posture (the mkcert root cannot be embedded at render time); production
+mkcert/local-CA cert the shared Gateway serves on that hop — a local-only
+development posture (the mkcert root cannot be embedded at render time); production
 replaces it with `rootCA` trust (see the production deployment area placeholder in
 [docs/placeholders.md](docs/placeholders.md#production-deployment-area)).
 
@@ -645,7 +645,7 @@ is in
 
 ### Verify an OCI-source Application
 
-The MVP delivery path syncs `Application` resources from rendered-manifests
+The delivery path syncs `Application` resources from rendered-manifests
 OCI artifacts in the in-cluster Quay registry —
 [docs/argocd-application-source.md](docs/argocd-application-source.md) is
 the pattern's contract (artifact layout, credential Secret shape, how the
@@ -863,8 +863,10 @@ collection-driven [`components/project/`](components/project/buildplan.cue) and
 [`components/application/`](components/application/buildplan.cue) components — the
 generalization of the formerly hand-authored scaffold (the bespoke
 `components/my-project` was deleted). It lays down everything one project needs to
-receive Kargo-driven OCI delivery ([ADR-16](../docs/adr/archive/ADR-16.md)) and is the
-template for a future self-service `ProjectRequest` (below). How to register
+receive Kargo-driven OCI delivery ([ADR-16](../docs/adr/archive/ADR-16.md)) — the
+substrate's end-to-end development and demo delivery path, exercising the
+`quay.holos.run` and `keycloak.holos.run` resources against a real registry and
+realm. How to register
 your own project and app — the `owners` map, the app `project`/`image`/`port`
 fields, the env-prefixed namespace model and the bare-`<name>` control
 namespace, the primitive-role → Quay-team and → app-client binding, and the
@@ -952,11 +954,12 @@ Ready. The Application stays `Unknown`/`Missing` until the first
 `my-app-config` repo is, emitted by the Application component) plus the push robot
 and pull-credential Secrets are provisioned by hand — expected scaffolding.
 
-**Toward self-service `ProjectRequest`.** Everything above is what a future
-self-service `ProjectRequest` API would generate per tenant: a namespace, a
+**Toward a `ProjectRequest` generator.** Everything above is what a future
+`ProjectRequest` API would generate per project: a namespace, a
 scoped Argo CD AppProject/Application, a Kargo Project/ProjectConfig/Warehouse/
 Stage, and the Quay org/repo/webhook/robot bootstrap. `my-project` is the
-hand-authored reference instance that proves the shape end-to-end before that
+hand-authored reference instance that proves the shape end-to-end — and
+exercises the substrate's controllers against a live cluster — before that
 generator exists.
 
 **Verifying the scaffold, and the end-to-end contract it will satisfy.** The
