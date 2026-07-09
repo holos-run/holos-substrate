@@ -13,16 +13,17 @@
 | 1        | 2026-06-17 | @jeffmccune | Initial design |
 | 2        | 2026-06-18 | @jeffmccune | The controller shipped (`holos-controller`, HOL-1309..HOL-1313) with its first API group `quay.holos.run` ([ADR-19](ADR-19.md), now `Implemented`). Record the **AC #7 API-group dependency boundary** (authoritative per HOL-1308 AC #10, refining the GitOps framing below): the `quay.holos.run` **API group / CRs** take **no dependency on Kargo or Argo CD** (only the Quay API + the credential `secretRef`), while the **controller binary may**. Confirm the install namespace remains `holos-controller` (no `quay-resource-controller` namespace anywhere) and that the Organization does not inline repositories (AC #9). Status `Proposed` → `Partially Implemented` (Quay group shipped; Keycloak group ADR-20 still proposed) |
 | 3        | 2026-06-18 | @jeffmccune | Record the controller-wide **CA-bundle convention** (HOL-1319/HOL-1320/HOL-1321): every CRD Kind that talks to a TLS endpoint accepts a standardized `caBundle []byte` spec field (PEM/base64, empty ⇒ pod system trust), threaded into the client's TLS `RootCAs`. The first instance ships on the `quay.holos.run` Organization and Repository ([ADR-19](ADR-19.md) Revision 5) for the in-cluster Quay registry's local-CA serving cert. |
+| 4        | 2026-07-09 | @jeffmccune | Holos Substrate rebrand (HOL-1546): prototype-era product framing in the prose is reworded to the platform/substrate framing. No decision change. |
 
 ## Context and Problem Statement
 
-The Holos PaaS targets a self-service "docker push to deploy" experience for
+The platform targets a self-service "docker push to deploy" experience for
 product engineers: push a tagged image, get a deploy, with everything managed
 through the Kubernetes API ([ADR-2](ADR-2.md)). Delivering that experience
 requires more capabilities than the upstream operators the platform already runs
 provide. The Quay and Keycloak operators install and manage their respective
 applications well, but neither offers a Kubernetes-native, declarative API for
-the **tenant-facing data-plane objects** the PaaS needs to provision on a
+the **tenant-facing data-plane objects** the platform needs to provision on a
 project's behalf — Quay organizations, repositories, robots, and webhooks;
 Keycloak clients, roles, and groups. Today those gaps are filled by manual,
 imperative procedures: an operator signs in and clicks through a UI, or runs a
@@ -52,7 +53,7 @@ and that the later, more detailed ADRs build on.
   that principle to the gaps the upstream operators leave open.
 - [ADR-12 — Repository Layout for Multiple Go Services](ADR-12.md): establishes
   the kubebuilder multi-group layout (`api/<group>/<version>`) "multi-group from
-  day one," with `paas.holos.run` first and `registry.holos.run` named as the
+  day one," with `registry.holos.run` named as the
   illustrative registry-related group. This ADR **refines** that registry
   example: the first **controller** API group is the concrete `quay.holos.run`
   (Quay organizations and repositories), which is the registry data plane ADR-12
@@ -110,7 +111,7 @@ closes are:
   **platform's own** realm configuration today
   ([holos/components/keycloak/realm-config/buildplan.cue](../../holos/components/keycloak/realm-config/buildplan.cue));
   what is missing is a KRM-native API for the **per-project, tenant-facing**
-  identity wiring the PaaS provisions on a project's behalf. The exact ownership
+  identity wiring the platform provisions on a project's behalf. The exact ownership
   boundary between the controller's Keycloak group and the existing
   `keycloak-config-cli` Job — so the two reconcilers never fight over the same
   realm objects — is a question [**ADR-20**](ADR-20.md) must resolve; this ADR
@@ -137,7 +138,7 @@ API-group naming convention.
 
 ### API-group dependency boundary (AC #7, Revision 2)
 
-The Holos PaaS parent issue's acceptance criteria are authoritative
+The Holos Controller parent issue's acceptance criteria are authoritative
 (HOL-1308 AC #10), and AC #7 refines this ADR's GitOps framing with a structural
 rule that the shipped controller observes:
 

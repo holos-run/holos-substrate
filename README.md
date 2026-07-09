@@ -1,17 +1,42 @@
 # Holos Substrate
 
-Kubernetes-native building blocks for platform identity and registry
-management — the `quay.holos.run` and `keycloak.holos.run` custom
-resources, the `security.holos.run` `ReferenceGrant`, and the Holos
-Authenticator — managed entirely through the Kubernetes API and rendered
-with the [Holos](https://holos.run/) rendered-manifests pattern.
+The substrate building blocks for the [holos](https://holos.run/) open
+source platform, implemented as Kubernetes custom resources:
+
+- **Declarative Quay and Keycloak management** — the `quay.holos.run`
+  `Organization` and `Repository` CRDs and the `keycloak.holos.run`
+  `KeycloakInstance`, `KeycloakGroup`, `KeycloakGroupMembership`,
+  `KeycloakUser`, and `KeycloakClient` CRDs, reconciled by
+  `holos-controller` ([ADR-18](docs/adr/ADR-18.md),
+  [ADR-19](docs/adr/ADR-19.md), [ADR-20](docs/adr/ADR-20.md)) so
+  registry organizations and identity primitives are managed through
+  the Kubernetes API.
+- **Cross-namespace authorization** — the `security.holos.run`
+  `ReferenceGrant` convention ([ADR-22](docs/adr/ADR-22.md)): every
+  cross-namespace reference between `holos.run` custom resources is
+  authorized by an explicit grant in the referent namespace, never
+  silently honored.
+- **The Holos Authenticator** — `holos-authenticator`
+  ([ADR-23](docs/adr/ADR-23.md)), an Istio gRPC `ext_authz` controller
+  that authenticates users to any conformant Kubernetes cluster relying
+  only on an OIDC identity provider, of which Keycloak is the reference
+  implementation.
+
+Everything is managed through the Kubernetes API and rendered with the
+[Holos](https://holos.run/) rendered-manifests pattern. Each custom
+resource is documented in-cluster — `kubectl explain
+organizations.quay.holos.run --recursive`, `kubectl explain
+keycloakclients.keycloak.holos.run`, and friends — and the
+[runbooks](docs/runbooks/) are the operational entry points for wiring
+credentials, renaming external resources, and verifying each service.
 
 ## Quick Start
 
 Follow [docs/local-cluster.md](docs/local-cluster.md) — the canonical
-guide from zero to a running platform — then verify the smoke test
-answers at `https://echo.holos.internal/` and Keycloak serves the
-`holos` realm at `https://auth.holos.internal/`. In summary:
+guide from zero to the substrate's local development and verification
+cluster — then verify the smoke test answers at
+`https://echo.holos.internal/` and Keycloak serves the `holos` realm at
+`https://auth.holos.internal/`. In summary:
 
 ```bash
 scripts/local-dns    # one-time DNS setup (macOS, requires sudo)
@@ -169,10 +194,12 @@ repository), each a multi-arch index covering `linux/amd64` and `linux/arm64`.
   binding design decisions.
 - [docs/local-cluster.md](docs/local-cluster.md) — the local quick start:
   create the cluster and apply the platform.
+- [docs/runbooks/](docs/runbooks/) — operational runbooks: the
+  [holos-controller](docs/runbooks/holos-controller.md) and
+  [holos-authenticator](docs/runbooks/holos-authenticator.md) service
+  runbooks, credential wiring, OIDC integrations, and the
+  [external-resource rename](docs/runbooks/external-resource-rename.md)
+  procedure.
 - [holos/README.md](holos/README.md) — the Holos CUE deployment
   configuration: layout, apply-order rationale, caveats, and the platform
   service contracts.
-
-## License
-
-Proprietary — see [LICENSE](LICENSE).

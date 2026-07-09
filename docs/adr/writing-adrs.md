@@ -73,7 +73,7 @@ and:
 3. Move its index row from the active table in [README.md](README.md) to the
    *Archived* table.
 
-The PaaS-era ADRs archived during the Holos Substrate rebrand are the worked
+The ADRs archived during the Holos Substrate rebrand are the worked
 example; see [archive/README.md](archive/README.md). Archived ADRs are never
 revised except to fix links; a new decision that supersedes an archived one is
 recorded in a new ADR, not in the archive.

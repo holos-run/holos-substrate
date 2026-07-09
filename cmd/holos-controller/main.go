@@ -4,12 +4,10 @@
 // Quay registry, filling the data-plane gaps the upstream Quay operator leaves
 // open.
 //
-// Unlike holos-paas (a Fisk multi-service CLI, ADR-17), this binary uses the
-// conventional kubebuilder wiring — the standard library flag package plus
-// controller-runtime's zap log flags — because that is the idiom every
-// controller-runtime manager, RBAC scaffold, and operator tutorial assumes, and
-// it keeps the manager legible to the kubebuilder toolchain. Fisk is for the
-// user-facing CLI, not the manager process.
+// This binary uses the conventional kubebuilder wiring — the standard library
+// flag package plus controller-runtime's zap log flags — because that is the
+// idiom every controller-runtime manager, RBAC scaffold, and operator tutorial
+// assumes, and it keeps the manager legible to the kubebuilder toolchain.
 //
 // The manager starts, serves health and Prometheus metrics endpoints, registers
 // the scheme, and runs the Organization (HOL-1311) and Repository (HOL-1312)
