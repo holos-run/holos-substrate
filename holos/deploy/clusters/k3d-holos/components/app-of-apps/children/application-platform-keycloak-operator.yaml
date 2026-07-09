@@ -16,7 +16,7 @@ spec:
   project: platform
   source:
     path: clusters/k3d-holos/components/keycloak-operator
-    repoURL: oci://quay.holos.internal/holos/holos-paas-config
+    repoURL: oci://quay.holos.internal/holos/holos-substrate-config
     targetRevision: dev
   syncPolicy:
     automated:

@@ -17,7 +17,7 @@ spec:
         directory:
             recurse: true
         path: clusters/k3d-holos/components/app-of-apps/children
-        repoURL: oci://quay.holos.internal/holos/holos-paas-config
+        repoURL: oci://quay.holos.internal/holos/holos-substrate-config
         targetRevision: dev
     syncPolicy:
         automated:

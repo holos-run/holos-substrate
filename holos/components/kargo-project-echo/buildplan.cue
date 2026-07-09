@@ -30,7 +30,7 @@ package holos
 // (holos/docs/oci-publish-workflow.md).  Its two repositories are:
 //   - app image:           quay.holos.internal/holos/echo            (the
 //     container the echo Deployment runs, injected via the _AppImage tag)
-//   - rendered manifests:  quay.holos.internal/holos/holos-paas-manifests
+//   - rendered manifests:  quay.holos.internal/holos/holos-substrate-manifests
 //     (the OCI artifact scripts/publish pushes; the Warehouse watches this)
 //
 // PROJECT is the Kargo Project namespace.  It is DELIBERATELY a dedicated

@@ -3,13 +3,13 @@
 // the shipped Holos Controller (ADR-18/ADR-19) reconciles into the in-cluster
 // Quay registry (HOL-1380).  This is the bootstrap home of the two OCI artifacts
 // the platform delivers from a fresh cluster: the holos-controller container
-// image and (in the holos-paas-config repo the App-of-Apps bundle is pushed to)
+// image and (in the holos-substrate-config repo the App-of-Apps bundle is pushed to)
 // the platform config bundle.
 //
 // It is a SIBLING of the collection-driven `project` / `application` components,
 // but it is NOT a tenant project: it carries no Kargo/Argo CD/Keycloak control
 // plane, only the org + its two repos (the public holos-controller image repo and
-// the public holos-paas-config bundle repo).  Like those components (and
+// the public holos-substrate-config bundle repo).  Like those components (and
 // keycloak-instance)
 // its caBundle is injected at apply time via the _CABundlePEM tag and never
 // committed, so it is render-here / apply-separately: EXCLUDED from the master
@@ -23,7 +23,7 @@
 // `authenticated` default group (every Keycloak realm user is a member, see
 // holos/components/keycloak/realm-config/buildplan.cue) with org role `creator`
 // and an org default `write` repository permission — so every authenticated user
-// can create repos in the org (e.g. the holos-paas-config bundle repo) and
+// can create repos in the org (e.g. the holos-substrate-config bundle repo) and
 // push/pull existing ones.  Automated pushes (the controller image, the
 // App-of-Apps bundle) still use a Quay ROBOT credential (scripts/publish-config's
 // ORAS_USERNAME/ORAS_PASSWORD); the runbook the apply script prints explains how
@@ -58,15 +58,15 @@ let CONTROLLER_REPO = "holos-controller"
 let AUTHENTICATOR_REPO = "holos-authenticator"
 
 // CONFIG_REPO is the repository the App-of-Apps platform config bundle
-// (holos-paas-config:dev) is pushed to and Argo CD pulls from.  It is managed as
+// (holos-substrate-config:dev) is pushed to and Argo CD pulls from.  It is managed as
 // a CR — rather than relying on a first-push to create it — so the push robot
 // only needs WRITE (push) access, not org `creator`/repo-create rights, and the
 // scripts/apply-platform-app-of-apps push targets an already-existing repo (round-1
 // review finding).  It is PUBLIC (HOL-1381): Argo CD pulls the bundle
-// ANONYMOUSLY, so the platform no longer depends on a holos-paas-config-robot
+// ANONYMOUSLY, so the platform no longer depends on a holos-substrate-config-robot
 // pull credential — see CONFIG_REPOSITORY_RESOURCE below and the credential-less
 // repository registration in components/argocd-projects.
-let CONFIG_REPO = "holos-paas-config"
+let CONFIG_REPO = "holos-substrate-config"
 
 // CREDS_SECRET is the controller's Quay superuser OAuth-Application credential
 // (named explicitly to document the contract; it is also the field default).
@@ -162,12 +162,12 @@ let AUTHENTICATOR_REPOSITORY_RESOURCE = {
 	}
 }
 
-// CONFIG_REPOSITORY_RESOURCE is the holos-paas-config Repository — the
+// CONFIG_REPOSITORY_RESOURCE is the holos-substrate-config Repository — the
 // App-of-Apps platform config bundle's home — managed declaratively so it exists
 // before scripts/apply-app-of-apps pushes to it (the push robot then needs only
 // write, not repo-create).  PUBLIC (HOL-1381, world-pullable including
 // unauthenticated pulls): Argo CD pulls the bundle anonymously, so the platform
-// no longer needs a holos-paas-config-robot pull credential — the
+// no longer needs a holos-substrate-config-robot pull credential — the
 // components/argocd-projects registration carries only the non-sensitive
 // insecure/type settings, with no robot username/password.  Same gated-injection
 // posture for caBundle.
@@ -196,11 +196,11 @@ let CONFIG_REPOSITORY_RESOURCE = {
 // holos/<project>-config, pushed to by scripts/apply-project-app-of-apps and
 // pulled ANONYMOUSLY by the project-app-of-apps roots (so the
 // components/argocd-projects registration for each carries no credential, exactly
-// like holos-paas-config).  Managed as a CR — rather than relying on a first-push
+// like holos-substrate-config).  Managed as a CR — rather than relying on a first-push
 // to create it — so the push robot needs only WRITE (push) access, not org
 // `creator`/repo-create rights, and the per-project bundle repo exists before the
 // per-project root reconciles.  Same gated-injection posture for caBundle.  These
-// live in the holos org alongside holos-controller / holos-paas-config; the
+// live in the holos org alongside holos-controller / holos-substrate-config; the
 // per-APP delivery repos (oci://quay.holos.internal/<project>/<app>-config) are a
 // separate concern under each project's OWN Quay org (the project Organization).
 let PROJECT_CONFIG_REPOSITORIES = {

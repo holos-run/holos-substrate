@@ -14,8 +14,8 @@ spec:
                         - name: echo
                           namespace: argocd
                           sources:
-                            - desiredRevision: ${{ imageFrom("quay.holos.internal/holos/holos-paas-manifests").Digest }}
-                              repoURL: oci://quay.holos.internal/holos/holos-paas-manifests
+                            - desiredRevision: ${{ imageFrom("quay.holos.internal/holos/holos-substrate-manifests").Digest }}
+                              repoURL: oci://quay.holos.internal/holos/holos-substrate-manifests
                               updateTargetRevision: true
                   uses: argocd-update
     requestedFreight:

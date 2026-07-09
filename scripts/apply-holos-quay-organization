@@ -7,11 +7,11 @@
 # a fresh cluster:
 #   * the holos-controller container image (the public holos-controller repo this
 #     script creates); and
-#   * the App-of-Apps platform config bundle (the public holos-paas-config repo
+#   * the App-of-Apps platform config bundle (the public holos-substrate-config repo
 #     this script also creates, so the push robot needs only write and Argo CD
 #     pulls the bundle anonymously — HOL-1381, see scripts/apply-platform-app-of-apps).
 #
-# Both the holos-controller and holos-paas-config Repositories are PUBLIC
+# Both the holos-controller and holos-substrate-config Repositories are PUBLIC
 # (world-pullable), and the org binds an
 # OIDC-synced Quay team to the realm's `authenticated` default group with org role
 # `creator` + an org default `write` permission — so every authenticated user can
@@ -170,6 +170,29 @@ if [[ ! -d "${COMPONENT_DIR}" ]] || [[ -z "$(ls -A "${COMPONENT_DIR}" 2>/dev/nul
 fi
 
 # ---------------------------------------------------------------------------
+# Legacy cleanup (HOL-1543 rename): delete the retired holos-paas-config CR
+# ---------------------------------------------------------------------------
+# On a cluster upgraded across the holos-paas -> holos-substrate rename the old
+# repository.quay.holos.run/holos-paas-config CR lingers (a plain apply never
+# prunes) and the controller would keep reconciling the retired legacy Quay
+# repository.  Delete it BEFORE applying the renamed manifests.  Deletion
+# semantics are the CR's omitted spec.deletionPolicy (provenance, ADR-22): the
+# controller created the repository during bootstrap, so its finalizer deletes
+# the retired remote Quay repository after verifying ownership; a repository
+# that had been adopted instead is released without remote deletion.  Nothing
+# pulls the legacy bundle anymore — the platform AppProject no longer
+# authorizes the legacy repoURL (see scripts/apply).  --ignore-not-found makes
+# this a no-op on a fresh cluster, and the bounded --timeout surfaces a stuck
+# finalizer as a warning without hanging the bootstrap.
+if ! kubectl --context "${KUBE_CONTEXT}" --namespace holos-controller delete \
+  repository.quay.holos.run/holos-paas-config \
+  --ignore-not-found --timeout=120s; then
+  echo "WARNING: the legacy repository.quay.holos.run/holos-paas-config CR did not" >&2
+  echo "         finish deleting; inspect its finalizer with:" >&2
+  echo "         kubectl --context ${KUBE_CONTEXT} --namespace holos-controller describe repository holos-paas-config" >&2
+fi
+
+# ---------------------------------------------------------------------------
 # Apply the Organization + Repository (with the injected caBundle)
 # ---------------------------------------------------------------------------
 echo "==> holos-quay-organization" >&2
@@ -229,18 +252,18 @@ gate_ready() {
 NS="holos-controller"
 gate_ready "${NS}" "organization.quay.holos.run/holos" || exit 1
 gate_ready "${NS}" "repository.quay.holos.run/holos-controller" || exit 1
-gate_ready "${NS}" "repository.quay.holos.run/holos-paas-config" || exit 1
+gate_ready "${NS}" "repository.quay.holos.run/holos-substrate-config" || exit 1
 
 cat <<EOF
 
 ============================================================================
 The holos Quay organization is provisioned: organization 'holos', the public
-'holos-controller' repository, and the public 'holos-paas-config' bundle
+'holos-controller' repository, and the public 'holos-substrate-config' bundle
 repository.  All authenticated users may push and pull.
 
 NEXT: obtain a Quay ROBOT account to PUSH the OCI artifacts that flow through this
 org — the holos-controller image, the platform App-of-Apps config bundle
-(holos-paas-config), AND each project's per-project config bundle
+(holos-substrate-config), AND each project's per-project config bundle
 (holos/<project>-config, one per registered project, also managed above, HOL-1382).
 All of these repositories already exist (managed above), so the robot needs only
 WRITE (push) access — no repo-create rights.  Automated pushes use a robot
@@ -250,7 +273,7 @@ repositories are public, so PULLS — including Argo CD's bundle pull — are an
 
   1. In https://quay.holos.internal, open the 'holos' organization and create a
      Robot account (e.g. holos+robot), then grant it EXPLICIT WRITE on EVERY
-     repository in the org — holos-controller, holos-paas-config, AND each
+     repository in the org — holos-controller, holos-substrate-config, AND each
      <project>-config bundle repo (e.g. my-project-config) — via each repo's
      Settings > User and Robot Permissions (set the robot to "Write").  Grant WRITE
      on each new <project>-config repo as projects are added.

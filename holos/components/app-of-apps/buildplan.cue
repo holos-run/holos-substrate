@@ -3,7 +3,7 @@ package holos
 // app-of-apps bootstraps the whole platform through Argo CD (HOL-1376, parent
 // HOL-1373).  It is the change that makes Argo CD actually reconcile the
 // platform: a single root Application (the App-of-Apps) plus one child
-// Application per SYSTEM component, every child reading the holos-paas-config
+// Application per SYSTEM component, every child reading the holos-substrate-config
 // OCI bundle at the mutable :dev tag the producer phase publishes (HOL-1374)
 // and assigned to the platform AppProject the prior phase stood up (HOL-1375).
 //
@@ -86,10 +86,10 @@ package holos
 let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 
 // CONFIG_REPO_OCI is the platform config OCI repository the App-of-Apps pulls
-// from (HOL-1374 publishes holos-paas-config:dev to it).  Keep it consistent
+// from (HOL-1374 publishes holos-substrate-config:dev to it).  Keep it consistent
 // with argocd-projects' CONFIG_REPO_OCI (the platform AppProject's sourceRepos
 // authorize exactly this URL) and scripts/publish-config's CONFIG_REPO default.
-let CONFIG_REPO_OCI = "oci://quay.holos.internal/holos/holos-paas-config"
+let CONFIG_REPO_OCI = "oci://quay.holos.internal/holos/holos-substrate-config"
 
 // CONFIG_TAG is the mutable bootstrap tag the platform Applications pin
 // themselves.  Unlike the Kargo-driven Applications (components/project,
@@ -156,8 +156,8 @@ let COMPONENTS_BASE = "clusters/\(clusterName)/components"
 // to BE the scripts/apply order; dropping echo would violate them).  The two
 // Applications source from DIFFERENT repos and do not fight over the workload
 // image: platform-echo (here) reconciles the STATIC echo scaffold committed in
-// the holos-paas-config bundle, while the kargo-echo component's own echo
-// Application sources the holos-paas-manifests repo whose targetRevision Kargo
+// the holos-substrate-config bundle, while the kargo-echo component's own echo
+// Application sources the holos-substrate-manifests repo whose targetRevision Kargo
 // owns and re-points on promotion.  The committed echo Deployment pins the
 // default agnhost smoke-test image (holos/tags.cue _AppImage), so a selfHeal
 // from platform-echo only ever re-asserts that same static scaffold — it does

@@ -17,13 +17,13 @@
 #      reconciling anything; AND
 #   2. the holos Quay ORGANIZATION has been provisioned by
 #      scripts/apply-holos-quay-organization (HOL-1380) — the holos org and the
-#      holos-controller + holos-paas-config repositories in the in-cluster Quay —
+#      holos-controller + holos-substrate-config repositories in the in-cluster Quay —
 #      and the operator has obtained the ONE credential this script needs:
 #        * HOST-SIDE PUSH auth for the `oras push` below — supplied via
 #          ORAS_USERNAME / ORAS_PASSWORD or a prior `oras login` (a push-capable
 #          Quay robot credential; scripts/publish-config reads these, NOT any
 #          in-cluster Secret).
-#      No PULL credential is needed: the holos-paas-config repository is PUBLIC
+#      No PULL credential is needed: the holos-substrate-config repository is PUBLIC
 #      (HOL-1381), so Argo CD pulls the bundle anonymously.  The repository itself
 #      is managed (pre-created) by scripts/apply-holos-quay-organization, so the
 #      push robot needs only write (push) access to it — no repo-create rights.
@@ -41,7 +41,7 @@
 # platform from the OCI config bundle until Argo CD itself is running — by
 # running AFTER the floor:
 #
-#   1. Publish the holos-paas-config:dev bundle — a straight tar of the committed
+#   1. Publish the holos-substrate-config:dev bundle — a straight tar of the committed
 #      holos/deploy/ tree (scripts/publish-config), pushed under the mutable :dev
 #      tag the platform App-of-Apps Applications track.
 #   2. Apply the PLATFORM ROOT App-of-Apps Application (the app-of-apps component
@@ -79,7 +79,7 @@
 #   - oras (https://oras.land/docs/installation) and a reachable Quay
 #   - host-side push auth for the oras push (ORAS_USERNAME / ORAS_PASSWORD or a
 #     prior `oras login`)
-#   (No Argo CD pull credential: the holos-paas-config repository is public,
+#   (No Argo CD pull credential: the holos-substrate-config repository is public,
 #    HOL-1381, so Argo CD pulls the bundle anonymously.)
 
 set -euo pipefail
@@ -123,7 +123,7 @@ fi
 
 FORCE_ROOT="${PLATFORM_APP_OF_APPS_FORCE_ROOT:-0}"
 
-echo "==> Platform App-of-Apps handoff: publish holos-paas-config bundle + apply the platform root"
+echo "==> Platform App-of-Apps handoff: publish holos-substrate-config bundle + apply the platform root"
 
 # 0. Source-consistency gate.  scripts/apply applied the WORKING-TREE manifests
 #    under ${COMPONENTS_DIR}, but scripts/publish-config --build bundles the
@@ -160,11 +160,11 @@ if [[ "${FORCE_ROOT}" != "1" && "${deploy_dirty}" -eq 1 ]]; then
   exit 1
 fi
 
-# 1. Publish the holos-paas-config:dev bundle.  This step requires oras, a
+# 1. Publish the holos-substrate-config:dev bundle.  This step requires oras, a
 #    reachable Quay, and a host-side push credential (ORAS_USERNAME/ORAS_PASSWORD
 #    or a prior `oras login`) — i.e. the manual holos Quay organization setup this
 #    script depends on.  Applying the platform root is GATED on a successful
-#    publish: the root reconciles with prune+selfHeal from holos-paas-config:dev,
+#    publish: the root reconciles with prune+selfHeal from holos-substrate-config:dev,
 #    so applying it against a STALE (or absent) :dev would drag the cluster back
 #    off the manifests scripts/apply just applied.  A failed/skipped publish is
 #    therefore a HARD ERROR (unless PLATFORM_APP_OF_APPS_FORCE_ROOT=1 forces the
@@ -175,14 +175,14 @@ if ! command -v oras >/dev/null 2>&1; then
   echo "    SKIP publish: 'oras' not found on PATH (https://oras.land/docs/installation)." >&2
 elif "${REPO_ROOT}/scripts/publish-config" --build >&2 \
   && "${REPO_ROOT}/scripts/publish-config" --push >/dev/null; then
-  echo "    Published holos-paas-config:${CONFIG_TAG:-dev} (the platform App-of-Apps :dev tag)."
+  echo "    Published holos-substrate-config:${CONFIG_TAG:-dev} (the platform App-of-Apps :dev tag)."
   published=1
 else
-  echo "    WARNING: publishing holos-paas-config failed." >&2
+  echo "    WARNING: publishing holos-substrate-config failed." >&2
 fi
 
 if [[ "${published}" -ne 1 && "${FORCE_ROOT}" != "1" ]]; then
-  echo "ERROR: holos-paas-config:${CONFIG_TAG:-dev} was not published this run, so the" >&2
+  echo "ERROR: holos-substrate-config:${CONFIG_TAG:-dev} was not published this run, so the" >&2
   echo "       platform App-of-Apps handoff cannot proceed: applying the prune+selfHeal root" >&2
   echo "       could drag the cluster back to a stale or absent :dev bundle." >&2
   echo "" >&2
@@ -192,7 +192,7 @@ if [[ "${published}" -ne 1 && "${FORCE_ROOT}" != "1" ]]; then
   echo "         - HOST-SIDE PUSH auth for this oras push: a push-capable Quay robot" >&2
   echo "           credential, supplied via ORAS_USERNAME / ORAS_PASSWORD or a prior" >&2
   echo "           'oras login quay.holos.internal'.  No PULL credential is needed:" >&2
-  echo "           the holos-paas-config repository is public, so Argo CD pulls the" >&2
+  echo "           the holos-substrate-config repository is public, so Argo CD pulls the" >&2
   echo "           bundle anonymously (HOL-1381)." >&2
   echo "       See holos/docs/oci-publish-workflow.md (Registry transport and credentials)" >&2
   echo "       and docs/runbooks/quay-resource-controller-credentials.md." >&2
@@ -207,7 +207,7 @@ fi
 # 2. Apply the PLATFORM root App-of-Apps Application.  This component dir is NOT in
 #    scripts/apply's COMPONENTS (the imperative floor) precisely so it is applied
 #    here, once, as the Argo CD handoff.  The platform AppProject and the
-#    credential-less holos-paas-config repository registration Secret already exist
+#    credential-less holos-substrate-config repository registration Secret already exist
 #    (applied by the argocd-projects component in scripts/apply).  Argo CD pulls the
 #    bundle ANONYMOUSLY: the repository is PUBLIC (HOL-1381 — holos-quay-organization
 #    sets its visibility to public), so no robot pull credential is needed; the
@@ -220,7 +220,7 @@ kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
 
 # 3. One-time migration cleanup (HOL-1382): prune the RETIRED global tenant
 #    App-of-Apps.  Before HOL-1382 a single `projects` App-of-Apps reconciled ALL
-#    projects from the SHARED holos-paas-config bundle: the root `projects-bootstrap`
+#    projects from the SHARED holos-substrate-config bundle: the root `projects-bootstrap`
 #    and its two children `projects-project` / `projects-application`.  HOL-1382
 #    removes the `projects` component (those paths are GONE from the republished
 #    bundle) and replaces it with per-project `<project>-control-plane` /
@@ -241,6 +241,6 @@ kubectl --context "${KUBE_CONTEXT}" --namespace argocd \
   --ignore-not-found --request-timeout=60s
 
 echo "    Argo CD now reconciles the platform (platform-bootstrap) from"
-echo "    holos-paas-config:${CONFIG_TAG:-dev}."
+echo "    holos-substrate-config:${CONFIG_TAG:-dev}."
 echo "    Tenant projects are bootstrapped separately and independently:"
 echo "      scripts/apply-projects-app-of-apps   # all projects' control planes"
