@@ -170,6 +170,29 @@ if [[ ! -d "${COMPONENT_DIR}" ]] || [[ -z "$(ls -A "${COMPONENT_DIR}" 2>/dev/nul
 fi
 
 # ---------------------------------------------------------------------------
+# Legacy cleanup (HOL-1543 rename): delete the retired holos-paas-config CR
+# ---------------------------------------------------------------------------
+# On a cluster upgraded across the holos-paas -> holos-substrate rename the old
+# repository.quay.holos.run/holos-paas-config CR lingers (a plain apply never
+# prunes) and the controller would keep reconciling the retired legacy Quay
+# repository.  Delete it BEFORE applying the renamed manifests.  Deletion
+# semantics are the CR's omitted spec.deletionPolicy (provenance, ADR-22): the
+# controller created the repository during bootstrap, so its finalizer deletes
+# the retired remote Quay repository after verifying ownership; a repository
+# that had been adopted instead is released without remote deletion.  Nothing
+# pulls the legacy bundle anymore — the platform AppProject no longer
+# authorizes the legacy repoURL (see scripts/apply).  --ignore-not-found makes
+# this a no-op on a fresh cluster, and the bounded --timeout surfaces a stuck
+# finalizer as a warning without hanging the bootstrap.
+if ! kubectl --context "${KUBE_CONTEXT}" --namespace holos-controller delete \
+  repository.quay.holos.run/holos-paas-config \
+  --ignore-not-found --timeout=120s; then
+  echo "WARNING: the legacy repository.quay.holos.run/holos-paas-config CR did not" >&2
+  echo "         finish deleting; inspect its finalizer with:" >&2
+  echo "         kubectl --context ${KUBE_CONTEXT} --namespace holos-controller describe repository holos-paas-config" >&2
+fi
+
+# ---------------------------------------------------------------------------
 # Apply the Organization + Repository (with the injected caBundle)
 # ---------------------------------------------------------------------------
 echo "==> holos-quay-organization" >&2
