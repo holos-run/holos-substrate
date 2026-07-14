@@ -28,13 +28,13 @@ import (
 	"github.com/holos-run/holos-substrate/internal/referencegrant"
 )
 
-// userFinalizer guards Keycloak-side cleanup of a KeycloakUser: while present,
+// userFinalizer guards Keycloak-side cleanup of a User: while present,
 // deleting the CR runs the finalizer (which deletes the Keycloak user only when
 // this CR created it, or releases an adopted user) before the CR is removed from
 // the API server. Its value is the resource's qualified name.
 const userFinalizer = "user.keycloak.holos.run/finalizer"
 
-// UserClient is the seam the KeycloakUser reconciler drives Keycloak through. It
+// UserClient is the seam the User reconciler drives Keycloak through. It
 // is the subset of internal/keycloak.Client's user and federated-identity
 // operations the reconciler needs, named as an interface so tests inject a fake
 // without HTTP. The concrete *keycloak.Client satisfies it.
@@ -71,23 +71,23 @@ type UserClient interface {
 // factory returns a real *keycloak.Client; tests substitute a fake.
 type UserClientFactory func(cred *keycloakCredential, url, realm string, caBundle []byte) UserClient
 
-// NewKeycloakUserClient is the production UserClientFactory.
-func NewKeycloakUserClient(cred *keycloakCredential, url, realm string, caBundle []byte) UserClient {
-	return newKeycloakClient(cred, url, realm, caBundle)
+// NewUserClient is the production UserClientFactory.
+func NewUserClient(cred *keycloakCredential, url, realm string, caBundle []byte) UserClient {
+	return newClient(cred, url, realm, caBundle)
 }
 
 // Compile-time assertion that the real Keycloak client satisfies the seam.
 var _ UserClient = (*keycloak.Client)(nil)
 
-// UserReconciler reconciles a keycloak.holos.run KeycloakUser against the realm
-// of its referenced KeycloakInstance: it pre-provisions the user by email (only
+// UserReconciler reconciles a keycloak.holos.run User against the realm
+// of its referenced Instance: it pre-provisions the user by email (only
 // when absent), configures the IdP federated-identity link, and on delete runs a
 // finalizer that deletes only a user it created (releasing an adopted one).
 // Status follows the Gateway-API convention and meaningful transitions emit
 // Events.
 type UserReconciler struct {
-	// Client is the manager's cached client for the KeycloakUser CR and status,
-	// and for resolving the referenced KeycloakInstance.
+	// Client is the manager's cached client for the User CR and status,
+	// and for resolving the referenced Instance.
 	client.Client
 	// APIReader is the manager's non-caching reader, used to Get the credential
 	// Secret without a cluster-wide Secret cache.
@@ -99,11 +99,11 @@ type UserReconciler struct {
 	// resolved. Defaults to DefaultControllerNamespace via controllerNamespace().
 	Namespace string
 	// NewClient builds the Keycloak client from a resolved credential. Defaults to
-	// NewKeycloakUserClient; tests override it with a fake factory.
+	// NewUserClient; tests override it with a fake factory.
 	NewClient UserClientFactory
 }
 
-// Reconcile drives a KeycloakUser toward its desired state: fetch CR → ensure
+// Reconcile drives a User toward its desired state: fetch CR → ensure
 // finalizer → on delete run Keycloak cleanup then remove finalizer → else
 // resolve instance (+ReferenceGrant) → resolve credential → find/create the user
 // (claim model) → ensure the IdP link → mark Ready.
@@ -111,7 +111,7 @@ func (r *UserReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resul
 	logger := log.FromContext(ctx)
 	defer func() { recordReconcile(kindUser, retErr) }()
 
-	user := &keycloakv1alpha1.KeycloakUser{}
+	user := &keycloakv1alpha1.User{}
 	if err := r.Get(ctx, req.NamespacedName, user); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -132,7 +132,7 @@ func (r *UserReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resul
 
 // reconcileNormal resolves the instance and credential, then finds-or-creates
 // the Keycloak user (claim model) and reconciles its IdP link.
-func (r *UserReconciler) reconcileNormal(ctx context.Context, logger logr.Logger, user *keycloakv1alpha1.KeycloakUser) (ctrl.Result, error) {
+func (r *UserReconciler) reconcileNormal(ctx context.Context, logger logr.Logger, user *keycloakv1alpha1.User) (ctrl.Result, error) {
 	instance, result, err := r.resolveInstance(ctx, user)
 	if instance == nil || err != nil {
 		return result, err
@@ -166,7 +166,7 @@ func (r *UserReconciler) reconcileNormal(ctx context.Context, logger logr.Logger
 // CreateUser tolerates a 409 (a concurrent actor created the same email in the
 // race window after the lookup): on that conflict the user is re-resolved and
 // re-evaluated against the claim model rather than silently seized.
-func (r *UserReconciler) reconcileCreate(ctx context.Context, logger logr.Logger, kc UserClient, user *keycloakv1alpha1.KeycloakUser) (ctrl.Result, error) {
+func (r *UserReconciler) reconcileCreate(ctx context.Context, logger logr.Logger, kc UserClient, user *keycloakv1alpha1.User) (ctrl.Result, error) {
 	userID, err := kc.CreateUser(ctx, r.desiredUser(user))
 	recordKeycloakAPI(opCreateUser, ignoreConflict(err))
 	if keycloak.IsConflict(err) {
@@ -197,7 +197,7 @@ func (r *UserReconciler) reconcileCreate(ctx context.Context, logger logr.Logger
 // still matches status.UserID — a mismatch means the original was deleted and a
 // foreign user recreated for the same email, a Conflict rather than a silent
 // seizure. Otherwise it adopts (spec.adopt) or records a terminal Conflict.
-func (r *UserReconciler) reconcileExisting(ctx context.Context, logger logr.Logger, kc UserClient, user *keycloakv1alpha1.KeycloakUser, existing *keycloak.User) (ctrl.Result, error) {
+func (r *UserReconciler) reconcileExisting(ctx context.Context, logger logr.Logger, kc UserClient, user *keycloakv1alpha1.User, existing *keycloak.User) (ctrl.Result, error) {
 	if user.Status.Created || user.Status.Adopted {
 		if user.Status.UserID != "" && user.Status.UserID != existing.ID {
 			return r.userReplaced(ctx, logger, user, existing.ID)
@@ -228,7 +228,7 @@ func (r *UserReconciler) reconcileExisting(ctx context.Context, logger logr.Logg
 // the realm's first-broker-login Trust Email flow can auto-link without a
 // verification step (ADR-20); the realm/IdP half of that flow is owned by the
 // platform realm config, not this CR.
-func (r *UserReconciler) desiredUser(user *keycloakv1alpha1.KeycloakUser) keycloak.User {
+func (r *UserReconciler) desiredUser(user *keycloakv1alpha1.User) keycloak.User {
 	username := user.Spec.Username
 	if username == "" {
 		username = user.Spec.Email
@@ -245,7 +245,7 @@ func (r *UserReconciler) desiredUser(user *keycloakv1alpha1.KeycloakUser) keyclo
 // carries the UUID this CR created (status.UserID) — the original was deleted and
 // a foreign one recreated for the same email. The replacement is never
 // reconciled into or deleted; an operator must resolve the collision.
-func (r *UserReconciler) userReplaced(ctx context.Context, logger logr.Logger, user *keycloakv1alpha1.KeycloakUser, actualID string) (ctrl.Result, error) {
+func (r *UserReconciler) userReplaced(ctx context.Context, logger logr.Logger, user *keycloakv1alpha1.User, actualID string) (ctrl.Result, error) {
 	message := fmt.Sprintf("Keycloak user %q now has UUID %q but this resource created UUID %q; the user was replaced out of band and is not reconciled or deleted", user.Spec.Email, actualID, user.Status.UserID)
 	return r.recordConflict(ctx, logger, user, message)
 }
@@ -255,7 +255,7 @@ func (r *UserReconciler) userReplaced(ctx context.Context, logger logr.Logger, u
 // side effects are applied only after the user itself exists. extraChanged is set
 // when an ownership/managed-set status field changed so a steady-state reconcile
 // still persists it.
-func (r *UserReconciler) reconcileSideEffectsThenSucceed(ctx context.Context, logger logr.Logger, kc UserClient, user *keycloakv1alpha1.KeycloakUser, userID string, created bool, reason, message string) (ctrl.Result, error) {
+func (r *UserReconciler) reconcileSideEffectsThenSucceed(ctx context.Context, logger logr.Logger, kc UserClient, user *keycloakv1alpha1.User, userID string, created bool, reason, message string) (ctrl.Result, error) {
 	beforeUserID := user.Status.UserID
 	beforeIDP := user.Status.ManagedIdentityProvider
 
@@ -295,7 +295,7 @@ func (r *UserReconciler) reconcileSideEffectsThenSucceed(ctx context.Context, lo
 // ensures only the per-user federated-identity record. The first-broker-login flow
 // that makes the auto-link actually happen on login is realm configuration owned by
 // the platform realm config (keycloak-config-cli), NOT this CR.
-func (r *UserReconciler) reconcileIdentityProviderLink(ctx context.Context, kc UserClient, user *keycloakv1alpha1.KeycloakUser, userID string) (bool, error) {
+func (r *UserReconciler) reconcileIdentityProviderLink(ctx context.Context, kc UserClient, user *keycloakv1alpha1.User, userID string) (bool, error) {
 	mutated := false
 	link := user.Spec.IdentityProviderLink
 
@@ -371,7 +371,7 @@ func serializeManagedIdentityProvider(alias, subject string) string {
 // actor's federation) is never deleted. When the recorded subject is empty (a
 // legacy entry) it falls back to the unconditional delete the prior behavior used.
 // An already-absent link is success.
-func (r *UserReconciler) deleteFederatedIfSubjectMatches(ctx context.Context, kc UserClient, user *keycloakv1alpha1.KeycloakUser, userID, alias, subject string) error {
+func (r *UserReconciler) deleteFederatedIfSubjectMatches(ctx context.Context, kc UserClient, user *keycloakv1alpha1.User, userID, alias, subject string) error {
 	if subject != "" {
 		links, err := kc.ListFederatedIdentities(ctx, userID)
 		recordKeycloakAPI(opListFederatedIDs, err)
@@ -405,14 +405,14 @@ func (r *UserReconciler) deleteFederatedIfSubjectMatches(ctx context.Context, kc
 
 // recordConflict sets a terminal Conflict condition and emits a Warning, writing
 // status only on a change so an already-recorded conflict does not spin a loop.
-func (r *UserReconciler) recordConflict(ctx context.Context, logger logr.Logger, user *keycloakv1alpha1.KeycloakUser, message string) (ctrl.Result, error) {
+func (r *UserReconciler) recordConflict(ctx context.Context, logger logr.Logger, user *keycloakv1alpha1.User, message string) (ctrl.Result, error) {
 	changed := setConflict(&user.Status.Conditions, message, user.Generation)
 	changed = changed || user.Status.ObservedGeneration != user.Generation
 	if !changed {
 		return ctrl.Result{}, nil
 	}
 	r.Recorder.Event(user, corev1.EventTypeWarning, ReasonConflict, message)
-	logger.Info("KeycloakUser conflict", "email", user.Spec.Email)
+	logger.Info("User conflict", "email", user.Spec.Email)
 	if err := r.updateStatus(ctx, user); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -425,7 +425,7 @@ func (r *UserReconciler) recordConflict(ctx context.Context, logger logr.Logger,
 // claimed a pre-existing user never destroys it. A Keycloak error during cleanup
 // fails the reconcile and requeues, so the finalizer is not removed until cleanup
 // succeeds.
-func (r *UserReconciler) reconcileDelete(ctx context.Context, logger logr.Logger, user *keycloakv1alpha1.KeycloakUser) (ctrl.Result, error) {
+func (r *UserReconciler) reconcileDelete(ctx context.Context, logger logr.Logger, user *keycloakv1alpha1.User) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(user, userFinalizer) {
 		return ctrl.Result{}, nil
 	}
@@ -529,7 +529,7 @@ func (r *UserReconciler) reconcileDelete(ctx context.Context, logger logr.Logger
 // so the link this CR created must be removed explicitly. The delete is
 // subject-verified: a link recreated out of band to a different upstream subject
 // is left intact. An already-absent link is treated as success.
-func (r *UserReconciler) pruneManagedIdentityProvider(ctx context.Context, kc UserClient, user *keycloakv1alpha1.KeycloakUser) error {
+func (r *UserReconciler) pruneManagedIdentityProvider(ctx context.Context, kc UserClient, user *keycloakv1alpha1.User) error {
 	alias, subject := parseManagedIdentityProvider(user.Status.ManagedIdentityProvider)
 	if alias == "" || user.Status.UserID == "" {
 		user.Status.ManagedIdentityProvider = ""
@@ -542,14 +542,14 @@ func (r *UserReconciler) pruneManagedIdentityProvider(ctx context.Context, kc Us
 	return nil
 }
 
-// resolveInstance resolves the KeycloakInstance referenced by the user's
+// resolveInstance resolves the Instance referenced by the user's
 // instanceRef, enforcing a security.holos.run ReferenceGrant when the reference
 // crosses a namespace boundary. A denied reference sets Ready=False (reason
 // ReferenceNotGranted) and requeues; a missing or not-yet-Ready instance sets
 // Ready=False (reason InstanceNotReady) and requeues. On success it returns the
 // resolved instance and a zero result; on any non-success path it returns a nil
 // instance plus the result/error the caller should return verbatim.
-func (r *UserReconciler) resolveInstance(ctx context.Context, user *keycloakv1alpha1.KeycloakUser) (*keycloakv1alpha1.KeycloakInstance, ctrl.Result, error) {
+func (r *UserReconciler) resolveInstance(ctx context.Context, user *keycloakv1alpha1.User) (*keycloakv1alpha1.Instance, ctrl.Result, error) {
 	ref := user.Spec.InstanceRef
 	instanceNamespace := ref.Namespace
 	if instanceNamespace == "" {
@@ -560,38 +560,38 @@ func (r *UserReconciler) resolveInstance(ctx context.Context, user *keycloakv1al
 		allowed, err := referencegrant.Allowed(ctx, r.Client,
 			referencegrant.FromRef{
 				Group:     keycloakv1alpha1.GroupVersion.Group,
-				Kind:      "KeycloakUser",
+				Kind:      "User",
 				Namespace: user.Namespace,
 			},
 			referencegrant.ToRef{
 				Group:     keycloakv1alpha1.GroupVersion.Group,
-				Kind:      "KeycloakInstance",
+				Kind:      "Instance",
 				Namespace: instanceNamespace,
 				Name:      ref.Name,
 			},
 		)
 		if err != nil {
-			return nil, ctrl.Result{}, fmt.Errorf("checking ReferenceGrant for KeycloakInstance %s/%s: %w", instanceNamespace, ref.Name, err)
+			return nil, ctrl.Result{}, fmt.Errorf("checking ReferenceGrant for Instance %s/%s: %w", instanceNamespace, ref.Name, err)
 		}
 		if !allowed {
-			message := fmt.Sprintf("cross-namespace reference to KeycloakInstance %s/%s is not authorized by a security.holos.run ReferenceGrant", instanceNamespace, ref.Name)
+			message := fmt.Sprintf("cross-namespace reference to Instance %s/%s is not authorized by a security.holos.run ReferenceGrant", instanceNamespace, ref.Name)
 			result, rerr := r.notReady(ctx, user, ReasonReferenceNotGranted, message)
 			return nil, result, rerr
 		}
 	}
 
-	instance := &keycloakv1alpha1.KeycloakInstance{}
+	instance := &keycloakv1alpha1.Instance{}
 	key := types.NamespacedName{Namespace: instanceNamespace, Name: ref.Name}
 	if err := r.Get(ctx, key, instance); err != nil {
 		if apierrors.IsNotFound(err) {
-			message := fmt.Sprintf("referenced KeycloakInstance %s/%s does not exist", instanceNamespace, ref.Name)
+			message := fmt.Sprintf("referenced Instance %s/%s does not exist", instanceNamespace, ref.Name)
 			result, rerr := r.notReady(ctx, user, ReasonInstanceNotReady, message)
 			return nil, result, rerr
 		}
-		return nil, ctrl.Result{}, fmt.Errorf("resolving KeycloakInstance %s/%s: %w", instanceNamespace, ref.Name, err)
+		return nil, ctrl.Result{}, fmt.Errorf("resolving Instance %s/%s: %w", instanceNamespace, ref.Name, err)
 	}
 	if !instanceReady(instance) {
-		message := fmt.Sprintf("referenced KeycloakInstance %s/%s is not Ready", instanceNamespace, ref.Name)
+		message := fmt.Sprintf("referenced Instance %s/%s is not Ready", instanceNamespace, ref.Name)
 		result, rerr := r.notReady(ctx, user, ReasonInstanceNotReady, message)
 		return nil, result, rerr
 	}
@@ -602,7 +602,7 @@ func (r *UserReconciler) resolveInstance(ctx context.Context, user *keycloakv1al
 // status only when something changed — a condition flipped, observedGeneration
 // advanced, or extraChanged is set (load-bearing for the ownership/managed-set
 // status fields so a backfill or prune on an already-current object persists).
-func (r *UserReconciler) succeed(ctx context.Context, logger logr.Logger, user *keycloakv1alpha1.KeycloakUser, reason, message string, extraChanged bool) (ctrl.Result, error) {
+func (r *UserReconciler) succeed(ctx context.Context, logger logr.Logger, user *keycloakv1alpha1.User, reason, message string, extraChanged bool) (ctrl.Result, error) {
 	validationChanged := true
 	changed := markReady(&user.Status.Conditions, reason, message, user.Generation)
 	changed = changed || extraChanged || validationChanged || user.Status.ObservedGeneration != user.Generation
@@ -610,14 +610,14 @@ func (r *UserReconciler) succeed(ctx context.Context, logger logr.Logger, user *
 		return ctrl.Result{RequeueAfter: keycloakExternalResourceResync}, nil
 	}
 	r.Recorder.Event(user, corev1.EventTypeNormal, reason, message)
-	logger.Info("reconciled KeycloakUser", "email", user.Spec.Email, "reason", reason)
+	logger.Info("reconciled User", "email", user.Spec.Email, "reason", reason)
 	if err := r.updateStatus(ctx, user); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: keycloakExternalResourceResync}, nil
 }
 
-func (r *UserReconciler) stampMutation(user *keycloakv1alpha1.KeycloakUser) {
+func (r *UserReconciler) stampMutation(user *keycloakv1alpha1.User) {
 	now, reason, drift := ctrlshared.MutationStamp(user.Status.ObservedGeneration, user.Generation, userReady(user), false)
 	user.Status.LastMutatedTime = &now
 	user.Status.LastMutationReason = keycloakv1alpha1.MutationReason(reason)
@@ -626,14 +626,14 @@ func (r *UserReconciler) stampMutation(user *keycloakv1alpha1.KeycloakUser) {
 	}
 }
 
-func userReady(user *keycloakv1alpha1.KeycloakUser) bool {
+func userReady(user *keycloakv1alpha1.User) bool {
 	return ctrlshared.GenerationReady(user.Status.Conditions, ConditionReady, user.Generation)
 }
 
 // notReady records a recoverable not-ready condition for an unsatisfied
 // declarative dependency and requeues on the requeueDependency backoff, writing
 // status + emitting a Warning only on a change.
-func (r *UserReconciler) notReady(ctx context.Context, user *keycloakv1alpha1.KeycloakUser, reason, message string) (ctrl.Result, error) {
+func (r *UserReconciler) notReady(ctx context.Context, user *keycloakv1alpha1.User, reason, message string) (ctrl.Result, error) {
 	if changed := markNotReady(&user.Status.Conditions, reason, message, user.Generation); changed {
 		r.Recorder.Event(user, corev1.EventTypeWarning, reason, message)
 		if err := r.updateStatus(ctx, user); err != nil {
@@ -646,7 +646,7 @@ func (r *UserReconciler) notReady(ctx context.Context, user *keycloakv1alpha1.Ke
 // handleCredentialError maps a credential-resolution error to a reconcile result:
 // a missing Secret/key sets CredentialsNotFound and requeues; a transient API
 // error requeues with backoff.
-func (r *UserReconciler) handleCredentialError(ctx context.Context, user *keycloakv1alpha1.KeycloakUser, err error) (ctrl.Result, error) {
+func (r *UserReconciler) handleCredentialError(ctx context.Context, user *keycloakv1alpha1.User, err error) (ctrl.Result, error) {
 	if !isMissingCredential(err) {
 		return ctrl.Result{}, err
 	}
@@ -662,7 +662,7 @@ func (r *UserReconciler) handleCredentialError(ctx context.Context, user *keyclo
 // fail records a Keycloak error as a False condition + Warning event and returns
 // the error so the request requeues with backoff, writing status only on a
 // change.
-func (r *UserReconciler) fail(ctx context.Context, user *keycloakv1alpha1.KeycloakUser, err error) (ctrl.Result, error) {
+func (r *UserReconciler) fail(ctx context.Context, user *keycloakv1alpha1.User, err error) (ctrl.Result, error) {
 	if changed := markNotReady(&user.Status.Conditions, ReasonKeycloakError, err.Error(), user.Generation); changed {
 		r.Recorder.Event(user, corev1.EventTypeWarning, ReasonKeycloakError, err.Error())
 		if statusErr := r.updateStatus(ctx, user); statusErr != nil {
@@ -674,7 +674,7 @@ func (r *UserReconciler) fail(ctx context.Context, user *keycloakv1alpha1.Keyclo
 
 // removeFinalizer drops the user finalizer and persists the change so the API
 // server can delete the CR.
-func (r *UserReconciler) removeFinalizer(ctx context.Context, user *keycloakv1alpha1.KeycloakUser) (ctrl.Result, error) {
+func (r *UserReconciler) removeFinalizer(ctx context.Context, user *keycloakv1alpha1.User) (ctrl.Result, error) {
 	controllerutil.RemoveFinalizer(user, userFinalizer)
 	if err := r.Update(ctx, user); err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
@@ -684,10 +684,10 @@ func (r *UserReconciler) removeFinalizer(ctx context.Context, user *keycloakv1al
 
 // updateStatus stamps observedGeneration and patches the status subresource from
 // a live merge base.
-func (r *UserReconciler) updateStatus(ctx context.Context, user *keycloakv1alpha1.KeycloakUser) error {
+func (r *UserReconciler) updateStatus(ctx context.Context, user *keycloakv1alpha1.User) error {
 	base := user.DeepCopy()
 	user.Status.ObservedGeneration = user.Generation
-	return ctrlshared.PatchStatus(ctx, r.Client, base, user, "KeycloakUser")
+	return ctrlshared.PatchStatus(ctx, r.Client, base, user, "User")
 }
 
 // SetupWithManager wires the reconciler into the manager.
@@ -702,33 +702,33 @@ func (r *UserReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.Namespace = controllerNamespace()
 	}
 	if r.NewClient == nil {
-		r.NewClient = NewKeycloakUserClient
+		r.NewClient = NewUserClient
 	}
 	if err := checkNoLegacyUserManagedGroups(context.Background(), r.APIReader); err != nil {
 		return err
 	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&keycloakv1alpha1.KeycloakUser{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		// Re-enqueue dependent users when their referenced KeycloakInstance changes
+		For(&keycloakv1alpha1.User{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		// Re-enqueue dependent users when their referenced Instance changes
 		// (e.g. it transitions to Ready), so a user blocked on InstanceNotReady
 		// recovers promptly rather than only on the requeueDependency backoff.
 		Watches(
-			&keycloakv1alpha1.KeycloakInstance{},
+			&keycloakv1alpha1.Instance{},
 			handler.EnqueueRequestsFromMapFunc(r.usersForInstance),
 		).
 		Complete(r)
 }
 
-// checkNoLegacyUserManagedGroups hard-blocks rollout when old KeycloakUser
+// checkNoLegacyUserManagedGroups hard-blocks rollout when old User
 // objects still carry the removed status.managedGroups field. HOL-1458
 // deliberately removes the user-side membership prune path, so clusters must
-// first apply the KeycloakGroupMembership migration under the previous
+// first apply the GroupMembership migration under the previous
 // controller until this legacy managed set is empty.
 func checkNoLegacyUserManagedGroups(ctx context.Context, reader client.Reader) error {
 	users := &unstructured.UnstructuredList{}
-	users.SetGroupVersionKind(keycloakv1alpha1.GroupVersion.WithKind("KeycloakUserList"))
+	users.SetGroupVersionKind(keycloakv1alpha1.GroupVersion.WithKind("UserList"))
 	if err := reader.List(ctx, users); err != nil {
-		return fmt.Errorf("checking legacy KeycloakUser managed groups before starting controller: %w", err)
+		return fmt.Errorf("checking legacy User managed groups before starting controller: %w", err)
 	}
 
 	var offenders []string
@@ -736,7 +736,7 @@ func checkNoLegacyUserManagedGroups(ctx context.Context, reader client.Reader) e
 		user := &users.Items[i]
 		managed, found, err := unstructured.NestedStringSlice(user.Object, "status", "managedGroups")
 		if err != nil {
-			return fmt.Errorf("checking legacy KeycloakUser managed groups on %s: %w", client.ObjectKeyFromObject(user), err)
+			return fmt.Errorf("checking legacy User managed groups on %s: %w", client.ObjectKeyFromObject(user), err)
 		}
 		if found && len(managed) > 0 {
 			offenders = append(offenders, client.ObjectKeyFromObject(user).String())
@@ -746,19 +746,19 @@ func checkNoLegacyUserManagedGroups(ctx context.Context, reader client.Reader) e
 		return nil
 	}
 	sort.Strings(offenders)
-	return fmt.Errorf("refusing to start KeycloakUser controller: legacy status.managedGroups entries remain on %s; apply the KeycloakGroupMembership migration with the previous controller until the field is empty", strings.Join(offenders, ", "))
+	return fmt.Errorf("refusing to start User controller: legacy status.managedGroups entries remain on %s; apply the GroupMembership migration with the previous controller until the field is empty", strings.Join(offenders, ", "))
 }
 
-// usersForInstance maps a changed KeycloakInstance to reconcile requests for
-// every KeycloakUser that references it (in its own namespace or cross-namespace).
+// usersForInstance maps a changed Instance to reconcile requests for
+// every User that references it (in its own namespace or cross-namespace).
 func (r *UserReconciler) usersForInstance(ctx context.Context, obj client.Object) []ctrlreconcile.Request {
-	instance, ok := obj.(*keycloakv1alpha1.KeycloakInstance)
+	instance, ok := obj.(*keycloakv1alpha1.Instance)
 	if !ok {
 		return nil
 	}
-	var users keycloakv1alpha1.KeycloakUserList
+	var users keycloakv1alpha1.UserList
 	if err := r.List(ctx, &users); err != nil {
-		log.FromContext(ctx).Error(err, "listing KeycloakUsers to map a KeycloakInstance change")
+		log.FromContext(ctx).Error(err, "listing Users to map an Instance change")
 		return nil
 	}
 	var requests []ctrlreconcile.Request

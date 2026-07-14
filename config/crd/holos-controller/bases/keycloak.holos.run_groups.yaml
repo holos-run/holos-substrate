@@ -4,17 +4,17 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: keycloakgroups.keycloak.holos.run
+  name: groups.keycloak.holos.run
 spec:
   group: keycloak.holos.run
   names:
     categories:
     - holos
     - keycloak
-    kind: KeycloakGroup
-    listKind: KeycloakGroupList
-    plural: keycloakgroups
-    singular: keycloakgroup
+    kind: Group
+    listKind: GroupList
+    plural: groups
+    singular: group
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -38,7 +38,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          KeycloakGroup is the Schema for the keycloakgroups API. It manages a (possibly
+          Group is the Schema for the groups API. It manages a (possibly
           nested) Keycloak group, the client roles its members hold, and the custodian
           group(s) that may manage its membership (ADR-20).
         properties:
@@ -61,7 +61,7 @@ spec:
             type: object
           spec:
             description: |-
-              KeycloakGroupSpec defines the desired state of a KeycloakGroup: a (possibly
+              GroupSpec defines the desired state of a Group: a (possibly
               nested) Keycloak group, the client roles its members hold, and the custodian
               group(s) that may manage its membership (ADR-20). Keycloak realm groups are a
               single global namespace while this CR is Kubernetes-namespaced, so ownership
@@ -84,7 +84,7 @@ spec:
                 description: |-
                   ClientRoles optionally lists the client roles every member of this group
                   holds. Each entry names its target client by EXACTLY ONE of clientRef (a
-                  same-namespace KeycloakClient CR) or clientId (a Keycloak clientId directly —
+                  same-namespace Client CR) or clientId (a Keycloak clientId directly —
                   the ADR-20 "Quay use case", for the platform-reserved Quay client where no
                   tenant CR exists), plus the role name. A member of the group thereby holds the
                   named client roles, which reach the target client's token via that client's
@@ -98,33 +98,33 @@ spec:
                     role named by Role scoped to a Keycloak client. A member of a group carrying
                     this reference holds that client role, which reaches the named client's token
                     via that client's per-client client-role mapper (ADR-20). It is shared by
-                    KeycloakGroup (the roles a group confers) and KeycloakClient (the roles a
+                    Group (the roles a group confers) and Client (the roles a
                     client defines).
 
                     The target client is named by EXACTLY ONE of ClientRef (a same-namespace
-                    KeycloakClient CR) or ClientID (a Keycloak clientId directly). The reconciler is
+                    Client CR) or ClientID (a Keycloak clientId directly). The reconciler is
                     transparent (HOL-1421): a reference may name ANY client and confer ANY role name
                     — the controller reserves and refuses nothing on org-policy grounds. ClientID is
                     the path for conferring a role on a client that has no same-namespace
-                    KeycloakClient CR (e.g. a platform client such as the in-cluster Quay client
+                    Client CR (e.g. a platform client such as the in-cluster Quay client
                     https://quay.holos.internal), so the role surfaces in that client's token via its
                     per-client client-role mapper (ADR-20).
                   properties:
                     clientId:
                       description: |-
                         ClientID names the target Keycloak clientId directly (e.g.
-                        https://quay.holos.internal), bypassing same-namespace KeycloakClient CR
+                        https://quay.holos.internal), bypassing same-namespace Client CR
                         resolution. It is the mechanism for conferring a role on a client that has no
-                        same-namespace KeycloakClient CR (such as a platform client). It may name any
+                        same-namespace Client CR (such as a platform client). It may name any
                         client and confer any role name — the controller reserves nothing (HOL-1421).
                         Mutually exclusive with ClientRef.
                       minLength: 1
                       type: string
                     clientRef:
                       description: |-
-                        ClientRef is the metadata.name of the KeycloakClient resource the role is
+                        ClientRef is the metadata.name of the Client resource the role is
                         scoped to — a Kubernetes object name, not the client's URL-shaped clientId.
-                        The reconciler resolves the named KeycloakClient CR in the referring
+                        The reconciler resolves the named Client CR in the referring
                         resource's namespace and derives the Keycloak clientId from its
                         spec.clientId, mirroring how a Repository resolves its OrganizationRef to an
                         Organization's spec.name (api/quay/v1alpha1). This keeps the reference a
@@ -186,17 +186,17 @@ spec:
                 type: string
               instanceRef:
                 description: |-
-                  InstanceRef references the KeycloakInstance this group is provisioned in. A
+                  InstanceRef references the Instance this group is provisioned in. A
                   cross-namespace reference (Namespace set to a different namespace) is gated
                   by a security.holos.run ReferenceGrant in the instance's namespace.
                 properties:
                   name:
-                    description: Name of the KeycloakInstance resource to target.
+                    description: Name of the Instance resource to target.
                     minLength: 1
                     type: string
                   namespace:
                     description: |-
-                      Namespace of the KeycloakInstance. When omitted the instance is resolved
+                      Namespace of the Instance. When omitted the instance is resolved
                       in the referring resource's own namespace. When set to a different
                       namespace, the cross-namespace reference must be authorized by a
                       security.holos.run ReferenceGrant in the target namespace.
@@ -222,7 +222,7 @@ spec:
             type: object
           status:
             description: |-
-              KeycloakGroupStatus defines the observed state of a KeycloakGroup, following
+              GroupStatus defines the observed state of a Group, following
               the Gateway-API status convention plus the durable ownership marker the claim
               model requires (mirroring ADR-19).
             properties:
@@ -372,7 +372,7 @@ spec:
               observedGeneration:
                 description: |-
                   ObservedGeneration is the most recent generation observed for this
-                  KeycloakGroup by the controller.
+                  Group by the controller.
                 format: int64
                 type: integer
             type: object

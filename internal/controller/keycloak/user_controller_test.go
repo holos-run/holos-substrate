@@ -36,9 +36,9 @@ func (r legacyManagedGroupsReader) List(ctx context.Context, list client.ObjectL
 	return nil
 }
 
-func getUser(t *testing.T, ctx context.Context, key client.ObjectKey) *keycloakv1alpha1.KeycloakUser {
+func getUser(t *testing.T, ctx context.Context, key client.ObjectKey) *keycloakv1alpha1.User {
 	t.Helper()
-	got := &keycloakv1alpha1.KeycloakUser{}
+	got := &keycloakv1alpha1.User{}
 	if err := shared.k8sClient.Get(ctx, key, got); err != nil {
 		t.Fatalf("get user: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestCheckNoLegacyUserManagedGroups(t *testing.T) {
 	newRawUser := func(namespace, name string, managedGroups any) unstructured.Unstructured {
 		u := unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": keycloakv1alpha1.GroupVersion.String(),
-			"kind":       "KeycloakUser",
+			"kind":       "User",
 			"metadata": map[string]any{
 				"namespace": namespace,
 				"name":      name,
@@ -112,11 +112,11 @@ func TestUserReconcileCreateAndLink(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	user := &keycloakv1alpha1.KeycloakUser{
+	user := &keycloakv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "bob"},
-		Spec: keycloakv1alpha1.KeycloakUserSpec{
+		Spec: keycloakv1alpha1.UserSpec{
 			Email:       "bob@example.com",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			IdentityProviderLink: &keycloakv1alpha1.IdentityProviderLink{
 				Alias:  "corp-oidc",
 				UserID: "upstream-sub-123",
@@ -127,7 +127,7 @@ func TestUserReconcileCreateAndLink(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	r, recorder := newUserReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(user)
 	reconcileUserToSteady(t, ctx, r, key)
@@ -186,11 +186,11 @@ func TestUserReconcileEmailOnlyLinkSkipsAdminAPI(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	user := &keycloakv1alpha1.KeycloakUser{
+	user := &keycloakv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "emaillink"},
-		Spec: keycloakv1alpha1.KeycloakUserSpec{
+		Spec: keycloakv1alpha1.UserSpec{
 			Email:       "emaillink@example.com",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			// userId omitted: email-only auto-link, left to the realm flow.
 			IdentityProviderLink: &keycloakv1alpha1.IdentityProviderLink{Alias: "corp-oidc"},
 		},
@@ -199,7 +199,7 @@ func TestUserReconcileEmailOnlyLinkSkipsAdminAPI(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	r, _ := newUserReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(user)
 	reconcileUserToSteady(t, ctx, r, key)
@@ -227,11 +227,11 @@ func TestUserReconcileReusePresentNoDuplicate(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	user := &keycloakv1alpha1.KeycloakUser{
+	user := &keycloakv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "alice"},
-		Spec: keycloakv1alpha1.KeycloakUserSpec{
+		Spec: keycloakv1alpha1.UserSpec{
 			Email:       "alice@example.com",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			Adopt:       true,
 		},
 	}
@@ -239,7 +239,7 @@ func TestUserReconcileReusePresentNoDuplicate(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	fake.seedUser("alice@example.com") // pre-existing user
 	r, _ := newUserReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(user)
@@ -271,11 +271,11 @@ func TestUserReconcileConflictWithoutAdopt(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	user := &keycloakv1alpha1.KeycloakUser{
+	user := &keycloakv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "carol"},
-		Spec: keycloakv1alpha1.KeycloakUserSpec{
+		Spec: keycloakv1alpha1.UserSpec{
 			Email:       "carol@example.com",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			// Adopt defaults false.
 		},
 	}
@@ -283,7 +283,7 @@ func TestUserReconcileConflictWithoutAdopt(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	fake.seedUser("carol@example.com") // pre-existing, foreign user
 	r, _ := newUserReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(user)
@@ -312,11 +312,11 @@ func TestUserReconcileIdentityProviderLinkRemovalPrunes(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	user := &keycloakv1alpha1.KeycloakUser{
+	user := &keycloakv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "eve"},
-		Spec: keycloakv1alpha1.KeycloakUserSpec{
+		Spec: keycloakv1alpha1.UserSpec{
 			Email:                "eve@example.com",
-			InstanceRef:          keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef:          keycloakv1alpha1.InstanceReference{Name: "kc"},
 			IdentityProviderLink: &keycloakv1alpha1.IdentityProviderLink{Alias: "corp-oidc", UserID: "sub-eve"},
 		},
 	}
@@ -324,7 +324,7 @@ func TestUserReconcileIdentityProviderLinkRemovalPrunes(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	r, _ := newUserReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(user)
 	reconcileUserToSteady(t, ctx, r, key)
@@ -365,11 +365,11 @@ func TestUserReconcileIdentityProviderLinkSubjectVerifiedPrune(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	user := &keycloakv1alpha1.KeycloakUser{
+	user := &keycloakv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "grace"},
-		Spec: keycloakv1alpha1.KeycloakUserSpec{
+		Spec: keycloakv1alpha1.UserSpec{
 			Email:                "grace@example.com",
-			InstanceRef:          keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef:          keycloakv1alpha1.InstanceReference{Name: "kc"},
 			IdentityProviderLink: &keycloakv1alpha1.IdentityProviderLink{Alias: "corp-oidc", UserID: "sub-grace"},
 		},
 	}
@@ -377,7 +377,7 @@ func TestUserReconcileIdentityProviderLinkSubjectVerifiedPrune(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	r, _ := newUserReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(user)
 	reconcileUserToSteady(t, ctx, r, key)
@@ -420,12 +420,12 @@ func TestUserReconcileReferenceGrant(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(userNS, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, instNS, "kc")
 
-	newUser := func(name string) *keycloakv1alpha1.KeycloakUser {
-		u := &keycloakv1alpha1.KeycloakUser{
+	newUser := func(name string) *keycloakv1alpha1.User {
+		u := &keycloakv1alpha1.User{
 			ObjectMeta: metav1.ObjectMeta{Namespace: userNS, Name: name},
-			Spec: keycloakv1alpha1.KeycloakUserSpec{
+			Spec: keycloakv1alpha1.UserSpec{
 				Email:       name + "@example.com",
-				InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc", Namespace: instNS},
+				InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc", Namespace: instNS},
 			},
 		}
 		if err := shared.k8sClient.Create(ctx, u); err != nil {
@@ -436,7 +436,7 @@ func TestUserReconcileReferenceGrant(t *testing.T) {
 
 	t.Run("denied without a grant", func(t *testing.T) {
 		user := newUser("denied")
-		fake := newFakeKeycloakClient()
+		fake := newFakeClient()
 		r, _ := newUserReconciler(fake, userNS)
 		key := client.ObjectKeyFromObject(user)
 		_, _ = reconcileUser(ctx, r, key) // finalizer
@@ -459,19 +459,19 @@ func TestUserReconcileReferenceGrant(t *testing.T) {
 			Spec: securityv1alpha1.ReferenceGrantSpec{
 				From: []securityv1alpha1.ReferenceGrantFrom{{
 					Group:     keycloakv1alpha1.GroupVersion.Group,
-					Kind:      "KeycloakUser",
+					Kind:      "User",
 					Namespace: userNS,
 				}},
 				To: []securityv1alpha1.ReferenceGrantTo{{
 					Group: keycloakv1alpha1.GroupVersion.Group,
-					Kind:  "KeycloakInstance",
+					Kind:  "Instance",
 				}},
 			},
 		}
 		createIgnoreExists(t, ctx, grant)
 
 		user := newUser("allowed")
-		fake := newFakeKeycloakClient()
+		fake := newFakeClient()
 		r, _ := newUserReconciler(fake, userNS)
 		key := client.ObjectKeyFromObject(user)
 		reconcileUserToSteady(t, ctx, r, key)
@@ -496,12 +496,12 @@ func TestUserRenameTransferFlow(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	old := &keycloakv1alpha1.KeycloakUser{
+	old := &keycloakv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "old-user"},
-		Spec: keycloakv1alpha1.KeycloakUserSpec{
+		Spec: keycloakv1alpha1.UserSpec{
 			Email:       "transfer@example.com",
 			Username:    "transfer",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			IdentityProviderLink: &keycloakv1alpha1.IdentityProviderLink{
 				Alias:  "corp-oidc",
 				UserID: "sub-transfer",
@@ -513,7 +513,7 @@ func TestUserRenameTransferFlow(t *testing.T) {
 	}
 	oldKey := client.ObjectKeyFromObject(old)
 
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	r, _ := newUserReconciler(fake, ns)
 	reconcileUserToSteady(t, ctx, r, oldKey)
 	old = getUser(t, ctx, oldKey)
@@ -546,12 +546,12 @@ func TestUserRenameTransferFlow(t *testing.T) {
 		t.Fatal("orphaned user should keep its existing IdP link")
 	}
 
-	replacement := &keycloakv1alpha1.KeycloakUser{
+	replacement := &keycloakv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "new-user"},
-		Spec: keycloakv1alpha1.KeycloakUserSpec{
+		Spec: keycloakv1alpha1.UserSpec{
 			Email:       "transfer@example.com",
 			Username:    "transfer",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			Adopt:       true,
 			IdentityProviderLink: &keycloakv1alpha1.IdentityProviderLink{
 				Alias:  "corp-oidc",
@@ -609,17 +609,17 @@ func TestUserDelete(t *testing.T) {
 	readyInstance(t, ctx, ns, "kc")
 
 	t.Run("created user is deleted in Keycloak", func(t *testing.T) {
-		user := &keycloakv1alpha1.KeycloakUser{
+		user := &keycloakv1alpha1.User{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "del-created"},
-			Spec: keycloakv1alpha1.KeycloakUserSpec{
+			Spec: keycloakv1alpha1.UserSpec{
 				Email:       "del-created@example.com",
-				InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			},
 		}
 		if err := shared.k8sClient.Create(ctx, user); err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		fake := newFakeKeycloakClient()
+		fake := newFakeClient()
 		r, _ := newUserReconciler(fake, ns)
 		key := client.ObjectKeyFromObject(user)
 		reconcileUserToSteady(t, ctx, r, key)
@@ -639,11 +639,11 @@ func TestUserDelete(t *testing.T) {
 	})
 
 	t.Run("adopted user is released not deleted", func(t *testing.T) {
-		user := &keycloakv1alpha1.KeycloakUser{
+		user := &keycloakv1alpha1.User{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "del-adopted"},
-			Spec: keycloakv1alpha1.KeycloakUserSpec{
+			Spec: keycloakv1alpha1.UserSpec{
 				Email:                "del-adopted@example.com",
-				InstanceRef:          keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				InstanceRef:          keycloakv1alpha1.InstanceReference{Name: "kc"},
 				Adopt:                true,
 				IdentityProviderLink: &keycloakv1alpha1.IdentityProviderLink{Alias: "corp-oidc", UserID: "sub-abc"},
 			},
@@ -651,7 +651,7 @@ func TestUserDelete(t *testing.T) {
 		if err := shared.k8sClient.Create(ctx, user); err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		fake := newFakeKeycloakClient()
+		fake := newFakeClient()
 		userID := fake.seedUser("del-adopted@example.com")
 		r, _ := newUserReconciler(fake, ns)
 		key := client.ObjectKeyFromObject(user)
@@ -675,18 +675,18 @@ func TestUserDelete(t *testing.T) {
 	})
 
 	t.Run("orphan leaves created user untouched without Keycloak calls", func(t *testing.T) {
-		user := &keycloakv1alpha1.KeycloakUser{
+		user := &keycloakv1alpha1.User{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "del-orphan"},
-			Spec: keycloakv1alpha1.KeycloakUserSpec{
+			Spec: keycloakv1alpha1.UserSpec{
 				Email:          "del-orphan@example.com",
-				InstanceRef:    keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				InstanceRef:    keycloakv1alpha1.InstanceReference{Name: "kc"},
 				DeletionPolicy: keycloakv1alpha1.DeletionPolicyOrphan,
 			},
 		}
 		if err := shared.k8sClient.Create(ctx, user); err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		fake := newFakeKeycloakClient()
+		fake := newFakeClient()
 		r, _ := newUserReconciler(fake, ns)
 		key := client.ObjectKeyFromObject(user)
 		reconcileUserToSteady(t, ctx, r, key)
@@ -710,11 +710,11 @@ func TestUserDelete(t *testing.T) {
 	})
 
 	t.Run("adopted user with explicit delete is deleted by pinned UUID", func(t *testing.T) {
-		user := &keycloakv1alpha1.KeycloakUser{
+		user := &keycloakv1alpha1.User{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "del-adopted-explicit"},
-			Spec: keycloakv1alpha1.KeycloakUserSpec{
+			Spec: keycloakv1alpha1.UserSpec{
 				Email:                "del-adopted-explicit@example.com",
-				InstanceRef:          keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				InstanceRef:          keycloakv1alpha1.InstanceReference{Name: "kc"},
 				Adopt:                true,
 				IdentityProviderLink: &keycloakv1alpha1.IdentityProviderLink{Alias: "corp-oidc", UserID: "sub-explicit"},
 				DeletionPolicy:       keycloakv1alpha1.DeletionPolicyDelete,
@@ -723,7 +723,7 @@ func TestUserDelete(t *testing.T) {
 		if err := shared.k8sClient.Create(ctx, user); err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		fake := newFakeKeycloakClient()
+		fake := newFakeClient()
 		userID := fake.seedUser("del-adopted-explicit@example.com")
 		r, _ := newUserReconciler(fake, ns)
 		key := client.ObjectKeyFromObject(user)
@@ -752,11 +752,11 @@ func TestUserDelete(t *testing.T) {
 
 	t.Run("adopted user explicit delete releases out-of-band replacement", func(t *testing.T) {
 		const email = "del-adopted-replaced@example.com"
-		user := &keycloakv1alpha1.KeycloakUser{
+		user := &keycloakv1alpha1.User{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "del-adopted-replaced"},
-			Spec: keycloakv1alpha1.KeycloakUserSpec{
+			Spec: keycloakv1alpha1.UserSpec{
 				Email:          email,
-				InstanceRef:    keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				InstanceRef:    keycloakv1alpha1.InstanceReference{Name: "kc"},
 				Adopt:          true,
 				DeletionPolicy: keycloakv1alpha1.DeletionPolicyDelete,
 			},
@@ -764,7 +764,7 @@ func TestUserDelete(t *testing.T) {
 		if err := shared.k8sClient.Create(ctx, user); err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		fake := newFakeKeycloakClient()
+		fake := newFakeClient()
 		claimedID := fake.seedUser(email)
 		r, _ := newUserReconciler(fake, ns)
 		key := client.ObjectKeyFromObject(user)

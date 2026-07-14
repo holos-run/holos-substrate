@@ -16,7 +16,7 @@ import (
 // optional tokenUrl overrides the derived token endpoint for an out-of-cluster
 // target whose token path differs from the conventional derivation.
 //
-// The KeycloakInstance spec already carries the url and realm, so unlike quay's
+// The Instance spec already carries the url and realm, so unlike quay's
 // credential (which holds url + token) this Secret holds only the auth material;
 // the reconciler combines it with the instance's url/realm/caBundle when building
 // the client.
@@ -64,7 +64,7 @@ func isMissingCredential(err error) bool {
 // Secrets from: the POD_NAMESPACE env (set via the downward API in the
 // deployment) when present, otherwise DefaultControllerNamespace. The credential
 // Secret always lives in the controller's own namespace, never the resource's
-// namespace — the KeycloakInstance's credentialsSecretRef names only the Secret,
+// namespace — the Instance's credentialsSecretRef names only the Secret,
 // not a namespace (ADR-20).
 func controllerNamespace() string {
 	return ctrlshared.ControllerNamespace()

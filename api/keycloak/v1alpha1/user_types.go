@@ -37,11 +37,11 @@ type IdentityProviderLink struct {
 	UserName string `json:"userName,omitempty"`
 }
 
-// KeycloakUserSpec defines the desired state of a KeycloakUser: a user
+// UserSpec defines the desired state of a User: a user
 // pre-provisioned by email (only when necessary) and the IdP link that lets first
 // federated login auto-link the existing record (ADR-20). Group membership is
-// managed separately by KeycloakGroupMembership.
-type KeycloakUserSpec struct {
+// managed separately by GroupMembership.
+type UserSpec struct {
 	// Email is the user's email address (e.g. bob@example.com). It is required
 	// and is the key the first-login auto-link matches on, so it must be the
 	// email the IdP asserts. It is immutable: email is the user's durable
@@ -63,7 +63,7 @@ type KeycloakUserSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="username is immutable"
 	Username string `json:"username,omitempty"`
 
-	// InstanceRef references the KeycloakInstance this user is provisioned in. A
+	// InstanceRef references the Instance this user is provisioned in. A
 	// cross-namespace reference (Namespace set to a different namespace) is gated
 	// by a security.holos.run ReferenceGrant in the instance's namespace. It is
 	// immutable: retargeting a provisioned user to another instance would create a
@@ -71,7 +71,7 @@ type KeycloakUserSpec struct {
 	// can no longer reach it), so the target realm is fixed for the user's life.
 	//
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="instanceRef is immutable"
-	InstanceRef KeycloakInstanceReference `json:"instanceRef"`
+	InstanceRef InstanceReference `json:"instanceRef"`
 
 	// IdentityProviderLink optionally configures the federated-identity link so
 	// first federated login auto-links this pre-created record instead of creating
@@ -103,10 +103,10 @@ type KeycloakUserSpec struct {
 	DeletionPolicy DeletionPolicy `json:"deletionPolicy,omitempty"`
 }
 
-// KeycloakUserStatus defines the observed state of a KeycloakUser, following the
+// UserStatus defines the observed state of a User, following the
 // Gateway-API status convention plus the durable ownership markers the claim
 // model requires (mirroring ADR-19).
-type KeycloakUserStatus struct {
+type UserStatus struct {
 	// Conditions represent the latest available observations of the user's state.
 	//
 	// +optional
@@ -117,7 +117,7 @@ type KeycloakUserStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
 	// ObservedGeneration is the most recent generation observed for this
-	// KeycloakUser by the controller.
+	// User by the controller.
 	//
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -198,25 +198,25 @@ type KeycloakUserStatus struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +kubebuilder:printcolumn:name="Validated",type=date,priority=1,JSONPath=`.status.lastValidatedTime`
 
-// KeycloakUser is the Schema for the keycloakusers API. It pre-provisions a user
+// User is the Schema for the users API. It pre-provisions a user
 // by email and configures the IdP link for first-login auto-link (ADR-20).
-type KeycloakUser struct {
+type User struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   KeycloakUserSpec   `json:"spec,omitempty"`
-	Status KeycloakUserStatus `json:"status,omitempty"`
+	Spec   UserSpec   `json:"spec,omitempty"`
+	Status UserStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// KeycloakUserList contains a list of KeycloakUser.
-type KeycloakUserList struct {
+// UserList contains a list of User.
+type UserList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []KeycloakUser `json:"items"`
+	Items           []User `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&KeycloakUser{}, &KeycloakUserList{})
+	SchemeBuilder.Register(&User{}, &UserList{})
 }

@@ -7,7 +7,7 @@ import (
 
 // Realm is the subset of a Keycloak realm representation the controller reads
 // back. Keycloak returns far more; only the fields the reconciler keys on are
-// decoded. It is the result of the reachability probe the KeycloakInstance
+// decoded. It is the result of the reachability probe the Instance
 // reconciler runs.
 type Realm struct {
 	// ID is the realm's internal id (often equal to Realm for the well-known
@@ -20,7 +20,7 @@ type Realm struct {
 }
 
 // GetRealm fetches the realm's top-level representation via
-// GET /admin/realms/{realm}. It is the KeycloakInstance reconciler's reachability
+// GET /admin/realms/{realm}. It is the Instance reconciler's reachability
 // probe: a successful call proves both that the admin credential authenticated
 // (the request carries a fresh bearer token obtained via the client_credentials
 // grant) and that the configured realm exists and is reachable over the

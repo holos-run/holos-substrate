@@ -10,13 +10,13 @@ import (
 	"github.com/holos-run/holos-substrate/internal/keycloak"
 )
 
-// fakeKeycloakClient is a recording, in-memory stand-in for the Keycloak Admin
+// fakeClient is a recording, in-memory stand-in for the Keycloak Admin
 // API the reconcilers drive. It satisfies both InstanceClient and GroupClient so a
 // test injects it via the reconciler's client factory, exercising the full
 // reconcile loop without HTTP or a live Keycloak. It records every call so tests
 // can assert create-vs-adopt behavior, role conferral, custodian wiring, and
 // idempotent delete.
-type fakeKeycloakClient struct {
+type fakeClient struct {
 	mu sync.Mutex
 
 	// realmReachable controls GetRealm: when false it returns a 404 *APIError so a
@@ -127,10 +127,10 @@ type fakeKeycloakClient struct {
 	updateClientErr error
 }
 
-// newFakeKeycloakClient returns a reachable fake with the given pre-existing group
+// newFakeClient returns a reachable fake with the given pre-existing group
 // paths (each normalized and assigned a synthetic UUID).
-func newFakeKeycloakClient(existingGroups ...string) *fakeKeycloakClient {
-	f := &fakeKeycloakClient{
+func newFakeClient(existingGroups ...string) *fakeClient {
+	f := &fakeClient{
 		realmReachable:       true,
 		groups:               map[string]string{},
 		clients:              map[string]string{},
@@ -154,7 +154,7 @@ func newFakeKeycloakClient(existingGroups ...string) *fakeKeycloakClient {
 	return f
 }
 
-func (f *fakeKeycloakClient) record(call string) { f.calls = append(f.calls, call) }
+func (f *fakeClient) record(call string) { f.calls = append(f.calls, call) }
 
 // normPath normalizes a path the way internal/keycloak does, so fake keys match
 // the reconciler's paths regardless of leading/trailing slashes.
@@ -167,7 +167,7 @@ func normPath(path string) string {
 }
 
 // addGroup seeds a group at path with a fresh synthetic UUID and returns the id.
-func (f *fakeKeycloakClient) addGroup(path string) string {
+func (f *fakeClient) addGroup(path string) string {
 	f.nextGroupID++
 	id := "grp-" + strconv.Itoa(f.nextGroupID)
 	f.groups[normPath(path)] = id
@@ -179,7 +179,7 @@ func notFoundErr(path string) error {
 	return &keycloak.APIError{StatusCode: http.StatusNotFound, Method: http.MethodGet, Path: path, Message: "not found"}
 }
 
-func (f *fakeKeycloakClient) GetRealm(ctx context.Context) (*keycloak.Realm, error) {
+func (f *fakeClient) GetRealm(ctx context.Context) (*keycloak.Realm, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("GetRealm")
@@ -192,7 +192,7 @@ func (f *fakeKeycloakClient) GetRealm(ctx context.Context) (*keycloak.Realm, err
 	return &keycloak.Realm{Realm: "holos", Enabled: true}, nil
 }
 
-func (f *fakeKeycloakClient) GetGroupByPath(ctx context.Context, path string) (*keycloak.Group, error) {
+func (f *fakeClient) GetGroupByPath(ctx context.Context, path string) (*keycloak.Group, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("Get:" + normPath(path))
@@ -207,7 +207,7 @@ func (f *fakeKeycloakClient) GetGroupByPath(ctx context.Context, path string) (*
 	return &keycloak.Group{ID: id, Path: normPath(path)}, nil
 }
 
-func (f *fakeKeycloakClient) EnsureGroupByPathCreated(ctx context.Context, path string) (string, bool, error) {
+func (f *fakeClient) EnsureGroupByPathCreated(ctx context.Context, path string) (string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("Ensure:" + normPath(path))
@@ -221,7 +221,7 @@ func (f *fakeKeycloakClient) EnsureGroupByPathCreated(ctx context.Context, path 
 	return f.addGroup(path), true, nil
 }
 
-func (f *fakeKeycloakClient) DeleteGroupByPathIfExists(ctx context.Context, path string) error {
+func (f *fakeClient) DeleteGroupByPathIfExists(ctx context.Context, path string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("Delete:" + normPath(path))
@@ -232,7 +232,7 @@ func (f *fakeKeycloakClient) DeleteGroupByPathIfExists(ctx context.Context, path
 	return nil
 }
 
-func (f *fakeKeycloakClient) DeleteGroup(ctx context.Context, id string) error {
+func (f *fakeClient) DeleteGroup(ctx context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("DeleteGroup:" + id)
@@ -248,7 +248,7 @@ func (f *fakeKeycloakClient) DeleteGroup(ctx context.Context, id string) error {
 	return notFoundErr("/groups/" + id)
 }
 
-func (f *fakeKeycloakClient) FindClientByClientID(ctx context.Context, clientID string) (*keycloak.OIDCClient, error) {
+func (f *fakeClient) FindClientByClientID(ctx context.Context, clientID string) (*keycloak.OIDCClient, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("FindClient:" + clientID)
@@ -265,7 +265,7 @@ func (f *fakeKeycloakClient) FindClientByClientID(ctx context.Context, clientID 
 	return &keycloak.OIDCClient{ID: id, ClientID: clientID}, nil
 }
 
-func (f *fakeKeycloakClient) GetClientRole(ctx context.Context, clientUUID, roleName string) (*keycloak.ClientRole, error) {
+func (f *fakeClient) GetClientRole(ctx context.Context, clientUUID, roleName string) (*keycloak.ClientRole, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("GetRole:" + clientUUID + "/" + roleName)
@@ -276,7 +276,7 @@ func (f *fakeKeycloakClient) GetClientRole(ctx context.Context, clientUUID, role
 	return &keycloak.ClientRole{ID: id, Name: roleName, ContainerID: clientUUID}, nil
 }
 
-func (f *fakeKeycloakClient) AssignClientRoleToGroup(ctx context.Context, groupID, clientUUID string, role keycloak.ClientRole) error {
+func (f *fakeClient) AssignClientRoleToGroup(ctx context.Context, groupID, clientUUID string, role keycloak.ClientRole) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("AssignRole:" + groupID + "/" + clientUUID + "/" + role.Name)
@@ -287,7 +287,7 @@ func (f *fakeKeycloakClient) AssignClientRoleToGroup(ctx context.Context, groupI
 	return nil
 }
 
-func (f *fakeKeycloakClient) ListGroupClientRoles(ctx context.Context, groupID, clientUUID string) ([]keycloak.ClientRole, error) {
+func (f *fakeClient) ListGroupClientRoles(ctx context.Context, groupID, clientUUID string) ([]keycloak.ClientRole, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("ListGroupRoles:" + groupID + "/" + clientUUID)
@@ -301,7 +301,7 @@ func (f *fakeKeycloakClient) ListGroupClientRoles(ctx context.Context, groupID, 
 	return out, nil
 }
 
-func (f *fakeKeycloakClient) RemoveClientRoleFromGroup(ctx context.Context, groupID, clientUUID string, role keycloak.ClientRole) error {
+func (f *fakeClient) RemoveClientRoleFromGroup(ctx context.Context, groupID, clientUUID string, role keycloak.ClientRole) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("RemoveRole:" + groupID + "/" + clientUUID + "/" + role.Name)
@@ -309,7 +309,7 @@ func (f *fakeKeycloakClient) RemoveClientRoleFromGroup(ctx context.Context, grou
 	return nil
 }
 
-func (f *fakeKeycloakClient) CreateGroupResource(ctx context.Context, permClientUUID string, resource keycloak.AuthzResource) (string, error) {
+func (f *fakeClient) CreateGroupResource(ctx context.Context, permClientUUID string, resource keycloak.AuthzResource) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("FGAPResource:" + resource.Name)
@@ -317,7 +317,7 @@ func (f *fakeKeycloakClient) CreateGroupResource(ctx context.Context, permClient
 	return "res-" + resource.Name, nil
 }
 
-func (f *fakeKeycloakClient) CreateGroupPolicy(ctx context.Context, permClientUUID string, policy keycloak.GroupPolicy) (string, error) {
+func (f *fakeClient) CreateGroupPolicy(ctx context.Context, permClientUUID string, policy keycloak.GroupPolicy) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("FGAPPolicy:" + policy.Name)
@@ -325,7 +325,7 @@ func (f *fakeKeycloakClient) CreateGroupPolicy(ctx context.Context, permClientUU
 	return "pol-" + policy.Name, nil
 }
 
-func (f *fakeKeycloakClient) CreateScopePermission(ctx context.Context, permClientUUID string, permission keycloak.ScopePermission) (string, error) {
+func (f *fakeClient) CreateScopePermission(ctx context.Context, permClientUUID string, permission keycloak.ScopePermission) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("FGAPPermission:" + permission.Name)
@@ -333,7 +333,7 @@ func (f *fakeKeycloakClient) CreateScopePermission(ctx context.Context, permClie
 	return "perm-" + permission.Name, nil
 }
 
-func (f *fakeKeycloakClient) FindPolicyByName(ctx context.Context, permClientUUID, name string) (string, error) {
+func (f *fakeClient) FindPolicyByName(ctx context.Context, permClientUUID, name string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("FindPolicy:" + name)
@@ -345,7 +345,7 @@ func (f *fakeKeycloakClient) FindPolicyByName(ctx context.Context, permClientUUI
 	return "", nil
 }
 
-func (f *fakeKeycloakClient) FindPermissionByName(ctx context.Context, permClientUUID, name string) (string, error) {
+func (f *fakeClient) FindPermissionByName(ctx context.Context, permClientUUID, name string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("FindPermission:" + name)
@@ -357,7 +357,7 @@ func (f *fakeKeycloakClient) FindPermissionByName(ctx context.Context, permClien
 	return "", nil
 }
 
-func (f *fakeKeycloakClient) DeleteScopePermissionIfExists(ctx context.Context, permClientUUID, permissionID string) error {
+func (f *fakeClient) DeleteScopePermissionIfExists(ctx context.Context, permClientUUID, permissionID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("FGAPDelete:" + permissionID)
@@ -367,7 +367,7 @@ func (f *fakeKeycloakClient) DeleteScopePermissionIfExists(ctx context.Context, 
 
 // seedClient registers an OIDC client (clientId → UUID) so FindClientByClientID
 // resolves it.
-func (f *fakeKeycloakClient) seedClient(clientID, uuid string) {
+func (f *fakeClient) seedClient(clientID, uuid string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.clients[clientID] = uuid
@@ -376,7 +376,7 @@ func (f *fakeKeycloakClient) seedClient(clientID, uuid string) {
 
 // seedClientDescription sets a client's current description by UUID, modeling a
 // console-set (drifted) description on a pre-existing client.
-func (f *fakeKeycloakClient) seedClientDescription(clientUUID, description string) {
+func (f *fakeClient) seedClientDescription(clientUUID, description string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.clientDescriptions[clientUUID] = description
@@ -395,14 +395,14 @@ func (f *fakeKeycloakClient) seedClientDescription(clientUUID, description strin
 
 // seedClientRole registers a client role (clientUUID/role → UUID) so GetClientRole
 // resolves it.
-func (f *fakeKeycloakClient) seedClientRole(clientUUID, role, uuid string) {
+func (f *fakeClient) seedClientRole(clientUUID, role, uuid string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.clientRoles[clientUUID+"/"+role] = uuid
 }
 
 // callsContain reports whether the recorded calls include the given call string.
-func (f *fakeKeycloakClient) callsContain(call string) bool {
+func (f *fakeClient) callsContain(call string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, c := range f.calls {
@@ -413,20 +413,20 @@ func (f *fakeKeycloakClient) callsContain(call string) bool {
 	return false
 }
 
-func (f *fakeKeycloakClient) resetCalls() {
+func (f *fakeClient) resetCalls() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = nil
 }
 
-func (f *fakeKeycloakClient) callCount() int {
+func (f *fakeClient) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.calls)
 }
 
 // groupExists reports whether the named (normalized) group path currently exists.
-func (f *fakeKeycloakClient) groupExists(path string) bool {
+func (f *fakeClient) groupExists(path string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	_, ok := f.groups[normPath(path)]
@@ -434,15 +434,15 @@ func (f *fakeKeycloakClient) groupExists(path string) bool {
 }
 
 // roleAssigned reports whether the role was assigned to groupID on clientUUID.
-func (f *fakeKeycloakClient) roleAssigned(groupID, clientUUID, role string) bool {
+func (f *fakeClient) roleAssigned(groupID, clientUUID, role string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.roleAssignments[groupID+"/"+clientUUID+"/"+role]
 }
 
-// --- KeycloakUser reconciler seam ---
+// --- User reconciler seam ---
 
-func (f *fakeKeycloakClient) FindUserByEmail(ctx context.Context, email string) (*keycloak.User, error) {
+func (f *fakeClient) FindUserByEmail(ctx context.Context, email string) (*keycloak.User, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("FindUser:" + email)
@@ -454,7 +454,7 @@ func (f *fakeKeycloakClient) FindUserByEmail(ctx context.Context, email string) 
 	return &cp, nil
 }
 
-func (f *fakeKeycloakClient) CreateUser(ctx context.Context, user keycloak.User) (string, error) {
+func (f *fakeClient) CreateUser(ctx context.Context, user keycloak.User) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("CreateUser:" + user.Email)
@@ -470,7 +470,7 @@ func (f *fakeKeycloakClient) CreateUser(ctx context.Context, user keycloak.User)
 	return id, nil
 }
 
-func (f *fakeKeycloakClient) DeleteUserIfExists(ctx context.Context, userID string) error {
+func (f *fakeClient) DeleteUserIfExists(ctx context.Context, userID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("DeleteUser:" + userID)
@@ -483,7 +483,7 @@ func (f *fakeKeycloakClient) DeleteUserIfExists(ctx context.Context, userID stri
 	return nil
 }
 
-func (f *fakeKeycloakClient) AddUserToGroup(ctx context.Context, userID, groupID string) error {
+func (f *fakeClient) AddUserToGroup(ctx context.Context, userID, groupID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("AddMember:" + userID + "/" + groupID)
@@ -491,7 +491,7 @@ func (f *fakeKeycloakClient) AddUserToGroup(ctx context.Context, userID, groupID
 	return nil
 }
 
-func (f *fakeKeycloakClient) ListUserGroups(ctx context.Context, userID string) ([]keycloak.Group, error) {
+func (f *fakeClient) ListUserGroups(ctx context.Context, userID string) ([]keycloak.Group, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("ListUserGroups:" + userID)
@@ -511,7 +511,7 @@ func (f *fakeKeycloakClient) ListUserGroups(ctx context.Context, userID string) 
 	return out, nil
 }
 
-func (f *fakeKeycloakClient) RemoveUserFromGroupIfMember(ctx context.Context, userID, groupID string) error {
+func (f *fakeClient) RemoveUserFromGroupIfMember(ctx context.Context, userID, groupID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("RemoveMember:" + userID + "/" + groupID)
@@ -519,7 +519,7 @@ func (f *fakeKeycloakClient) RemoveUserFromGroupIfMember(ctx context.Context, us
 	return nil
 }
 
-func (f *fakeKeycloakClient) CreateFederatedIdentityIfNotExists(ctx context.Context, userID, provider string, link keycloak.FederatedIdentity) error {
+func (f *fakeClient) CreateFederatedIdentityIfNotExists(ctx context.Context, userID, provider string, link keycloak.FederatedIdentity) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("FederatedLink:" + userID + "/" + provider)
@@ -527,7 +527,7 @@ func (f *fakeKeycloakClient) CreateFederatedIdentityIfNotExists(ctx context.Cont
 	return nil
 }
 
-func (f *fakeKeycloakClient) DeleteFederatedIdentityIfExists(ctx context.Context, userID, provider string) error {
+func (f *fakeClient) DeleteFederatedIdentityIfExists(ctx context.Context, userID, provider string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("FederatedUnlink:" + userID + "/" + provider)
@@ -535,7 +535,7 @@ func (f *fakeKeycloakClient) DeleteFederatedIdentityIfExists(ctx context.Context
 	return nil
 }
 
-func (f *fakeKeycloakClient) ListFederatedIdentities(ctx context.Context, userID string) ([]keycloak.FederatedIdentity, error) {
+func (f *fakeClient) ListFederatedIdentities(ctx context.Context, userID string) ([]keycloak.FederatedIdentity, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("ListFederated:" + userID)
@@ -551,15 +551,15 @@ func (f *fakeKeycloakClient) ListFederatedIdentities(ctx context.Context, userID
 
 // setFederatedSubject seeds/overrides the upstream subject of a link, simulating
 // an out-of-band recreation to a different subject.
-func (f *fakeKeycloakClient) setFederatedSubject(userID, provider, subject string) {
+func (f *fakeClient) setFederatedSubject(userID, provider, subject string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.federatedLinks[userID+"/"+provider] = subject
 }
 
-// --- KeycloakClient reconciler seam ---
+// --- Client reconciler seam ---
 
-func (f *fakeKeycloakClient) CreateClient(ctx context.Context, client keycloak.OIDCClient) (string, error) {
+func (f *fakeClient) CreateClient(ctx context.Context, client keycloak.OIDCClient) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("CreateClient:" + client.ClientID)
@@ -586,7 +586,7 @@ func (f *fakeKeycloakClient) CreateClient(ctx context.Context, client keycloak.O
 	return id, nil
 }
 
-func (f *fakeKeycloakClient) UpdateClientFields(ctx context.Context, clientUUID string, fields keycloak.ClientFields) error {
+func (f *fakeClient) UpdateClientFields(ctx context.Context, clientUUID string, fields keycloak.ClientFields) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("UpdateClient:" + clientUUID)
@@ -634,7 +634,7 @@ func (f *fakeKeycloakClient) UpdateClientFields(ctx context.Context, clientUUID 
 	return f.updateClientErr
 }
 
-func (f *fakeKeycloakClient) DeleteClient(ctx context.Context, clientUUID string) error {
+func (f *fakeClient) DeleteClient(ctx context.Context, clientUUID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("DeleteClient:" + clientUUID)
@@ -648,7 +648,7 @@ func (f *fakeKeycloakClient) DeleteClient(ctx context.Context, clientUUID string
 	return notFoundErr("/clients/" + clientUUID)
 }
 
-func (f *fakeKeycloakClient) CreateClientRoleIfNotExists(ctx context.Context, clientUUID string, role keycloak.ClientRole) error {
+func (f *fakeClient) CreateClientRoleIfNotExists(ctx context.Context, clientUUID string, role keycloak.ClientRole) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("CreateClientRole:" + clientUUID + "/" + role.Name)
@@ -668,7 +668,7 @@ func (f *fakeKeycloakClient) CreateClientRoleIfNotExists(ctx context.Context, cl
 	return nil
 }
 
-func (f *fakeKeycloakClient) EnsureClientRoleMapper(ctx context.Context, clientUUID, name, clientID, claimName string) error {
+func (f *fakeClient) EnsureClientRoleMapper(ctx context.Context, clientUUID, name, clientID, claimName string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("EnsureMapper:" + clientUUID + "/" + name + "/" + clientID + "/" + claimName)
@@ -676,7 +676,7 @@ func (f *fakeKeycloakClient) EnsureClientRoleMapper(ctx context.Context, clientU
 	return nil
 }
 
-func (f *fakeKeycloakClient) GetClientSecret(ctx context.Context, clientUUID string) (*keycloak.ClientSecret, error) {
+func (f *fakeClient) GetClientSecret(ctx context.Context, clientUUID string) (*keycloak.ClientSecret, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("GetClientSecret:" + clientUUID)
@@ -691,7 +691,7 @@ func (f *fakeKeycloakClient) GetClientSecret(ctx context.Context, clientUUID str
 
 // seedUser registers a user by email with a synthetic UUID so FindUserByEmail
 // resolves it, modeling a pre-existing Keycloak user.
-func (f *fakeKeycloakClient) seedUser(email string) string {
+func (f *fakeClient) seedUser(email string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nextUserID++
@@ -701,7 +701,7 @@ func (f *fakeKeycloakClient) seedUser(email string) string {
 }
 
 // userExists reports whether a user with the email currently exists.
-func (f *fakeKeycloakClient) userExists(email string) bool {
+func (f *fakeClient) userExists(email string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	_, ok := f.users[email]
@@ -709,14 +709,14 @@ func (f *fakeKeycloakClient) userExists(email string) bool {
 }
 
 // memberOf reports whether userID is a member of groupID.
-func (f *fakeKeycloakClient) memberOf(userID, groupID string) bool {
+func (f *fakeClient) memberOf(userID, groupID string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.groupMembers[userID+"/"+groupID]
 }
 
 // federated reports whether a federated-identity link exists for userID/provider.
-func (f *fakeKeycloakClient) federated(userID, provider string) bool {
+func (f *fakeClient) federated(userID, provider string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	_, ok := f.federatedLinks[userID+"/"+provider]
@@ -725,7 +725,7 @@ func (f *fakeKeycloakClient) federated(userID, provider string) bool {
 
 // updatePKCECleared reports whether the last UpdateClientFields for clientUUID
 // requested removal of the PKCE code-challenge attribute.
-func (f *fakeKeycloakClient) updatePKCECleared(clientUUID string) bool {
+func (f *fakeClient) updatePKCECleared(clientUUID string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, k := range f.lastUpdateFields[clientUUID].RemoveAttributes {
@@ -738,14 +738,14 @@ func (f *fakeKeycloakClient) updatePKCECleared(clientUUID string) bool {
 
 // updatePKCESet reports the PKCE attribute value the last UpdateClientFields for
 // clientUUID set, or "" when none.
-func (f *fakeKeycloakClient) updatePKCESet(clientUUID string) string {
+func (f *fakeClient) updatePKCESet(clientUUID string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.lastUpdateFields[clientUUID].Attributes[keycloak.PKCECodeChallengeMethodAttr]
 }
 
 // clientExists reports whether an OIDC client with the clientId currently exists.
-func (f *fakeKeycloakClient) clientExists(clientID string) bool {
+func (f *fakeClient) clientExists(clientID string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	_, ok := f.clients[clientID]
@@ -753,21 +753,21 @@ func (f *fakeKeycloakClient) clientExists(clientID string) bool {
 }
 
 // clientRoleCreated reports whether role was created on the client UUID.
-func (f *fakeKeycloakClient) clientRoleCreated(clientUUID, role string) bool {
+func (f *fakeClient) clientRoleCreated(clientUUID, role string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.createdClientRoles[clientUUID][role]
 }
 
 // mapperEnsured reports whether the client-role mapper was ensured on clientUUID.
-func (f *fakeKeycloakClient) mapperEnsured(clientUUID string) bool {
+func (f *fakeClient) mapperEnsured(clientUUID string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.roleMappers[clientUUID]
 }
 
 // clientDescription returns the current description recorded for the client UUID.
-func (f *fakeKeycloakClient) clientDescription(clientUUID string) string {
+func (f *fakeClient) clientDescription(clientUUID string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.clientDescriptions[clientUUID]
@@ -775,7 +775,7 @@ func (f *fakeKeycloakClient) clientDescription(clientUUID string) string {
 
 // createdClientPKCE returns the PKCE code-challenge attribute the client was
 // created with, or "" when none was set.
-func (f *fakeKeycloakClient) createdClientPKCE(clientID string) string {
+func (f *fakeClient) createdClientPKCE(clientID string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.createdClientAttrs[clientID][keycloak.PKCECodeChallengeMethodAttr]
@@ -783,9 +783,9 @@ func (f *fakeKeycloakClient) createdClientPKCE(clientID string) string {
 
 // compile-time assertions that the fake satisfies all four reconciler seams.
 var (
-	_ InstanceClient   = (*fakeKeycloakClient)(nil)
-	_ GroupClient      = (*fakeKeycloakClient)(nil)
-	_ UserClient       = (*fakeKeycloakClient)(nil)
-	_ ClientClient     = (*fakeKeycloakClient)(nil)
-	_ MembershipClient = (*fakeKeycloakClient)(nil)
+	_ InstanceClient   = (*fakeClient)(nil)
+	_ GroupClient      = (*fakeClient)(nil)
+	_ UserClient       = (*fakeClient)(nil)
+	_ ClientClient     = (*fakeClient)(nil)
+	_ MembershipClient = (*fakeClient)(nil)
 )

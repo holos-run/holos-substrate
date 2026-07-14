@@ -8,23 +8,23 @@ import (
 // role named by Role scoped to a Keycloak client. A member of a group carrying
 // this reference holds that client role, which reaches the named client's token
 // via that client's per-client client-role mapper (ADR-20). It is shared by
-// KeycloakGroup (the roles a group confers) and KeycloakClient (the roles a
+// Group (the roles a group confers) and Client (the roles a
 // client defines).
 //
 // The target client is named by EXACTLY ONE of ClientRef (a same-namespace
-// KeycloakClient CR) or ClientID (a Keycloak clientId directly). The reconciler is
+// Client CR) or ClientID (a Keycloak clientId directly). The reconciler is
 // transparent (HOL-1421): a reference may name ANY client and confer ANY role name
 // — the controller reserves and refuses nothing on org-policy grounds. ClientID is
 // the path for conferring a role on a client that has no same-namespace
-// KeycloakClient CR (e.g. a platform client such as the in-cluster Quay client
+// Client CR (e.g. a platform client such as the in-cluster Quay client
 // https://quay.holos.internal), so the role surfaces in that client's token via its
 // per-client client-role mapper (ADR-20).
 //
 // +kubebuilder:validation:XValidation:rule="has(self.clientRef) != has(self.clientId)",message="exactly one of clientRef or clientId must be set"
 type ClientRoleReference struct {
-	// ClientRef is the metadata.name of the KeycloakClient resource the role is
+	// ClientRef is the metadata.name of the Client resource the role is
 	// scoped to — a Kubernetes object name, not the client's URL-shaped clientId.
-	// The reconciler resolves the named KeycloakClient CR in the referring
+	// The reconciler resolves the named Client CR in the referring
 	// resource's namespace and derives the Keycloak clientId from its
 	// spec.clientId, mirroring how a Repository resolves its OrganizationRef to an
 	// Organization's spec.name (api/quay/v1alpha1). This keeps the reference a
@@ -36,9 +36,9 @@ type ClientRoleReference struct {
 	ClientRef string `json:"clientRef,omitempty"`
 
 	// ClientID names the target Keycloak clientId directly (e.g.
-	// https://quay.holos.internal), bypassing same-namespace KeycloakClient CR
+	// https://quay.holos.internal), bypassing same-namespace Client CR
 	// resolution. It is the mechanism for conferring a role on a client that has no
-	// same-namespace KeycloakClient CR (such as a platform client). It may name any
+	// same-namespace Client CR (such as a platform client). It may name any
 	// client and confer any role name — the controller reserves nothing (HOL-1421).
 	// Mutually exclusive with ClientRef.
 	//
@@ -68,13 +68,13 @@ type CustodianReference struct {
 	Path string `json:"path"`
 }
 
-// KeycloakGroupSpec defines the desired state of a KeycloakGroup: a (possibly
+// GroupSpec defines the desired state of a Group: a (possibly
 // nested) Keycloak group, the client roles its members hold, and the custodian
 // group(s) that may manage its membership (ADR-20). Keycloak realm groups are a
 // single global namespace while this CR is Kubernetes-namespaced, so ownership
 // is tracked via a durable claim marker on status (mirroring ADR-19's claim
 // model).
-type KeycloakGroupSpec struct {
+type GroupSpec struct {
 	// Path is the group's full Keycloak group path (e.g.
 	// projects/my-project/roles/owner). It is the group's durable identity and is
 	// immutable: renaming it would target a different Keycloak group, breaking the
@@ -85,14 +85,14 @@ type KeycloakGroupSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="path is immutable"
 	Path string `json:"path"`
 
-	// InstanceRef references the KeycloakInstance this group is provisioned in. A
+	// InstanceRef references the Instance this group is provisioned in. A
 	// cross-namespace reference (Namespace set to a different namespace) is gated
 	// by a security.holos.run ReferenceGrant in the instance's namespace.
-	InstanceRef KeycloakInstanceReference `json:"instanceRef"`
+	InstanceRef InstanceReference `json:"instanceRef"`
 
 	// ClientRoles optionally lists the client roles every member of this group
 	// holds. Each entry names its target client by EXACTLY ONE of clientRef (a
-	// same-namespace KeycloakClient CR) or clientId (a Keycloak clientId directly —
+	// same-namespace Client CR) or clientId (a Keycloak clientId directly —
 	// the ADR-20 "Quay use case", for the platform-reserved Quay client where no
 	// tenant CR exists), plus the role name. A member of the group thereby holds the
 	// named client roles, which reach the target client's token via that client's
@@ -137,10 +137,10 @@ type KeycloakGroupSpec struct {
 	DeletionPolicy DeletionPolicy `json:"deletionPolicy,omitempty"`
 }
 
-// KeycloakGroupStatus defines the observed state of a KeycloakGroup, following
+// GroupStatus defines the observed state of a Group, following
 // the Gateway-API status convention plus the durable ownership marker the claim
 // model requires (mirroring ADR-19).
-type KeycloakGroupStatus struct {
+type GroupStatus struct {
 	// Conditions represent the latest available observations of the group's
 	// state.
 	//
@@ -152,7 +152,7 @@ type KeycloakGroupStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
 	// ObservedGeneration is the most recent generation observed for this
-	// KeycloakGroup by the controller.
+	// Group by the controller.
 	//
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -248,26 +248,26 @@ type KeycloakGroupStatus struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +kubebuilder:printcolumn:name="Validated",type=date,priority=1,JSONPath=`.status.lastValidatedTime`
 
-// KeycloakGroup is the Schema for the keycloakgroups API. It manages a (possibly
+// Group is the Schema for the groups API. It manages a (possibly
 // nested) Keycloak group, the client roles its members hold, and the custodian
 // group(s) that may manage its membership (ADR-20).
-type KeycloakGroup struct {
+type Group struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   KeycloakGroupSpec   `json:"spec,omitempty"`
-	Status KeycloakGroupStatus `json:"status,omitempty"`
+	Spec   GroupSpec   `json:"spec,omitempty"`
+	Status GroupStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// KeycloakGroupList contains a list of KeycloakGroup.
-type KeycloakGroupList struct {
+// GroupList contains a list of Group.
+type GroupList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []KeycloakGroup `json:"items"`
+	Items           []Group `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&KeycloakGroup{}, &KeycloakGroupList{})
+	SchemeBuilder.Register(&Group{}, &GroupList{})
 }

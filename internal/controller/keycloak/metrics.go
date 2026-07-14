@@ -59,7 +59,7 @@ const (
 	opFindAuthz             = "find_authz"
 	opDeleteScopePermission = "delete_scope_permission"
 
-	// KeycloakUser reconciler operations.
+	// User reconciler operations.
 	opFindUserByEmail     = "find_user_by_email"
 	opCreateUser          = "create_user"
 	opDeleteUser          = "delete_user"
@@ -70,7 +70,7 @@ const (
 	opDeleteFederatedID   = "delete_federated_identity"
 	opListFederatedIDs    = "list_federated_identities"
 
-	// KeycloakClient reconciler operations.
+	// Client reconciler operations.
 	opCreateClient           = "create_client"
 	opUpdateClient           = "update_client"
 	opDeleteClient           = "delete_client"

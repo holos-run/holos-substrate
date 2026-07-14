@@ -2,8 +2,8 @@ package v1alpha1
 
 // CABundle convention (shared across all keycloak.holos.run Kinds).
 //
-// Kinds in this API group that reach a Keycloak target (KeycloakInstance, and
-// KeycloakClient for its own client TLS) carry a CABundle []byte spec field with
+// Kinds in this API group that reach a Keycloak target (Instance, and
+// Client for its own client TLS) carry a CABundle []byte spec field with
 // JSON tag `caBundle,omitempty`. Its semantics and serialization are
 // standardized here, once, and each spec's field godoc refers back to this block
 // rather than re-describing the format — so the field is generally re-used
@@ -28,7 +28,7 @@ package v1alpha1
 
 // DefaultCredentialsSecretName is the suggested and default name of the Secret
 // holding the Keycloak admin credential the controller authenticates to the
-// Keycloak admin API with. When a KeycloakInstance's credentialsSecretRef is
+// Keycloak admin API with. When an Instance's credentialsSecretRef is
 // omitted, the controller resolves a Secret of this name in its own
 // holos-controller namespace.
 const DefaultCredentialsSecretName = "holos-controller-keycloak-creds"
@@ -64,8 +64,8 @@ type SecretReference struct {
 	Key string `json:"key,omitempty"`
 }
 
-// KeycloakInstanceReference references the KeycloakInstance a keycloak.holos.run
-// resource targets. Every Kind in this group references a KeycloakInstance: it
+// InstanceReference references the Instance a keycloak.holos.run
+// resource targets. Every Kind in this group references an Instance: it
 // is the single, centrally-managed holder of how to reach one Keycloak target
 // and realm (ADR-20). The reconciler resolves the referenced instance and uses
 // its url, realm, credential, and caBundle to perform the resource's Keycloak
@@ -73,19 +73,19 @@ type SecretReference struct {
 //
 // Cross-namespace reference gating: when Namespace is set and differs from the
 // referring resource's namespace, the reference is authorized by a
-// security.holos.run ReferenceGrant in the KeycloakInstance's namespace (ADR-22,
+// security.holos.run ReferenceGrant in the Instance's namespace (ADR-22,
 // the Gateway-API ReferenceGrant convention). An unset Namespace means the
-// KeycloakInstance is resolved in the referring resource's own namespace and no
+// Instance is resolved in the referring resource's own namespace and no
 // grant is required. The grant itself is defined by the security.holos.run API
 // group and read at reconcile time by the authorization helper in
 // internal/referencegrant — this API group neither imports nor redefines it.
-type KeycloakInstanceReference struct {
-	// Name of the KeycloakInstance resource to target.
+type InstanceReference struct {
+	// Name of the Instance resource to target.
 	//
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 
-	// Namespace of the KeycloakInstance. When omitted the instance is resolved
+	// Namespace of the Instance. When omitted the instance is resolved
 	// in the referring resource's own namespace. When set to a different
 	// namespace, the cross-namespace reference must be authorized by a
 	// security.holos.run ReferenceGrant in the target namespace.
@@ -131,11 +131,11 @@ const (
 	// ReasonReferenceNotGranted indicates a cross-namespace keycloak.holos.run
 	// reference is not authorized by a security.holos.run ReferenceGrant.
 	ReasonReferenceNotGranted = "ReferenceNotGranted"
-	// ReasonInstanceMismatch indicates a KeycloakGroupMembership's instanceRef
-	// does not match the referenced KeycloakGroup's instanceRef after namespace
+	// ReasonInstanceMismatch indicates a GroupMembership's instanceRef
+	// does not match the referenced Group's instanceRef after namespace
 	// defaulting, so the reconciler refuses to mutate Keycloak.
 	ReasonInstanceMismatch = "InstanceMismatch"
-	// ReasonMemberNotFound indicates a KeycloakGroupMembership member email did
+	// ReasonMemberNotFound indicates a GroupMembership member email did
 	// not resolve to an existing Keycloak user.
 	ReasonMemberNotFound = "MemberNotFound"
 	// ReasonKeycloakError indicates a Keycloak admin-API call failed.

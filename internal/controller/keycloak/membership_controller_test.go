@@ -14,20 +14,20 @@ import (
 	securityv1alpha1 "github.com/holos-run/holos-substrate/api/security/v1alpha1"
 )
 
-func getMembership(t *testing.T, ctx context.Context, key client.ObjectKey) *keycloakv1alpha1.KeycloakGroupMembership {
+func getMembership(t *testing.T, ctx context.Context, key client.ObjectKey) *keycloakv1alpha1.GroupMembership {
 	t.Helper()
-	got := &keycloakv1alpha1.KeycloakGroupMembership{}
+	got := &keycloakv1alpha1.GroupMembership{}
 	if err := shared.k8sClient.Get(ctx, key, got); err != nil {
 		t.Fatalf("get membership: %v", err)
 	}
 	return got
 }
 
-func readyGroup(t *testing.T, ctx context.Context, ns, name, path string, instanceRef keycloakv1alpha1.KeycloakInstanceReference) *keycloakv1alpha1.KeycloakGroup {
+func readyGroup(t *testing.T, ctx context.Context, ns, name, path string, instanceRef keycloakv1alpha1.InstanceReference) *keycloakv1alpha1.Group {
 	t.Helper()
-	group := &keycloakv1alpha1.KeycloakGroup{
+	group := &keycloakv1alpha1.Group{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
-		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+		Spec: keycloakv1alpha1.GroupSpec{
 			Path:        path,
 			InstanceRef: instanceRef,
 		},
@@ -64,21 +64,21 @@ func TestMembershipReconcileSameNamespaceJoin(t *testing.T) {
 	makeNamespace(t, ctx, ns)
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
-	readyGroup(t, ctx, ns, "owner", "projects/p/roles/owner", keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"})
+	readyGroup(t, ctx, ns, "owner", "projects/p/roles/owner", keycloakv1alpha1.InstanceReference{Name: "kc"})
 
-	membership := &keycloakv1alpha1.KeycloakGroupMembership{
+	membership := &keycloakv1alpha1.GroupMembership{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "owner-members"},
-		Spec: keycloakv1alpha1.KeycloakGroupMembershipSpec{
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
-			GroupRef:    keycloakv1alpha1.KeycloakGroupReference{Name: "owner"},
-			Members:     []keycloakv1alpha1.KeycloakGroupMembershipMember{{Email: "bob@example.com"}},
+		Spec: keycloakv1alpha1.GroupMembershipSpec{
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
+			GroupRef:    keycloakv1alpha1.GroupReference{Name: "owner"},
+			Members:     []keycloakv1alpha1.GroupMembershipMember{{Email: "bob@example.com"}},
 		},
 	}
 	if err := shared.k8sClient.Create(ctx, membership); err != nil {
 		t.Fatalf("create membership: %v", err)
 	}
 
-	fake := newFakeKeycloakClient("projects/p/roles/owner")
+	fake := newFakeClient("projects/p/roles/owner")
 	groupID := fake.groups[normPath("projects/p/roles/owner")]
 	userID := fake.seedUser("bob@example.com")
 	r, recorder := newMembershipReconciler(fake, ns)
@@ -124,15 +124,15 @@ func TestMembershipGroupReferenceGrant(t *testing.T) {
 	makeNamespace(t, ctx, groupNS)
 	createIgnoreExists(t, ctx, newCredentialSecret(membershipNS, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, membershipNS, "kc")
-	readyGroup(t, ctx, groupNS, "owner", "projects/xns/roles/owner", keycloakv1alpha1.KeycloakInstanceReference{Name: "kc", Namespace: membershipNS})
+	readyGroup(t, ctx, groupNS, "owner", "projects/xns/roles/owner", keycloakv1alpha1.InstanceReference{Name: "kc", Namespace: membershipNS})
 
-	newMembership := func(name string) *keycloakv1alpha1.KeycloakGroupMembership {
-		m := &keycloakv1alpha1.KeycloakGroupMembership{
+	newMembership := func(name string) *keycloakv1alpha1.GroupMembership {
+		m := &keycloakv1alpha1.GroupMembership{
 			ObjectMeta: metav1.ObjectMeta{Namespace: membershipNS, Name: name},
-			Spec: keycloakv1alpha1.KeycloakGroupMembershipSpec{
-				InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
-				GroupRef:    keycloakv1alpha1.KeycloakGroupReference{Name: "owner", Namespace: groupNS},
-				Members:     []keycloakv1alpha1.KeycloakGroupMembershipMember{{Email: name + "@example.com"}},
+			Spec: keycloakv1alpha1.GroupMembershipSpec{
+				InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
+				GroupRef:    keycloakv1alpha1.GroupReference{Name: "owner", Namespace: groupNS},
+				Members:     []keycloakv1alpha1.GroupMembershipMember{{Email: name + "@example.com"}},
 			},
 		}
 		if err := shared.k8sClient.Create(ctx, m); err != nil {
@@ -143,7 +143,7 @@ func TestMembershipGroupReferenceGrant(t *testing.T) {
 
 	t.Run("denied without grant", func(t *testing.T) {
 		m := newMembership("denied")
-		fake := newFakeKeycloakClient("projects/xns/roles/owner")
+		fake := newFakeClient("projects/xns/roles/owner")
 		fake.seedUser("denied@example.com")
 		r, _ := newMembershipReconciler(fake, membershipNS)
 		key := client.ObjectKeyFromObject(m)
@@ -167,19 +167,19 @@ func TestMembershipGroupReferenceGrant(t *testing.T) {
 			Spec: securityv1alpha1.ReferenceGrantSpec{
 				From: []securityv1alpha1.ReferenceGrantFrom{{
 					Group:     keycloakv1alpha1.GroupVersion.Group,
-					Kind:      "KeycloakGroupMembership",
+					Kind:      "GroupMembership",
 					Namespace: membershipNS,
 				}},
 				To: []securityv1alpha1.ReferenceGrantTo{{
 					Group: keycloakv1alpha1.GroupVersion.Group,
-					Kind:  "KeycloakGroup",
+					Kind:  "Group",
 				}},
 			},
 		}
 		createIgnoreExists(t, ctx, grant)
 
 		m := newMembership("allowed")
-		fake := newFakeKeycloakClient("projects/xns/roles/owner")
+		fake := newFakeClient("projects/xns/roles/owner")
 		userID := fake.seedUser("allowed@example.com")
 		groupID := fake.groups[normPath("projects/xns/roles/owner")]
 		r, _ := newMembershipReconciler(fake, membershipNS)
@@ -199,14 +199,14 @@ func TestMembershipPruneDeleteAndUUIDPin(t *testing.T) {
 	makeNamespace(t, ctx, ns)
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
-	readyGroup(t, ctx, ns, "owner", "projects/p2/roles/owner", keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"})
+	readyGroup(t, ctx, ns, "owner", "projects/p2/roles/owner", keycloakv1alpha1.InstanceReference{Name: "kc"})
 
-	membership := &keycloakv1alpha1.KeycloakGroupMembership{
+	membership := &keycloakv1alpha1.GroupMembership{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "owner-members"},
-		Spec: keycloakv1alpha1.KeycloakGroupMembershipSpec{
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
-			GroupRef:    keycloakv1alpha1.KeycloakGroupReference{Name: "owner"},
-			Members: []keycloakv1alpha1.KeycloakGroupMembershipMember{
+		Spec: keycloakv1alpha1.GroupMembershipSpec{
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
+			GroupRef:    keycloakv1alpha1.GroupReference{Name: "owner"},
+			Members: []keycloakv1alpha1.GroupMembershipMember{
 				{Email: "alice@example.com"},
 				{Email: "bob@example.com"},
 			},
@@ -215,7 +215,7 @@ func TestMembershipPruneDeleteAndUUIDPin(t *testing.T) {
 	if err := shared.k8sClient.Create(ctx, membership); err != nil {
 		t.Fatalf("create membership: %v", err)
 	}
-	fake := newFakeKeycloakClient("projects/p2/roles/owner")
+	fake := newFakeClient("projects/p2/roles/owner")
 	groupID := fake.groups[normPath("projects/p2/roles/owner")]
 	aliceID := fake.seedUser("alice@example.com")
 	bobID := fake.seedUser("bob@example.com")
@@ -224,7 +224,7 @@ func TestMembershipPruneDeleteAndUUIDPin(t *testing.T) {
 	reconcileMembershipToSteady(t, ctx, r, key)
 
 	got := getMembership(t, ctx, key)
-	got.Spec.Members = []keycloakv1alpha1.KeycloakGroupMembershipMember{{Email: "alice@example.com"}}
+	got.Spec.Members = []keycloakv1alpha1.GroupMembershipMember{{Email: "alice@example.com"}}
 	if err := shared.k8sClient.Update(ctx, got); err != nil {
 		t.Fatalf("update membership spec: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestMembershipPruneDeleteAndUUIDPin(t *testing.T) {
 
 	// Restore one managed member and verify finalization prunes it.
 	got = getMembership(t, ctx, key)
-	got.Spec.Members = []keycloakv1alpha1.KeycloakGroupMembershipMember{{Email: "alice@example.com"}}
+	got.Spec.Members = []keycloakv1alpha1.GroupMembershipMember{{Email: "alice@example.com"}}
 	if err := shared.k8sClient.Update(ctx, got); err != nil {
 		t.Fatalf("restore membership spec: %v", err)
 	}
@@ -288,22 +288,22 @@ func TestMembershipDeletionPolicy(t *testing.T) {
 	makeNamespace(t, ctx, ns)
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
-	readyGroup(t, ctx, ns, "owner", "projects/dp/roles/owner", keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"})
+	readyGroup(t, ctx, ns, "owner", "projects/dp/roles/owner", keycloakv1alpha1.InstanceReference{Name: "kc"})
 
 	t.Run("orphan leaves managed memberships untouched without Keycloak calls", func(t *testing.T) {
-		membership := &keycloakv1alpha1.KeycloakGroupMembership{
+		membership := &keycloakv1alpha1.GroupMembership{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "orphan-members"},
-			Spec: keycloakv1alpha1.KeycloakGroupMembershipSpec{
-				InstanceRef:    keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
-				GroupRef:       keycloakv1alpha1.KeycloakGroupReference{Name: "owner"},
-				Members:        []keycloakv1alpha1.KeycloakGroupMembershipMember{{Email: "orphan-member@example.com"}},
+			Spec: keycloakv1alpha1.GroupMembershipSpec{
+				InstanceRef:    keycloakv1alpha1.InstanceReference{Name: "kc"},
+				GroupRef:       keycloakv1alpha1.GroupReference{Name: "owner"},
+				Members:        []keycloakv1alpha1.GroupMembershipMember{{Email: "orphan-member@example.com"}},
 				DeletionPolicy: keycloakv1alpha1.DeletionPolicyOrphan,
 			},
 		}
 		if err := shared.k8sClient.Create(ctx, membership); err != nil {
 			t.Fatalf("create membership: %v", err)
 		}
-		fake := newFakeKeycloakClient("projects/dp/roles/owner")
+		fake := newFakeClient("projects/dp/roles/owner")
 		groupID := fake.groups[normPath("projects/dp/roles/owner")]
 		userID := fake.seedUser("orphan-member@example.com")
 		r, _ := newMembershipReconciler(fake, ns)
@@ -329,19 +329,19 @@ func TestMembershipDeletionPolicy(t *testing.T) {
 	})
 
 	t.Run("explicit delete removes managed memberships", func(t *testing.T) {
-		membership := &keycloakv1alpha1.KeycloakGroupMembership{
+		membership := &keycloakv1alpha1.GroupMembership{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "delete-members"},
-			Spec: keycloakv1alpha1.KeycloakGroupMembershipSpec{
-				InstanceRef:    keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
-				GroupRef:       keycloakv1alpha1.KeycloakGroupReference{Name: "owner"},
-				Members:        []keycloakv1alpha1.KeycloakGroupMembershipMember{{Email: "delete-member@example.com"}},
+			Spec: keycloakv1alpha1.GroupMembershipSpec{
+				InstanceRef:    keycloakv1alpha1.InstanceReference{Name: "kc"},
+				GroupRef:       keycloakv1alpha1.GroupReference{Name: "owner"},
+				Members:        []keycloakv1alpha1.GroupMembershipMember{{Email: "delete-member@example.com"}},
 				DeletionPolicy: keycloakv1alpha1.DeletionPolicyDelete,
 			},
 		}
 		if err := shared.k8sClient.Create(ctx, membership); err != nil {
 			t.Fatalf("create membership: %v", err)
 		}
-		fake := newFakeKeycloakClient("projects/dp/roles/owner")
+		fake := newFakeClient("projects/dp/roles/owner")
 		groupID := fake.groups[normPath("projects/dp/roles/owner")]
 		userID := fake.seedUser("delete-member@example.com")
 		r, _ := newMembershipReconciler(fake, ns)
@@ -360,18 +360,18 @@ func TestMembershipDeletionPolicy(t *testing.T) {
 	})
 
 	t.Run("orphan drops finalizer without resolving instance", func(t *testing.T) {
-		membership := &keycloakv1alpha1.KeycloakGroupMembership{
+		membership := &keycloakv1alpha1.GroupMembership{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "orphan-no-instance"},
-			Spec: keycloakv1alpha1.KeycloakGroupMembershipSpec{
-				InstanceRef:    keycloakv1alpha1.KeycloakInstanceReference{Name: "absent"},
-				GroupRef:       keycloakv1alpha1.KeycloakGroupReference{Name: "owner"},
+			Spec: keycloakv1alpha1.GroupMembershipSpec{
+				InstanceRef:    keycloakv1alpha1.InstanceReference{Name: "absent"},
+				GroupRef:       keycloakv1alpha1.GroupReference{Name: "owner"},
 				DeletionPolicy: keycloakv1alpha1.DeletionPolicyOrphan,
 			},
 		}
 		if err := shared.k8sClient.Create(ctx, membership); err != nil {
 			t.Fatalf("create membership: %v", err)
 		}
-		fake := newFakeKeycloakClient("projects/dp/roles/owner")
+		fake := newFakeClient("projects/dp/roles/owner")
 		r, _ := newMembershipReconciler(fake, ns)
 		key := client.ObjectKeyFromObject(membership)
 		if _, err := reconcileMembership(ctx, r, key); err != nil {
@@ -402,32 +402,32 @@ func TestMembershipUnauthorizedPeerDoesNotBlockPrune(t *testing.T) {
 	makeNamespace(t, ctx, peerNS)
 	createIgnoreExists(t, ctx, newCredentialSecret(ownerNS, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ownerNS, "kc")
-	readyGroup(t, ctx, ownerNS, "owner", "projects/peer/roles/owner", keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"})
+	readyGroup(t, ctx, ownerNS, "owner", "projects/peer/roles/owner", keycloakv1alpha1.InstanceReference{Name: "kc"})
 
-	owner := &keycloakv1alpha1.KeycloakGroupMembership{
+	owner := &keycloakv1alpha1.GroupMembership{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ownerNS, Name: "owner-members"},
-		Spec: keycloakv1alpha1.KeycloakGroupMembershipSpec{
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
-			GroupRef:    keycloakv1alpha1.KeycloakGroupReference{Name: "owner"},
-			Members:     []keycloakv1alpha1.KeycloakGroupMembershipMember{{Email: "bob@example.com"}},
+		Spec: keycloakv1alpha1.GroupMembershipSpec{
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
+			GroupRef:    keycloakv1alpha1.GroupReference{Name: "owner"},
+			Members:     []keycloakv1alpha1.GroupMembershipMember{{Email: "bob@example.com"}},
 		},
 	}
 	if err := shared.k8sClient.Create(ctx, owner); err != nil {
 		t.Fatalf("create owner membership: %v", err)
 	}
-	peer := &keycloakv1alpha1.KeycloakGroupMembership{
+	peer := &keycloakv1alpha1.GroupMembership{
 		ObjectMeta: metav1.ObjectMeta{Namespace: peerNS, Name: "unauthorized-peer"},
-		Spec: keycloakv1alpha1.KeycloakGroupMembershipSpec{
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc", Namespace: ownerNS},
-			GroupRef:    keycloakv1alpha1.KeycloakGroupReference{Name: "owner", Namespace: ownerNS},
-			Members:     []keycloakv1alpha1.KeycloakGroupMembershipMember{{Email: "bob@example.com"}},
+		Spec: keycloakv1alpha1.GroupMembershipSpec{
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc", Namespace: ownerNS},
+			GroupRef:    keycloakv1alpha1.GroupReference{Name: "owner", Namespace: ownerNS},
+			Members:     []keycloakv1alpha1.GroupMembershipMember{{Email: "bob@example.com"}},
 		},
 	}
 	if err := shared.k8sClient.Create(ctx, peer); err != nil {
 		t.Fatalf("create peer membership: %v", err)
 	}
 
-	fake := newFakeKeycloakClient("projects/peer/roles/owner")
+	fake := newFakeClient("projects/peer/roles/owner")
 	groupID := fake.groups[normPath("projects/peer/roles/owner")]
 	bobID := fake.seedUser("bob@example.com")
 	r, _ := newMembershipReconciler(fake, ownerNS)
@@ -459,14 +459,14 @@ func TestMembershipMissingMemberConvergesOthers(t *testing.T) {
 	makeNamespace(t, ctx, ns)
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
-	readyGroup(t, ctx, ns, "owner", "projects/missing/roles/owner", keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"})
+	readyGroup(t, ctx, ns, "owner", "projects/missing/roles/owner", keycloakv1alpha1.InstanceReference{Name: "kc"})
 
-	membership := &keycloakv1alpha1.KeycloakGroupMembership{
+	membership := &keycloakv1alpha1.GroupMembership{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "owner-members"},
-		Spec: keycloakv1alpha1.KeycloakGroupMembershipSpec{
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
-			GroupRef:    keycloakv1alpha1.KeycloakGroupReference{Name: "owner"},
-			Members: []keycloakv1alpha1.KeycloakGroupMembershipMember{
+		Spec: keycloakv1alpha1.GroupMembershipSpec{
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
+			GroupRef:    keycloakv1alpha1.GroupReference{Name: "owner"},
+			Members: []keycloakv1alpha1.GroupMembershipMember{
 				{Email: "present@example.com"},
 				{Email: "missing@example.com"},
 			},
@@ -475,7 +475,7 @@ func TestMembershipMissingMemberConvergesOthers(t *testing.T) {
 	if err := shared.k8sClient.Create(ctx, membership); err != nil {
 		t.Fatalf("create membership: %v", err)
 	}
-	fake := newFakeKeycloakClient("projects/missing/roles/owner")
+	fake := newFakeClient("projects/missing/roles/owner")
 	groupID := fake.groups[normPath("projects/missing/roles/owner")]
 	userID := fake.seedUser("present@example.com")
 	r, _ := newMembershipReconciler(fake, ns)
@@ -520,14 +520,14 @@ func TestMembershipPartialMutationFailureStampsMutation(t *testing.T) {
 	makeNamespace(t, ctx, ns)
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
-	readyGroup(t, ctx, ns, "owner", "projects/partial/roles/owner", keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"})
+	readyGroup(t, ctx, ns, "owner", "projects/partial/roles/owner", keycloakv1alpha1.InstanceReference{Name: "kc"})
 
-	membership := &keycloakv1alpha1.KeycloakGroupMembership{
+	membership := &keycloakv1alpha1.GroupMembership{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "owner-members"},
-		Spec: keycloakv1alpha1.KeycloakGroupMembershipSpec{
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
-			GroupRef:    keycloakv1alpha1.KeycloakGroupReference{Name: "owner"},
-			Members: []keycloakv1alpha1.KeycloakGroupMembershipMember{
+		Spec: keycloakv1alpha1.GroupMembershipSpec{
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
+			GroupRef:    keycloakv1alpha1.GroupReference{Name: "owner"},
+			Members: []keycloakv1alpha1.GroupMembershipMember{
 				{Email: "alice@example.com"},
 				{Email: "bob@example.com"},
 			},
@@ -536,7 +536,7 @@ func TestMembershipPartialMutationFailureStampsMutation(t *testing.T) {
 	if err := shared.k8sClient.Create(ctx, membership); err != nil {
 		t.Fatalf("create membership: %v", err)
 	}
-	fake := newFakeKeycloakClient("projects/partial/roles/owner")
+	fake := newFakeClient("projects/partial/roles/owner")
 	groupID := fake.groups[normPath("projects/partial/roles/owner")]
 	aliceID := fake.seedUser("alice@example.com")
 	bobID := fake.seedUser("bob@example.com")
@@ -585,20 +585,20 @@ func TestMembershipDriftTimestamps(t *testing.T) {
 	makeNamespace(t, ctx, ns)
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
-	readyGroup(t, ctx, ns, "owner", "projects/drift/roles/owner", keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"})
+	readyGroup(t, ctx, ns, "owner", "projects/drift/roles/owner", keycloakv1alpha1.InstanceReference{Name: "kc"})
 
-	membership := &keycloakv1alpha1.KeycloakGroupMembership{
+	membership := &keycloakv1alpha1.GroupMembership{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "owner-members"},
-		Spec: keycloakv1alpha1.KeycloakGroupMembershipSpec{
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
-			GroupRef:    keycloakv1alpha1.KeycloakGroupReference{Name: "owner"},
-			Members:     []keycloakv1alpha1.KeycloakGroupMembershipMember{{Email: "alice@example.com"}},
+		Spec: keycloakv1alpha1.GroupMembershipSpec{
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
+			GroupRef:    keycloakv1alpha1.GroupReference{Name: "owner"},
+			Members:     []keycloakv1alpha1.GroupMembershipMember{{Email: "alice@example.com"}},
 		},
 	}
 	if err := shared.k8sClient.Create(ctx, membership); err != nil {
 		t.Fatalf("create membership: %v", err)
 	}
-	fake := newFakeKeycloakClient("projects/drift/roles/owner")
+	fake := newFakeClient("projects/drift/roles/owner")
 	groupID := fake.groups[normPath("projects/drift/roles/owner")]
 	aliceID := fake.seedUser("alice@example.com")
 	r, _ := newMembershipReconciler(fake, ns)
@@ -643,7 +643,7 @@ func TestMembershipDriftTimestamps(t *testing.T) {
 
 	fake.seedUser("bob@example.com")
 	got := getMembership(t, ctx, key)
-	got.Spec.Members = append(got.Spec.Members, keycloakv1alpha1.KeycloakGroupMembershipMember{Email: "bob@example.com"})
+	got.Spec.Members = append(got.Spec.Members, keycloakv1alpha1.GroupMembershipMember{Email: "bob@example.com"})
 	if err := shared.k8sClient.Update(ctx, got); err != nil {
 		t.Fatalf("update membership spec: %v", err)
 	}
@@ -662,7 +662,7 @@ func TestMembershipDriftTimestamps(t *testing.T) {
 	delete(fake.groupMembers, aliceID+"/"+groupID)
 	fake.seedUser("carol@example.com")
 	got = getMembership(t, ctx, key)
-	got.Spec.Members = append(got.Spec.Members, keycloakv1alpha1.KeycloakGroupMembershipMember{Email: "carol@example.com"})
+	got.Spec.Members = append(got.Spec.Members, keycloakv1alpha1.GroupMembershipMember{Email: "carol@example.com"})
 	if err := shared.k8sClient.Update(ctx, got); err != nil {
 		t.Fatalf("update membership spec for mixed drift/spec change: %v", err)
 	}

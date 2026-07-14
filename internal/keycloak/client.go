@@ -1,7 +1,7 @@
 // Package keycloak is a focused REST client for the Keycloak 26.x Admin REST
 // API, covering exactly the realm, group, user, client, client-role, and
-// fine-grained-permission operations the holos-controller KeycloakInstance,
-// KeycloakGroup, KeycloakUser, and KeycloakClient reconcilers consume
+// fine-grained-permission operations the holos-controller Instance,
+// Group, User, and Client reconcilers consume
 // (ADR-20).
 //
 // The client authenticates to the Admin API with an OAuth2 client_credentials

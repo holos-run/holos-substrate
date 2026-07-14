@@ -4,18 +4,18 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// KeycloakInstanceSpec defines the desired state of a KeycloakInstance: how to
+// InstanceSpec defines the desired state of an Instance: how to
 // reach one Keycloak target and realm. It is the single, centrally-managed
 // holder of the connection configuration the rest of the keycloak.holos.run
-// Kinds reference via a KeycloakInstanceReference (ADR-20). The design supports
+// Kinds reference via a InstanceReference (ADR-20). The design supports
 // multiple instances per cluster (e.g. pre-prod and prod) and a target that is
 // in-cluster, out-of-cluster, or in a remote cluster — each is a distinct
-// KeycloakInstance.
+// Instance.
 //
 // Its only external coupling is the admin credential in CredentialsSecretRef
 // plus the optional CABundle trust anchor — never a Keycloak client-library
 // type import (ADR-20 dependency boundary).
-type KeycloakInstanceSpec struct {
+type InstanceSpec struct {
 	// URL is the Keycloak base/API URL the controller reaches the admin API at
 	// (e.g. https://keycloak-service:8443 for the in-cluster instance, or an
 	// external https URL for an out-of-cluster or remote-cluster target). It is
@@ -28,8 +28,8 @@ type KeycloakInstanceSpec struct {
 	URL string `json:"url"`
 
 	// Realm is the Keycloak realm this instance targets (e.g. holos). It is
-	// required. A KeycloakInstance binds one realm; targeting a second realm on
-	// the same Keycloak server is a second KeycloakInstance.
+	// required. A Instance binds one realm; targeting a second realm on
+	// the same Keycloak server is a second Instance.
 	//
 	// +kubebuilder:validation:MinLength=1
 	Realm string `json:"realm"`
@@ -59,10 +59,10 @@ type KeycloakInstanceSpec struct {
 	CABundle []byte `json:"caBundle,omitempty"`
 }
 
-// KeycloakInstanceStatus defines the observed state of a KeycloakInstance. It
+// InstanceStatus defines the observed state of an Instance. It
 // follows the Gateway-API status convention: a slice of standard
 // metav1.Conditions plus the observedGeneration the controller last reconciled.
-type KeycloakInstanceStatus struct {
+type InstanceStatus struct {
 	// Conditions represent the latest available observations of the instance's
 	// reachability and readiness.
 	//
@@ -74,7 +74,7 @@ type KeycloakInstanceStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
 	// ObservedGeneration is the most recent generation observed for this
-	// KeycloakInstance by the controller.
+	// Instance by the controller.
 	//
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -97,26 +97,26 @@ type KeycloakInstanceStatus struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +kubebuilder:printcolumn:name="Validated",type=date,priority=1,JSONPath=`.status.lastValidatedTime`
 
-// KeycloakInstance is the Schema for the keycloakinstances API. It is the
+// Instance is the Schema for the instances API. It is the
 // centrally-managed reference to one Keycloak target and realm the rest of the
 // keycloak.holos.run resources reconcile against (ADR-20).
-type KeycloakInstance struct {
+type Instance struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   KeycloakInstanceSpec   `json:"spec,omitempty"`
-	Status KeycloakInstanceStatus `json:"status,omitempty"`
+	Spec   InstanceSpec   `json:"spec,omitempty"`
+	Status InstanceStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// KeycloakInstanceList contains a list of KeycloakInstance.
-type KeycloakInstanceList struct {
+// InstanceList contains a list of Instance.
+type InstanceList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []KeycloakInstance `json:"items"`
+	Items           []Instance `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&KeycloakInstance{}, &KeycloakInstanceList{})
+	SchemeBuilder.Register(&Instance{}, &InstanceList{})
 }

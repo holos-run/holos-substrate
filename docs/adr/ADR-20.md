@@ -1,4 +1,4 @@
-# Keycloak API Group (`keycloak.holos.run`): KeycloakInstance, Client, Group, User, and Roles
+# Keycloak API Group (`keycloak.holos.run`): Instance, Client, Group, User, and Roles
 
 | Metadata | Value                              |
 | -------- | ---------------------------------- |
@@ -10,20 +10,21 @@
 
 | Revision | Date       | Author      | Info           |
 | -------- | ---------- | ----------- | -------------- |
-| 1        | 2026-06-17 | @jeffmccune | Initial design — four illustrative Kinds (`KeycloakClient`, `KeycloakClientRole`, `KeycloakRealmRole`, `KeycloakGroup`), the ownership boundary vs `keycloak-config-cli`, reserved-name + claim enforcement, and a list of open questions; schemas explicitly "illustrative, not final" |
-| 2        | 2026-06-20 | @jeffmccune | Make the `## Design` concrete for the **project group-management use case**. Add the centrally-managed **`KeycloakInstance`** reference Kind (API URL, `caBundle`, admin `credentialsSecretRef`, `realm`; multiple instances per cluster; in/out-of/remote-cluster targets) and the **`KeycloakUser`** Kind (Admin-API pre-create-if-necessary + first-broker-login auto-link by email). Resolve the open questions: the **claim value** comes from a **client-role** assignment surfaced by the existing `oidc-usermodel-client-role-mapper` (rejecting the full-path Group Membership mapper and a script mapper); **nested groups** `projects/<project>/{roles,custodians}/{owner,editor,viewer}` are idiomatic in Keycloak 26.x; **custodian delegation** uses Fine-Grained Admin Permissions v2 `manage-members`/`manage-membership` group scope (KC ≥ 26.2). Every Kind references a `KeycloakInstance` and a cross-namespace reference is authorized by a `security.holos.run` `ReferenceGrant` ([ADR-22](ADR-22.md)). State the **API-group dependency boundary** (`api/keycloak/v1alpha1` imports only `k8s.io/api`/`k8s.io/apimachinery`), the **`holos_controller` metrics**, and the **Gateway-API status** contract. Reconciled by the existing `holos-controller` binary as a second API group alongside `quay.holos.run`. Keep `Status: Proposed`, `Updates: ADR-3` |
-| 3        | 2026-06-20 | @jeffmccune | **`Status: Partially Implemented`** — the API group **shipped** (HOL-1344..HOL-1348): the `api/keycloak/v1alpha1` types (`KeycloakInstance`/`Group`/`User`/`Client`), the `internal/keycloak` Admin REST client seam, and the four reconcilers (`internal/controller/keycloak`, claim model + finalizers + conditions + metrics + `ReferenceGrant` gating), with CRDs and RBAC installed by the controller's kustomize tree. Phase 6 (HOL-1348) wired the Holos CUE layer: the controller's **admin credential** (the confidential `svc-holos-controller` service-account client with scoped `realm-management` roles + a generate-once bootstrap into `holos-controller-keycloak-creds`), the realm's **first-broker-login auto-link flow** (`Detect Existing Broker User` + `Automatically Set Existing User`), the central **`KeycloakInstance`** + `security.holos.run` `ReferenceGrant` (the `keycloak-instance` component), and the **`my-project`** project CRs (the role/custodian `KeycloakGroup`s, the owner `KeycloakUser` `bob@example.com`, and the project `KeycloakClient`). **Implementation deviations from this ADR's worked examples:** the shipped `KeycloakGroup.spec.clientRoles[]` / `KeycloakClient.spec.clientRoles[]` (a `{clientRef, role}` referencing a `KeycloakClient` CR by object name) replaced the proposed `KeycloakGroup.clientRoleBindings` (a bare `clientId` list) + `KeycloakClient.emitProjectRolesInGroupsClaim` flag, and the `KeycloakClient` reconciler always ensures its own client-role→`groups` mapper. A consequence: the ADR's **"Quay use case"** (folding `my-project-<role>` into the **platform Quay** client's token with no project client) is **not yet implemented** — the reserved-name guard forbids a tenant `KeycloakClient` targeting `https://quay.holos.internal` and `clientRef` resolves only a same-namespace CR, so today the `my-project` claim values surface in the **project's own** `https://my-project.holos.internal` client token (the ADR's "project's own service" path). Folding onto the reserved Quay client is tracked as follow-up. `KeycloakClientRole`/`KeycloakRealmRole` remain unimplemented. `Updates: ADR-3` unchanged |
-| 4        | 2026-06-21 | @jeffmccune | **Close the "Quay use case" gap (HOL-1350).** Reconcile the implemented `clientRoles` model with this ADR's proposed `clientRoleBindings`/`emitProjectRolesInGroupsClaim` design: `ClientRoleReference` now names its target client by **exactly one of** `clientRef` (a same-namespace `KeycloakClient` CR, the "project's own service" path) **or `clientId`** (a Keycloak clientId directly — the new field, CEL-enforced mutual exclusion). A `KeycloakGroup` confers a **project-prefixed** client role (`my-project-<role>`) on the **platform-reserved Quay client** (`https://quay.holos.internal`) by naming its `clientId` directly — no tenant `KeycloakClient` CR exists for it (the reserved-name guard still forbids one). The group reconciler **ensures the project-prefixed role exists** on the named client (idempotent create, on the direct path only — a `clientRef` target stays get-only so a group never expands a project client's role vocabulary), and a **direct-path guard** in `conferClientRoles` bounds the raw-`clientId` capability so it cannot escalate privilege: the target must be on a tight **allowlist of permitted reserved consumer clients** (only the Quay client — so the path cannot reach `realm-management`/`argocd`/`kargo` or an arbitrary client); the path must be a `projects/<project>/roles/<leaf>` role group whose **`<project>` equals the CR's namespace** (the project↔namespace ownership boundary — RBAC governs who creates a CR in a namespace, so a tenant cannot declare another project's path); the role must be **exactly** this role group's own name `<project>-<leaf>` (an exact match, not a prefix, so a prefix collision like project `my` conferring `my-project-owner` is rejected); and the platform's own reserved client-role names (`platform-admin`/`project-admin`) are refused. The guard keys on the **resolved** clientId regardless of which field named it: the Keycloak built-in clients (`realm-management`, `account`, `account-console`, `broker`, `security-admin-console`) are added to the reserved set, and a `clientRef` resolving to **any** reserved client is refused outright — so a tenant cannot craft a same-namespace `KeycloakClient` whose `spec.clientId` is `realm-management` and confer `realm-admin` through `clientRef` (a reserved client's roles are conferable only via the bounded direct path, which allowlists only the Quay client). The `quay` **client object** stays config-cli's. `KeycloakClient.spec.clientRoles` is CEL-constrained to forbid `clientId` (a client defines roles on itself), so the shared `ClientRoleReference` type never admits a silently-ignored target there. The role then surfaces in Quay's `groups` claim via the already-deployed `quay-client-roles` mapper, so [ADR-19](ADR-19.md) `syncedTeams[].oidcGroup` membership populates with **no Quay-side or new-mapper change**. The `KeycloakClient` reserved-name guard (client-object create/reconfigure) is unchanged. The `my-project` role groups now confer the role on **both** the Quay client (`clientId`) and the project client (`clientRef`). `KeycloakClientRole`/`KeycloakRealmRole` remain unimplemented. `Status`/`Updates: ADR-3` unchanged |
+| 1        | 2026-06-17 | @jeffmccune | Initial design — four illustrative Kinds (`Client`, `ClientRole`, `RealmRole`, `Group`), the ownership boundary vs `keycloak-config-cli`, reserved-name + claim enforcement, and a list of open questions; schemas explicitly "illustrative, not final" |
+| 2        | 2026-06-20 | @jeffmccune | Make the `## Design` concrete for the **project group-management use case**. Add the centrally-managed **`Instance`** reference Kind (API URL, `caBundle`, admin `credentialsSecretRef`, `realm`; multiple instances per cluster; in/out-of/remote-cluster targets) and the **`User`** Kind (Admin-API pre-create-if-necessary + first-broker-login auto-link by email). Resolve the open questions: the **claim value** comes from a **client-role** assignment surfaced by the existing `oidc-usermodel-client-role-mapper` (rejecting the full-path Group Membership mapper and a script mapper); **nested groups** `projects/<project>/{roles,custodians}/{owner,editor,viewer}` are idiomatic in Keycloak 26.x; **custodian delegation** uses Fine-Grained Admin Permissions v2 `manage-members`/`manage-membership` group scope (KC ≥ 26.2). Every Kind references a `Instance` and a cross-namespace reference is authorized by a `security.holos.run` `ReferenceGrant` ([ADR-22](ADR-22.md)). State the **API-group dependency boundary** (`api/keycloak/v1alpha1` imports only `k8s.io/api`/`k8s.io/apimachinery`), the **`holos_controller` metrics**, and the **Gateway-API status** contract. Reconciled by the existing `holos-controller` binary as a second API group alongside `quay.holos.run`. Keep `Status: Proposed`, `Updates: ADR-3` |
+| 3        | 2026-06-20 | @jeffmccune | **`Status: Partially Implemented`** — the API group **shipped** (HOL-1344..HOL-1348): the `api/keycloak/v1alpha1` types (`Instance`/`Group`/`User`/`Client`), the `internal/keycloak` Admin REST client seam, and the four reconcilers (`internal/controller/keycloak`, claim model + finalizers + conditions + metrics + `ReferenceGrant` gating), with CRDs and RBAC installed by the controller's kustomize tree. Phase 6 (HOL-1348) wired the Holos CUE layer: the controller's **admin credential** (the confidential `svc-holos-controller` service-account client with scoped `realm-management` roles + a generate-once bootstrap into `holos-controller-keycloak-creds`), the realm's **first-broker-login auto-link flow** (`Detect Existing Broker User` + `Automatically Set Existing User`), the central **`Instance`** + `security.holos.run` `ReferenceGrant` (the `keycloak-instance` component), and the **`my-project`** project CRs (the role/custodian `Group`s, the owner `User` `bob@example.com`, and the project `Client`). **Implementation deviations from this ADR's worked examples:** the shipped `Group.spec.clientRoles[]` / `Client.spec.clientRoles[]` (a `{clientRef, role}` referencing a `Client` CR by object name) replaced the proposed `Group.clientRoleBindings` (a bare `clientId` list) + `Client.emitProjectRolesInGroupsClaim` flag, and the `Client` reconciler always ensures its own client-role→`groups` mapper. A consequence: the ADR's **"Quay use case"** (folding `my-project-<role>` into the **platform Quay** client's token with no project client) is **not yet implemented** — the reserved-name guard forbids a tenant `Client` targeting `https://quay.holos.internal` and `clientRef` resolves only a same-namespace CR, so today the `my-project` claim values surface in the **project's own** `https://my-project.holos.internal` client token (the ADR's "project's own service" path). Folding onto the reserved Quay client is tracked as follow-up. `ClientRole`/`RealmRole` remain unimplemented. `Updates: ADR-3` unchanged |
+| 4        | 2026-06-21 | @jeffmccune | **Close the "Quay use case" gap (HOL-1350).** Reconcile the implemented `clientRoles` model with this ADR's proposed `clientRoleBindings`/`emitProjectRolesInGroupsClaim` design: `ClientRoleReference` now names its target client by **exactly one of** `clientRef` (a same-namespace `Client` CR, the "project's own service" path) **or `clientId`** (a Keycloak clientId directly — the new field, CEL-enforced mutual exclusion). A `Group` confers a **project-prefixed** client role (`my-project-<role>`) on the **platform-reserved Quay client** (`https://quay.holos.internal`) by naming its `clientId` directly — no tenant `Client` CR exists for it (the reserved-name guard still forbids one). The group reconciler **ensures the project-prefixed role exists** on the named client (idempotent create, on the direct path only — a `clientRef` target stays get-only so a group never expands a project client's role vocabulary), and a **direct-path guard** in `conferClientRoles` bounds the raw-`clientId` capability so it cannot escalate privilege: the target must be on a tight **allowlist of permitted reserved consumer clients** (only the Quay client — so the path cannot reach `realm-management`/`argocd`/`kargo` or an arbitrary client); the path must be a `projects/<project>/roles/<leaf>` role group whose **`<project>` equals the CR's namespace** (the project↔namespace ownership boundary — RBAC governs who creates a CR in a namespace, so a tenant cannot declare another project's path); the role must be **exactly** this role group's own name `<project>-<leaf>` (an exact match, not a prefix, so a prefix collision like project `my` conferring `my-project-owner` is rejected); and the platform's own reserved client-role names (`platform-admin`/`project-admin`) are refused. The guard keys on the **resolved** clientId regardless of which field named it: the Keycloak built-in clients (`realm-management`, `account`, `account-console`, `broker`, `security-admin-console`) are added to the reserved set, and a `clientRef` resolving to **any** reserved client is refused outright — so a tenant cannot craft a same-namespace `Client` whose `spec.clientId` is `realm-management` and confer `realm-admin` through `clientRef` (a reserved client's roles are conferable only via the bounded direct path, which allowlists only the Quay client). The `quay` **client object** stays config-cli's. `Client.spec.clientRoles` is CEL-constrained to forbid `clientId` (a client defines roles on itself), so the shared `ClientRoleReference` type never admits a silently-ignored target there. The role then surfaces in Quay's `groups` claim via the already-deployed `quay-client-roles` mapper, so [ADR-19](ADR-19.md) `syncedTeams[].oidcGroup` membership populates with **no Quay-side or new-mapper change**. The `Client` reserved-name guard (client-object create/reconfigure) is unchanged. The `my-project` role groups now confer the role on **both** the Quay client (`clientId`) and the project client (`clientRef`). `ClientRole`/`RealmRole` remain unimplemented. `Status`/`Updates: ADR-3` unchanged |
 | 5        | 2026-06-21 | @jeffmccune | **Record the `esso` enterprise-SSO realm + `holos` OIDC brokering topology (HOL-1366/HOL-1367).** Add the *Two-realm topology: the `esso` enterprise-SSO realm + the `holos` OIDC broker* design section: a **second Keycloak realm `esso`** on the **single** Keycloak instance at `https://auth.holos.internal` (reachable at `https://auth.holos.internal/realms/esso`; the existing `auth.holos.internal` HTTPRoute already covers all realms — no new route) models an **authentication-only** upstream Enterprise SSO IdP, and the `holos` realm **brokers** logins from it via an **OIDC identity provider** (broker **alias `esso`**, `trustEmail: true`, `firstBrokerLoginFlowAlias: "first broker login"`). The broker's confidential **esso client** is named `https://auth.holos.internal/realms/holos` with redirect URI `https://auth.holos.internal/realms/holos/broker/esso/endpoint`. **Authorization stays entirely in the `holos` realm's groups/roles** ([ADR-3](ADR-3.md)) — `esso` authenticates, `holos` authorizes. Introducing the `esso` IdP (and correcting the `holos` realm's first-broker-login flow declaration) is what **completes and fixes** the HOL-1348 auto-link flow that currently fails the keycloak-config Job (`Cannot find stored execution by authenticator 'idp-auto-link'…`) because no IdP is present. **AC #5 provisioning constraint:** the `esso` realm and the `holos` IdP are provisioned by **keycloak-config-cli Jobs + bootstrap Jobs only**, with **no dependency on the `holos-controller` API groups** (`keycloak.holos.run`/`quay.holos.run`), to avoid a fresh-cluster provisioning race. **Ownership shift:** the `holos` realm's `identityProviders[]` move under the **holos realm-config keycloak-config-cli Job** (so the IdP `clientSecret` can be injected at runtime via `$(env:…)`), while the `KeycloakRealmImport` CR keeps owning `enabled`. Update the *reserved names* set to add the `esso` realm, the `esso` IdP broker alias, and the `https://auth.holos.internal/realms/holos` esso client ID, and note the broker alias changed from the placeholder `holos` to `esso`. This revision is a **design record only — no CUE/Go behavior changes**; phases 2–4 (HOL-1368..HOL-1370) implement it. `Status: Partially Implemented`/`Updates: ADR-3` unchanged |
 | 6        | 2026-06-21 | @jeffmccune | **Reconcile the `esso` IdP section with the as-built first-broker-login flow (HOL-1371, the cleanup phase).** Revision 5 (a design record) wrote `firstBrokerLoginFlowAlias: "first broker login"` — Keycloak's built-in flow. The as-built (HOL-1369) instead points at a **custom** (`builtIn: false`) flow, alias **`first broker login auto-link`** (subflow `User creation or linking auto-link`), because keycloak-config-cli **refuses to add executions to a built-in flow** — the built-in `User creation or linking` subflow lacks `idp-auto-link`, so importing it throws `Cannot find stored execution by authenticator 'idp-auto-link'`. The *`firstBrokerLoginFlowAlias`* bullet and the design-consequences item now describe the custom flow and why it is required. **Documentation-only consistency correction — no CUE/Go behavior change** (the behavior shipped in HOL-1369); `Status: Partially Implemented`/`Updates: ADR-3` unchanged. New operator runbook `docs/runbooks/esso-keycloak-idp.md` and the `holos/docs/keycloak-clients.md` *esso realm* section document the as-built topology |
-| 7        | 2026-06-28 | @jeffmccune | **Make the controller transparent — remove the project-prefix / reserved-name / claim-value-rewriting / disjointness model from the reconcilers (HOL-1420/HOL-1421).** The `keycloak.holos.run` reconcilers now reconcile **exactly** the group `path`, client `clientId`, and client-role names declared in the spec — **adding, stripping, requiring, and refusing nothing on organizational-policy grounds**. HOL-1421 removed from the Go reconcilers (PR #207): the reserved client-ID set (`argocd`/`kargo`/`https://quay.holos.internal`/the Keycloak built-ins/the esso broker client), the reserved group prefixes/names (`platform-*`/`authenticated`/`realm_roles`/…), the reserved client-role names (`platform-admin`/`project-admin`), the `validateDirectClientRole` direct-`clientId` guard (the Quay-only allowlist, the `<project>`-equals-namespace project↔namespace check, the `<project>-<leaf>` exact-match rule, the reserved-role refusal), `projectRoleFromGroupPath`, the `clientRef`-resolves-to-reserved refusal, and the `ReasonReserved` condition. A `KeycloakClient` may now declare **any** `clientId` (previously-reserved IDs included); a `KeycloakGroup` may declare **any** `spec.path`; a `KeycloakGroup.spec.clientRoles[]` entry may name **any** client by `clientId` and confer **any** role name — the reconciler resolves the client, ensures the role exists (idempotent create), and confers it. Previously-refused specs now enter the **normal claim/adoption flow** (a write when the controller creates/owns the object, a `Conflict` when an unadopted foreign object already holds the name) rather than being rejected on `Reserved` grounds. **What is preserved** (reconciliation/structural invariants, not org policy): the claim/adoption/ownership-conflict model (`spec.adopt`, `status.created`/`status.adopted`, the finalizer + Keycloak-UUID tracking, `ReasonConflict`/`ReasonReleased`) and all `+kubebuilder:validation:XValidation` markers (immutability, the `clientRef` XOR `clientId`, confidential-requires-`secretRef`, a `KeycloakClient`'s own `clientRoles` may not set `clientId`). The CRDs were diff-clean (the policy lived in Go, not CRD CEL). The superseded design sections below — *Claim value via a client role* (the project-prefix/exact-match rewriting), the reserved-names set in *Ownership / disjointness*, and the reserved-role discussion in *KeycloakClientRole and KeycloakRealmRole* — are marked **historical/removed**, and a new *Transparent contract, migration, and admission-control policy (Rev 7)* section records the new contract, the migration note, and the admission-control pointer. **The recommended home for configuration policy** (naming conventions, reserved prefixes, tenant/platform disjointness) is now Kubernetes **admission control** — a `ValidatingAdmissionPolicy` with CEL and/or a `ValidatingAdmissionWebhook` backed by dedicated policy CRs — authored as a **separate downstream effort** (out of scope for this revision, which documents the contract and points at the mechanism). This is a documentation revision recording HOL-1421's behavior change; `Status: Partially Implemented`/`Updates: ADR-3` unchanged |
-| 8        | 2026-06-28 | @jeffmccune | **Add the additive `KeycloakClient.spec.description` field (HOL-1424..HOL-1427).** `KeycloakClientSpec` gains an optional `Description string` (`json:"description,omitempty"`, `+optional`) — free text the reconciler propagates verbatim to the managed Keycloak client's native **Description** attribute. The `internal/keycloak` library carries it on `OIDCClient.Description` (`omitempty`) and `ClientFields.Description` (HOL-1425); the client reconciler sets it in `desiredClient` on create and sends it **unconditionally** (a non-nil pointer to a possibly-empty string) in `updateClient`, so a console-set description is corrected back to the spec on every reconcile and an omitted/empty spec value actively clears it (HOL-1426). Purely additive: no change to `KeycloakGroup`/`KeycloakInstance`/`KeycloakUser`, and existing `KeycloakClient` specs that omit `description` reconcile unchanged. The CRD bundle (`config/crd/bases/keycloak.holos.run_keycloakclients.yaml`) and `zz_generated.deepcopy.go` were regenerated; the docs (this revision table and [holos/docs/keycloak-clients.md](../../holos/docs/keycloak-clients.md)) record the field (HOL-1427). `Status: Partially Implemented`/`Updates: ADR-3` unchanged |
-| 9        | 2026-07-04 | @jeffmccune | **Design-record only: add the first-class `KeycloakGroupMembership` Kind (HOL-1454).** The new Kind is namespaced, `keycloak.holos.run/v1alpha1`, and RoleBinding-shaped: one `groupRef`, many email members, with per-CR `status.managedMembers` ownership so multiple membership CRs can target the same `KeycloakGroup` without seizing out-of-band members. This records the concrete spec/status shape for the API phase, including `instanceRef`, immutable `groupRef` (`name` plus optional `namespace`), `members[]` (`listType=map`, `listMapKey=email`), Gateway-API conditions, `observedGeneration`, `groupID`, structured `managedMembers`, and the ADR-22 drift-observability timestamps. It records the double-binding authorization model: same-namespace `groupRef` is implicitly authorized, cross-namespace `groupRef` requires a `security.holos.run` `ReferenceGrant` in the **group's namespace**, and missing grants fail closed with `Ready=False` reason `ReferenceNotGranted`. It also splits the delegation planes: Keycloak-console delegation remains FGAP v2 through `KeycloakGroup.spec.custodians[]`, while Kubernetes-API delegation is membership CRs in the group's namespace, with owner write RBAC enabled only after ADR-24's rendered-object protection prerequisite; the HOL-1457 Project component migration will seed project owners into `projects/<name>/custodians/{owner,editor,viewer}` so console-side delegation is live. `KeycloakUser.spec.groups` is deprecated pending removal because HOL-1435 identified self-asserted membership with no double-binding; migration temporarily prunes then re-adds memberships when control-plane specs move from users to membership CRs. No Go, CUE, or CRD behavior changes in this revision; `Status: Partially Implemented`/`Updates: ADR-3` unchanged |
-| 10       | 2026-07-04 | @jeffmccune | **Remove the user-side membership path (HOL-1458).** After the HOL-1457 Project component migration renders standing-owner `KeycloakGroupMembership` CRs, `KeycloakUser` no longer declares or owns group membership. The API removes the former `groups` field and `status.managedGroups`, and the user reconciler drops membership join/prune behavior while retaining create/adopt, first-login IdP-link sync, finalizer/delete, claim-model, status, and ReferenceGrant behavior. Existing clusters must apply the membership-CR migration before rolling out this controller/API version so the seeded owner memberships stay declared under the new Kind. |
-| 11       | 2026-07-04 | @jeffmccune | **Implement ADR-22 drift-observability status on shipped Keycloak external-resource Kinds (HOL-1459).** `KeycloakInstance` now reports validation freshness with `status.lastValidatedTime` only. `KeycloakGroup`, `KeycloakUser`, and `KeycloakClient` now report `lastValidatedTime`, `lastMutatedTime`, `lastMutationReason`, and `lastDriftTime`, using the shared `MutationReason` enum (`SpecChange` / `DriftRemediation`) and exposing the extended `Validated` printer column. The reconcilers stamp validation only after successful Keycloak verification, stamp mutation only after successful remote changes, return bounded steady-state resyncs, and filter primary watches to generation changes to avoid timestamp hot loops. |
-| 12       | 2026-07-07 | @jeffmccune | **Design pointer to ADR-22's Adopt & Preserve contract (HOL-1533).** A later Keycloak implementation revision will add `spec.deletionPolicy` across `KeycloakGroup`, `KeycloakUser`, `KeycloakClient`, and `KeycloakGroupMembership`, preserving `KeycloakInstance` as a read-only validator exemption and keeping `KeycloakGroupMembership` exempt from `spec.adopt` while still requiring deletion-time preserve/prune semantics. This row records the design dependency only; no Keycloak CRD or reconciler behavior changes in this revision. |
-| 13       | 2026-07-07 | @jeffmccune | **Ship deletionPolicy for mutating Keycloak Kinds (HOL-1536).** `KeycloakGroup`, `KeycloakUser`, `KeycloakClient`, and `KeycloakGroupMembership` now carry `spec.deletionPolicy` (`Delete` / `Orphan`; omitted preserves provenance defaults). For `Group`/`User`/`Client`, omitted still deletes resources created by the CR and releases adopted resources after pruning controller-added side effects; explicit `Delete` also deletes adopted resources after verifying the pinned Keycloak UUID, and a UUID mismatch releases without deleting the replacement. `KeycloakGroupMembership` has no `spec.adopt`; omitted and `Delete` remove the managed membership edges, while `Orphan` leaves them untouched. `Orphan` returns before KeycloakInstance or credential resolution because Keycloak has no remote ownership marker to strip, making it a reliable escape hatch when the backing realm or credential is gone. `KeycloakInstance` remains the read-only validator exemption. |
-| 14       | 2026-07-07 | @jeffmccune | **Document and test the rename/transfer flow (HOL-1537).** The Keycloak group controller tests now cover the full old-CR `deletionPolicy: Orphan` -> new-CR `adopt: true` -> new-CR `deletionPolicy: Delete` path, proving the external group UUID survives the Kubernetes object rename and the new CR can regain UUID-verified delete authority. The external-resource rename runbook documents the same procedure for KeycloakGroup, KeycloakUser, and KeycloakClient, including `clientRef` cascades and the KeycloakGroupMembership recreate/orphan caveat. |
+| 7        | 2026-06-28 | @jeffmccune | **Make the controller transparent — remove the project-prefix / reserved-name / claim-value-rewriting / disjointness model from the reconcilers (HOL-1420/HOL-1421).** The `keycloak.holos.run` reconcilers now reconcile **exactly** the group `path`, client `clientId`, and client-role names declared in the spec — **adding, stripping, requiring, and refusing nothing on organizational-policy grounds**. HOL-1421 removed from the Go reconcilers (PR #207): the reserved client-ID set (`argocd`/`kargo`/`https://quay.holos.internal`/the Keycloak built-ins/the esso broker client), the reserved group prefixes/names (`platform-*`/`authenticated`/`realm_roles`/…), the reserved client-role names (`platform-admin`/`project-admin`), the `validateDirectClientRole` direct-`clientId` guard (the Quay-only allowlist, the `<project>`-equals-namespace project↔namespace check, the `<project>-<leaf>` exact-match rule, the reserved-role refusal), `projectRoleFromGroupPath`, the `clientRef`-resolves-to-reserved refusal, and the `ReasonReserved` condition. A `Client` may now declare **any** `clientId` (previously-reserved IDs included); a `Group` may declare **any** `spec.path`; a `Group.spec.clientRoles[]` entry may name **any** client by `clientId` and confer **any** role name — the reconciler resolves the client, ensures the role exists (idempotent create), and confers it. Previously-refused specs now enter the **normal claim/adoption flow** (a write when the controller creates/owns the object, a `Conflict` when an unadopted foreign object already holds the name) rather than being rejected on `Reserved` grounds. **What is preserved** (reconciliation/structural invariants, not org policy): the claim/adoption/ownership-conflict model (`spec.adopt`, `status.created`/`status.adopted`, the finalizer + Keycloak-UUID tracking, `ReasonConflict`/`ReasonReleased`) and all `+kubebuilder:validation:XValidation` markers (immutability, the `clientRef` XOR `clientId`, confidential-requires-`secretRef`, a `Client`'s own `clientRoles` may not set `clientId`). The CRDs were diff-clean (the policy lived in Go, not CRD CEL). The superseded design sections below — *Claim value via a client role* (the project-prefix/exact-match rewriting), the reserved-names set in *Ownership / disjointness*, and the reserved-role discussion in *ClientRole and RealmRole* — are marked **historical/removed**, and a new *Transparent contract, migration, and admission-control policy (Rev 7)* section records the new contract, the migration note, and the admission-control pointer. **The recommended home for configuration policy** (naming conventions, reserved prefixes, tenant/platform disjointness) is now Kubernetes **admission control** — a `ValidatingAdmissionPolicy` with CEL and/or a `ValidatingAdmissionWebhook` backed by dedicated policy CRs — authored as a **separate downstream effort** (out of scope for this revision, which documents the contract and points at the mechanism). This is a documentation revision recording HOL-1421's behavior change; `Status: Partially Implemented`/`Updates: ADR-3` unchanged |
+| 8        | 2026-06-28 | @jeffmccune | **Add the additive `Client.spec.description` field (HOL-1424..HOL-1427).** `ClientSpec` gains an optional `Description string` (`json:"description,omitempty"`, `+optional`) — free text the reconciler propagates verbatim to the managed Keycloak client's native **Description** attribute. The `internal/keycloak` library carries it on `OIDCClient.Description` (`omitempty`) and `ClientFields.Description` (HOL-1425); the client reconciler sets it in `desiredClient` on create and sends it **unconditionally** (a non-nil pointer to a possibly-empty string) in `updateClient`, so a console-set description is corrected back to the spec on every reconcile and an omitted/empty spec value actively clears it (HOL-1426). Purely additive: no change to `Group`/`Instance`/`User`, and existing `Client` specs that omit `description` reconcile unchanged. The CRD bundle (`config/crd/holos-controller/bases/keycloak.holos.run_clients.yaml`) and `zz_generated.deepcopy.go` were regenerated; the docs (this revision table and [holos/docs/keycloak-clients.md](../../holos/docs/keycloak-clients.md)) record the field (HOL-1427). `Status: Partially Implemented`/`Updates: ADR-3` unchanged |
+| 9        | 2026-07-04 | @jeffmccune | **Design-record only: add the first-class `GroupMembership` Kind (HOL-1454).** The new Kind is namespaced, `keycloak.holos.run/v1alpha1`, and RoleBinding-shaped: one `groupRef`, many email members, with per-CR `status.managedMembers` ownership so multiple membership CRs can target the same `Group` without seizing out-of-band members. This records the concrete spec/status shape for the API phase, including `instanceRef`, immutable `groupRef` (`name` plus optional `namespace`), `members[]` (`listType=map`, `listMapKey=email`), Gateway-API conditions, `observedGeneration`, `groupID`, structured `managedMembers`, and the ADR-22 drift-observability timestamps. It records the double-binding authorization model: same-namespace `groupRef` is implicitly authorized, cross-namespace `groupRef` requires a `security.holos.run` `ReferenceGrant` in the **group's namespace**, and missing grants fail closed with `Ready=False` reason `ReferenceNotGranted`. It also splits the delegation planes: Keycloak-console delegation remains FGAP v2 through `Group.spec.custodians[]`, while Kubernetes-API delegation is membership CRs in the group's namespace, with owner write RBAC enabled only after ADR-24's rendered-object protection prerequisite; the HOL-1457 Project component migration will seed project owners into `projects/<name>/custodians/{owner,editor,viewer}` so console-side delegation is live. `User.spec.groups` is deprecated pending removal because HOL-1435 identified self-asserted membership with no double-binding; migration temporarily prunes then re-adds memberships when control-plane specs move from users to membership CRs. No Go, CUE, or CRD behavior changes in this revision; `Status: Partially Implemented`/`Updates: ADR-3` unchanged |
+| 10       | 2026-07-04 | @jeffmccune | **Remove the user-side membership path (HOL-1458).** After the HOL-1457 Project component migration renders standing-owner `GroupMembership` CRs, `User` no longer declares or owns group membership. The API removes the former `groups` field and `status.managedGroups`, and the user reconciler drops membership join/prune behavior while retaining create/adopt, first-login IdP-link sync, finalizer/delete, claim-model, status, and ReferenceGrant behavior. Existing clusters must apply the membership-CR migration before rolling out this controller/API version so the seeded owner memberships stay declared under the new Kind. |
+| 11       | 2026-07-04 | @jeffmccune | **Implement ADR-22 drift-observability status on shipped Keycloak external-resource Kinds (HOL-1459).** `Instance` now reports validation freshness with `status.lastValidatedTime` only. `Group`, `User`, and `Client` now report `lastValidatedTime`, `lastMutatedTime`, `lastMutationReason`, and `lastDriftTime`, using the shared `MutationReason` enum (`SpecChange` / `DriftRemediation`) and exposing the extended `Validated` printer column. The reconcilers stamp validation only after successful Keycloak verification, stamp mutation only after successful remote changes, return bounded steady-state resyncs, and filter primary watches to generation changes to avoid timestamp hot loops. |
+| 12       | 2026-07-07 | @jeffmccune | **Design pointer to ADR-22's Adopt & Preserve contract (HOL-1533).** A later Keycloak implementation revision will add `spec.deletionPolicy` across `Group`, `User`, `Client`, and `GroupMembership`, preserving `Instance` as a read-only validator exemption and keeping `GroupMembership` exempt from `spec.adopt` while still requiring deletion-time preserve/prune semantics. This row records the design dependency only; no Keycloak CRD or reconciler behavior changes in this revision. |
+| 13       | 2026-07-07 | @jeffmccune | **Ship deletionPolicy for mutating Keycloak Kinds (HOL-1536).** `Group`, `User`, `Client`, and `GroupMembership` now carry `spec.deletionPolicy` (`Delete` / `Orphan`; omitted preserves provenance defaults). For `Group`/`User`/`Client`, omitted still deletes resources created by the CR and releases adopted resources after pruning controller-added side effects; explicit `Delete` also deletes adopted resources after verifying the pinned Keycloak UUID, and a UUID mismatch releases without deleting the replacement. `GroupMembership` has no `spec.adopt`; omitted and `Delete` remove the managed membership edges, while `Orphan` leaves them untouched. `Orphan` returns before Instance or credential resolution because Keycloak has no remote ownership marker to strip, making it a reliable escape hatch when the backing realm or credential is gone. `Instance` remains the read-only validator exemption. |
+| 14       | 2026-07-07 | @jeffmccune | **Document and test the rename/transfer flow (HOL-1537).** The Keycloak group controller tests now cover the full old-CR `deletionPolicy: Orphan` -> new-CR `adopt: true` -> new-CR `deletionPolicy: Delete` path, proving the external group UUID survives the Kubernetes object rename and the new CR can regain UUID-verified delete authority. The external-resource rename runbook documents the same procedure for Group, User, and Client, including `clientRef` cascades and the GroupMembership recreate/orphan caveat. |
+| 15       | 2026-07-14 | @jeffmccune | **Rename the shipped Kinds to match Keycloak Admin API resource types (HOL-1557).** `KeycloakGroup`, `KeycloakGroupMembership`, `KeycloakUser`, and `KeycloakClient` become `Group`, `GroupMembership`, `User`, and `Client`, matching Keycloak's `GROUP`, `GROUP_MEMBERSHIP`, `USER`, and `CLIENT` admin-event resource types in Kubernetes CamelCase. `KeycloakInstance` becomes `Instance`; it is the documented exception because it models a controller connection rather than a Keycloak resource type. This pre-release replacement adds no conversion or compatibility aliases, and leaves all spec and status JSON field names unchanged. |
 
 ## Context and Problem Statement
 
@@ -65,8 +66,8 @@ sketched an illustrative schema, but deferred a list of open questions and left
 the schemas "illustrative, not final." This Revision 2 **resolves those open
 questions** from the planning decisions and the supporting web research, makes the
 `## Design` concrete for the group-management use case, and adds the two Kinds the
-design turned out to need: a centrally-managed **`KeycloakInstance`** (the
-connection/credential record for one Keycloak target) and a **`KeycloakUser`** (to
+design turned out to need: a centrally-managed **`Instance`** (the
+connection/credential record for one Keycloak target) and a **`User`** (to
 pre-provision and auto-link a person by email). The status stays **`Proposed`**:
 this is a design record, **no Go or CUE code and no CRD manifests are written**
 here — those land in [HOL-1344](https://linear.app/holos-run/issue/HOL-1344) and
@@ -92,8 +93,8 @@ later implementation issues.
   primitive roles*). This ADR is the declarative source of those names.
 - [ADR-22 — The `security.holos.run` API Group and `ReferenceGrant`](ADR-22.md):
   fixes the cross-namespace-reference convention. A `keycloak.holos.run`
-  `KeycloakClient`/`KeycloakGroup`/`KeycloakUser` (and the role Kinds) in a
-  project namespace references a `KeycloakInstance` in a platform namespace; that
+  `Client`/`Group`/`User` (and the role Kinds) in a
+  project namespace references a `Instance` in a platform namespace; that
   cross-namespace reference is authorized by a `security.holos.run`
   `ReferenceGrant` placed in the **instance (referent) namespace**. This ADR
   **cites** that grant; it does **not** redefine it. ADR-22 also mandates the
@@ -143,8 +144,8 @@ later implementation issues.
 - [holos/docs/secret-handling.md](../../holos/docs/secret-handling.md): the
   runtime-secret guardrail — secret material is created at runtime (an
   `ExternalSecret` or a generate-once create-if-absent bootstrap Job) and never
-  committed. The `KeycloakInstance` admin credential and any confidential
-  `KeycloakClient` secret delivered into a project namespace must honor this,
+  committed. The `Instance` admin credential and any confidential
+  `Client` secret delivered into a project namespace must honor this,
   exactly as the platform's own `quay-oidc` bootstrap does.
 
 ### Web research backing the resolved decisions
@@ -171,7 +172,7 @@ The open questions are resolved with these findings (validated against Keycloak
 - **First-broker-login auto-link by email** — the `Detect Existing Broker User` +
   `Automatically Set Existing User` authenticators plus the IdP's `Trust Email`
   flag — links a federated login to a **pre-existing** local user with the same
-  email instead of creating a duplicate. This is the basis for `KeycloakUser`'s
+  email instead of creating a duplicate. This is the basis for `User`'s
   pre-provision-then-auto-link behavior.
 - **Prior-art CRD operators** (the official `keycloak-realm-operator`, EDP's
   Keycloak operator, RightCrowd's) validate the per-resource-CR-over-Admin-API
@@ -185,17 +186,33 @@ API group, reconciled by the existing `holos-controller` binary ([ADR-18](ADR-18
 as a **second API group alongside `quay.holos.run`** ([ADR-19](ADR-19.md)) — the
 same manager process, a sibling reconciler set, not a new binary. They reach
 Keycloak over its **Admin REST API**, authenticated by a per-target credential the
-`KeycloakInstance` Kind holds.
+`Instance` Kind holds.
 
-The Kinds are: **`KeycloakInstance`** (the connection/credential record for one
-Keycloak target), **`KeycloakClient`** (a per-project OIDC client named by its
-URL, with the `groups`-claim wiring), **`KeycloakGroup`** (the nested
-`roles`/`custodians` group tree and its custodian delegation), **`KeycloakUser`**
+The Kinds are: **`Instance`** (the connection/credential record for one
+Keycloak target), **`Client`** (a per-project OIDC client named by its
+URL, with the `groups`-claim wiring), **`Group`** (the nested
+`roles`/`custodians` group tree and its custodian delegation), **`User`**
 (pre-provision-by-email + first-login auto-link), and the role Kinds
-**`KeycloakClientRole`** / **`KeycloakRealmRole`** (the client-scoped
+**`ClientRole`** / **`RealmRole`** (the client-scoped
 `owner`/`editor`/`viewer` triad and the realm-role → client-role mapping). Every
-Kind except `KeycloakInstance` carries an **`instanceRef`** naming the
-`KeycloakInstance` it reconciles against.
+Kind except `Instance` carries an **`instanceRef`** naming the
+`Instance` it reconciles against.
+
+### Kind names follow Keycloak resource types (Rev 15)
+
+The `keycloak.holos.run` API group supplies the Keycloak context, so Kind names
+do not repeat the `Keycloak` prefix. Kinds that manage Keycloak resources use the
+CamelCase form of the corresponding Admin API admin-event resource type:
+`Group` for `GROUP`, `GroupMembership` for `GROUP_MEMBERSHIP`, `User` for
+`USER`, and `Client` for `CLIENT`. `Instance` is the deliberate exception: it
+models the controller's connection and credential target and has no upstream
+Keycloak resource type.
+
+These APIs are pre-release. Revision 15 replaces the old Kind names outright;
+there are no conversion webhooks, aliases, or migration shims. The rename is
+limited to Kubernetes type identity and generated resource names. Existing JSON
+field names such as `instanceRef`, `groupRef`, `clientRef`, and all status fields
+remain unchanged.
 
 The YAML below is **concrete but still illustrative of the field-level API** — it
 fixes the field *shape and semantics*, while the exact field names, optionality,
@@ -211,7 +228,7 @@ boundary in reverse:
 - **`api/keycloak/v1alpha1` imports only `k8s.io/api` and `k8s.io/apimachinery`**
   (for `metav1`). It imports **no** Quay, Kargo, or Argo CD type, and no Keycloak
   client/Go type either — the CRs reach Keycloak **solely** through the credential
-  named by a `KeycloakInstance`'s `credentialsSecretRef`. The API package stays
+  named by a `Instance`'s `credentialsSecretRef`. The API package stays
   extractable into its own module and legible independent of any relying party.
 - **OIDC group names consumed by Quay remain data referenced by name.** Where
   [ADR-19](ADR-19.md)'s `Organization.spec.syncedTeams[].oidcGroup` is a plain
@@ -226,15 +243,15 @@ boundary in reverse:
   never in `api/keycloak/...`, exactly as [ADR-19](ADR-19.md) confines Quay's
   pipeline coupling to the binary.
 
-### `KeycloakInstance` — the centrally-managed connection record (AC #4)
+### `Instance` — the centrally-managed connection record (AC #4)
 
-A `KeycloakInstance` holds everything the controller needs to reach **one**
+A `Instance` holds everything the controller needs to reach **one**
 Keycloak target and authenticate to its Admin API. It is **centrally managed** —
 created by a platform owner in a platform namespace (e.g. `keycloak`), not by
 tenants — and is the single object every other `keycloak.holos.run` Kind
 references.
 
-**The name.** `KeycloakInstance` (not `KeycloakTarget`, `KeycloakConnection`, or
+**The name.** `Instance` (not `KeycloakTarget`, `KeycloakConnection`, or
 `KeycloakServer`) is chosen because the object models exactly one **running
 Keycloak instance + the realm the controller operates within it**: it parallels
 the platform's own [Keycloak instance component](../../holos/components/keycloak/instance/buildplan.cue)
@@ -246,7 +263,7 @@ credential plus the realm selector.
 
 ```yaml
 apiVersion: keycloak.holos.run/v1alpha1
-kind: KeycloakInstance
+kind: Instance
 metadata:
   name: holos-keycloak
   namespace: keycloak            # a platform namespace; centrally managed
@@ -256,7 +273,7 @@ spec:
   # target is any reachable https URL (AC #4.2, #4.3).
   apiURL: https://keycloak-service.keycloak.svc:8443
   # The realm this instance operates within (AC #4). The controller reconciles
-  # objects into THIS realm; multiple KeycloakInstances may target the same
+  # objects into THIS realm; multiple Instances may target the same
   # server with different realms, or different servers entirely.
   realm: holos
   # PEM/base64 CA trust anchor for the target's serving cert, the controller-wide
@@ -292,7 +309,7 @@ status:
 | `credentialsSecretRef` | a `SecretReference` to the Keycloak **admin** credential. Resolved in the **`holos-controller` namespace** by default (the ADR-19 convention, read from `POD_NAMESPACE`), so one operator-managed credential per instance serves every tenant CR that references the instance. See *Admin credential* below. |
 
 **Multiple instances per cluster (AC #4.2), and any target location (AC #4.3).**
-Because a `KeycloakInstance` is a plain namespaced CR carrying its own `apiURL` +
+Because a `Instance` is a plain namespaced CR carrying its own `apiURL` +
 credential + realm, a cluster may hold **several** — e.g. a `pre-prod-keycloak`
 and a `prod-keycloak`, or one per realm. The `apiURL` may name an **in-cluster**
 Service (`https://keycloak-service.keycloak.svc:8443`), an **out-of-cluster** public endpoint,
@@ -325,10 +342,10 @@ like the platform's `quay-oidc` and the controller's
 reconciler sets `Programmed`/`Ready` `False` (reason `CredentialsNotFound`) and
 requeues.
 
-### Every Kind references a `KeycloakInstance`, gated by a `ReferenceGrant` (AC #4.4, #4.5)
+### Every Kind references a `Instance`, gated by a `ReferenceGrant` (AC #4.4, #4.5)
 
-Every `keycloak.holos.run` Kind except `KeycloakInstance` itself carries an
-**`instanceRef`** — the `KeycloakInstance` it reconciles against:
+Every `keycloak.holos.run` Kind except `Instance` itself carries an
+**`instanceRef`** — the `Instance` it reconciles against:
 
 ```yaml
 spec:
@@ -337,12 +354,12 @@ spec:
     namespace: keycloak          # cross-namespace ⇒ needs a ReferenceGrant
 ```
 
-A tenant CR lives in the **project namespace** while the `KeycloakInstance` lives
+A tenant CR lives in the **project namespace** while the `Instance` lives
 in a **platform namespace** — a **cross-namespace reference**. Per the guard rail
 ([ADR-22](ADR-22.md)), that reference is authorized by a `security.holos.run`
 `ReferenceGrant` placed **in the instance's (referent) namespace**, declaring
 `from` the project namespace's `keycloak.holos.run` Kinds and `to` the
-`KeycloakInstance`. A `KeycloakClient`/`Group`/`User` whose `instanceRef` crosses
+`Instance`. A `Client`/`Group`/`User` whose `instanceRef` crosses
 a namespace boundary with **no matching grant** is **rejected** by its reconciler
 (`Ready=False`, reason `ReferenceNotGranted` — the as-built reason name; this ADR's
 earlier revisions wrote the placeholder `RefNotPermitted`), never silently honored — the same
@@ -350,9 +367,9 @@ default-deny posture ADR-22 fixes. This ADR **cites** that grant and does **not*
 redefine it; ADR-22 owns the grant's shape. (A same-namespace `instanceRef` — e.g.
 a platform-owned CR in the `keycloak` namespace — needs no grant.)
 
-### `KeycloakGroup` — the nested role/custodian group tree (AC #5)
+### `Group` — the nested role/custodian group tree (AC #5)
 
-A `KeycloakGroup` manages a project's primitive-role groups as a **shallow nested
+A `Group` manages a project's primitive-role groups as a **shallow nested
 group tree** under a per-project parent, plus the **custodian** groups that
 delegate membership management:
 
@@ -377,7 +394,7 @@ projects/
 
 ```yaml
 apiVersion: keycloak.holos.run/v1alpha1
-kind: KeycloakGroup
+kind: Group
 metadata:
   name: my-project-roles
   namespace: my-project
@@ -395,15 +412,15 @@ spec:
   # as the flat groups-claim value in that consumer's token (the mapper is
   # per-client; see "claim value" below). The Quay client https://quay.holos.internal
   # is the consumer for the ADR-19 syncedTeams use case — and it needs NO project
-  # KeycloakClient at all, which is why this binding lives on KeycloakGroup (the
-  # owner of the role groups), not on KeycloakClient. List one or more entries;
+  # Client at all, which is why this binding lives on Group (the
+  # owner of the role groups), not on Client. List one or more entries;
   # each names its target client by EXACTLY ONE of clientId (a Keycloak clientId
   # directly — used for the reserved Quay client, project-prefixed roles only) or
-  # clientRef (a same-namespace KeycloakClient CR — a project's own client).
+  # clientRef (a same-namespace Client CR — a project's own client).
   #
   # IMPLEMENTED SHAPE (HOL-1347/HOL-1350): the field is spec.clientRoles[], a list
   # of {clientId|clientRef, role} — it replaced this ADR's earlier proposed
-  # KeycloakGroup.clientRoleBindings (a bare clientId list). The example below uses
+  # Group.clientRoleBindings (a bare clientId list). The example below uses
   # the implemented field.
   clientRoles:
     - clientId: https://quay.holos.internal   # the ADR-19 syncedTeams consumer
@@ -472,7 +489,7 @@ performs the approval.
 
 - **Controller-layer alternative.** Where FGAP v2 group scope is unavailable or
   the platform prefers an audit trail in Kubernetes, the controller path is the
-  first-class `KeycloakGroupMembership` Kind in *`KeycloakGroupMembership` — the
+  first-class `GroupMembership` Kind in *`GroupMembership` — the
   Kubernetes-API membership binding (Rev 9)* below. It keeps membership changes
   on the Kubernetes API plane: an authorized actor creates or updates a
   membership CR in the group's namespace, Kubernetes RBAC authorizes that write,
@@ -486,18 +503,18 @@ approves) is unchanged; this ADR makes the platform **provision** the Keycloak
 groups and **delegate** the custodian approval rather than assuming an external
 identity system does.
 
-### `KeycloakGroupMembership` — the Kubernetes-API membership binding (Rev 9)
+### `GroupMembership` — the Kubernetes-API membership binding (Rev 9)
 
-`KeycloakGroupMembership` is the first-class, namespaced membership-binding Kind
+`GroupMembership` is the first-class, namespaced membership-binding Kind
 for `keycloak.holos.run/v1alpha1`. It is modeled like a Kubernetes `RoleBinding`:
 one target group, many members. Multiple membership CRs may target the same
-`KeycloakGroup`; each CR owns only the members it declares and tracks, so it does
+`Group`; each CR owns only the members it declares and tracks, so it does
 not seize memberships created by another CR, by FGAP/console custodians, or by an
 operator.
 
 ```yaml
 apiVersion: keycloak.holos.run/v1alpha1
-kind: KeycloakGroupMembership
+kind: GroupMembership
 metadata:
   name: my-project-roles-owner-members
   namespace: my-project            # the group's namespace: the delegation surface
@@ -525,26 +542,26 @@ status:
 
 **Spec shape.**
 
-- **`spec.instanceRef`** is the immutable `KeycloakInstance` reference, with the
+- **`spec.instanceRef`** is the immutable `Instance` reference, with the
   same cross-namespace `ReferenceGrant` authorization model all other
   `keycloak.holos.run` Kinds use. The membership reconciler also resolves the
-  referenced `KeycloakGroup` and requires the group's `spec.instanceRef`, after
+  referenced `Group` and requires the group's `spec.instanceRef`, after
   namespace defaulting, to match this value exactly. A mismatch is rejected
   fail-closed (`Ready=False`, reason `InstanceMismatch`) and does not mutate
   Keycloak; membership is never written to an instance different from the one
   that owns the group.
-- **`spec.groupRef`** is immutable and names the `KeycloakGroup` whose Keycloak
+- **`spec.groupRef`** is immutable and names the `Group` whose Keycloak
   group membership is being managed. Its shape is `name` plus optional
   `namespace`; an empty namespace defaults to the membership CR's namespace. A
   same-namespace `groupRef` is implicitly authorized. A cross-namespace `groupRef`
   requires a `security.holos.run` `ReferenceGrant` in the **group's namespace**
   (the referent namespace) whose `from` entry is `group: keycloak.holos.run`,
-  `kind: KeycloakGroupMembership`, and the referrer's namespace, and whose `to`
-  entry is `group: keycloak.holos.run`, `kind: KeycloakGroup`, optionally
+  `kind: GroupMembership`, and the referrer's namespace, and whose `to`
+  entry is `group: keycloak.holos.run`, `kind: Group`, optionally
   narrowed by `name`. No matching grant means fail-closed: the reconciler sets
   `Ready=False` with reason `ReferenceNotGranted` and does not mutate Keycloak.
 - **`spec.members[]`** is a map list keyed by `email`. The membership CR never
-  creates users; `KeycloakUser` remains the provisioning Kind. A member email
+  creates users; `User` remains the provisioning Kind. A member email
   with no Keycloak user yields `Ready=False` reason `MemberNotFound` (a new
   reason constant) and requeues, while members that do resolve still converge.
 
@@ -567,7 +584,7 @@ unrelated replacement group.
   this CR added are tracked in `status.managedMembers`; members dropped from
   `spec.members[]` are pruned only if their stored user UUID still matches and no
   other live
-  `KeycloakGroupMembership` for the same defaulted `groupRef` and matching
+  `GroupMembership` for the same defaulted `groupRef` and matching
   `instanceRef` declares the same email. The peer check is spec-based and
   fail-safe: a peer does not need to have reconciled yet or written
   `status.managedMembers[]` to block removal, because otherwise normal reconcile
@@ -591,13 +608,13 @@ unrelated replacement group.
 **Two complementary delegation planes.**
 
 - **Keycloak-console delegation** remains FGAP v2 through
-  `KeycloakGroup.spec.custodians[]`: the controller grants
+  `Group.spec.custodians[]`: the controller grants
   `custodians/<role>` members the Keycloak-native ability to manage the matching
   `roles/<role>` group directly in the console. The HOL-1457 Project component
   migration will seed project owners into
   `projects/<name>/custodians/{owner,editor,viewer}` so the console-side
   delegation path is live for the generated project scaffold.
-- **Kubernetes-API delegation** is `KeycloakGroupMembership` in the target
+- **Kubernetes-API delegation** is `GroupMembership` in the target
   group's namespace. A namespace owner can grant project owners/editor/custodian
   personas RBAC to create/update membership CRs there once ADR-24's
   rendered-object protection policy enables write aggregation. This realizes
@@ -609,19 +626,19 @@ unrelated replacement group.
 **Removal of user-side membership.** HOL-1435 identified the security flaw in the
 former user-owned membership field: a user CR could self-assert group membership
 with no group-owner double binding, so membership was authorized by the user
-namespace alone. `KeycloakGroupMembership` moves the write surface to the
+namespace alone. `GroupMembership` moves the write surface to the
 group's namespace and, for cross-namespace targets, adds the referent-owner
 `ReferenceGrant`.
 
 The migration is intentionally simple for the pre-production platform. First,
 move generated control-plane CUE from user-owned group entries to
-`KeycloakGroupMembership` objects. Then roll out the controller/API version that
+`GroupMembership` objects. Then roll out the controller/API version that
 removes user-side membership management. Apply ordering matters: render/apply the
 CUE migration that creates membership CRs before the API phase removes the user
 field, so the old controller prunes its tracked memberships, the membership CRs
 re-add the seeded owner memberships, and the edges remain declared under the new
 Kind. The rollout gate is explicit: before applying the API/controller version
-that removes the user field, every live `KeycloakUser` must have an empty or
+that removes the user field, every live `User` must have an empty or
 absent legacy `status.managedGroups`:
 
 ```bash
@@ -670,29 +687,29 @@ role on a *different* (project) client would surface in **that** client's token,
 whose token the consumer reads**:
 
 The **authoritative declaration** of which consumer client each role binds on is a
-single field — **`KeycloakGroup.clientRoleBindings`** (it lists one or more
-consumer `clientId`s), owned by the `KeycloakGroup` because the group owns the role
-groups. A `KeycloakClient` does **not** own this binding; it only opts **its own**
+single field — **`Group.clientRoleBindings`** (it lists one or more
+consumer `clientId`s), owned by the `Group` because the group owns the role
+groups. A `Client` does **not** own this binding; it only opts **its own**
 token in via `emitProjectRolesInGroupsClaim` (ensuring its own mapper). This keeps
 one owner for the binding even when, as in the Quay case, **no project
-`KeycloakClient` exists at all**:
+`Client` exists at all**:
 
 - **For the Quay use case** (`syncedTeams[].oidcGroup` reads Quay's token): the
-  `KeycloakGroup` lists `clientId: https://quay.holos.internal` in its
+  `Group` lists `clientId: https://quay.holos.internal` in its
   `clientRoles` (the implemented field; see the example above), so each
   `roles/<role>` group is assigned a **client role `my-project-<role>` on the Quay
   client** — the client the existing `quay-client-roles` mapper already serves. A
   member of `roles/owner` thereby holds the `my-project-owner` Quay-client role
   (via Keycloak's group → role assignment), and the already-deployed
   `quay-client-roles` mapper emits `my-project-owner` into Quay's `groups` claim
-  with **no Quay-side or new-mapper change** and **no project `KeycloakClient`**.
+  with **no Quay-side or new-mapper change** and **no project `Client`**.
   This is the join the "no Quay-side change" consequence rests on, and it is
   **implemented as of HOL-1350** (Revision 4): the group reconciler resolves the
   named `clientId`, ensures the project-prefixed role on it, and assigns it without
   seizing the client object.
 - **For a project's own service** (its token must carry its own role): the
-  `KeycloakGroup` lists that project `KeycloakClient`'s `clientId` in
-  `clientRoleBindings`, and the `KeycloakClient` sets
+  `Group` lists that project `Client`'s `clientId` in
+  `clientRoleBindings`, and the `Client` sets
   `emitProjectRolesInGroupsClaim: true` so its reconciler ensures an
   `oidc-usermodel-client-role-mapper` scoped to **its own** `clientId` is present
   (the `quay-client-roles` shape, retargeted) and the role surfaces in **that**
@@ -727,9 +744,9 @@ controller-claimed.)
 The client-role mechanism reuses an **already-deployed mapper** with no new realm
 feature, which is why it is preferred.
 
-### `KeycloakClient` — the per-project OIDC client named by its URL (AC #5)
+### `Client` — the per-project OIDC client named by its URL (AC #5)
 
-A `KeycloakClient` manages one project OIDC client and the `groups`-claim wiring
+A `Client` manages one project OIDC client and the `groups`-claim wiring
 that carries the project's role groups into that client's tokens. The client is
 **named by its URL** — its `clientId` is the service URL (e.g.
 `https://quay.holos.internal`), matching the platform's own convention where the
@@ -739,7 +756,7 @@ real Quay `clientId` **is** `https://quay.holos.internal`
 
 ```yaml
 apiVersion: keycloak.holos.run/v1alpha1
-kind: KeycloakClient
+kind: Client
 metadata:
   name: my-app
   namespace: my-project
@@ -761,11 +778,11 @@ spec:
   # Opt THIS client's token into carrying project role values: when true the
   # reconciler ensures an oidc-usermodel-client-role-mapper scoped to THIS clientId
   # is present, so any my-project-<role> client role assigned on this client (by a
-  # KeycloakGroup.clientRoleBindings entry naming this clientId) surfaces in this
+  # Group.clientRoleBindings entry naming this clientId) surfaces in this
   # client's groups claim. This is only the mapper wiring on this client — the
   # AUTHORITATIVE binding of which role lives on which consumer client is owned by
-  # KeycloakGroup.clientRoleBindings (see "claim value" above), NOT here, because
-  # the ADR-19 Quay consumer needs no project KeycloakClient at all.
+  # Group.clientRoleBindings (see "claim value" above), NOT here, because
+  # the ADR-19 Quay consumer needs no project Client at all.
   emitProjectRolesInGroupsClaim: true
   # For a confidential client, where to deliver the generated secret — a
   # generate-once, create-if-absent Secret per secret-handling.md, never committed.
@@ -789,31 +806,31 @@ status:
       reason: SecretDelivered
 ```
 
-The `KeycloakClient` reconciler creates the client; when
+The `Client` reconciler creates the client; when
 `emitProjectRolesInGroupsClaim` is set it ensures an
 `oidc-usermodel-client-role-mapper` scoped to **this** `clientId` is present (the
 `quay-client-roles` precedent) so project roles assigned on this client surface in
 its token — but it does **not** own which roles bind where (that is
-`KeycloakGroup.clientRoleBindings`). For `type: confidential` it delivers the
+`Group.clientRoleBindings`). For `type: confidential` it delivers the
 generated client secret into the project namespace as runtime-created,
 never-committed material ([secret-handling.md](../../holos/docs/secret-handling.md)),
 mirroring the platform's `quay-oidc` bootstrap.
 
-### `KeycloakClientRole` and `KeycloakRealmRole` (AC #5)
+### `ClientRole` and `RealmRole` (AC #5)
 
-A `KeycloakClientRole` is a single client role scoped to one client; a
-`KeycloakRealmRole` carries a realm role and the **realm-role → client-role**
+A `ClientRole` is a single client role scoped to one client; a
+`RealmRole` carries a realm role and the **realm-role → client-role**
 mapping (a Keycloak composite role) that lets a broad organizational role compose
 down onto a service. These are unchanged in intent from Revision 1, now bound to a
-`KeycloakInstance` and made concrete.
+`Instance` and made concrete.
 
 > **Note (Revision 7, HOL-1421):** The "disjoint by construction" framing below
 > relied on the now-removed project-prefix reservation. The controller no longer
 > reserves or rewrites role names. Be precise about what the retained claim model
 > covers: the per-CR **claim/`Conflict`** model protects a CR's **own claimed
-> Keycloak object** — the group at a `KeycloakGroup.spec.path`, a client, a user.
+> Keycloak object** — the group at a `Group.spec.path`, a client, a user.
 > It does **not** put a per-role claim boundary around a **directly-referenced**
-> client's roles: when a `KeycloakGroup.spec.clientRoles[]` entry names a client by
+> client's roles: when a `Group.spec.clientRoles[]` entry names a client by
 > `clientId`, the controller **idempotently** ensures that role exists
 > (`CreateClientRoleIfNotExists`) and confers it — two CRs naming the same role on
 > the same client both succeed (last write wins on the assignment), they do **not**
@@ -821,35 +838,35 @@ down onto a service. These are unchanged in intent from Revision 1, now bound to
 > `Conflict`" holds only for a role defined **on a CR's own claimed client**, not
 > for a role created on a foreign client via the direct `clientId` path. (This is
 > why the worked example relies on convention — the Project component emitting
-> distinct `<name>-<role>` names — not on a controller guarantee.) `KeycloakClientRole`
-> / `KeycloakRealmRole` remain unimplemented regardless.
+> distinct `<name>-<role>` names — not on a controller guarantee.) `ClientRole`
+> / `RealmRole` remain unimplemented regardless.
 
 **Single owner of the primitive-role client roles.** To avoid two Kinds claiming
 the same client role, ownership is **disjoint by construction**: the
 `my-project-<role>` client roles that back the project group-claim model — the
 `owner`/`editor`/`viewer` triad on the consumer client — are **created and claimed
-solely by `KeycloakGroup`** (it creates each role on every `clientRoleBindings`
+solely by `Group`** (it creates each role on every `clientRoleBindings`
 client and assigns it to the matching `roles/<role>` group, tracking it in
-`status`). A `KeycloakClientRole` is the **standalone** Kind for a client role that
+`status`). A `ClientRole` is the **standalone** Kind for a client role that
 is **not** part of a group→claim binding (an ad-hoc, directly-granted role); it
-must **not** re-declare a role a `KeycloakGroup` owns (doing so is a `Conflict`
+must **not** re-declare a role a `Group` owns (doing so is a `Conflict`
 under the same per-CR claim model). The two never co-own a role: the group owns the
-primitive triad it surfaces in the claim; `KeycloakClientRole` owns roles outside
+primitive triad it surfaces in the claim; `ClientRole` owns roles outside
 that flow.
 
 ```yaml
 apiVersion: keycloak.holos.run/v1alpha1
-kind: KeycloakClientRole
+kind: ClientRole
 metadata:
   name: my-app-editor
   namespace: my-project
 spec:
   instanceRef: {name: holos-keycloak, namespace: keycloak}
-  clientRef: my-app             # the KeycloakClient this role is scoped to
+  clientRef: my-app             # the Client this role is scoped to
   role: editor                  # owner | editor | viewer (the primitive triad)
 ---
 apiVersion: keycloak.holos.run/v1alpha1
-kind: KeycloakRealmRole
+kind: RealmRole
 metadata:
   name: core-services-developer
   namespace: my-project
@@ -865,22 +882,22 @@ spec:
 ```
 
 Per the *single owner* rule above, the `my-project-<role>` triad is owned by
-`KeycloakGroup`; the standalone `KeycloakClientRole` is **only** for ad-hoc,
-non-group role grants outside that flow, and `KeycloakRealmRole` is for the
+`Group`; the standalone `ClientRole` is **only** for ad-hoc,
+non-group role grants outside that flow, and `RealmRole` is for the
 cross-service "carries a broad role" case. The composite realm-role → client-role
 mapping is a **Keycloak composite role** (not a protocol-mapper change), so it
 composes with — does not fork — the existing realm-role mapper that folds
 realm-role names into `groups`.
 
-### `KeycloakUser` — pre-provision by email + first-login auto-link (AC #5)
+### `User` — pre-provision by email + first-login auto-link (AC #5)
 
-A `KeycloakUser` pre-provisions a person **by email** *only if necessary* and can
+A `User` pre-provisions a person **by email** *only if necessary* and can
 configure the per-user federated identity link used by the first-login auto-link
 flow. It does **not** itself configure the realm or IdP: the **first-login
 auto-link** that links the federated login to the pre-created record (rather than
 creating a duplicate) is **platform realm/IdP configuration** (see *What the
 platform must provide* below) and the CR **assumes is present**. Membership is
-managed separately by `KeycloakGroupMembership`. (**Rev 5 ownership note:** as of
+managed separately by `GroupMembership`. (**Rev 5 ownership note:** as of
 Revision 5 — see *Two-realm topology* below — the `holos` realm's
 `identityProviders[]` are owned by the **holos realm-config keycloak-config-cli
 Job**, not the `KeycloakRealmImport` CR, which keeps owning only `enabled`; the
@@ -889,7 +906,7 @@ first-broker-login *flow* remains realm config, and either way it is **not** a
 
 ```yaml
 apiVersion: keycloak.holos.run/v1alpha1
-kind: KeycloakUser
+kind: User
 metadata:
   name: bob
   namespace: my-project
@@ -916,10 +933,10 @@ status:
       reason: Reconciled
 ```
 
-**What the CR owns.** The `KeycloakUser` reconciler does the **Admin-API
+**What the CR owns.** The `User` reconciler does the **Admin-API
 pre-create-if-absent** (a local user with the given email) and, when declared,
 the specific federated-identity link for that user. It does not grant access;
-membership grants are modeled by `KeycloakGroupMembership`.
+membership grants are modeled by `GroupMembership`.
 
 **What the platform realm/IdP config must provide.** The **auto-link behavior is
 realm-level first-broker-login flow + identity-provider configuration**, which
@@ -939,7 +956,7 @@ first-broker-login flow (**`Detect Existing Broker User`** + **`Automatically Se
 Existing User`**) and the IdP's **`Trust Email`** setting are therefore configured
 by that platform layer — so that when Bob first authenticates through the
 federated IdP, Keycloak matches his email to the pre-created record and **links**
-it instead of creating a second user. The `KeycloakUser` CR **assumes** this
+it instead of creating a second user. The `User` CR **assumes** this
 realm/IdP configuration is present (a documented prerequisite); it does **not**
 reconcile the first-broker-login flow or the IdP itself.
 
@@ -952,7 +969,7 @@ account-takeover vector). The mechanism is therefore safe **only** when the
 federated IdP is trusted to verify email ownership; the realm config and the
 runbook must state that prerequisite explicitly. Pre-create users only when the
 platform needs the identity before first login; membership grants are separate
-`KeycloakGroupMembership` resources. The trust assumption is intrinsic to
+`GroupMembership` resources. The trust assumption is intrinsic to
 email-based auto-link.
 
 ### Two-realm topology: the `esso` enterprise-SSO realm + the `holos` OIDC broker
@@ -997,8 +1014,8 @@ points at the `esso` realm's OIDC endpoints. Its key settings:
 - **`trustEmail: true`** — `esso` is trusted to assert verified email ownership,
   so the broker accepts the asserted email without re-verifying it. This is the
   setting that **enables email-based auto-link** to a pre-provisioned
-  `KeycloakUser` (with the *email-based auto-link security tradeoff* documented
-  in *KeycloakUser* above — safe only because the upstream `esso` IdP is trusted
+  `User` (with the *email-based auto-link security tradeoff* documented
+  in *User* above — safe only because the upstream `esso` IdP is trusted
   to verify email ownership).
 - **`firstBrokerLoginFlowAlias` → a custom auto-link flow** — as built (HOL-1369)
   the broker points at a **custom** (`builtIn: false`) first-broker-login flow,
@@ -1045,7 +1062,7 @@ config-cli-driven mechanism the platform already uses for its own realm — with
 **no dependency on the `holos-controller` API groups** (`keycloak.holos.run` /
 `quay.holos.run`). This is load-bearing: the controller and its CRDs are
 themselves bootstrapped against the `holos` realm (e.g. the
-`svc-holos-controller` admin credential, the `KeycloakInstance`), so making the
+`svc-holos-controller` admin credential, the `Instance`), so making the
 realm/IdP topology depend on the controller would create a **fresh-cluster
 provisioning race** — the realm the controller authenticates against could not
 be brought up until the controller it depends on was already running. Keeping
@@ -1129,7 +1146,7 @@ mechanisms enforce disjointness:
     broker; see *Two-realm topology* above) — and the **Keycloak built-in clients**
     `realm-management` (hosts `realm-admin`/`manage-*`, the prime escalation
     target), `account`, `account-console`, `broker`, `security-admin-console`
-    (HOL-1350): reserving these stops a tenant `KeycloakClient`/`KeycloakGroup`
+    (HOL-1350): reserving these stops a tenant `Client`/`Group`
     from defining or conferring roles on Keycloak's own clients;
   - **realm roles**: `platform-owner`, `platform-editor`, `platform-viewer`;
   - **client roles on a platform client**: the `quay` client's own
@@ -1219,14 +1236,14 @@ mandated for all `holos.run` CRs ([ADR-22](ADR-22.md) guard rail; the
   `+listMapKey=type`, merge-patch on `type`) with the standard **`Accepted`** (the
   spec was understood and claimed), **`Programmed`** (the desired state was written
   into Keycloak), and **`Ready`** (fully provisioned and usable) types, plus
-  Kind-specific extras where useful (e.g. `KeycloakClient`'s `SecretDelivered`,
+  Kind-specific extras where useful (e.g. `Client`'s `SecretDelivered`,
   analogous to Repository's `WebhookConfigured`);
 - a **`status.observedGeneration`** recording the last `spec` generation
   reconciled; and
 - the ADR-22 drift-observability timestamps for external-resource freshness:
-  `KeycloakInstance` carries `lastValidatedTime` only, while
-  `KeycloakGroup`, `KeycloakUser`, `KeycloakClient`, and
-  `KeycloakGroupMembership` carry `lastValidatedTime`, `lastMutatedTime`,
+  `Instance` carries `lastValidatedTime` only, while
+  `Group`, `User`, `Client`, and
+  `GroupMembership` carry `lastValidatedTime`, `lastMutatedTime`,
   `lastMutationReason`, and `lastDriftTime`; and
 - printer columns surfacing `Ready` and the extended `Validated` timestamp.
 
@@ -1256,13 +1273,13 @@ sections are now **historical**; this section records the contract as built.
   names **verbatim** — exactly as declared in the spec. Nothing is added,
   stripped, or required, and **no client ID or role name is reserved or refused**
   by the controller on policy grounds.
-- A `KeycloakClient` may declare **any** `spec.clientId`, including
+- A `Client` may declare **any** `spec.clientId`, including
   previously-reserved IDs (`argocd`, `kargo`, `realm-management`,
   `https://quay.holos.internal`, the Keycloak built-in clients, the esso broker
-  client). A `KeycloakGroup` may declare **any** `spec.path`, including
+  client). A `Group` may declare **any** `spec.path`, including
   previously-reserved paths/prefixes (`platform-*`, `authenticated`,
   `realm_roles`, `default-roles-holos`).
-- A `KeycloakGroup.spec.clientRoles[]` entry may name **any** client by
+- A `Group.spec.clientRoles[]` entry may name **any** client by
   `clientId` and confer **any** role name — there is no Quay-only allowlist, no
   `<project>-<leaf>` exact-match rule, no reserved-role-name refusal, and no
   `project == namespace` check. The reconciler resolves the client, ensures the
@@ -1272,7 +1289,7 @@ sections are now **historical**; this section records the contract as built.
   `status.adopted`, the finalizer + Keycloak-UUID tracking, `ReasonConflict`,
   adopted-release `ReasonReleased`) and all the structural CEL validation markers
   (immutability, `clientRef` XOR `clientId`, confidential-requires-`secretRef`, a
-  `KeycloakClient`'s own `clientRoles` may not set `clientId`).
+  `Client`'s own `clientRoles` may not set `clientId`).
 
 **Where configuration policy lives now.** Naming conventions, reserved prefixes,
 and tenant/platform disjointness are **organizational policy**, not reconciler
@@ -1281,8 +1298,8 @@ mechanics — so they move to Kubernetes **admission control**, evaluated at
 
 - A **`ValidatingAdmissionPolicy`** (built-in, CEL-based, no extra deployment)
   for the rules that are expressible as CEL over the incoming object — e.g.
-  "a `KeycloakGroup.spec.path` in a tenant namespace must start with
-  `projects/<that-namespace>/`", or "a tenant `KeycloakClient.spec.clientId`
+  "a `Group.spec.path` in a tenant namespace must start with
+  `projects/<that-namespace>/`", or "a tenant `Client.spec.clientId`
   may not be one of {`argocd`, `kargo`, `https://quay.holos.internal`, …}".
 - A **`ValidatingAdmissionWebhook` backed by dedicated policy CRs** for rules
   that need state the admission request alone does not carry (cross-object
@@ -1301,7 +1318,7 @@ that work.
   Go reconcilers, not in CRD CEL, so existing CRDs and existing objects are
   unaffected; the controller simply stops rejecting specs it used to refuse.
 - **Previously-refused specs now enter the normal claim/adoption flow.** Any
-  `KeycloakClient` / `KeycloakGroup` that was being held `Ready=False` with reason
+  `Client` / `Group` that was being held `Ready=False` with reason
   `Reserved` (a reserved client ID, a reserved group path/prefix, a
   non-allowlisted direct `clientId`, a non-`<project>-<leaf>` role, or a
   `clientRef` resolving to a reserved client) is, after upgrading to the
@@ -1313,7 +1330,7 @@ that work.
     surfaces **`Conflict`** (not a write, not a seizure) when an **unadopted,
     foreign** object already holds that name unless `spec.adopt` is set.
   - **A directly-referenced client's role** named via a
-    `KeycloakGroup.spec.clientRoles[]` `clientId` entry is **not** behind that
+    `Group.spec.clientRoles[]` `clientId` entry is **not** behind that
     per-role claim boundary: once the group is owned/reconciled, the controller
     **idempotently** ensures the named role on the referenced client and assigns
     it — so a formerly-refused direct-`clientId` grant (e.g. a `<role>` on
@@ -1341,32 +1358,32 @@ that work.
 1. **The existing `holos-controller` binary ([ADR-18](ADR-18.md)) owns a second
    API group, `keycloak.holos.run/v1alpha1`,** reconciled as a **sibling reconciler
    set alongside `quay.holos.run`** ([ADR-19](ADR-19.md)) — not a new binary —
-   against the Keycloak Admin REST API. Its Kinds are **`KeycloakInstance`**,
-   **`KeycloakClient`**, **`KeycloakGroup`**, **`KeycloakUser`**,
-   **`KeycloakGroupMembership`**, **`KeycloakClientRole`**, and
-   **`KeycloakRealmRole`**.
-2. **`KeycloakInstance` is the centrally-managed connection/credential record** for
+   against the Keycloak Admin REST API. Its Kinds are **`Instance`**,
+   **`Client`**, **`Group`**, **`User`**,
+   **`GroupMembership`**, **`ClientRole`**, and
+   **`RealmRole`**.
+2. **`Instance` is the centrally-managed connection/credential record** for
    one Keycloak target: `apiURL` (the Admin API URL, in/out-of/remote-cluster),
    `realm`, a `caBundle` (the controller-wide cross-Kind trust-anchor convention),
    and an admin `credentialsSecretRef` defaulting into the `holos-controller`
    namespace (recommended auth: a confidential service-account client with scoped
    `realm-management` roles, or a realm user with the same). **Multiple instances
-   per cluster** are supported. The name `KeycloakInstance` is chosen because the
+   per cluster** are supported. The name `Instance` is chosen because the
    object models one running instance + the realm the controller operates within.
-3. **Every other Kind references a `KeycloakInstance` via `instanceRef`**, and a
+3. **Every other Kind references a `Instance` via `instanceRef`**, and a
    **cross-namespace** `instanceRef` is authorized by a `security.holos.run`
    `ReferenceGrant` in the instance's (referent) namespace
    ([ADR-22](ADR-22.md), cited not redefined); an ungranted cross-namespace
    reference is rejected (`Ready=False`, `ReferenceNotGranted` — the as-built reason
    name; earlier revisions wrote `RefNotPermitted`), never silently honored.
-4. **`KeycloakGroup` manages a shallow nested group tree**
+4. **`Group` manages a shallow nested group tree**
    `projects/<project>/roles/{owner,editor,viewer}` and
    `projects/<project>/custodians/{owner,editor,viewer}` (native subgroups are
    idiomatic in Keycloak 26.x; kept shallow). **Custodian delegation uses FGAP v2
    `manage-members`/`manage-membership` group scope** (Keycloak ≥ 26.2; platform
    runs 26.6.3) so `custodians/<role>` members manage `roles/<role>` membership in
    Keycloak directly. The `controller`-layer alternative is the Rev 9
-   `KeycloakGroupMembership` Kind: membership CRs are written in the target
+   `GroupMembership` Kind: membership CRs are written in the target
    group's namespace under Kubernetes RBAC, then reconciled into Keycloak. This is
    the concrete realization of the `Updates: ADR-3` change — the platform now
    provisions the groups and delegates the custodian approval; ADR-3's RBAC
@@ -1383,15 +1400,15 @@ that work.
    **full-path Group Membership mapper** (emits a path, not the flat value) and a
    **script mapper** (disabled by default, an avoidable security/operational
    liability) are **rejected**.
-6. **`KeycloakClient` manages a per-project OIDC client named by its URL**
+6. **`Client` manages a per-project OIDC client named by its URL**
    (`clientId: https://my-app.holos.internal`, the platform convention), opts its
    own token into carrying project roles via `emitProjectRolesInGroupsClaim` (the
    per-client mapper on **its own** `clientId`) — while the **authoritative
-   role→consumer-client binding is `KeycloakGroup.clientRoleBindings`**, a single
+   role→consumer-client binding is `Group.clientRoleBindings`**, a single
    owning field that works even when the consumer (the Quay client) has no project
-   `KeycloakClient` — and delivers a confidential client's secret into the
+   `Client` — and delivers a confidential client's secret into the
    project namespace as runtime-created, never-committed material.
-   **`KeycloakUser` pre-provisions a person by email only-if-necessary** and can
+   **`User` pre-provisions a person by email only-if-necessary** and can
    manage that user's federated-identity link; the **first-login auto-link**
    (`Detect Existing Broker User` +
    `Automatically Set Existing User` + `Trust Email`) is **platform realm/IdP config
@@ -1399,14 +1416,14 @@ that work.
    the `holos` realm's `identityProviders[]` are owned by the holos realm-config
    keycloak-config-cli Job and the `KeycloakRealmImport` CR keeps `enabled`), not
    CR state — with the documented email-based-auto-link security tradeoff.
-   Membership belongs on `KeycloakGroupMembership`, whose group-namespace write
+   Membership belongs on `GroupMembership`, whose group-namespace write
    surface and cross-namespace `groupRef` `ReferenceGrant` provide the missing
    double binding.
-   `KeycloakClientRole`/`KeycloakRealmRole` carry the client-scoped triad and the
+   `ClientRole`/`RealmRole` carry the client-scoped triad and the
    realm-role → client-role composite.
 7. **The API-group dependency boundary holds (AC #3):** `api/keycloak/v1alpha1`
    imports **only** `k8s.io/api` / `k8s.io/apimachinery`; it reaches Keycloak
-   solely via the `KeycloakInstance` credential and takes **no** dependency on
+   solely via the `Instance` credential and takes **no** dependency on
    Quay/Kargo/Argo CD or their types. The OIDC group names Quay consumes
    (`syncedTeams`) remain **data referenced by name** — the two groups meet only at
    the claim-name string, preserving [ADR-19](ADR-19.md)'s boundary in reverse.
@@ -1478,7 +1495,7 @@ that work.
   `credentialsSecretRef`, claim-model, status, and metrics conventions — so the
   cost is incremental reconciler code, not new infrastructure. The status stays
   `Proposed`; nothing changes operationally until the CRDs ship and a
-  `KeycloakInstance` + its admin credential are provisioned.
+  `Instance` + its admin credential are provisioned.
 - **A new, security-sensitive admin credential.** A controller that mints clients,
   delivers confidential secrets into project namespaces, provisions groups, and
   pre-creates/auto-links users holds a high-privilege Keycloak Admin-API

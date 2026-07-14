@@ -45,11 +45,11 @@ rules:
 - apiGroups:
   - keycloak.holos.run
   resources:
-  - keycloakclients
-  - keycloakgroupmemberships
-  - keycloakgroups
-  - keycloakinstances
-  - keycloakusers
+  - clients
+  - groupmemberships
+  - groups
+  - instances
+  - users
   verbs:
   - create
   - delete
@@ -61,21 +61,21 @@ rules:
 - apiGroups:
   - keycloak.holos.run
   resources:
-  - keycloakclients/finalizers
-  - keycloakgroupmemberships/finalizers
-  - keycloakgroups/finalizers
-  - keycloakinstances/finalizers
-  - keycloakusers/finalizers
+  - clients/finalizers
+  - groupmemberships/finalizers
+  - groups/finalizers
+  - instances/finalizers
+  - users/finalizers
   verbs:
   - update
 - apiGroups:
   - keycloak.holos.run
   resources:
-  - keycloakclients/status
-  - keycloakgroupmemberships/status
-  - keycloakgroups/status
-  - keycloakinstances/status
-  - keycloakusers/status
+  - clients/status
+  - groupmemberships/status
+  - groups/status
+  - instances/status
+  - users/status
   verbs:
   - get
   - patch

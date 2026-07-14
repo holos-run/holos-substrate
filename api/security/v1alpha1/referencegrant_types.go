@@ -15,7 +15,7 @@ type ReferenceGrantFrom struct {
 	// +kubebuilder:validation:MaxLength=253
 	Group string `json:"group"`
 
-	// Kind is the kind of the referrer (e.g. KeycloakInstance). It is matched
+	// Kind is the kind of the referrer (e.g. Instance). It is matched
 	// exactly and is required.
 	//
 	// +kubebuilder:validation:MinLength=1

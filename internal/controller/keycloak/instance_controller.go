@@ -18,7 +18,7 @@ import (
 	"github.com/holos-run/holos-substrate/internal/keycloak"
 )
 
-// InstanceClient is the seam the KeycloakInstance reconciler drives Keycloak
+// InstanceClient is the seam the Instance reconciler drives Keycloak
 // through. It is the subset of internal/keycloak.Client the reconciler needs —
 // just the realm-reachability probe — named as an interface so tests inject a
 // fake without HTTP. The concrete *keycloak.Client satisfies it.
@@ -31,14 +31,14 @@ type InstanceClient interface {
 
 // InstanceClientFactory builds an InstanceClient from a resolved Keycloak
 // credential, the instance URL/realm, and the CA bundle the instance spec
-// carries. The default factory (NewKeycloakInstanceClient) returns a real
+// carries. The default factory (NewInstanceClient) returns a real
 // *keycloak.Client trusting that bundle; tests substitute a factory that returns
 // a fake, which is how the reconciler is exercised without a live Keycloak or
 // HTTP. The caBundle comes from the spec (not the credential Secret), so it is a
 // separate argument and is never folded into keycloakCredential.
 type InstanceClientFactory func(cred *keycloakCredential, url, realm string, caBundle []byte) InstanceClient
 
-// newKeycloakClient builds a real internal/keycloak client from the credential's
+// newClient builds a real internal/keycloak client from the credential's
 // client_credentials material and the instance's url/realm, trusting the
 // PEM-encoded caBundle (the in-cluster Keycloak's local-CA chain) in addition to
 // the system store. An empty caBundle yields system trust only — unchanged
@@ -46,7 +46,7 @@ type InstanceClientFactory func(cred *keycloakCredential, url, realm string, caB
 // system-trust client so a misconfigured bundle surfaces as the original x509
 // trust error on the Keycloak call rather than a silent nil client; the parse
 // failure is logged. It is shared by both the instance and group factories.
-func newKeycloakClient(cred *keycloakCredential, url, realm string, caBundle []byte) *keycloak.Client {
+func newClient(cred *keycloakCredential, url, realm string, caBundle []byte) *keycloak.Client {
 	creds := keycloak.Credentials{
 		ClientID:     cred.clientID,
 		ClientSecret: cred.clientSecret,
@@ -60,25 +60,25 @@ func newKeycloakClient(cred *keycloakCredential, url, realm string, caBundle []b
 	return c
 }
 
-// NewKeycloakInstanceClient is the production InstanceClientFactory.
-func NewKeycloakInstanceClient(cred *keycloakCredential, url, realm string, caBundle []byte) InstanceClient {
-	return newKeycloakClient(cred, url, realm, caBundle)
+// NewInstanceClient is the production InstanceClientFactory.
+func NewInstanceClient(cred *keycloakCredential, url, realm string, caBundle []byte) InstanceClient {
+	return newClient(cred, url, realm, caBundle)
 }
 
 // Compile-time assertion that the real Keycloak client satisfies the reconciler's
 // seam, so a signature drift in internal/keycloak is caught at build time.
 var _ InstanceClient = (*keycloak.Client)(nil)
 
-// InstanceReconciler reconciles a keycloak.holos.run KeycloakInstance: it
+// InstanceReconciler reconciles a keycloak.holos.run Instance: it
 // resolves the admin credential and caBundle, builds the internal/keycloak
 // client, verifies the target realm is reachable, and reports Ready. The
-// KeycloakInstance models only a connection reference — there is no Keycloak-side
+// Instance models only a connection reference — there is no Keycloak-side
 // object it owns — so it needs no finalizer (Keycloak cleanup is the job of the
 // resource Kinds that create groups/users/clients). Status follows the
 // Gateway-API convention (see conditions.go) and meaningful transitions emit
 // Events.
 type InstanceReconciler struct {
-	// Client is the manager's cached client for the KeycloakInstance CR and status.
+	// Client is the manager's cached client for the Instance CR and status.
 	client.Client
 	// APIReader is the manager's non-caching reader, used to Get the credential
 	// Secret without a cluster-wide Secret cache (the controller holds only get on
@@ -90,11 +90,11 @@ type InstanceReconciler struct {
 	// resolved. Defaults to DefaultControllerNamespace via controllerNamespace().
 	Namespace string
 	// NewClient builds the Keycloak client from a resolved credential. Defaults to
-	// NewKeycloakInstanceClient; tests override it with a fake factory.
+	// NewInstanceClient; tests override it with a fake factory.
 	NewClient InstanceClientFactory
 }
 
-// Reconcile drives a KeycloakInstance toward its desired state: fetch CR →
+// Reconcile drives an Instance toward its desired state: fetch CR →
 // resolve credential → validate caBundle → build client → GetRealm reachability
 // probe → mark Ready with observedGeneration → Status().Patch. Credential and
 // Keycloak errors map to a False condition with an actionable reason and a
@@ -102,7 +102,7 @@ type InstanceReconciler struct {
 func (r *InstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, retErr error) {
 	defer func() { recordReconcile(kindInstance, retErr) }()
 
-	instance := &keycloakv1alpha1.KeycloakInstance{}
+	instance := &keycloakv1alpha1.Instance{}
 	if err := r.Get(ctx, req.NamespacedName, instance); err != nil {
 		// Not found: the CR was deleted. Nothing to do; do not requeue.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -143,7 +143,7 @@ func (r *InstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (r
 // emits a Normal event, and writes status only when something actually changed (a
 // condition flipped or observedGeneration advanced), so a steady-state reconcile
 // does not spin a status/update/event loop.
-func (r *InstanceReconciler) succeed(ctx context.Context, instance *keycloakv1alpha1.KeycloakInstance, reason, message string) (ctrl.Result, error) {
+func (r *InstanceReconciler) succeed(ctx context.Context, instance *keycloakv1alpha1.Instance, reason, message string) (ctrl.Result, error) {
 	now := metav1.Now()
 	instance.Status.LastValidatedTime = &now
 	validationChanged := true
@@ -153,7 +153,7 @@ func (r *InstanceReconciler) succeed(ctx context.Context, instance *keycloakv1al
 		return ctrl.Result{RequeueAfter: keycloakExternalResourceResync}, nil
 	}
 	r.Recorder.Event(instance, corev1.EventTypeNormal, reason, message)
-	log.FromContext(ctx).Info("reconciled KeycloakInstance", "realm", instance.Spec.Realm, "url", instance.Spec.URL)
+	log.FromContext(ctx).Info("reconciled Instance", "realm", instance.Spec.Realm, "url", instance.Spec.URL)
 	if err := r.updateStatus(ctx, instance); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -166,7 +166,7 @@ func (r *InstanceReconciler) succeed(ctx context.Context, instance *keycloakv1al
 // condition changed, to avoid churn) and requeues with the error so the reconcile
 // retries once the operator provides the Secret. A transient API error reading the
 // Secret requeues with backoff without stamping a misleading reason.
-func (r *InstanceReconciler) handleCredentialError(ctx context.Context, instance *keycloakv1alpha1.KeycloakInstance, err error) (ctrl.Result, error) {
+func (r *InstanceReconciler) handleCredentialError(ctx context.Context, instance *keycloakv1alpha1.Instance, err error) (ctrl.Result, error) {
 	if !isMissingCredential(err) {
 		return ctrl.Result{}, err
 	}
@@ -184,7 +184,7 @@ func (r *InstanceReconciler) handleCredentialError(ctx context.Context, instance
 // emitted only when the condition actually changed, so a persistently failing
 // reconcile does not re-emit identical events on every backoff retry — the
 // returned error already drives the requeue.
-func (r *InstanceReconciler) fail(ctx context.Context, instance *keycloakv1alpha1.KeycloakInstance, err error) (ctrl.Result, error) {
+func (r *InstanceReconciler) fail(ctx context.Context, instance *keycloakv1alpha1.Instance, err error) (ctrl.Result, error) {
 	if changed := markNotReady(&instance.Status.Conditions, ReasonKeycloakError, err.Error(), instance.Generation); changed {
 		r.Recorder.Event(instance, corev1.EventTypeWarning, ReasonKeycloakError, err.Error())
 		if statusErr := r.updateStatus(ctx, instance); statusErr != nil {
@@ -196,14 +196,14 @@ func (r *InstanceReconciler) fail(ctx context.Context, instance *keycloakv1alpha
 
 // updateStatus stamps observedGeneration and patches the status subresource from
 // a live merge base. A NotFound (the CR was deleted concurrently) is ignored.
-func (r *InstanceReconciler) updateStatus(ctx context.Context, instance *keycloakv1alpha1.KeycloakInstance) error {
+func (r *InstanceReconciler) updateStatus(ctx context.Context, instance *keycloakv1alpha1.Instance) error {
 	base := instance.DeepCopy()
 	instance.Status.ObservedGeneration = instance.Generation
-	return ctrlshared.PatchStatus(ctx, r.Client, base, instance, "KeycloakInstance")
+	return ctrlshared.PatchStatus(ctx, r.Client, base, instance, "Instance")
 }
 
 // SetupWithManager wires the reconciler into the manager: it watches
-// KeycloakInstance resources, defaults the namespace and client factory if unset,
+// Instance resources, defaults the namespace and client factory if unset,
 // and obtains an event recorder.
 func (r *InstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.APIReader == nil {
@@ -216,9 +216,9 @@ func (r *InstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.Namespace = controllerNamespace()
 	}
 	if r.NewClient == nil {
-		r.NewClient = NewKeycloakInstanceClient
+		r.NewClient = NewInstanceClient
 	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&keycloakv1alpha1.KeycloakInstance{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&keycloakv1alpha1.Instance{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
 }

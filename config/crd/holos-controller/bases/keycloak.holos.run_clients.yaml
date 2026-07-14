@@ -4,17 +4,17 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: keycloakclients.keycloak.holos.run
+  name: clients.keycloak.holos.run
 spec:
   group: keycloak.holos.run
   names:
     categories:
     - holos
     - keycloak
-    kind: KeycloakClient
-    listKind: KeycloakClientList
-    plural: keycloakclients
-    singular: keycloakclient
+    kind: Client
+    listKind: ClientList
+    plural: clients
+    singular: client
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -38,7 +38,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          KeycloakClient is the Schema for the keycloakclients API. It manages one
+          Client is the Schema for the clients API. It manages one
           project OIDC client named by its URL and the group→groups-claim mapping via
           client roles (ADR-20).
         properties:
@@ -61,7 +61,7 @@ spec:
             type: object
           spec:
             description: |-
-              KeycloakClientSpec defines the desired state of a KeycloakClient: one project
+              ClientSpec defines the desired state of a Client: one project
               OIDC client named by its URL, its redirect/web-origin configuration, the
               client roles it defines, the group→groups-claim mapping (via client roles),
               and — for a confidential client — where to deliver the generated secret
@@ -109,12 +109,12 @@ spec:
                 description: |-
                   ClientRoles optionally lists the client roles defined on this client — the
                   primitive owner/editor/viewer triad scoped to this one client. A role group
-                  (KeycloakGroup) assigns one of these, and the per-client
+                  (Group) assigns one of these, and the per-client
                   oidc-usermodel-client-role-mapper emits the role name into the shared groups
                   claim (the group→claim mechanism, ADR-20). Each entry's ClientRef is this
-                  KeycloakClient's own metadata.name (the object name, not the URL-shaped
+                  Client's own metadata.name (the object name, not the URL-shaped
                   clientId — see ClientRoleReference). The role is always defined on THIS
-                  client, so an entry's clientId — meaningful only for KeycloakGroup, where it
+                  client, so an entry's clientId — meaningful only for Group, where it
                   names a foreign target client — is forbidden here: the CEL rule rejects it so
                   an accepted spec never carries a silently-ignored target field.
                 items:
@@ -123,33 +123,33 @@ spec:
                     role named by Role scoped to a Keycloak client. A member of a group carrying
                     this reference holds that client role, which reaches the named client's token
                     via that client's per-client client-role mapper (ADR-20). It is shared by
-                    KeycloakGroup (the roles a group confers) and KeycloakClient (the roles a
+                    Group (the roles a group confers) and Client (the roles a
                     client defines).
 
                     The target client is named by EXACTLY ONE of ClientRef (a same-namespace
-                    KeycloakClient CR) or ClientID (a Keycloak clientId directly). The reconciler is
+                    Client CR) or ClientID (a Keycloak clientId directly). The reconciler is
                     transparent (HOL-1421): a reference may name ANY client and confer ANY role name
                     — the controller reserves and refuses nothing on org-policy grounds. ClientID is
                     the path for conferring a role on a client that has no same-namespace
-                    KeycloakClient CR (e.g. a platform client such as the in-cluster Quay client
+                    Client CR (e.g. a platform client such as the in-cluster Quay client
                     https://quay.holos.internal), so the role surfaces in that client's token via its
                     per-client client-role mapper (ADR-20).
                   properties:
                     clientId:
                       description: |-
                         ClientID names the target Keycloak clientId directly (e.g.
-                        https://quay.holos.internal), bypassing same-namespace KeycloakClient CR
+                        https://quay.holos.internal), bypassing same-namespace Client CR
                         resolution. It is the mechanism for conferring a role on a client that has no
-                        same-namespace KeycloakClient CR (such as a platform client). It may name any
+                        same-namespace Client CR (such as a platform client). It may name any
                         client and confer any role name — the controller reserves nothing (HOL-1421).
                         Mutually exclusive with ClientRef.
                       minLength: 1
                       type: string
                     clientRef:
                       description: |-
-                        ClientRef is the metadata.name of the KeycloakClient resource the role is
+                        ClientRef is the metadata.name of the Client resource the role is
                         scoped to — a Kubernetes object name, not the client's URL-shaped clientId.
-                        The reconciler resolves the named KeycloakClient CR in the referring
+                        The reconciler resolves the named Client CR in the referring
                         resource's namespace and derives the Keycloak clientId from its
                         spec.clientId, mirroring how a Repository resolves its OrganizationRef to an
                         Organization's spec.name (api/quay/v1alpha1). This keeps the reference a
@@ -172,8 +172,8 @@ spec:
                 type: array
                 x-kubernetes-list-type: atomic
                 x-kubernetes-validations:
-                - message: clientRoles on a KeycloakClient may not set clientId; a
-                    client defines roles on itself (use clientRef naming this client)
+                - message: clientRoles on a Client may not set clientId; a client
+                    defines roles on itself (use clientRef naming this client)
                   rule: self.all(r, !has(r.clientId))
               deletionPolicy:
                 description: |-
@@ -195,7 +195,7 @@ spec:
                 type: string
               instanceRef:
                 description: |-
-                  InstanceRef references the KeycloakInstance this client is provisioned in. A
+                  InstanceRef references the Instance this client is provisioned in. A
                   cross-namespace reference (Namespace set to a different namespace) is gated
                   by a security.holos.run ReferenceGrant in the instance's namespace. It is
                   immutable: retargeting a provisioned client to another instance would create
@@ -203,12 +203,12 @@ spec:
                   can no longer reach it), so the target realm is fixed for the client's life.
                 properties:
                   name:
-                    description: Name of the KeycloakInstance resource to target.
+                    description: Name of the Instance resource to target.
                     minLength: 1
                     type: string
                   namespace:
                     description: |-
-                      Namespace of the KeycloakInstance. When omitted the instance is resolved
+                      Namespace of the Instance. When omitted the instance is resolved
                       in the referring resource's own namespace. When set to a different
                       namespace, the cross-namespace reference must be authorized by a
                       security.holos.run ReferenceGrant in the target namespace.
@@ -281,7 +281,7 @@ spec:
               rule: 'self.type == ''confidential'' ? has(self.secretRef) : !has(self.secretRef)'
           status:
             description: |-
-              KeycloakClientStatus defines the observed state of a KeycloakClient, following
+              ClientStatus defines the observed state of a Client, following
               the Gateway-API status convention.
             properties:
               adopted:
@@ -400,7 +400,7 @@ spec:
               observedGeneration:
                 description: |-
                   ObservedGeneration is the most recent generation observed for this
-                  KeycloakClient by the controller.
+                  Client by the controller.
                 format: int64
                 type: integer
             type: object

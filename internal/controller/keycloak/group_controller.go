@@ -28,7 +28,7 @@ import (
 )
 
 // groupFinalizer guards Keycloak-side cleanup: while it is present, deleting the
-// KeycloakGroup CR runs the finalizer (which deletes the Keycloak group only when
+// Group CR runs the finalizer (which deletes the Keycloak group only when
 // this CR created it) before the CR is removed from the API server. Its value is
 // the resource's qualified name so it is unambiguous among any other finalizers.
 const groupFinalizer = "group.keycloak.holos.run/finalizer"
@@ -40,7 +40,7 @@ const groupFinalizer = "group.keycloak.holos.run/finalizer"
 // scope permission) on it (ADR-20, "Custodian delegation — FGAP v2 group scope").
 const adminPermissionsClientID = "admin-permissions"
 
-// GroupClient is the seam the KeycloakGroup reconciler drives Keycloak through.
+// GroupClient is the seam the Group reconciler drives Keycloak through.
 // It is the subset of internal/keycloak.Client's group, client-role, and FGAP v2
 // operations the reconciler needs, named as an interface so tests inject a fake
 // without HTTP. The concrete *keycloak.Client satisfies it.
@@ -73,7 +73,7 @@ type GroupClient interface {
 	// CreateClientRoleIfNotExists creates a client role on the client, treating an
 	// already-existing role as success (idempotent). The group reconciler ensures
 	// the conferred role exists before assigning it on the direct clientId path,
-	// where no KeycloakClient CR is responsible for creating the role.
+	// where no Client CR is responsible for creating the role.
 	CreateClientRoleIfNotExists(ctx context.Context, clientUUID string, role keycloak.ClientRole) error
 	// AssignClientRoleToGroup grants the client role to the group; re-assigning an
 	// already-held role is idempotent on Keycloak's side.
@@ -115,23 +115,23 @@ type GroupClient interface {
 // default factory returns a real *keycloak.Client; tests substitute a fake.
 type GroupClientFactory func(cred *keycloakCredential, url, realm string, caBundle []byte) GroupClient
 
-// NewKeycloakGroupClient is the production GroupClientFactory.
-func NewKeycloakGroupClient(cred *keycloakCredential, url, realm string, caBundle []byte) GroupClient {
-	return newKeycloakClient(cred, url, realm, caBundle)
+// NewGroupClient is the production GroupClientFactory.
+func NewGroupClient(cred *keycloakCredential, url, realm string, caBundle []byte) GroupClient {
+	return newClient(cred, url, realm, caBundle)
 }
 
 // Compile-time assertion that the real Keycloak client satisfies the reconciler's
 // seam.
 var _ GroupClient = (*keycloak.Client)(nil)
 
-// GroupReconciler reconciles a keycloak.holos.run KeycloakGroup against the
-// Keycloak realm of its referenced KeycloakInstance: it ensures the nested group
+// GroupReconciler reconciles a keycloak.holos.run Group against the
+// Keycloak realm of its referenced Instance: it ensures the nested group
 // exists, confers the declared client roles, configures custodian delegation, and
 // on delete runs a finalizer that deletes only a group it created. Status follows
 // the Gateway-API convention and meaningful transitions emit Events.
 type GroupReconciler struct {
-	// Client is the manager's cached client for the KeycloakGroup CR and status,
-	// and for resolving the referenced KeycloakInstance and KeycloakClient CRs.
+	// Client is the manager's cached client for the Group CR and status,
+	// and for resolving the referenced Instance and Client CRs.
 	client.Client
 	// APIReader is the manager's non-caching reader, used to Get the credential
 	// Secret without a cluster-wide Secret cache.
@@ -143,11 +143,11 @@ type GroupReconciler struct {
 	// resolved. Defaults to DefaultControllerNamespace via controllerNamespace().
 	Namespace string
 	// NewClient builds the Keycloak client from a resolved credential. Defaults to
-	// NewKeycloakGroupClient; tests override it with a fake factory.
+	// NewGroupClient; tests override it with a fake factory.
 	NewClient GroupClientFactory
 }
 
-// Reconcile drives a KeycloakGroup toward its desired state. Loop shape: fetch CR
+// Reconcile drives a Group toward its desired state. Loop shape: fetch CR
 // → ensure finalizer → on delete run Keycloak delete then remove finalizer →
 // resolve instance (+ReferenceGrant) → resolve credential →
 // ensure/adopt the nested group (claim model) → confer client roles → configure
@@ -160,7 +160,7 @@ func (r *GroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	logger := log.FromContext(ctx)
 	defer func() { recordReconcile(kindGroup, retErr) }()
 
-	group := &keycloakv1alpha1.KeycloakGroup{}
+	group := &keycloakv1alpha1.Group{}
 	if err := r.Get(ctx, req.NamespacedName, group); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -183,7 +183,7 @@ func (r *GroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 // the Keycloak group and reconciles its roles and custodians. It provisions the
 // group at exactly the declared spec.path, reserving and refusing no paths
 // (HOL-1421).
-func (r *GroupReconciler) reconcileNormal(ctx context.Context, logger logr.Logger, group *keycloakv1alpha1.KeycloakGroup) (ctrl.Result, error) {
+func (r *GroupReconciler) reconcileNormal(ctx context.Context, logger logr.Logger, group *keycloakv1alpha1.Group) (ctrl.Result, error) {
 	instance, result, err := r.resolveInstance(ctx, group)
 	if instance == nil || err != nil {
 		return result, err
@@ -222,7 +222,7 @@ func (r *GroupReconciler) reconcileNormal(ctx context.Context, logger logr.Logge
 // EnsureGroupByPathCreated returns created=false, and the group is re-evaluated
 // against the claim model (reconcileExisting: adopt or Conflict) rather than being
 // silently seized despite spec.adopt=false.
-func (r *GroupReconciler) reconcileCreate(ctx context.Context, logger logr.Logger, kc GroupClient, instance *keycloakv1alpha1.KeycloakInstance, group *keycloakv1alpha1.KeycloakGroup) (ctrl.Result, error) {
+func (r *GroupReconciler) reconcileCreate(ctx context.Context, logger logr.Logger, kc GroupClient, instance *keycloakv1alpha1.Instance, group *keycloakv1alpha1.Group) (ctrl.Result, error) {
 	groupID, created, err := kc.EnsureGroupByPathCreated(ctx, group.Spec.Path)
 	recordKeycloakAPI(opEnsureGroupByPath, err)
 	if err != nil {
@@ -246,7 +246,7 @@ func (r *GroupReconciler) reconcileCreate(ctx context.Context, logger logr.Logge
 // foreign group recreated at the same path, which is a Conflict (never reconciled
 // or deleted) rather than a silent seizure. Otherwise it adopts (spec.adopt,
 // status.Adopted=true, never deleted on removal) or records a terminal Conflict.
-func (r *GroupReconciler) reconcileExisting(ctx context.Context, logger logr.Logger, kc GroupClient, instance *keycloakv1alpha1.KeycloakInstance, group *keycloakv1alpha1.KeycloakGroup) (ctrl.Result, error) {
+func (r *GroupReconciler) reconcileExisting(ctx context.Context, logger logr.Logger, kc GroupClient, instance *keycloakv1alpha1.Instance, group *keycloakv1alpha1.Group) (ctrl.Result, error) {
 	groupID, err := r.resolveGroupID(ctx, kc, group)
 	if err != nil {
 		return r.fail(ctx, group, err)
@@ -285,7 +285,7 @@ func (r *GroupReconciler) reconcileExisting(ctx context.Context, logger logr.Log
 // carries the UUID this CR created (status.GroupID) — the original group was
 // deleted and a foreign one recreated at the same path. The replacement is never
 // reconciled into or deleted; an operator must resolve the collision.
-func (r *GroupReconciler) groupReplaced(ctx context.Context, logger logr.Logger, group *keycloakv1alpha1.KeycloakGroup, actualID string) (ctrl.Result, error) {
+func (r *GroupReconciler) groupReplaced(ctx context.Context, logger logr.Logger, group *keycloakv1alpha1.Group, actualID string) (ctrl.Result, error) {
 	message := fmt.Sprintf("Keycloak group %q now has UUID %q but this resource created UUID %q; the group was replaced out of band and is not reconciled or deleted", group.Spec.Path, actualID, group.Status.GroupID)
 	return r.recordConflict(ctx, logger, group, message)
 }
@@ -293,14 +293,14 @@ func (r *GroupReconciler) groupReplaced(ctx context.Context, logger logr.Logger,
 // recordConflict sets a terminal Conflict condition and emits a Warning, writing
 // status only on a change so an already-recorded conflict does not spin a watch
 // loop.
-func (r *GroupReconciler) recordConflict(ctx context.Context, logger logr.Logger, group *keycloakv1alpha1.KeycloakGroup, message string) (ctrl.Result, error) {
+func (r *GroupReconciler) recordConflict(ctx context.Context, logger logr.Logger, group *keycloakv1alpha1.Group, message string) (ctrl.Result, error) {
 	changed := setConflict(&group.Status.Conditions, message, group.Generation)
 	changed = changed || group.Status.ObservedGeneration != group.Generation
 	if !changed {
 		return ctrl.Result{}, nil
 	}
 	r.Recorder.Event(group, corev1.EventTypeWarning, ReasonConflict, message)
-	logger.Info("KeycloakGroup conflict", "path", group.Spec.Path)
+	logger.Info("Group conflict", "path", group.Spec.Path)
 	if err := r.updateStatus(ctx, group); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -308,7 +308,7 @@ func (r *GroupReconciler) recordConflict(ctx context.Context, logger logr.Logger
 }
 
 // resolveGroupID looks up the leaf group's UUID by its full path.
-func (r *GroupReconciler) resolveGroupID(ctx context.Context, kc GroupClient, group *keycloakv1alpha1.KeycloakGroup) (string, error) {
+func (r *GroupReconciler) resolveGroupID(ctx context.Context, kc GroupClient, group *keycloakv1alpha1.Group) (string, error) {
 	g, err := kc.GetGroupByPath(ctx, group.Spec.Path)
 	recordKeycloakAPI(opGetGroupByPath, err)
 	if err != nil {
@@ -325,7 +325,7 @@ func (r *GroupReconciler) resolveGroupID(ctx context.Context, kc GroupClient, gr
 // reconcile-to-desired-set rather than add-only: a role or custodian removed from
 // the spec is actively unassigned in Keycloak so a downgrade in Kubernetes does
 // not leave a stale privilege active.
-func (r *GroupReconciler) reconcileMembershipThenSucceed(ctx context.Context, logger logr.Logger, kc GroupClient, instance *keycloakv1alpha1.KeycloakInstance, group *keycloakv1alpha1.KeycloakGroup, groupID string, created bool, reason, message string) (ctrl.Result, error) {
+func (r *GroupReconciler) reconcileMembershipThenSucceed(ctx context.Context, logger logr.Logger, kc GroupClient, instance *keycloakv1alpha1.Instance, group *keycloakv1alpha1.Group, groupID string, created bool, reason, message string) (ctrl.Result, error) {
 	// Snapshot the ownership/managed-set status fields before reconciling so a
 	// change to any of them (e.g. a GroupID backfill on an already-current object,
 	// or a pruned role/custodian) is persisted even when Ready and observedGeneration
@@ -398,7 +398,7 @@ func (s *stringSet) sorted() []string {
 // unassigns any role this CR previously managed (recorded in
 // status.managedClientRoles) that is no longer desired — so a role removed from
 // the spec is actively revoked rather than left active (the add-only gap). Each
-// declared entry resolves its target clientId (a same-namespace KeycloakClient CR
+// declared entry resolves its target clientId (a same-namespace Client CR
 // via clientRef, or a named clientId directly via clientId), finds the OIDC
 // client, gets the named client role, and assigns it (the join that makes a member
 // of the group hold the client role the client's role mapper emits into the groups
@@ -406,7 +406,7 @@ func (s *stringSet) sorted() []string {
 // client by clientId and confer any role name — no client or role is reserved or
 // refused on org-policy grounds (HOL-1421). status.managedClientRoles is rewritten
 // to the new desired set so the next reconcile knows what it owns.
-func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient, group *keycloakv1alpha1.KeycloakGroup, groupID string) (bool, error) {
+func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient, group *keycloakv1alpha1.Group, groupID string) (bool, error) {
 	mutated := false
 	// Resolve the desired roles, keyed by managedRoleKey (the NUL-separated
 	// "<clientId>\x00<role>" encoding), to the OIDC client UUID and the role
@@ -422,10 +422,10 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 		if err != nil {
 			return mutated, err
 		}
-		// The direct clientId path names a client that may have no KeycloakClient CR
+		// The direct clientId path names a client that may have no Client CR
 		// of its own (e.g. a platform client), so this reconciler ensures the conferred
 		// role exists below. The clientRef path defers role creation to the referenced
-		// KeycloakClient's own reconciler (get-only resolution). Either path may name
+		// Client's own reconciler (get-only resolution). Either path may name
 		// any client and confer any role name — conferral is transparent (HOL-1421).
 		directTarget := ref.ClientID != ""
 		oidc, err := kc.FindClientByClientID(ctx, clientID)
@@ -437,12 +437,12 @@ func (r *GroupReconciler) conferClientRoles(ctx context.Context, kc GroupClient,
 			return mutated, fmt.Errorf("no Keycloak client %q (from %s) exists", clientID, clientRefDescription(ref))
 		}
 		// Ensure the conferred role exists ONLY on the direct path. A client named
-		// directly by clientId may have no KeycloakClient CR to create the role, so
+		// directly by clientId may have no Client CR to create the role, so
 		// the group reconciler creates it (idempotent). For a clientRef target the
-		// referenced KeycloakClient's own reconciler owns its role vocabulary
+		// referenced Client's own reconciler owns its role vocabulary
 		// (spec.clientRoles); the group must NOT silently expand it, so the role is
 		// resolved get-only and a missing role is a hard error the operator fixes by
-		// declaring it on the KeycloakClient.
+		// declaring it on the Client.
 		if directTarget {
 			createRoleErr := kc.CreateClientRoleIfNotExists(ctx, oidc.ID, keycloak.ClientRole{Name: ref.Role})
 			recordKeycloakAPI(opCreateClientRole, createRoleErr)
@@ -619,8 +619,8 @@ func clientRefDescription(ref keycloakv1alpha1.ClientRoleReference) string {
 // resolveClientID resolves a ClientRoleReference to the underlying Keycloak
 // clientId (ADR-20, ClientRoleReference). When ref.ClientID is set it names the
 // Keycloak clientId directly (e.g. conferring a role on a client that has no
-// same-namespace KeycloakClient CR, such as the platform Quay client). Otherwise
-// ref.ClientRef names a same-namespace KeycloakClient CR whose spec.clientId is
+// same-namespace Client CR, such as the platform Quay client). Otherwise
+// ref.ClientRef names a same-namespace Client CR whose spec.clientId is
 // the target, so the reference stays a valid Kubernetes object name even though
 // the Keycloak clientId is a URL. The CRD CEL rule guarantees exactly one of the
 // two is set. The controller reserves no client ID or role name (HOL-1421); the
@@ -631,16 +631,16 @@ func (r *GroupReconciler) resolveClientID(ctx context.Context, namespace string,
 		return ref.ClientID, nil
 	}
 	clientRef := ref.ClientRef
-	kclient := &keycloakv1alpha1.KeycloakClient{}
+	kclient := &keycloakv1alpha1.Client{}
 	key := types.NamespacedName{Namespace: namespace, Name: clientRef}
 	if err := r.Get(ctx, key, kclient); err != nil {
 		if apierrors.IsNotFound(err) {
-			return "", fmt.Errorf("KeycloakClient %s/%s referenced by clientRef does not exist", namespace, clientRef)
+			return "", fmt.Errorf("Client %s/%s referenced by clientRef does not exist", namespace, clientRef)
 		}
-		return "", fmt.Errorf("resolving KeycloakClient %s/%s: %w", namespace, clientRef, err)
+		return "", fmt.Errorf("resolving Client %s/%s: %w", namespace, clientRef, err)
 	}
 	if kclient.Spec.ClientID == "" {
-		return "", fmt.Errorf("KeycloakClient %s/%s has an empty spec.clientId", namespace, clientRef)
+		return "", fmt.Errorf("Client %s/%s has an empty spec.clientId", namespace, clientRef)
 	}
 	return kclient.Spec.ClientID, nil
 }
@@ -666,7 +666,7 @@ const managedCustodianSep = "|"
 // success; on that conflict path the object's UUID is unknown, so the created id
 // recorded for pruning may be empty. The prune therefore deletes by id only when
 // one was captured — the common case where this controller created the objects.
-func (r *GroupReconciler) configureCustodians(ctx context.Context, kc GroupClient, group *keycloakv1alpha1.KeycloakGroup, groupID string) (bool, error) {
+func (r *GroupReconciler) configureCustodians(ctx context.Context, kc GroupClient, group *keycloakv1alpha1.Group, groupID string) (bool, error) {
 	mutated := false
 	prev := parseManagedCustodians(group.Status.ManagedCustodians)
 
@@ -903,7 +903,7 @@ func (r *GroupReconciler) resolvePermissionID(ctx context.Context, kc GroupClien
 // release must prune them explicitly (it does not delete the surviving group). A
 // Keycloak error during cleanup fails the reconcile and requeues, so the finalizer
 // is not removed until cleanup succeeds.
-func (r *GroupReconciler) reconcileDelete(ctx context.Context, logger logr.Logger, group *keycloakv1alpha1.KeycloakGroup) (ctrl.Result, error) {
+func (r *GroupReconciler) reconcileDelete(ctx context.Context, logger logr.Logger, group *keycloakv1alpha1.Group) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(group, groupFinalizer) {
 		return ctrl.Result{}, nil
 	}
@@ -1017,7 +1017,7 @@ func (r *GroupReconciler) reconcileDelete(ctx context.Context, logger logr.Logge
 // not deleted so its role mappings must be removed explicitly. (For a created group
 // the group delete cascades its role mappings, so this is not called there.) The
 // caller persists the cleared status by removing the finalizer.
-func (r *GroupReconciler) pruneManagedClientRoles(ctx context.Context, kc GroupClient, group *keycloakv1alpha1.KeycloakGroup, groupID string) error {
+func (r *GroupReconciler) pruneManagedClientRoles(ctx context.Context, kc GroupClient, group *keycloakv1alpha1.Group, groupID string) error {
 	for _, entry := range group.Status.ManagedClientRoles {
 		clientID, roleName, ok := splitManagedRole(entry)
 		if !ok {
@@ -1056,7 +1056,7 @@ func (r *GroupReconciler) pruneManagedClientRoles(ctx context.Context, kc GroupC
 // the role group, so deleting the role group does not cascade them — they must be
 // pruned explicitly on EVERY delete path (created, adopted, gone, or replaced) or
 // they leak. The caller persists the cleared status by removing the finalizer.
-func (r *GroupReconciler) pruneManagedCustodians(ctx context.Context, kc GroupClient, group *keycloakv1alpha1.KeycloakGroup) error {
+func (r *GroupReconciler) pruneManagedCustodians(ctx context.Context, kc GroupClient, group *keycloakv1alpha1.Group) error {
 	if len(group.Status.ManagedCustodians) == 0 {
 		return nil
 	}
@@ -1100,7 +1100,7 @@ func (r *GroupReconciler) pruneManagedCustodians(ctx context.Context, kc GroupCl
 	return nil
 }
 
-// resolveInstance resolves the KeycloakInstance referenced by the group's
+// resolveInstance resolves the Instance referenced by the group's
 // instanceRef. When the reference crosses a namespace boundary it enforces a
 // security.holos.run ReferenceGrant in the instance's namespace; a denied
 // reference sets Ready=False (reason ReferenceNotGranted) and requeues. A missing
@@ -1108,7 +1108,7 @@ func (r *GroupReconciler) pruneManagedCustodians(ctx context.Context, kc GroupCl
 // requeues. On success it returns the resolved instance and a zero result; on any
 // non-success path it returns a nil instance plus the result/error the caller
 // should return verbatim.
-func (r *GroupReconciler) resolveInstance(ctx context.Context, group *keycloakv1alpha1.KeycloakGroup) (*keycloakv1alpha1.KeycloakInstance, ctrl.Result, error) {
+func (r *GroupReconciler) resolveInstance(ctx context.Context, group *keycloakv1alpha1.Group) (*keycloakv1alpha1.Instance, ctrl.Result, error) {
 	ref := group.Spec.InstanceRef
 	instanceNamespace := ref.Namespace
 	if instanceNamespace == "" {
@@ -1120,53 +1120,53 @@ func (r *GroupReconciler) resolveInstance(ctx context.Context, group *keycloakv1
 		allowed, err := referencegrant.Allowed(ctx, r.Client,
 			referencegrant.FromRef{
 				Group:     keycloakv1alpha1.GroupVersion.Group,
-				Kind:      "KeycloakGroup",
+				Kind:      "Group",
 				Namespace: group.Namespace,
 			},
 			referencegrant.ToRef{
 				Group:     keycloakv1alpha1.GroupVersion.Group,
-				Kind:      "KeycloakInstance",
+				Kind:      "Instance",
 				Namespace: instanceNamespace,
 				Name:      ref.Name,
 			},
 		)
 		if err != nil {
-			return nil, ctrl.Result{}, fmt.Errorf("checking ReferenceGrant for KeycloakInstance %s/%s: %w", instanceNamespace, ref.Name, err)
+			return nil, ctrl.Result{}, fmt.Errorf("checking ReferenceGrant for Instance %s/%s: %w", instanceNamespace, ref.Name, err)
 		}
 		if !allowed {
 			// A missing grant is recoverable: creating the grant later must unblock
 			// the group. Use notReady (recoverable, requeue + watch-driven recovery),
 			// not reject (terminal), so it self-heals when the grant appears.
-			message := fmt.Sprintf("cross-namespace reference to KeycloakInstance %s/%s is not authorized by a security.holos.run ReferenceGrant", instanceNamespace, ref.Name)
+			message := fmt.Sprintf("cross-namespace reference to Instance %s/%s is not authorized by a security.holos.run ReferenceGrant", instanceNamespace, ref.Name)
 			result, rerr := r.notReady(ctx, group, ReasonReferenceNotGranted, message)
 			return nil, result, rerr
 		}
 	}
 
-	instance := &keycloakv1alpha1.KeycloakInstance{}
+	instance := &keycloakv1alpha1.Instance{}
 	key := types.NamespacedName{Namespace: instanceNamespace, Name: ref.Name}
 	if err := r.Get(ctx, key, instance); err != nil {
 		if apierrors.IsNotFound(err) {
-			message := fmt.Sprintf("referenced KeycloakInstance %s/%s does not exist", instanceNamespace, ref.Name)
+			message := fmt.Sprintf("referenced Instance %s/%s does not exist", instanceNamespace, ref.Name)
 			result, rerr := r.notReady(ctx, group, ReasonInstanceNotReady, message)
 			return nil, result, rerr
 		}
-		return nil, ctrl.Result{}, fmt.Errorf("resolving KeycloakInstance %s/%s: %w", instanceNamespace, ref.Name, err)
+		return nil, ctrl.Result{}, fmt.Errorf("resolving Instance %s/%s: %w", instanceNamespace, ref.Name, err)
 	}
 	if !instanceReady(instance) {
-		message := fmt.Sprintf("referenced KeycloakInstance %s/%s is not Ready", instanceNamespace, ref.Name)
+		message := fmt.Sprintf("referenced Instance %s/%s is not Ready", instanceNamespace, ref.Name)
 		result, rerr := r.notReady(ctx, group, ReasonInstanceNotReady, message)
 		return nil, result, rerr
 	}
 	return instance, ctrl.Result{}, nil
 }
 
-// instanceReady reports whether the KeycloakInstance's Ready condition is True AND
+// instanceReady reports whether the Instance's Ready condition is True AND
 // reflects the instance's current generation. Requiring the condition's
 // observedGeneration to match the instance generation prevents a stale Ready=True
 // (left over from an older spec whose new URL/realm/credential has not been
 // accepted yet) from letting a group reconcile against an unverified instance.
-func instanceReady(instance *keycloakv1alpha1.KeycloakInstance) bool {
+func instanceReady(instance *keycloakv1alpha1.Instance) bool {
 	return ctrlshared.GenerationReady(instance.Status.Conditions, ConditionReady, instance.Generation)
 }
 
@@ -1177,7 +1177,7 @@ func instanceReady(instance *keycloakv1alpha1.KeycloakInstance) bool {
 // ManagedCustodians): a backfill or prune that does not flip Ready or bump the
 // generation must still be persisted, otherwise the round-1 ownership/pruning fixes
 // would be silently dropped on an already-current object.
-func (r *GroupReconciler) succeed(ctx context.Context, logger logr.Logger, group *keycloakv1alpha1.KeycloakGroup, reason, message string, extraChanged bool) (ctrl.Result, error) {
+func (r *GroupReconciler) succeed(ctx context.Context, logger logr.Logger, group *keycloakv1alpha1.Group, reason, message string, extraChanged bool) (ctrl.Result, error) {
 	validationChanged := true
 	changed := markReady(&group.Status.Conditions, reason, message, group.Generation)
 	changed = changed || extraChanged || validationChanged || group.Status.ObservedGeneration != group.Generation
@@ -1185,14 +1185,14 @@ func (r *GroupReconciler) succeed(ctx context.Context, logger logr.Logger, group
 		return ctrl.Result{RequeueAfter: keycloakExternalResourceResync}, nil
 	}
 	r.Recorder.Event(group, corev1.EventTypeNormal, reason, message)
-	logger.Info("reconciled KeycloakGroup", "path", group.Spec.Path, "reason", reason)
+	logger.Info("reconciled Group", "path", group.Spec.Path, "reason", reason)
 	if err := r.updateStatus(ctx, group); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: keycloakExternalResourceResync}, nil
 }
 
-func (r *GroupReconciler) stampMutation(group *keycloakv1alpha1.KeycloakGroup) {
+func (r *GroupReconciler) stampMutation(group *keycloakv1alpha1.Group) {
 	now, reason, drift := ctrlshared.MutationStamp(group.Status.ObservedGeneration, group.Generation, groupReady(group), false)
 	group.Status.LastMutatedTime = &now
 	group.Status.LastMutationReason = keycloakv1alpha1.MutationReason(reason)
@@ -1203,13 +1203,13 @@ func (r *GroupReconciler) stampMutation(group *keycloakv1alpha1.KeycloakGroup) {
 
 // notReady records a recoverable not-ready condition (Programmed/Ready False,
 // Accepted untouched) for a declarative dependency that is not yet satisfied — the
-// referenced KeycloakInstance is missing or not Ready, or a cross-namespace
+// referenced Instance is missing or not Ready, or a cross-namespace
 // ReferenceGrant is absent — and requeues on the requeueDependency backoff so the
 // reconcile retries once the dependency appears (backstopping the watch-driven
 // recovery SetupWithManager wires). It writes status + emits a Warning only on a
 // change, so a persistently-unsatisfied dependency does not re-emit identical
 // events on every retry.
-func (r *GroupReconciler) notReady(ctx context.Context, group *keycloakv1alpha1.KeycloakGroup, reason, message string) (ctrl.Result, error) {
+func (r *GroupReconciler) notReady(ctx context.Context, group *keycloakv1alpha1.Group, reason, message string) (ctrl.Result, error) {
 	if changed := markNotReady(&group.Status.Conditions, reason, message, group.Generation); changed {
 		r.Recorder.Event(group, corev1.EventTypeWarning, reason, message)
 		if err := r.updateStatus(ctx, group); err != nil {
@@ -1222,7 +1222,7 @@ func (r *GroupReconciler) notReady(ctx context.Context, group *keycloakv1alpha1.
 // handleCredentialError maps a credential-resolution error to a reconcile result,
 // mirroring the instance reconciler: a missing Secret/key sets CredentialsNotFound
 // and requeues; a transient API error requeues with backoff.
-func (r *GroupReconciler) handleCredentialError(ctx context.Context, group *keycloakv1alpha1.KeycloakGroup, err error) (ctrl.Result, error) {
+func (r *GroupReconciler) handleCredentialError(ctx context.Context, group *keycloakv1alpha1.Group, err error) (ctrl.Result, error) {
 	if !isMissingCredential(err) {
 		return ctrl.Result{}, err
 	}
@@ -1237,7 +1237,7 @@ func (r *GroupReconciler) handleCredentialError(ctx context.Context, group *keyc
 
 // fail records a Keycloak error as a False condition + Warning event and returns
 // the error so the request requeues with backoff, writing status only on a change.
-func (r *GroupReconciler) fail(ctx context.Context, group *keycloakv1alpha1.KeycloakGroup, err error) (ctrl.Result, error) {
+func (r *GroupReconciler) fail(ctx context.Context, group *keycloakv1alpha1.Group, err error) (ctrl.Result, error) {
 	if changed := markNotReady(&group.Status.Conditions, ReasonKeycloakError, err.Error(), group.Generation); changed {
 		r.Recorder.Event(group, corev1.EventTypeWarning, ReasonKeycloakError, err.Error())
 		if statusErr := r.updateStatus(ctx, group); statusErr != nil {
@@ -1249,7 +1249,7 @@ func (r *GroupReconciler) fail(ctx context.Context, group *keycloakv1alpha1.Keyc
 
 // removeFinalizer drops the group finalizer and persists the change so the API
 // server can delete the CR.
-func (r *GroupReconciler) removeFinalizer(ctx context.Context, group *keycloakv1alpha1.KeycloakGroup) (ctrl.Result, error) {
+func (r *GroupReconciler) removeFinalizer(ctx context.Context, group *keycloakv1alpha1.Group) (ctrl.Result, error) {
 	controllerutil.RemoveFinalizer(group, groupFinalizer)
 	if err := r.Update(ctx, group); err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
@@ -1259,10 +1259,10 @@ func (r *GroupReconciler) removeFinalizer(ctx context.Context, group *keycloakv1
 
 // updateStatus stamps observedGeneration and patches the status subresource from
 // a live merge base.
-func (r *GroupReconciler) updateStatus(ctx context.Context, group *keycloakv1alpha1.KeycloakGroup) error {
+func (r *GroupReconciler) updateStatus(ctx context.Context, group *keycloakv1alpha1.Group) error {
 	base := group.DeepCopy()
 	group.Status.ObservedGeneration = group.Generation
-	return ctrlshared.PatchStatus(ctx, r.Client, base, group, "KeycloakGroup")
+	return ctrlshared.PatchStatus(ctx, r.Client, base, group, "Group")
 }
 
 // SetupWithManager wires the reconciler into the manager.
@@ -1277,33 +1277,33 @@ func (r *GroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.Namespace = controllerNamespace()
 	}
 	if r.NewClient == nil {
-		r.NewClient = NewKeycloakGroupClient
+		r.NewClient = NewGroupClient
 	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&keycloakv1alpha1.KeycloakGroup{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		// Re-enqueue dependent groups when their referenced KeycloakInstance changes
+		For(&keycloakv1alpha1.Group{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		// Re-enqueue dependent groups when their referenced Instance changes
 		// (e.g. it transitions to Ready), so a group blocked on InstanceNotReady
 		// recovers promptly rather than only on the requeueDependency backoff.
 		Watches(
-			&keycloakv1alpha1.KeycloakInstance{},
+			&keycloakv1alpha1.Instance{},
 			handler.EnqueueRequestsFromMapFunc(r.groupsForInstance),
 		).
 		Complete(r)
 }
 
-// groupsForInstance maps a changed KeycloakInstance to reconcile requests for
-// every KeycloakGroup that references it. A group references the instance either
+// groupsForInstance maps a changed Instance to reconcile requests for
+// every Group that references it. A group references the instance either
 // in its own namespace (instanceRef.namespace empty) or cross-namespace
 // (instanceRef.namespace set to the instance's namespace), so both forms are
 // matched by name + effective namespace.
 func (r *GroupReconciler) groupsForInstance(ctx context.Context, obj client.Object) []ctrlreconcile.Request {
-	instance, ok := obj.(*keycloakv1alpha1.KeycloakInstance)
+	instance, ok := obj.(*keycloakv1alpha1.Instance)
 	if !ok {
 		return nil
 	}
-	var groups keycloakv1alpha1.KeycloakGroupList
+	var groups keycloakv1alpha1.GroupList
 	if err := r.List(ctx, &groups); err != nil {
-		log.FromContext(ctx).Error(err, "listing KeycloakGroups to map a KeycloakInstance change")
+		log.FromContext(ctx).Error(err, "listing Groups to map an Instance change")
 		return nil
 	}
 	var requests []ctrlreconcile.Request

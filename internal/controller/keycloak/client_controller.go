@@ -25,7 +25,7 @@ import (
 	"github.com/holos-run/holos-substrate/internal/referencegrant"
 )
 
-// clientFinalizer guards Keycloak-side cleanup of a KeycloakClient: while
+// clientFinalizer guards Keycloak-side cleanup of a Client: while
 // present, deleting the CR runs the finalizer (which deletes the Keycloak client
 // only when this CR created it) before the CR is removed. Its value is the
 // resource's qualified name.
@@ -44,7 +44,7 @@ const clientRoleMapperName = "client-roles"
 // my-project-{owner,editor,viewer} in the groups claim on login (ADR-20).
 const groupsClaimName = "groups"
 
-// ClientClient is the seam the KeycloakClient reconciler drives Keycloak through.
+// ClientClient is the seam the Client reconciler drives Keycloak through.
 // It is the subset of internal/keycloak.Client's client, client-role,
 // protocol-mapper, and client-secret operations the reconciler needs, named as an
 // interface so tests inject a fake without HTTP. The concrete *keycloak.Client
@@ -82,24 +82,24 @@ type ClientClient interface {
 // default factory returns a real *keycloak.Client; tests substitute a fake.
 type ClientClientFactory func(cred *keycloakCredential, url, realm string, caBundle []byte) ClientClient
 
-// NewKeycloakClientClient is the production ClientClientFactory.
-func NewKeycloakClientClient(cred *keycloakCredential, url, realm string, caBundle []byte) ClientClient {
-	return newKeycloakClient(cred, url, realm, caBundle)
+// NewClientClient is the production ClientClientFactory.
+func NewClientClient(cred *keycloakCredential, url, realm string, caBundle []byte) ClientClient {
+	return newClient(cred, url, realm, caBundle)
 }
 
 // Compile-time assertion that the real Keycloak client satisfies the seam.
 var _ ClientClient = (*keycloak.Client)(nil)
 
-// ClientReconciler reconciles a keycloak.holos.run KeycloakClient against the
-// realm of its referenced KeycloakInstance: it ensures the URL-named OIDC client
+// ClientReconciler reconciles a keycloak.holos.run Client against the
+// realm of its referenced Instance: it ensures the URL-named OIDC client
 // exists with the declared redirect URIs/web origins/type, ensures the declared
 // client roles exist, ensures the client-role→groups-claim mapper exists, and —
 // for a confidential client — delivers the generated secret to the declared
 // secretRef (generate-once). On delete it runs a finalizer that deletes only a
 // client it created. Status follows the Gateway-API convention.
 type ClientReconciler struct {
-	// Client is the manager's cached client for the KeycloakClient CR and status,
-	// for resolving the referenced KeycloakInstance, and for delivering the
+	// Client is the manager's cached client for the Client CR and status,
+	// for resolving the referenced Instance, and for delivering the
 	// confidential client secret into a Secret in the resource's namespace.
 	client.Client
 	// APIReader is the manager's non-caching reader, used to Get the credential
@@ -113,11 +113,11 @@ type ClientReconciler struct {
 	// resolved. Defaults to DefaultControllerNamespace via controllerNamespace().
 	Namespace string
 	// NewClient builds the Keycloak client from a resolved credential. Defaults to
-	// NewKeycloakClientClient; tests override it with a fake factory.
+	// NewClientClient; tests override it with a fake factory.
 	NewClient ClientClientFactory
 }
 
-// Reconcile drives a KeycloakClient toward its desired state: fetch CR → ensure
+// Reconcile drives a Client toward its desired state: fetch CR → ensure
 // finalizer → on delete run Keycloak cleanup then remove finalizer → resolve
 // instance (+ReferenceGrant) → resolve credential → ensure/update the client →
 // ensure client roles + mapper → deliver the confidential secret → mark Ready.
@@ -127,7 +127,7 @@ func (r *ClientReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 	logger := log.FromContext(ctx)
 	defer func() { recordReconcile(kindClient, retErr) }()
 
-	kclient := &keycloakv1alpha1.KeycloakClient{}
+	kclient := &keycloakv1alpha1.Client{}
 	if err := r.Get(ctx, req.NamespacedName, kclient); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -150,7 +150,7 @@ func (r *ClientReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res
 // model (create / adopt / conflict) before converging the client's roles, mapper,
 // and confidential secret delivery. It reconciles exactly the declared clientId,
 // reserving and refusing no client IDs (HOL-1421).
-func (r *ClientReconciler) reconcileNormal(ctx context.Context, logger logr.Logger, kclient *keycloakv1alpha1.KeycloakClient) (ctrl.Result, error) {
+func (r *ClientReconciler) reconcileNormal(ctx context.Context, logger logr.Logger, kclient *keycloakv1alpha1.Client) (ctrl.Result, error) {
 	instance, result, err := r.resolveInstance(ctx, kclient)
 	if instance == nil || err != nil {
 		return result, err
@@ -186,7 +186,7 @@ func (r *ClientReconciler) reconcileNormal(ctx context.Context, logger logr.Logg
 // absent. CreateClient tolerates a 409 (a concurrent actor created the same
 // clientId in the race window after the lookup): on that conflict the client is
 // re-resolved and re-evaluated against the claim model rather than seized.
-func (r *ClientReconciler) reconcileCreate(ctx context.Context, logger logr.Logger, kc ClientClient, kclient *keycloakv1alpha1.KeycloakClient) (ctrl.Result, error) {
+func (r *ClientReconciler) reconcileCreate(ctx context.Context, logger logr.Logger, kc ClientClient, kclient *keycloakv1alpha1.Client) (ctrl.Result, error) {
 	uuid, err := kc.CreateClient(ctx, r.desiredClient(kclient))
 	recordKeycloakAPI(opCreateClient, ignoreConflict(err))
 	if keycloak.IsConflict(err) {
@@ -216,7 +216,7 @@ func (r *ClientReconciler) reconcileCreate(ctx context.Context, logger logr.Logg
 // a foreign client recreated at the same clientId, a Conflict rather than a silent
 // seizure. Otherwise it adopts (spec.adopt) and converges, or records a terminal
 // Conflict without touching the foreign client.
-func (r *ClientReconciler) reconcileExisting(ctx context.Context, logger logr.Logger, kc ClientClient, kclient *keycloakv1alpha1.KeycloakClient, existing *keycloak.OIDCClient) (ctrl.Result, error) {
+func (r *ClientReconciler) reconcileExisting(ctx context.Context, logger logr.Logger, kc ClientClient, kclient *keycloakv1alpha1.Client, existing *keycloak.OIDCClient) (ctrl.Result, error) {
 	if kclient.Status.Created || kclient.Status.Adopted {
 		if kclient.Status.ClientUUID != "" && kclient.Status.ClientUUID != existing.ID {
 			message := fmt.Sprintf("Keycloak client %q now has UUID %q but this resource provisioned UUID %q; the client was replaced out of band and is not reconciled or deleted", kclient.Spec.ClientID, existing.ID, kclient.Status.ClientUUID)
@@ -246,7 +246,7 @@ func (r *ClientReconciler) reconcileExisting(ctx context.Context, logger logr.Lo
 // convergeThenSucceed converges the managed client fields, roles, mapper, and
 // confidential secret delivery (in that order), then marks Ready. It is the
 // single funnel every claim-model success path runs.
-func (r *ClientReconciler) convergeThenSucceed(ctx context.Context, logger logr.Logger, kc ClientClient, kclient *keycloakv1alpha1.KeycloakClient, clientUUID string, existing *keycloak.OIDCClient, created bool, reason, message string) (ctrl.Result, error) {
+func (r *ClientReconciler) convergeThenSucceed(ctx context.Context, logger logr.Logger, kc ClientClient, kclient *keycloakv1alpha1.Client, clientUUID string, existing *keycloak.OIDCClient, created bool, reason, message string) (ctrl.Result, error) {
 	beforeUUID := kclient.Status.ClientUUID
 
 	updated, err := r.updateClient(ctx, kc, kclient, clientUUID, existing)
@@ -273,14 +273,14 @@ func (r *ClientReconciler) convergeThenSucceed(ctx context.Context, logger logr.
 
 // recordConflict sets a terminal Conflict condition and emits a Warning, writing
 // status only on a change so an already-recorded conflict does not spin a loop.
-func (r *ClientReconciler) recordConflict(ctx context.Context, logger logr.Logger, kclient *keycloakv1alpha1.KeycloakClient, message string) (ctrl.Result, error) {
+func (r *ClientReconciler) recordConflict(ctx context.Context, logger logr.Logger, kclient *keycloakv1alpha1.Client, message string) (ctrl.Result, error) {
 	changed := setConflict(&kclient.Status.Conditions, message, kclient.Generation)
 	changed = changed || kclient.Status.ObservedGeneration != kclient.Generation
 	if !changed {
 		return ctrl.Result{}, nil
 	}
 	r.Recorder.Event(kclient, corev1.EventTypeWarning, ReasonConflict, message)
-	logger.Info("KeycloakClient conflict", "clientId", kclient.Spec.ClientID)
+	logger.Info("Client conflict", "clientId", kclient.Spec.ClientID)
 	if err := r.updateStatus(ctx, kclient); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -291,8 +291,8 @@ func (r *ClientReconciler) recordConflict(ctx context.Context, logger logr.Logge
 // public client is created with the PKCE S256 attribute so its authorization-code
 // flow requires PKCE by default (the platform public-client guardrail,
 // keycloak-clients.md); a confidential client carries no PKCE attribute.
-func (r *ClientReconciler) desiredClient(kclient *keycloakv1alpha1.KeycloakClient) keycloak.OIDCClient {
-	public := kclient.Spec.Type == keycloakv1alpha1.KeycloakClientTypePublic
+func (r *ClientReconciler) desiredClient(kclient *keycloakv1alpha1.Client) keycloak.OIDCClient {
+	public := kclient.Spec.Type == keycloakv1alpha1.ClientTypePublic
 	c := keycloak.OIDCClient{
 		ClientID:     kclient.Spec.ClientID,
 		Name:         kclient.Name,
@@ -316,9 +316,9 @@ func (r *ClientReconciler) desiredClient(kclient *keycloakv1alpha1.KeycloakClien
 // gets that attribute actively REMOVED so an adopted/pre-existing confidential
 // client carrying a stale S256 converges to no-PKCE (rather than keeping a stale
 // PKCE requirement the merge-only path would never clear).
-func (r *ClientReconciler) updateClient(ctx context.Context, kc ClientClient, kclient *keycloakv1alpha1.KeycloakClient, clientUUID string, existing *keycloak.OIDCClient) (bool, error) {
+func (r *ClientReconciler) updateClient(ctx context.Context, kc ClientClient, kclient *keycloakv1alpha1.Client, clientUUID string, existing *keycloak.OIDCClient) (bool, error) {
 	enabled := true
-	public := kclient.Spec.Type == keycloakv1alpha1.KeycloakClientTypePublic
+	public := kclient.Spec.Type == keycloakv1alpha1.ClientTypePublic
 	redirects := append([]string(nil), kclient.Spec.RedirectURIs...)
 	origins := append([]string(nil), kclient.Spec.WebOrigins...)
 	desc := kclient.Spec.Description
@@ -347,8 +347,8 @@ func (r *ClientReconciler) updateClient(ctx context.Context, kc ClientClient, kc
 	return true, nil
 }
 
-func clientMatchesDesired(existing *keycloak.OIDCClient, kclient *keycloakv1alpha1.KeycloakClient) bool {
-	public := kclient.Spec.Type == keycloakv1alpha1.KeycloakClientTypePublic
+func clientMatchesDesired(existing *keycloak.OIDCClient, kclient *keycloakv1alpha1.Client) bool {
+	public := kclient.Spec.Type == keycloakv1alpha1.ClientTypePublic
 	if !existing.Enabled || existing.PublicClient != public {
 		return false
 	}
@@ -386,7 +386,7 @@ func sameStringSet(a, b []string) bool {
 // on the client (idempotent create-if-absent). The role name IS the groups-claim
 // value the role mapper emits (ADR-20), so the role set is the claim vocabulary
 // the project client exposes.
-func (r *ClientReconciler) ensureClientRoles(ctx context.Context, kc ClientClient, kclient *keycloakv1alpha1.KeycloakClient, clientUUID string) error {
+func (r *ClientReconciler) ensureClientRoles(ctx context.Context, kc ClientClient, kclient *keycloakv1alpha1.Client, clientUUID string) error {
 	for _, ref := range kclient.Spec.ClientRoles {
 		err := kc.CreateClientRoleIfNotExists(ctx, clientUUID, keycloak.ClientRole{Name: ref.Role})
 		recordKeycloakAPI(opCreateClientRole, err)
@@ -402,7 +402,7 @@ func (r *ClientReconciler) ensureClientRoles(ctx context.Context, kc ClientClien
 // groups claim — the mechanism that surfaces a role group's conferred client role
 // (the my-project-{owner,editor,viewer} claim value) on login (ADR-20). It is the
 // per-client analog of the platform's quay-client-roles mapper.
-func (r *ClientReconciler) ensureRoleMapper(ctx context.Context, kc ClientClient, kclient *keycloakv1alpha1.KeycloakClient, clientUUID string) error {
+func (r *ClientReconciler) ensureRoleMapper(ctx context.Context, kc ClientClient, kclient *keycloakv1alpha1.Client, clientUUID string) error {
 	err := kc.EnsureClientRoleMapper(ctx, clientUUID, clientRoleMapperName, kclient.Spec.ClientID, groupsClaimName)
 	recordKeycloakAPI(opEnsureClientRoleMapper, err)
 	if err != nil {
@@ -417,8 +417,8 @@ func (r *ClientReconciler) ensureRoleMapper(ctx context.Context, kc ClientClient
 // the value stays stable across reconciles (the Runtime Secret Handling
 // guardrail, mirroring the quay-oidc bootstrap). A public client carries no
 // secret, so this is a no-op for it.
-func (r *ClientReconciler) deliverClientSecret(ctx context.Context, kc ClientClient, kclient *keycloakv1alpha1.KeycloakClient, clientUUID string) error {
-	if kclient.Spec.Type != keycloakv1alpha1.KeycloakClientTypeConfidential {
+func (r *ClientReconciler) deliverClientSecret(ctx context.Context, kc ClientClient, kclient *keycloakv1alpha1.Client, clientUUID string) error {
+	if kclient.Spec.Type != keycloakv1alpha1.ClientTypeConfidential {
 		return nil
 	}
 	ref := kclient.Spec.SecretRef
@@ -442,19 +442,19 @@ func (r *ClientReconciler) deliverClientSecret(ctx context.Context, kc ClientCli
 	getErr := r.APIReader.Get(ctx, key, existing)
 	switch {
 	case getErr == nil:
-		// The Secret must be one THIS KeycloakClient owns (controller owner-reference
+		// The Secret must be one THIS Client owns (controller owner-reference
 		// by UID) before it is accepted as delivered — otherwise a name/key collision
 		// with a foreign Secret that happens to carry the same key would make the
 		// resource report Ready while consumers receive the wrong secret. A foreign
 		// Secret (no matching owner reference) is a collision the operator must
 		// resolve, whether or not it carries the key.
 		if !ownedBy(existing, kclient) {
-			return fmt.Errorf("client-secret Secret %s/%s exists but is not owned by this KeycloakClient; refusing to treat a foreign Secret as the delivered client secret", key.Namespace, key.Name)
+			return fmt.Errorf("client-secret Secret %s/%s exists but is not owned by this Client; refusing to treat a foreign Secret as the delivered client secret", key.Namespace, key.Name)
 		}
 		if v, ok := existing.Data[ref.Key]; ok && len(v) > 0 {
 			return nil
 		}
-		return fmt.Errorf("client-secret Secret %s/%s is owned by this KeycloakClient but is missing a non-empty %q key", key.Namespace, key.Name, ref.Key)
+		return fmt.Errorf("client-secret Secret %s/%s is owned by this Client but is missing a non-empty %q key", key.Namespace, key.Name, ref.Key)
 	case !apierrors.IsNotFound(getErr):
 		return fmt.Errorf("checking delivered client-secret Secret %s/%s: %w", key.Namespace, key.Name, getErr)
 	}
@@ -487,11 +487,11 @@ func (r *ClientReconciler) deliverClientSecret(ctx context.Context, kc ClientCli
 }
 
 // ownedBy reports whether secret carries a controller owner reference pointing at
-// this KeycloakClient (matched by UID), i.e. it is a Secret this CR delivered
+// this Client (matched by UID), i.e. it is a Secret this CR delivered
 // rather than a foreign Secret that merely shares the name.
-func ownedBy(secret *corev1.Secret, kclient *keycloakv1alpha1.KeycloakClient) bool {
+func ownedBy(secret *corev1.Secret, kclient *keycloakv1alpha1.Client) bool {
 	for _, ref := range secret.OwnerReferences {
-		if ref.UID == kclient.UID && ref.Kind == "KeycloakClient" {
+		if ref.UID == kclient.UID && ref.Kind == "Client" {
 			return true
 		}
 	}
@@ -508,7 +508,7 @@ func ownedBy(secret *corev1.Secret, kclient *keycloakv1alpha1.KeycloakClient) bo
 // clientId out of band is released, not deleted. The delivered client-secret
 // Secret is garbage-collected by its owner reference, so it needs no explicit
 // cleanup here.
-func (r *ClientReconciler) reconcileDelete(ctx context.Context, logger logr.Logger, kclient *keycloakv1alpha1.KeycloakClient) (ctrl.Result, error) {
+func (r *ClientReconciler) reconcileDelete(ctx context.Context, logger logr.Logger, kclient *keycloakv1alpha1.Client) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(kclient, clientFinalizer) {
 		return ctrl.Result{}, nil
 	}
@@ -581,11 +581,11 @@ func (r *ClientReconciler) reconcileDelete(ctx context.Context, logger logr.Logg
 	return r.removeFinalizer(ctx, kclient)
 }
 
-// resolveInstance resolves the KeycloakInstance referenced by the client's
+// resolveInstance resolves the Instance referenced by the client's
 // instanceRef, enforcing a security.holos.run ReferenceGrant when the reference
 // crosses a namespace boundary. Denied/missing/not-ready paths set Ready=False
 // and requeue; on success it returns the resolved instance and a zero result.
-func (r *ClientReconciler) resolveInstance(ctx context.Context, kclient *keycloakv1alpha1.KeycloakClient) (*keycloakv1alpha1.KeycloakInstance, ctrl.Result, error) {
+func (r *ClientReconciler) resolveInstance(ctx context.Context, kclient *keycloakv1alpha1.Client) (*keycloakv1alpha1.Instance, ctrl.Result, error) {
 	ref := kclient.Spec.InstanceRef
 	instanceNamespace := ref.Namespace
 	if instanceNamespace == "" {
@@ -596,38 +596,38 @@ func (r *ClientReconciler) resolveInstance(ctx context.Context, kclient *keycloa
 		allowed, err := referencegrant.Allowed(ctx, r.Client,
 			referencegrant.FromRef{
 				Group:     keycloakv1alpha1.GroupVersion.Group,
-				Kind:      "KeycloakClient",
+				Kind:      "Client",
 				Namespace: kclient.Namespace,
 			},
 			referencegrant.ToRef{
 				Group:     keycloakv1alpha1.GroupVersion.Group,
-				Kind:      "KeycloakInstance",
+				Kind:      "Instance",
 				Namespace: instanceNamespace,
 				Name:      ref.Name,
 			},
 		)
 		if err != nil {
-			return nil, ctrl.Result{}, fmt.Errorf("checking ReferenceGrant for KeycloakInstance %s/%s: %w", instanceNamespace, ref.Name, err)
+			return nil, ctrl.Result{}, fmt.Errorf("checking ReferenceGrant for Instance %s/%s: %w", instanceNamespace, ref.Name, err)
 		}
 		if !allowed {
-			message := fmt.Sprintf("cross-namespace reference to KeycloakInstance %s/%s is not authorized by a security.holos.run ReferenceGrant", instanceNamespace, ref.Name)
+			message := fmt.Sprintf("cross-namespace reference to Instance %s/%s is not authorized by a security.holos.run ReferenceGrant", instanceNamespace, ref.Name)
 			result, rerr := r.notReady(ctx, kclient, ReasonReferenceNotGranted, message)
 			return nil, result, rerr
 		}
 	}
 
-	instance := &keycloakv1alpha1.KeycloakInstance{}
+	instance := &keycloakv1alpha1.Instance{}
 	key := types.NamespacedName{Namespace: instanceNamespace, Name: ref.Name}
 	if err := r.Get(ctx, key, instance); err != nil {
 		if apierrors.IsNotFound(err) {
-			message := fmt.Sprintf("referenced KeycloakInstance %s/%s does not exist", instanceNamespace, ref.Name)
+			message := fmt.Sprintf("referenced Instance %s/%s does not exist", instanceNamespace, ref.Name)
 			result, rerr := r.notReady(ctx, kclient, ReasonInstanceNotReady, message)
 			return nil, result, rerr
 		}
-		return nil, ctrl.Result{}, fmt.Errorf("resolving KeycloakInstance %s/%s: %w", instanceNamespace, ref.Name, err)
+		return nil, ctrl.Result{}, fmt.Errorf("resolving Instance %s/%s: %w", instanceNamespace, ref.Name, err)
 	}
 	if !instanceReady(instance) {
-		message := fmt.Sprintf("referenced KeycloakInstance %s/%s is not Ready", instanceNamespace, ref.Name)
+		message := fmt.Sprintf("referenced Instance %s/%s is not Ready", instanceNamespace, ref.Name)
 		result, rerr := r.notReady(ctx, kclient, ReasonInstanceNotReady, message)
 		return nil, result, rerr
 	}
@@ -636,7 +636,7 @@ func (r *ClientReconciler) resolveInstance(ctx context.Context, kclient *keycloa
 
 // succeed stamps Ready/Programmed/Accepted true, emits a Normal event, and writes
 // status only when a condition flipped or observedGeneration advanced.
-func (r *ClientReconciler) succeed(ctx context.Context, logger logr.Logger, kclient *keycloakv1alpha1.KeycloakClient, reason, message string, extraChanged bool) (ctrl.Result, error) {
+func (r *ClientReconciler) succeed(ctx context.Context, logger logr.Logger, kclient *keycloakv1alpha1.Client, reason, message string, extraChanged bool) (ctrl.Result, error) {
 	validationChanged := true
 	changed := markReady(&kclient.Status.Conditions, reason, message, kclient.Generation)
 	changed = changed || extraChanged || validationChanged || kclient.Status.ObservedGeneration != kclient.Generation
@@ -644,14 +644,14 @@ func (r *ClientReconciler) succeed(ctx context.Context, logger logr.Logger, kcli
 		return ctrl.Result{RequeueAfter: keycloakExternalResourceResync}, nil
 	}
 	r.Recorder.Event(kclient, corev1.EventTypeNormal, reason, message)
-	logger.Info("reconciled KeycloakClient", "clientId", kclient.Spec.ClientID, "reason", reason)
+	logger.Info("reconciled Client", "clientId", kclient.Spec.ClientID, "reason", reason)
 	if err := r.updateStatus(ctx, kclient); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: keycloakExternalResourceResync}, nil
 }
 
-func (r *ClientReconciler) stampMutation(kclient *keycloakv1alpha1.KeycloakClient) {
+func (r *ClientReconciler) stampMutation(kclient *keycloakv1alpha1.Client) {
 	now, reason, drift := ctrlshared.MutationStamp(kclient.Status.ObservedGeneration, kclient.Generation, clientReady(kclient), false)
 	kclient.Status.LastMutatedTime = &now
 	kclient.Status.LastMutationReason = keycloakv1alpha1.MutationReason(reason)
@@ -660,14 +660,14 @@ func (r *ClientReconciler) stampMutation(kclient *keycloakv1alpha1.KeycloakClien
 	}
 }
 
-func clientReady(kclient *keycloakv1alpha1.KeycloakClient) bool {
+func clientReady(kclient *keycloakv1alpha1.Client) bool {
 	return ctrlshared.GenerationReady(kclient.Status.Conditions, ConditionReady, kclient.Generation)
 }
 
 // notReady records a recoverable not-ready condition for an unsatisfied
 // declarative dependency and requeues on the requeueDependency backoff, writing
 // status + emitting a Warning only on a change.
-func (r *ClientReconciler) notReady(ctx context.Context, kclient *keycloakv1alpha1.KeycloakClient, reason, message string) (ctrl.Result, error) {
+func (r *ClientReconciler) notReady(ctx context.Context, kclient *keycloakv1alpha1.Client, reason, message string) (ctrl.Result, error) {
 	if changed := markNotReady(&kclient.Status.Conditions, reason, message, kclient.Generation); changed {
 		r.Recorder.Event(kclient, corev1.EventTypeWarning, reason, message)
 		if err := r.updateStatus(ctx, kclient); err != nil {
@@ -678,7 +678,7 @@ func (r *ClientReconciler) notReady(ctx context.Context, kclient *keycloakv1alph
 }
 
 // handleCredentialError maps a credential-resolution error to a reconcile result.
-func (r *ClientReconciler) handleCredentialError(ctx context.Context, kclient *keycloakv1alpha1.KeycloakClient, err error) (ctrl.Result, error) {
+func (r *ClientReconciler) handleCredentialError(ctx context.Context, kclient *keycloakv1alpha1.Client, err error) (ctrl.Result, error) {
 	if !isMissingCredential(err) {
 		return ctrl.Result{}, err
 	}
@@ -694,7 +694,7 @@ func (r *ClientReconciler) handleCredentialError(ctx context.Context, kclient *k
 // fail records a Keycloak error as a False condition + Warning event and returns
 // the error so the request requeues with backoff, writing status only on a
 // change.
-func (r *ClientReconciler) fail(ctx context.Context, kclient *keycloakv1alpha1.KeycloakClient, err error) (ctrl.Result, error) {
+func (r *ClientReconciler) fail(ctx context.Context, kclient *keycloakv1alpha1.Client, err error) (ctrl.Result, error) {
 	if changed := markNotReady(&kclient.Status.Conditions, ReasonKeycloakError, err.Error(), kclient.Generation); changed {
 		r.Recorder.Event(kclient, corev1.EventTypeWarning, ReasonKeycloakError, err.Error())
 		if statusErr := r.updateStatus(ctx, kclient); statusErr != nil {
@@ -705,7 +705,7 @@ func (r *ClientReconciler) fail(ctx context.Context, kclient *keycloakv1alpha1.K
 }
 
 // removeFinalizer drops the client finalizer and persists the change.
-func (r *ClientReconciler) removeFinalizer(ctx context.Context, kclient *keycloakv1alpha1.KeycloakClient) (ctrl.Result, error) {
+func (r *ClientReconciler) removeFinalizer(ctx context.Context, kclient *keycloakv1alpha1.Client) (ctrl.Result, error) {
 	controllerutil.RemoveFinalizer(kclient, clientFinalizer)
 	if err := r.Update(ctx, kclient); err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
@@ -715,10 +715,10 @@ func (r *ClientReconciler) removeFinalizer(ctx context.Context, kclient *keycloa
 
 // updateStatus stamps observedGeneration and patches the status subresource from
 // a live merge base.
-func (r *ClientReconciler) updateStatus(ctx context.Context, kclient *keycloakv1alpha1.KeycloakClient) error {
+func (r *ClientReconciler) updateStatus(ctx context.Context, kclient *keycloakv1alpha1.Client) error {
 	base := kclient.DeepCopy()
 	kclient.Status.ObservedGeneration = kclient.Generation
-	return ctrlshared.PatchStatus(ctx, r.Client, base, kclient, "KeycloakClient")
+	return ctrlshared.PatchStatus(ctx, r.Client, base, kclient, "Client")
 }
 
 // SetupWithManager wires the reconciler into the manager.
@@ -733,32 +733,32 @@ func (r *ClientReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.Namespace = controllerNamespace()
 	}
 	if r.NewClient == nil {
-		r.NewClient = NewKeycloakClientClient
+		r.NewClient = NewClientClient
 	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&keycloakv1alpha1.KeycloakClient{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&keycloakv1alpha1.Client{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		// The delivered confidential-client Secret is NOT Owns-watched: the
 		// controller holds only secrets get;create (never list/watch), so it must not
 		// establish a cluster-wide Secret informer. The Secret is generate-once and
 		// reaped by its owner reference on CR deletion, so no Secret watch is needed.
-		// Re-enqueue dependent clients when their referenced KeycloakInstance changes.
+		// Re-enqueue dependent clients when their referenced Instance changes.
 		Watches(
-			&keycloakv1alpha1.KeycloakInstance{},
+			&keycloakv1alpha1.Instance{},
 			handler.EnqueueRequestsFromMapFunc(r.clientsForInstance),
 		).
 		Complete(r)
 }
 
-// clientsForInstance maps a changed KeycloakInstance to reconcile requests for
-// every KeycloakClient that references it (in its own namespace or cross-namespace).
+// clientsForInstance maps a changed Instance to reconcile requests for
+// every Client that references it (in its own namespace or cross-namespace).
 func (r *ClientReconciler) clientsForInstance(ctx context.Context, obj client.Object) []ctrlreconcile.Request {
-	instance, ok := obj.(*keycloakv1alpha1.KeycloakInstance)
+	instance, ok := obj.(*keycloakv1alpha1.Instance)
 	if !ok {
 		return nil
 	}
-	var clients keycloakv1alpha1.KeycloakClientList
+	var clients keycloakv1alpha1.ClientList
 	if err := r.List(ctx, &clients); err != nil {
-		log.FromContext(ctx).Error(err, "listing KeycloakClients to map a KeycloakInstance change")
+		log.FromContext(ctx).Error(err, "listing Clients to map an Instance change")
 		return nil
 	}
 	var requests []ctrlreconcile.Request

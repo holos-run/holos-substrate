@@ -112,7 +112,7 @@ func TestMain(m *testing.M) {
 
 // newInstanceReconciler builds an InstanceReconciler wired to the envtest client
 // and a recording event recorder, injecting the supplied fake via a factory.
-func newInstanceReconciler(fake *fakeKeycloakClient, namespace string) (*InstanceReconciler, *record.FakeRecorder) {
+func newInstanceReconciler(fake *fakeClient, namespace string) (*InstanceReconciler, *record.FakeRecorder) {
 	recorder := record.NewFakeRecorder(64)
 	r := &InstanceReconciler{
 		Client:    shared.k8sClient,
@@ -129,7 +129,7 @@ func newInstanceReconciler(fake *fakeKeycloakClient, namespace string) (*Instanc
 
 // newGroupReconciler builds a GroupReconciler wired to the envtest client and a
 // recording event recorder, injecting the supplied fake via a factory.
-func newGroupReconciler(fake *fakeKeycloakClient, namespace string) (*GroupReconciler, *record.FakeRecorder) {
+func newGroupReconciler(fake *fakeClient, namespace string) (*GroupReconciler, *record.FakeRecorder) {
 	recorder := record.NewFakeRecorder(64)
 	r := &GroupReconciler{
 		Client:    shared.k8sClient,
@@ -146,7 +146,7 @@ func newGroupReconciler(fake *fakeKeycloakClient, namespace string) (*GroupRecon
 
 // newUserReconciler builds a UserReconciler wired to the envtest client and a
 // recording event recorder, injecting the supplied fake via a factory.
-func newUserReconciler(fake *fakeKeycloakClient, namespace string) (*UserReconciler, *record.FakeRecorder) {
+func newUserReconciler(fake *fakeClient, namespace string) (*UserReconciler, *record.FakeRecorder) {
 	recorder := record.NewFakeRecorder(64)
 	r := &UserReconciler{
 		Client:    shared.k8sClient,
@@ -164,7 +164,7 @@ func newUserReconciler(fake *fakeKeycloakClient, namespace string) (*UserReconci
 // newMembershipReconciler builds a MembershipReconciler wired to the envtest
 // client and a recording event recorder, injecting the supplied fake via a
 // factory.
-func newMembershipReconciler(fake *fakeKeycloakClient, namespace string) (*MembershipReconciler, *record.FakeRecorder) {
+func newMembershipReconciler(fake *fakeClient, namespace string) (*MembershipReconciler, *record.FakeRecorder) {
 	recorder := record.NewFakeRecorder(64)
 	r := &MembershipReconciler{
 		Client:    shared.k8sClient,
@@ -181,7 +181,7 @@ func newMembershipReconciler(fake *fakeKeycloakClient, namespace string) (*Membe
 
 // newClientReconciler builds a ClientReconciler wired to the envtest client and a
 // recording event recorder, injecting the supplied fake via a factory.
-func newClientReconciler(fake *fakeKeycloakClient, namespace string) (*ClientReconciler, *record.FakeRecorder) {
+func newClientReconciler(fake *fakeClient, namespace string) (*ClientReconciler, *record.FakeRecorder) {
 	recorder := record.NewFakeRecorder(64)
 	r := &ClientReconciler{
 		Client:    shared.k8sClient,
@@ -196,28 +196,28 @@ func newClientReconciler(fake *fakeKeycloakClient, namespace string) (*ClientRec
 	return r, recorder
 }
 
-// reconcileInstance runs a single Reconcile pass for the named KeycloakInstance.
+// reconcileInstance runs a single Reconcile pass for the named Instance.
 func reconcileInstance(ctx context.Context, r *InstanceReconciler, key client.ObjectKey) (ctrl.Result, error) {
 	return r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 }
 
-// reconcileGroup runs a single Reconcile pass for the named KeycloakGroup.
+// reconcileGroup runs a single Reconcile pass for the named Group.
 func reconcileGroup(ctx context.Context, r *GroupReconciler, key client.ObjectKey) (ctrl.Result, error) {
 	return r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 }
 
-// reconcileUser runs a single Reconcile pass for the named KeycloakUser.
+// reconcileUser runs a single Reconcile pass for the named User.
 func reconcileUser(ctx context.Context, r *UserReconciler, key client.ObjectKey) (ctrl.Result, error) {
 	return r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 }
 
 // reconcileMembership runs a single Reconcile pass for the named
-// KeycloakGroupMembership.
+// GroupMembership.
 func reconcileMembership(ctx context.Context, r *MembershipReconciler, key client.ObjectKey) (ctrl.Result, error) {
 	return r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 }
 
-// reconcileClient runs a single Reconcile pass for the named KeycloakClient.
+// reconcileClient runs a single Reconcile pass for the named Client.
 func reconcileClient(ctx context.Context, r *ClientReconciler, key client.ObjectKey) (ctrl.Result, error) {
 	return r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 }

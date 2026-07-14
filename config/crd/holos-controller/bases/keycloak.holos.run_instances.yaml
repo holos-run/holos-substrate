@@ -4,17 +4,17 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: keycloakinstances.keycloak.holos.run
+  name: instances.keycloak.holos.run
 spec:
   group: keycloak.holos.run
   names:
     categories:
     - holos
     - keycloak
-    kind: KeycloakInstance
-    listKind: KeycloakInstanceList
-    plural: keycloakinstances
-    singular: keycloakinstance
+    kind: Instance
+    listKind: InstanceList
+    plural: instances
+    singular: instance
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -38,7 +38,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          KeycloakInstance is the Schema for the keycloakinstances API. It is the
+          Instance is the Schema for the instances API. It is the
           centrally-managed reference to one Keycloak target and realm the rest of the
           keycloak.holos.run resources reconcile against (ADR-20).
         properties:
@@ -61,13 +61,13 @@ spec:
             type: object
           spec:
             description: |-
-              KeycloakInstanceSpec defines the desired state of a KeycloakInstance: how to
+              InstanceSpec defines the desired state of an Instance: how to
               reach one Keycloak target and realm. It is the single, centrally-managed
               holder of the connection configuration the rest of the keycloak.holos.run
-              Kinds reference via a KeycloakInstanceReference (ADR-20). The design supports
+              Kinds reference via a InstanceReference (ADR-20). The design supports
               multiple instances per cluster (e.g. pre-prod and prod) and a target that is
               in-cluster, out-of-cluster, or in a remote cluster — each is a distinct
-              KeycloakInstance.
+              Instance.
 
               Its only external coupling is the admin credential in CredentialsSecretRef
               plus the optional CABundle trust anchor — never a Keycloak client-library
@@ -117,8 +117,8 @@ spec:
               realm:
                 description: |-
                   Realm is the Keycloak realm this instance targets (e.g. holos). It is
-                  required. A KeycloakInstance binds one realm; targeting a second realm on
-                  the same Keycloak server is a second KeycloakInstance.
+                  required. A Instance binds one realm; targeting a second realm on
+                  the same Keycloak server is a second Instance.
                 minLength: 1
                 type: string
               url:
@@ -138,7 +138,7 @@ spec:
             type: object
           status:
             description: |-
-              KeycloakInstanceStatus defines the observed state of a KeycloakInstance. It
+              InstanceStatus defines the observed state of an Instance. It
               follows the Gateway-API status convention: a slice of standard
               metav1.Conditions plus the observedGeneration the controller last reconciled.
             properties:
@@ -215,7 +215,7 @@ spec:
               observedGeneration:
                 description: |-
                   ObservedGeneration is the most recent generation observed for this
-                  KeycloakInstance by the controller.
+                  Instance by the controller.
                 format: int64
                 type: integer
             type: object

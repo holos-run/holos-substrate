@@ -39,13 +39,13 @@ func ptr(s string) *string { return &s }
 
 // The referrer and target used across the truth-table cases.
 var (
-	defaultFrom = FromRef{Group: "keycloak.holos.run", Kind: "KeycloakInstance", Namespace: "team-a"}
+	defaultFrom = FromRef{Group: "keycloak.holos.run", Kind: "Instance", Namespace: "team-a"}
 	defaultTo   = ToRef{Group: "", Kind: "Secret", Namespace: "team-b", Name: "kc-creds"}
 )
 
 func TestAllowed(t *testing.T) {
 	matchingFrom := securityv1alpha1.ReferenceGrantFrom{
-		Group: "keycloak.holos.run", Kind: "KeycloakInstance", Namespace: "team-a",
+		Group: "keycloak.holos.run", Kind: "Instance", Namespace: "team-a",
 	}
 	unconstrainedTo := securityv1alpha1.ReferenceGrantTo{Group: "", Kind: "Secret"}
 
@@ -73,7 +73,7 @@ func TestAllowed(t *testing.T) {
 		{
 			name: "wrong from-namespace denies",
 			grants: []*securityv1alpha1.ReferenceGrant{grant("g", "team-b",
-				securityv1alpha1.ReferenceGrantFrom{Group: "keycloak.holos.run", Kind: "KeycloakInstance", Namespace: "other"},
+				securityv1alpha1.ReferenceGrantFrom{Group: "keycloak.holos.run", Kind: "Instance", Namespace: "other"},
 				unconstrainedTo)},
 			from: defaultFrom,
 			to:   defaultTo,
@@ -129,7 +129,7 @@ func TestAllowed(t *testing.T) {
 		{
 			name:   "empty referrer namespace fails closed",
 			grants: []*securityv1alpha1.ReferenceGrant{grant("g", "team-b", matchingFrom, unconstrainedTo)},
-			from:   FromRef{Group: "keycloak.holos.run", Kind: "KeycloakInstance", Namespace: ""},
+			from:   FromRef{Group: "keycloak.holos.run", Kind: "Instance", Namespace: ""},
 			to:     defaultTo,
 			want:   false,
 		},
@@ -163,10 +163,10 @@ func TestAllowed(t *testing.T) {
 // To, so the reference is denied.
 func TestAllowedMatchAcrossSeparateEntries(t *testing.T) {
 	g1 := grant("g1", "team-b",
-		securityv1alpha1.ReferenceGrantFrom{Group: "keycloak.holos.run", Kind: "KeycloakInstance", Namespace: "team-a"},
+		securityv1alpha1.ReferenceGrantFrom{Group: "keycloak.holos.run", Kind: "Instance", Namespace: "team-a"},
 		securityv1alpha1.ReferenceGrantTo{Group: "", Kind: "ConfigMap"})
 	g2 := grant("g2", "team-b",
-		securityv1alpha1.ReferenceGrantFrom{Group: "keycloak.holos.run", Kind: "KeycloakInstance", Namespace: "other"},
+		securityv1alpha1.ReferenceGrantFrom{Group: "keycloak.holos.run", Kind: "Instance", Namespace: "other"},
 		securityv1alpha1.ReferenceGrantTo{Group: "", Kind: "Secret"})
 
 	c := fake.NewClientBuilder().
