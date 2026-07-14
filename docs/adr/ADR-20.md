@@ -642,7 +642,7 @@ that removes the user field, every live `User` must have an empty or
 absent legacy `status.managedGroups`:
 
 ```bash
-kubectl get keycloakusers.keycloak.holos.run -A -o json \
+kubectl get users.keycloak.holos.run -A -o json \
   | jq -e '([.items[] | select(((.status.managedGroups // []) | length) > 0) | "\(.metadata.namespace)/\(.metadata.name)"] | length) == 0'
 ```
 

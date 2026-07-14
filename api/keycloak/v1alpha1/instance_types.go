@@ -7,7 +7,7 @@ import (
 // InstanceSpec defines the desired state of an Instance: how to
 // reach one Keycloak target and realm. It is the single, centrally-managed
 // holder of the connection configuration the rest of the keycloak.holos.run
-// Kinds reference via a InstanceReference (ADR-20). The design supports
+// Kinds reference via an InstanceReference (ADR-20). The design supports
 // multiple instances per cluster (e.g. pre-prod and prod) and a target that is
 // in-cluster, out-of-cluster, or in a remote cluster — each is a distinct
 // Instance.
@@ -28,7 +28,7 @@ type InstanceSpec struct {
 	URL string `json:"url"`
 
 	// Realm is the Keycloak realm this instance targets (e.g. holos). It is
-	// required. A Instance binds one realm; targeting a second realm on
+	// required. An Instance binds one realm; targeting a second realm on
 	// the same Keycloak server is a second Instance.
 	//
 	// +kubebuilder:validation:MinLength=1
