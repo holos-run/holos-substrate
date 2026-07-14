@@ -22,7 +22,7 @@ into the Keycloak group ([ADR-20](ADR-20.md)) and the logical Project/Applicatio
 model ([ADR-21](archive/ADR-21.md)), `holos.run` custom resources increasingly need to
 **reference one another across namespace boundaries**. A `keycloak.holos.run`
 `User`, `Group`, or `Client` in a project namespace must name the
-`KeycloakInstance` that owns its realm — and that instance lives in a platform
+`Instance` that owns its realm — and that instance lives in a platform
 namespace the project does not own. Left unconstrained, any namespace could
 reference any object in any other namespace, which is precisely the
 confused-deputy / silent-cross-tenant-access hazard the Kubernetes Gateway API
@@ -71,7 +71,7 @@ reconciler land in later CRD-implementation issues.
   `+listMapKey=type`) a denied cross-namespace reference surfaces through.
 - [ADR-20 — The Keycloak API Group](ADR-20.md): the concrete motivating case — a
   `keycloak.holos.run` `User`/`Group`/`Client` in a project namespace
-  referencing a `KeycloakInstance` in a platform namespace.
+  referencing an `Instance` in a platform namespace.
 - [ADR-2 — Core Platform Principles](ADR-2.md): every platform capability is
   modeled as Kubernetes resources; `ReferenceGrant` is the Kubernetes-native
   expression of cross-namespace reference policy, consistent with that principle.
@@ -108,7 +108,7 @@ referenced. It mirrors Gateway API's `ReferenceGrant` From/To shape:
 
 An illustrative — concrete but not yet field-final — grant authorizing
 `keycloak.holos.run` `User`, `Group`, and `Client` resources in the `my-project`
-namespace to reference a specific `KeycloakInstance` in the `keycloak` namespace,
+namespace to reference a specific `Instance` in the `keycloak` namespace,
 created **in `keycloak`** (the referent namespace):
 
 ```yaml
@@ -130,7 +130,7 @@ spec:
       namespace: my-project
   to:
     - group: keycloak.holos.run
-      kind: KeycloakInstance
+      kind: Instance
       name: holos                # optional; omit to grant all instances here
 ```
 
@@ -183,13 +183,13 @@ incapable:
   the Gateway/Route object-reference cases (an `HTTPRoute` `backendRefs` →
   `Service`, a listener `certificateRefs` → `Secret`, and the like). While an
   implementation *may* extend the kinds it honors, no controller interprets a
-  Gateway grant to authorize a `keycloak.holos.run` `User` → `KeycloakInstance`
+  Gateway grant to authorize a `keycloak.holos.run` `User` → `Instance`
   reference; the `holos-controller` would have to teach itself the same grant
   anyway. Owning the grant makes that interpretation explicit and unambiguous
   rather than overloading another group's primitive.
 - **The platform needs CR-to-CR generality.** The references this convention must
   authorize are between **arbitrary `holos.run` custom resources** — e.g. a
-  `keycloak.holos.run` `User`/`Group`/`Client` referencing a `KeycloakInstance`
+  `keycloak.holos.run` `User`/`Group`/`Client` referencing an `Instance`
   in another namespace, or any future `holos.run` CR referencing another. A
   holos-owned grant generalizes the Gateway-API From/To pattern to these CR-to-CR
   references within the platform's own API group, where the platform controls the
@@ -285,7 +285,7 @@ Rules:
    with no external surface are out of scope.
 7. **Read-only validators:** a reconciler that never mutates the remote system
    carries `lastValidatedTime` only and omits the mutation fields entirely. For
-   example, `KeycloakInstance` checks reachability and credentials but does not
+   example, `Instance` checks reachability and credentials but does not
    change Keycloak state.
 8. **Printer column:** external-resource CRDs SHOULD add an extended `Validated`
    printer column (`type=date`, `priority=1`, JSONPath
@@ -314,8 +314,8 @@ This ADR therefore defines the **Adopt & Preserve** contract for every
 2. **External identity comes from immutable spec fields, never
    `metadata.name`.** The external name or identity is declared in spec and made
    immutable with validation. Current examples are `Organization.spec.name`,
-   `Repository.spec.organizationRef` plus `spec.name`, `KeycloakGroup.spec.path`,
-   `KeycloakUser.spec.email`, and `KeycloakClient.spec.clientId`. This decouples
+   `Repository.spec.organizationRef` plus `spec.name`, `Group.spec.path`,
+   `User.spec.email`, and `Client.spec.clientId`. This decouples
    Kubernetes object naming from remote identity, so a CR can be renamed by
    orphaning and re-adopting the same external resource.
 3. **Deletion behavior is declarative and provenance-aware.** Each mutating
@@ -398,9 +398,9 @@ Rules:
       delete authority; because the new CR acquired the resource by adoption, its
       omitted default remains non-destructive release.
 6. **Exemptions are narrow.** Read-only validators that own nothing, such as
-   `KeycloakInstance`, omit both `spec.adopt` and `spec.deletionPolicy`.
+   `Instance`, omit both `spec.adopt` and `spec.deletionPolicy`.
    Set-membership managers with no single ownable external object, such as
-   `KeycloakGroupMembership`, omit `spec.adopt` but still carry
+   `GroupMembership`, omit `spec.adopt` but still carry
    `spec.deletionPolicy`, because they mutate external membership edges and need
    delete-time preserve/prune semantics.
 7. **New external-resource Kinds inherit this contract.** A new mutating

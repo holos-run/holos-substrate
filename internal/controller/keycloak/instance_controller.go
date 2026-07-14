@@ -210,7 +210,7 @@ func (r *InstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.APIReader = mgr.GetAPIReader()
 	}
 	if r.Recorder == nil {
-		r.Recorder = mgr.GetEventRecorderFor("keycloakinstance-controller")
+		r.Recorder = mgr.GetEventRecorderFor("instance-controller")
 	}
 	if r.Namespace == "" {
 		r.Namespace = controllerNamespace()

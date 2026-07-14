@@ -630,7 +630,7 @@ func TestClientReconcileReferenceGrant(t *testing.T) {
 
 	t.Run("allowed with a grant", func(t *testing.T) {
 		grant := &securityv1alpha1.ReferenceGrant{
-			ObjectMeta: metav1.ObjectMeta{Namespace: instNS, Name: "allow-keycloakclient"},
+			ObjectMeta: metav1.ObjectMeta{Namespace: instNS, Name: "allow-client"},
 			Spec: securityv1alpha1.ReferenceGrantSpec{
 				From: []securityv1alpha1.ReferenceGrantFrom{{
 					Group:     keycloakv1alpha1.GroupVersion.Group,

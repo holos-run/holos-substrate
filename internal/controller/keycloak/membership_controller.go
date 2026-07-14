@@ -603,7 +603,7 @@ func (r *MembershipReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.APIReader = mgr.GetAPIReader()
 	}
 	if r.Recorder == nil {
-		r.Recorder = mgr.GetEventRecorderFor("keycloakgroupmembership-controller")
+		r.Recorder = mgr.GetEventRecorderFor("groupmembership-controller")
 	}
 	if r.Namespace == "" {
 		r.Namespace = controllerNamespace()

@@ -683,13 +683,13 @@ created by either script and must be provisioned by hand:
 > `components/application/<app>/workload/` (the
 > `Deployment`/`Service`/`HTTPRoute`/`ConfigMap`/`ServiceAccount`/`RoleBinding`)
 > and `components/application/<app>/control-plane/` (the Quay `Repository`, the
-> app `KeycloakClient`, the Kargo `Warehouse`/`Stage`, and the Argo CD
+> app `Client`, the Kargo `Warehouse`/`Stage`, and the Argo CD
 > `Application`). The control-plane objects are applied by the operator path
 > (`scripts/apply-projects`, which applies **only** the `control-plane/` subtree).
 > The per-app delivery contract is that the publish step packages **only the
 > `workload/` subtree** as the `<app>-config` artifact the app's Argo CD
 > `Application` syncs — so Argo CD never tries to manage the
-> `Repository`/`KeycloakClient`/Kargo objects or the `Application` that points at
+> `Repository`/`Client`/Kargo objects or the `Application` that points at
 > itself, and the artifact is the project-scoped, namespace-fit bundle the
 > whole-platform render is not. **`scripts/publish` does NOT yet implement this
 > per-app packaging** — it still renders and packages the whole platform tree (the

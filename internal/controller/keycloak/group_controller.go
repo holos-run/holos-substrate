@@ -1271,7 +1271,7 @@ func (r *GroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.APIReader = mgr.GetAPIReader()
 	}
 	if r.Recorder == nil {
-		r.Recorder = mgr.GetEventRecorderFor("keycloakgroup-controller")
+		r.Recorder = mgr.GetEventRecorderFor("group-controller")
 	}
 	if r.Namespace == "" {
 		r.Namespace = controllerNamespace()

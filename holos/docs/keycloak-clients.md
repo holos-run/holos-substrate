@@ -190,7 +190,7 @@ The realm-role and client-role mappers set `id.token.claim`,
 > the `keycloak-config-cli` Job** — it is the platform declaring its **own**
 > realm objects, not policy the controller enforces. The separate
 > **`keycloak.holos.run` controller** ([ADR-20](../../docs/adr/ADR-20.md)) that
-> reconciles tenant-facing `KeycloakClient`/`KeycloakGroup`/… CRs is
+> reconciles tenant-facing `Client`/`Group`/… CRs is
 > **transparent** (HOL-1421, ADR-20 Rev 7): it writes client IDs, group paths,
 > and role names **verbatim** and **reserves/refuses no name** — including
 > `platform-*`, `argocd`, `kargo`, or `https://quay.holos.internal`. The
@@ -201,7 +201,7 @@ The realm-role and client-role mappers set `id.token.claim`,
 > declarative-client mechanics below (PKCE, the three mappers, the secret
 > bootstrap) are config-cli's and are unchanged.
 >
-> A tenant-facing `KeycloakClient` may also carry an optional
+> A tenant-facing `Client` may also carry an optional
 > `spec.description` (HOL-1424, ADR-20 Rev 8) — free text the controller
 > propagates verbatim to the Keycloak client's native **Description** attribute.
 > The reconciler sends it unconditionally on update, so a console-set

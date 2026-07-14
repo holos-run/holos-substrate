@@ -727,7 +727,7 @@ func (r *ClientReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.APIReader = mgr.GetAPIReader()
 	}
 	if r.Recorder == nil {
-		r.Recorder = mgr.GetEventRecorderFor("keycloakclient-controller")
+		r.Recorder = mgr.GetEventRecorderFor("client-controller")
 	}
 	if r.Namespace == "" {
 		r.Namespace = controllerNamespace()

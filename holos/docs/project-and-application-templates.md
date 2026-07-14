@@ -41,8 +41,8 @@ projects: "my-project": owners: "bob@example.com": _
   (`projects.<name>.owners.<email>`), so a project may name one or several
   owners. Each owner email is validated. Every project must name **at least one**
   owner (a render-time assertion). The single-owner registration above is the
-  common case; the owner is pre-provisioned as a `KeycloakUser` and seeded into
-  first-class `KeycloakGroupMembership` CRs for the project's owner role and
+  common case; the owner is pre-provisioned as a `User` and seeded into
+  first-class `GroupMembership` CRs for the project's owner role and
   custodian groups (below).
 
 The `#Project` schema lives in [`holos/projects/projects.cue`](../projects/projects.cue);
@@ -131,13 +131,13 @@ realized as `keycloak.holos.run` resources the Holos Controller
   person is a member of to hold a primitive role.
 - **Custodian groups** `projects/<name>/custodians/{owner,editor,viewer}` — whose
   members manage the matching `roles/*` group's membership.
-- Owner **`KeycloakGroupMembership`** CRs — one named
+- Owner **`GroupMembership`** CRs — one named
   `<name>-roles-owner-members` that seeds project owners into
   `projects/<name>/roles/owner`, plus one per custodian tier named
   `<name>-custodians-{owner,editor,viewer}-members` that seeds the same owners
   into every custodian group.
-- The owner's **`KeycloakUser`** (pre-created by email, first-login auto-linked).
-- The project's own **`KeycloakClient`** (`https://<name>.holos.internal`).
+- The owner's **`User`** (pre-created by email, first-login auto-linked).
+- The project's own **`Client`** (`https://<name>.holos.internal`).
 
 Each role group confers its primitive role on **three** clients via
 `clientRoles[]`:
@@ -151,9 +151,9 @@ Each role group confers its primitive role on **three** clients via
    viewer → `role: member` + `repositoryPermission: read` — the
    [ADR-19](../../docs/adr/ADR-19.md) primitive-role example). This is the
    one-line-CUE → Keycloak group → `groups` claim → Quay team chain end to end.
-2. **The project's own client** (`clientRef` to the project `KeycloakClient`) —
+2. **The project's own client** (`clientRef` to the project `Client`) —
    conferring `<name>-<role>`, so the value reaches that client's token.
-3. **Each app's client** (`clientRef` to the app's `KeycloakClient`) — conferring
+3. **Each app's client** (`clientRef` to the app's `Client`) — conferring
    the **bare** primitive role (`owner`/`editor`/`viewer`), so project-role
    membership maps onto matching application roles. The Application component
    defines those three roles on the app client
@@ -175,10 +175,10 @@ separate downstream effort. See [ADR-20](../../docs/adr/ADR-20.md) and the
 *Project Delivery Scaffold* guardrail in [AGENTS.md](../../AGENTS.md).
 
 The cross-namespace reference each Keycloak CR makes to the central
-`KeycloakInstance` (the separate `keycloak-instance` component) is authorized by a
+`Instance` (the separate `keycloak-instance` component) is authorized by a
 `security.holos.run` `ReferenceGrant` ([ADR-22](../../docs/adr/ADR-22.md)) the
 **instance namespace's owner** creates — not a resource the templates render.
-Role and custodian group membership is managed through `KeycloakGroupMembership`
+Role and custodian group membership is managed through `GroupMembership`
 CRs in the project's control namespace. The rendered CRs seed the standing owner
 set; the intended day-2 owner path is separate owner-authored membership CRs in
 that same namespace, using the owner RoleBinding's namespace `admin` role and the
@@ -186,13 +186,13 @@ membership RBAC shipped by the reconciler phase. Treat the rendered standing-own
 CRs as platform-owned scaffold, and gate broader owner writes with ADR-24's
 rendered-object protection/admission policy.
 Apply ordering matters for existing clusters: apply the project-rendered
-`KeycloakGroupMembership` migration before rolling out the controller/API version
+`GroupMembership` migration before rolling out the controller/API version
 that removes user-side membership management. Keep the old controller running
-until every live `KeycloakUser` has an empty or absent legacy
+until every live `User` has an empty or absent legacy
 `status.managedGroups`:
 
 ```bash
-kubectl get keycloakusers.keycloak.holos.run -A -o json \
+kubectl get users.keycloak.holos.run -A -o json \
   | jq -e '([.items[] | select(((.status.managedGroups // []) | length) > 0) | "\(.metadata.namespace)/\(.metadata.name)"] | length) == 0'
 ```
 
@@ -208,7 +208,7 @@ bundles:
   `<host>`, default `<app>.holos.internal`), `ConfigMap`, `ServiceAccount`, and
   a view `RoleBinding` — all in the project's control namespace.
 - **Control plane** (operator-applied, never Argo-synced): the app's
-  `KeycloakClient`, the Quay `Repository` (within the project's `Organization`),
+  `Client`, the Quay `Repository` (within the project's `Organization`),
   the Kargo `Warehouse` and `Stage`, and the app's Argo CD `Application` (in
   `argocd`, named `<project>-<app>`, destination the project namespace).
 

@@ -117,7 +117,7 @@ esso-asserted (and esso-verified) email matches a pre-provisioned holos user
 auto-links **silently**: no profile prompt for an existing user, no manual
 account-link confirmation.
 
-This is the realm half of the auto-link mechanism ADR-20's `KeycloakUser`
+This is the realm half of the auto-link mechanism ADR-20's `User`
 relies on (a controller-created `holos` user pre-provisioned by email — e.g.
 `bob@example.com`). For the local demo the pre-provisioned identity is **alice**.
 
@@ -165,7 +165,7 @@ To exercise the broker, browse to a `holos`-realm relying party
 (`https://argocd.holos.internal` or `https://kargo.holos.internal`), choose the
 **esso** identity provider on the login page, and sign in with alice's
 credentials. To verify the **silent auto-link**, first pre-provision a `holos`
-user with `email: alice@example.com` (e.g. a `KeycloakUser` CR, or by hand in the
+user with `email: alice@example.com` (e.g. a `User` CR, or by hand in the
 admin console); alice's first esso login then links to that user with no
 profile-review or account-link prompt. With no pre-provisioned match, the flow
 falls through to ordinary federated-user creation.
