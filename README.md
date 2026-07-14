@@ -5,8 +5,8 @@ source platform, implemented as Kubernetes custom resources:
 
 - **Declarative Quay and Keycloak management** — the `quay.holos.run`
   `Organization` and `Repository` CRDs and the `keycloak.holos.run`
-  `KeycloakInstance`, `KeycloakGroup`, `KeycloakGroupMembership`,
-  `KeycloakUser`, and `KeycloakClient` CRDs, reconciled by
+  `Instance`, `Group`, `GroupMembership`,
+  `User`, and `Client` CRDs, reconciled by
   `holos-controller` ([ADR-18](docs/adr/ADR-18.md),
   [ADR-19](docs/adr/ADR-19.md), [ADR-20](docs/adr/ADR-20.md)) so
   registry organizations and identity primitives are managed through
@@ -26,7 +26,7 @@ Everything is managed through the Kubernetes API and rendered with the
 [Holos](https://holos.run/) rendered-manifests pattern. Each custom
 resource is documented in-cluster — `kubectl explain
 organizations.quay.holos.run --recursive`, `kubectl explain
-keycloakclients.keycloak.holos.run`, and friends — and the
+clients.keycloak.holos.run`, and friends — and the
 [runbooks](docs/runbooks/) are the operational entry points for wiring
 credentials, renaming external resources, and verifying each service.
 

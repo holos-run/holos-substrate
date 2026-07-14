@@ -343,7 +343,7 @@ func TestGroupReferenceGrant(t *testing.T) {
 
 	t.Run("allowed with a grant", func(t *testing.T) {
 		grant := &securityv1alpha1.ReferenceGrant{
-			ObjectMeta: metav1.ObjectMeta{Namespace: instNS, Name: "allow-keycloakgroup"},
+			ObjectMeta: metav1.ObjectMeta{Namespace: instNS, Name: "allow-group"},
 			Spec: securityv1alpha1.ReferenceGrantSpec{
 				From: []securityv1alpha1.ReferenceGrantFrom{{
 					Group:     keycloakv1alpha1.GroupVersion.Group,

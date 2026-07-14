@@ -113,8 +113,8 @@ runtime-secret guardrail, [`AGENTS.md`](../../AGENTS.md) Conventions /
 ## The Keycloak admin credential: `holos-controller-keycloak-creds`
 
 The controller also reconciles the `keycloak.holos.run` API group
-([ADR-20](../adr/ADR-20.md)) — `KeycloakInstance`, `KeycloakGroup`,
-`KeycloakUser`, `KeycloakClient` — against the Keycloak Admin REST API. Unlike
+([ADR-20](../adr/ADR-20.md)) — `Instance`, `Group`,
+`User`, `Client` — against the Keycloak Admin REST API. Unlike
 the Quay token, this credential is **not minted by hand**: it is provisioned at
 runtime by the platform's `keycloak-config` component (HOL-1348), so a plain
 `scripts/apply` leaves the controller ready to talk to Keycloak with no operator
@@ -143,16 +143,16 @@ step.
   | Field | Value |
   |-------|-------|
   | Namespace | `holos-controller` |
-  | Secret name | `holos-controller-keycloak-creds` (default; the `KeycloakInstance` `credentialsSecretRef` default) |
+  | Secret name | `holos-controller-keycloak-creds` (default; the `Instance` `credentialsSecretRef` default) |
   | Keys | `clientId`, `clientSecret` (optional `tokenUrl`) |
 
   `clientId` is `svc-holos-controller`; `clientSecret` is the generated secret.
-  The `KeycloakInstance` spec carries the `url` and `realm`, so the in-cluster
+  The `Instance` spec carries the `url` and `realm`, so the in-cluster
   token endpoint is derived and `tokenUrl` is omitted. When the Secret or a
   required key is missing the reconciler sets `Ready` `False` with reason
   `CredentialsNotFound` and requeues.
 
-The central `KeycloakInstance` (`holos-keycloak`, in the `keycloak` namespace) and
+The central `Instance` (`holos-keycloak`, in the `keycloak` namespace) and
 its `security.holos.run` `ReferenceGrant` are emitted by the `keycloak-instance`
 component and applied — with the per-cluster local-ca `caBundle` injected at apply
 time — by `scripts/apply-projects` (the caBundle is per-cluster trust material
@@ -279,15 +279,15 @@ Run the bring-up steps **in order**:
    runtime in step 2 and needs no manual step.)
 5. **`scripts/apply-projects`** — reads the local-ca PEM, renders the platform
    with it injected via the `ca_bundle_pem` CUE tag, and applies the central
-   `KeycloakInstance` + its `ReferenceGrant` (the `keycloak-instance` component,
+   `Instance` + its `ReferenceGrant` (the `keycloak-instance` component,
    carrying the injected `caBundle`), then the `my-project` Namespace +
    Organization + the project's `keycloak.holos.run` CRs (the project client, the
-   role/custodian KeycloakGroups, the owner KeycloakUser, and the standing-owner
-   KeycloakGroupMembership CRs) and the rest of the component. It gates the
+   role/custodian `Group` CRs, the owner `User` CR, and the standing-owner
+   `GroupMembership` CRs) and the rest of the component. It gates the
    Organization **and** the
-   `keycloak.holos.run` resources (the `KeycloakInstance`, the project
-   `KeycloakClient`, the role/custodian `KeycloakGroup`s, and the owner
-   `KeycloakUser`) reaching `Ready`.
+   `keycloak.holos.run` resources (the `Instance`, the project
+   `Client`, the role/custodian `Group` CRs, and the owner
+   `User`) reaching `Ready`.
 
 ```bash
 scripts/apply-projects

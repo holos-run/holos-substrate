@@ -696,7 +696,7 @@ func (r *UserReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.APIReader = mgr.GetAPIReader()
 	}
 	if r.Recorder == nil {
-		r.Recorder = mgr.GetEventRecorderFor("keycloakuser-controller")
+		r.Recorder = mgr.GetEventRecorderFor("user-controller")
 	}
 	if r.Namespace == "" {
 		r.Namespace = controllerNamespace()

@@ -54,8 +54,8 @@ bespoke platform workflows.
 2. **The platform assumes consumers have Kubernetes API server access** and may
    obtain authorization efficiently by requesting membership in the relevant
    groups, which are approved by the appropriate custodians.
-3. Group membership is mapped to access through RBAC bindings whose subjects are
-   `Group`s.
+3. Group membership is mapped to access through RBAC bindings whose subjects have
+   kind `Group`.
 
 ## Consequences
 

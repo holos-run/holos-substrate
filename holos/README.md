@@ -932,12 +932,12 @@ instead. That script reads the local-ca PEM (the `cert-manager/local-ca` Secret,
 or `$(mkcert -CAROOT)/rootCA.pem`), renders the platform with it injected via the
 `ca_bundle_pem` CUE tag (the `scripts/publish` `--inject` pattern), and applies —
 with `kubectl apply --server-side` — the `keycloak-instance` component (the central
-`KeycloakInstance` + its `security.holos.run` `ReferenceGrant`), the rendered
+`Instance` + its `security.holos.run` `ReferenceGrant`), the rendered
 **Project** component (the Quay `Organization`, the per-project `keycloak.holos.run`
-CRs — role/custodian `KeycloakGroup`s, owner `KeycloakUser`, project
-`KeycloakClient` — the Argo CD `AppProject`/`Application`, the Kargo control plane,
+CRs — role/custodian `Group` CRs, owner `User`, project
+`Client` — the Argo CD `AppProject`/`Application`, the Kargo control plane,
 the owner `RoleBinding`, and the webhook-token bootstrap), and each rendered
-**Application** component's control-plane bundle (the app `KeycloakClient`, the Quay
+**Application** component's control-plane bundle (the app `Client`, the Quay
 `Repository`, the Kargo `Warehouse`/`Stage`, and the app's Argo CD `Application`);
 the app's workload bundle is delivered by Argo CD from the published OCI artifact. It runs **after** `scripts/local-ca` and
 **after** the manual Quay superuser-credential setup

@@ -36,11 +36,11 @@ Carry these fields verbatim to the new CR:
 | ---- | ------------------------ |
 | `quay.holos.run/Organization` | `spec.name` |
 | `quay.holos.run/Repository` | `spec.name`, plus `spec.organizationRef` to the Organization CR that resolves to the same Quay organization. Carry it verbatim for a Repository-only rename; update it when transferring repositories as part of an Organization CR rename. |
-| `keycloak.holos.run/KeycloakGroup` | `spec.instanceRef` and `spec.path` |
-| `keycloak.holos.run/KeycloakUser` | `spec.instanceRef`, `spec.email`, and `spec.username` when set |
-| `keycloak.holos.run/KeycloakClient` | `spec.instanceRef` and `spec.clientId` |
+| `keycloak.holos.run/Group` | `spec.instanceRef` and `spec.path` |
+| `keycloak.holos.run/User` | `spec.instanceRef`, `spec.email`, and `spec.username` when set |
+| `keycloak.holos.run/Client` | `spec.instanceRef` and `spec.clientId` |
 
-`KeycloakGroupMembership` has no single ownable external object to adopt. Recreate
+`GroupMembership` has no single ownable external object to adopt. Recreate
 the membership CR under the new name. Use `deletionPolicy: Orphan` on the old CR
 when the membership edges must remain during the swap.
 
@@ -63,24 +63,24 @@ kubectl -n my-project get repository new-repo \
   -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}{"\n"}{.status.created}{"\n"}{.status.quayRepository}{"\n"}{.status.webhookNotificationUUID}{"\n"}'
 ```
 
-KeycloakGroup:
+Group:
 
 ```bash
-kubectl -n my-project get keycloakgroup new-owner \
+kubectl -n my-project get group.keycloak.holos.run new-owner \
   -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}{"\n"}{.status.created}{"\n"}{.status.adopted}{"\n"}{.status.groupID}{"\n"}'
 ```
 
-KeycloakUser:
+User:
 
 ```bash
-kubectl -n my-project get keycloakuser new-user \
+kubectl -n my-project get user.keycloak.holos.run new-user \
   -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}{"\n"}{.status.created}{"\n"}{.status.adopted}{"\n"}{.status.userID}{"\n"}'
 ```
 
-KeycloakClient:
+Client:
 
 ```bash
-kubectl -n my-project get keycloakclient new-client \
+kubectl -n my-project get client.keycloak.holos.run new-client \
   -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}{"\n"}{.status.created}{"\n"}{.status.adopted}{"\n"}{.status.clientUUID}{"\n"}'
 ```
 
@@ -129,7 +129,7 @@ For adopted Quay and Keycloak resources, `status.created` should be `false`. For
 Keycloak resources, also check the adopted flag:
 
 ```bash
-kubectl -n my-project get keycloakgroup new-owner \
+kubectl -n my-project get group.keycloak.holos.run new-owner \
   -o jsonpath='{.status.adopted}{"\n"}{.status.groupID}{"\n"}'
 ```
 
@@ -163,24 +163,24 @@ kubectl -n my-project get organization new-org \
 true`. If the new CR should delete the Quay organization when it is later
 removed, patch `spec.deletionPolicy: Delete` after adoption is Ready.
 
-## KeycloakGroup Example
+## Group Example
 
-Rename a `KeycloakGroup` CR while preserving the Keycloak group at the same path:
+Rename a `Group` CR while preserving the Keycloak group at the same path:
 
 ```bash
-kubectl -n my-project patch keycloakgroup old-owner \
+kubectl -n my-project patch group.keycloak.holos.run old-owner \
   --type merge \
   -p '{"spec":{"deletionPolicy":"Orphan"}}'
-kubectl -n my-project delete keycloakgroup old-owner
-kubectl -n my-project apply -f keycloakgroup-new-owner.yaml
-kubectl -n my-project wait keycloakgroup/new-owner \
+kubectl -n my-project delete group.keycloak.holos.run old-owner
+kubectl -n my-project apply -f group-new-owner.yaml
+kubectl -n my-project wait group.keycloak.holos.run/new-owner \
   --for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
   --timeout=2m
-kubectl -n my-project get keycloakgroup new-owner \
+kubectl -n my-project get group.keycloak.holos.run new-owner \
   -o jsonpath='{.status.created}{"\n"}{.status.adopted}{"\n"}{.status.groupID}{"\n"}'
 ```
 
-`keycloakgroup-new-owner.yaml` must keep the same `spec.path` and set
+`group-new-owner.yaml` must keep the same `spec.path` and set
 `spec.adopt: true`. Patch `spec.deletionPolicy: Delete` only if the new CR should
 delete the Keycloak group after verifying the pinned `status.groupID`.
 
@@ -201,9 +201,9 @@ until the old team markers have been deliberately cleared or reassigned by an
 operator, or restore the old CR and perform a different handoff. There is no
 per-team `deletionPolicy: Orphan` field.
 
-Renaming a `KeycloakClient` CR requires updating every `clientRef` that points to
-the old CR name. Check `KeycloakGroup.spec.clientRoles[]` and
-`KeycloakClient.spec.clientRoles[]`, then apply those referencing CR changes with
+Renaming a `Client` CR requires updating every `clientRef` that points to
+the old CR name. Check `Group.spec.clientRoles[]` and
+`Client.spec.clientRoles[]`, then apply those referencing CR changes with
 the client transfer.
 
 Cross-namespace moves also change which namespace owns RBAC, ReferenceGrants, and
@@ -223,7 +223,7 @@ creating a duplicate.
 `deletionPolicy: Orphan` on Keycloak resources makes no Keycloak calls. It is the
 escape hatch when the backing realm or credential is gone.
 
-For confidential `KeycloakClient` resources, the delivered Secret named by
+For confidential `Client` resources, the delivered Secret named by
 `spec.secretRef` is Kubernetes state owned by the old CR, not part of the remote
 Keycloak client identity. Reusing the same Secret name before ownership is
 resolved will surface as a Secret collision. Use a new `secretRef` for the
