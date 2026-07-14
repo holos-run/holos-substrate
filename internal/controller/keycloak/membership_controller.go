@@ -46,7 +46,7 @@ type MembershipClient interface {
 
 type MembershipClientFactory func(cred *keycloakCredential, url, realm string, caBundle []byte) MembershipClient
 
-func NewKeycloakMembershipClient(cred *keycloakCredential, url, realm string, caBundle []byte) MembershipClient {
+func NewMembershipClient(cred *keycloakCredential, url, realm string, caBundle []byte) MembershipClient {
 	return newClient(cred, url, realm, caBundle)
 }
 
@@ -609,7 +609,7 @@ func (r *MembershipReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.Namespace = controllerNamespace()
 	}
 	if r.NewClient == nil {
-		r.NewClient = NewKeycloakMembershipClient
+		r.NewClient = NewMembershipClient
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&keycloakv1alpha1.GroupMembership{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
