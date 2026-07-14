@@ -1,7 +1,7 @@
 // my-app is the reference Application registration (ADR-21) — the one-line
 // self-service entry the Application component (HOL-1356) renders into the full
 // application-level resource set (the Deployment/Service/HTTPRoute, the app
-// KeycloakClient defining the owner/editor/viewer roles the project role groups
+// Client defining the owner/editor/viewer roles the project role groups
 // confer, the Quay Repository, and the Kargo Warehouse/Stage + Argo CD
 // Application), all contained by its project my-project.  Registering it here
 // (HOL-1357) is the second half of migrating the reference instance onto the
@@ -16,7 +16,7 @@
 //   - project: my-project — the containment reference (a key in the `projects`
 //     collection; a dangling reference fails at render).  The app's resources
 //     land in my-project's bare control namespace, alongside the project's role
-//     KeycloakGroups, so the role groups' clientRef to this app's KeycloakClient
+//     Groups, so the role groups' clientRef to this app's Client
 //     resolves same-namespace (the Application component's namespace rationale).
 //   - image: the upstream Kubernetes e2e agnhost image (multi-arch, the same one
 //     the echo sample and the _AppImage default use) — its netexec server listens

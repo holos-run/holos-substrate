@@ -1,21 +1,21 @@
 apiVersion: keycloak.holos.run/v1alpha1
-kind: KeycloakGroup
+kind: Group
 metadata:
   labels:
     app.kubernetes.io/name: my-project
-  name: my-project-roles-editor
+  name: my-project-roles-viewer
   namespace: my-project
 spec:
   clientRoles:
   - clientId: https://quay.holos.internal
-    role: my-project-editor
+    role: my-project-viewer
   - clientRef: my-project
-    role: my-project-editor
+    role: my-project-viewer
   - clientRef: my-app
-    role: editor
+    role: viewer
   custodians:
-  - path: projects/my-project/custodians/editor
+  - path: projects/my-project/custodians/viewer
   instanceRef:
     name: holos-keycloak
     namespace: keycloak
-  path: projects/my-project/roles/editor
+  path: projects/my-project/roles/viewer

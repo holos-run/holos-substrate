@@ -1,5 +1,5 @@
 apiVersion: keycloak.holos.run/v1alpha1
-kind: KeycloakInstance
+kind: Instance
 metadata:
   labels:
     app.kubernetes.io/name: keycloak

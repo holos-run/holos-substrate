@@ -308,13 +308,13 @@ platform: {
 			}}).output
 
 			// keycloak-instance emits the central keycloak.holos.run
-			// KeycloakInstance the shipped Holos Controller reconciles the rest of
+			// Instance the shipped Holos Controller reconciles the rest of
 			// the keycloak.holos.run Kinds against, plus the security.holos.run
 			// ReferenceGrant authorizing project namespaces (my-project) to
 			// reference it cross-namespace (HOL-1348, ADR-18/ADR-20).  Registered
 			// after keycloak-config: the realm must exist and the controller's
 			// admin credential Secret must be provisioned (the realm-config
-			// CONTROLLER_CREDS_BOOTSTRAP Job) before the KeycloakInstance is
+			// CONTROLLER_CREDS_BOOTSTRAP Job) before the Instance is
 			// reconcilable.  Its caBundle is injected at apply time via the
 			// _CABundlePEM tag (never committed), so a plain `holos render
 			// platform` and scripts/render stay diff-clean.
@@ -344,34 +344,34 @@ platform: {
 				labels: app: "quay"
 			}}).output
 
-				// holos-authenticator deploys the Holos Authenticator (ADR-23): the
-				// controller-runtime manager running the Envoy ext_authz gRPC server
-				// plus its Backend CRD, RBAC, Service, an AuthorizationPolicy
-				// (action: CUSTOM, provider.name holos-authenticator) referencing the
-				// Istio extensionProvider declared in components/istio/istio.cue, and
-				// one example Backend CR.  Listed here next to quay because the manager
-				// Deployment pulls its image from the in-cluster Quay registry
-				// (quay.holos.internal/holos/holos-authenticator:dev).  It is
-				// render-here / apply-OUT-OF-BAND: like the holos-controller (also
-				// image-from-Quay), it is DELIBERATELY EXCLUDED from the master
-				// scripts/apply COMPONENTS floor AND the system App-of-Apps
-				// (components/app-of-apps) — that image does not exist on a freshly
-				// bootstrapped cluster until an operator publishes it after the
-				// imperative floor, so a bootstrap rollout gate (or an Argo CD child
-				// Application) would hang on ImagePullBackOff.  It is applied out of
-				// band once its image is published (the deploy step the next phase
-				// wires, alongside the impersonator credential Secret and any waypoint
-				// topology).  Its ext_authz provider (istiod's MeshConfig) and its
-				// ambient-enrolled namespace are both established earlier in the istio
-				// data-plane phase.  The component bundles its Backend CRD with the
-				// controller so the authenticator.holos.run types ship with it (the
-				// cert-manager-crds / cnpg-crds / kargo-crds pattern, here co-located
-				// because the example Backend CR ships in the same component).
-				(#ComponentTemplate & {inputs: {
-					component: "holos-authenticator"
-					cluster:   CLUSTER.name
-					labels: app: "holos-authenticator"
-				}}).output
+			// holos-authenticator deploys the Holos Authenticator (ADR-23): the
+			// controller-runtime manager running the Envoy ext_authz gRPC server
+			// plus its Backend CRD, RBAC, Service, an AuthorizationPolicy
+			// (action: CUSTOM, provider.name holos-authenticator) referencing the
+			// Istio extensionProvider declared in components/istio/istio.cue, and
+			// one example Backend CR.  Listed here next to quay because the manager
+			// Deployment pulls its image from the in-cluster Quay registry
+			// (quay.holos.internal/holos/holos-authenticator:dev).  It is
+			// render-here / apply-OUT-OF-BAND: like the holos-controller (also
+			// image-from-Quay), it is DELIBERATELY EXCLUDED from the master
+			// scripts/apply COMPONENTS floor AND the system App-of-Apps
+			// (components/app-of-apps) — that image does not exist on a freshly
+			// bootstrapped cluster until an operator publishes it after the
+			// imperative floor, so a bootstrap rollout gate (or an Argo CD child
+			// Application) would hang on ImagePullBackOff.  It is applied out of
+			// band once its image is published (the deploy step the next phase
+			// wires, alongside the impersonator credential Secret and any waypoint
+			// topology).  Its ext_authz provider (istiod's MeshConfig) and its
+			// ambient-enrolled namespace are both established earlier in the istio
+			// data-plane phase.  The component bundles its Backend CRD with the
+			// controller so the authenticator.holos.run types ship with it (the
+			// cert-manager-crds / cnpg-crds / kargo-crds pattern, here co-located
+			// because the example Backend CR ships in the same component).
+			(#ComponentTemplate & {inputs: {
+				component: "holos-authenticator"
+				cluster:   CLUSTER.name
+				labels: app: "holos-authenticator"
+			}}).output
 
 			// argocd-crds renders the Argo CD CRDs (applications,
 			// applicationsets, appprojects in group argoproj.io) from the
@@ -545,11 +545,11 @@ platform: {
 			// application is the collection-driven Application component (HOL-1356):
 			// it iterates the apps collection (holos/collections.cue) and emits, for
 			// every apps.<name> entry, the full application-level resource set
-			// (Deployment/Service/HTTPRoute, the app KeycloakClient defining the
+			// (Deployment/Service/HTTPRoute, the app Client defining the
 			// owner/editor/viewer roles the project role groups confer, the Quay
 			// Repository, and the Kargo Warehouse/Stage + Argo CD Application) into
 			// components/application/<name>/.  Registered after project for the
-			// containment ordering: an app's KeycloakClient is referenced by the
+			// containment ordering: an app's Client is referenced by the
 			// project's role groups (clientRef), its Repository's organizationRef
 			// names the project Organization, and its Argo CD Application runs in the
 			// project AppProject — all emitted by the project component.  Like

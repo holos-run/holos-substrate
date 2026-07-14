@@ -39,7 +39,7 @@ package projects
 // and the platform does not need it); it exists to reject the obvious mistakes
 // the owners map would otherwise admit — an empty key "" or a bare token like
 // "notanemail" — at RENDER time, before that malformed identity flows into the
-// owner's KeycloakUser (ADR-20) or an access grant.
+// owner's User (ADR-20) or an access grant.
 #Email: =~"^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$"
 
 // #Owner is a single project owner.  Keyed by #Email in the owners map; the

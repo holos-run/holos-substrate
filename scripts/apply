@@ -195,11 +195,11 @@ ROLLOUT_TIMEOUT_SECONDS="$(duration_seconds "${ROLLOUT_TIMEOUT}")" || exit 1
 # for the per-project pre-/wait- gating logic.
 #
 # keycloak-instance is DELIBERATELY NOT in this array either (HOL-1348).  The
-# central KeycloakInstance carries the same per-cluster local-ca caBundle (so the
+# central Instance carries the same per-cluster local-ca caBundle (so the
 # controller trusts the in-cluster Keycloak's serving cert), injected at render
 # time and never committed.  Applying its committed, caBundle-less manifest from
 # this master apply would, under server-side apply with the same field manager,
-# strip the caBundle scripts/apply-projects sets — so the KeycloakInstance and its
+# strip the caBundle scripts/apply-projects sets — so the Instance and its
 # security.holos.run ReferenceGrant are applied (with the injected caBundle) by
 # scripts/apply-projects, alongside the project Keycloak CRs that reference them.
 # The realm-config component (in this array) still provisions the controller's

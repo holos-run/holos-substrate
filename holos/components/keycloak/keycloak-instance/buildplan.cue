@@ -1,4 +1,4 @@
-// keycloak-instance emits the central keycloak.holos.run KeycloakInstance the
+// keycloak-instance emits the central keycloak.holos.run Instance the
 // shipped Holos Controller (ADR-18/ADR-20) reconciles the rest of the
 // keycloak.holos.run Kinds against, plus the security.holos.run ReferenceGrant(s)
 // that authorize project namespaces (my-project) to reference that instance
@@ -6,9 +6,9 @@
 //
 // It is a sibling leaf of the operator, operator-crds, instance, and
 // realm-config components and inherits KeycloakNamespace from the shared
-// ancestor ../keycloak.cue.  The KeycloakInstance and the ReferenceGrant both
+// ancestor ../keycloak.cue.  The Instance and the ReferenceGrant both
 // live in the keycloak namespace: the ReferenceGrant convention places the grant
-// in the REFERENT (target) namespace — the KeycloakInstance's namespace — naming
+// in the REFERENT (target) namespace — the Instance's namespace — naming
 // the referrer namespaces it trusts (internal/referencegrant/authorize.go,
 // ADR-22).
 //
@@ -28,14 +28,14 @@ import (
 
 let NAMESPACE = KeycloakNamespace
 
-// NAME is the KeycloakInstance the project Keycloak CRs reference by
+// NAME is the Instance the project Keycloak CRs reference by
 // instanceRef.name; it matches the ADR-20 worked examples (holos-keycloak in the
-// keycloak namespace).  The my-project KeycloakGroup/KeycloakUser/KeycloakClient
+// keycloak namespace).  The my-project Group/User/Client
 // CRs set instanceRef: {name: "holos-keycloak", namespace: "keycloak"}.
 let NAME = "holos-keycloak"
 
 // REALM is the realm this instance binds (the platform realm the realm-config
-// component reconciles).  A KeycloakInstance binds exactly one realm.
+// component reconciles).  An Instance binds exactly one realm.
 let REALM = "holos"
 
 // The Keycloak admin API URL.  Keycloak now runs HTTP-only behind the shared
@@ -43,7 +43,7 @@ let REALM = "holos"
 // URL https://auth.holos.internal — the Gateway terminates TLS once with the
 // wildcard cert and CoreDNS resolves the hostname in-cluster (HOL-1364), so the
 // same URL serves browsers, in-cluster consumers, and the controller alike.  An
-// absolute https URL is required (the KeycloakInstance CRD rejects http at
+// absolute https URL is required (the Instance CRD rejects http at
 // admission); the controller trusts the Gateway's local-CA-signed cert via
 // spec.caBundle below (the per-cluster local-ca PEM injected at apply time).
 let KEYCLOAK_URL = "https://auth.holos.internal"
@@ -72,15 +72,15 @@ let PROJECT_NAMESPACES = [
 ]
 
 // KEYCLOAK_GROUP is the API group every keycloak.holos.run referrer and the
-// KeycloakInstance target share.
+// Instance target share.
 let KEYCLOAK_GROUP = "keycloak.holos.run"
 
 // The referrer Kinds the project namespaces hold — each carries an instanceRef
 // the controller gates through this grant (the FromRef Kinds in
 // internal/controller/keycloak/{group,membership,user,client}_controller.go).
-let REFERRER_KINDS = ["KeycloakGroup", "KeycloakGroupMembership", "KeycloakUser", "KeycloakClient"]
+let REFERRER_KINDS = ["Group", "GroupMembership", "User", "Client"]
 
-// KEYCLOAK_INSTANCE_RESOURCE is the central KeycloakInstance.  spec.caBundle is
+// KEYCLOAK_INSTANCE_RESOURCE is the central Instance.  spec.caBundle is
 // GATED on a non-empty _CABundlePEM tag (holos/tags.cue): empty (the default,
 // e.g. during `holos render platform` and scripts/render's clean-tree gate)
 // omits the field entirely, so the committed deploy tree carries no per-cluster
@@ -90,7 +90,7 @@ let REFERRER_KINDS = ["KeycloakGroup", "KeycloakGroupMembership", "KeycloakUser"
 // CABundle convention).
 let KEYCLOAK_INSTANCE_RESOURCE = {
 	apiVersion: "keycloak.holos.run/v1alpha1"
-	kind:       "KeycloakInstance"
+	kind:       "Instance"
 	metadata: {
 		name:      NAME
 		namespace: NAMESPACE
@@ -107,11 +107,11 @@ let KEYCLOAK_INSTANCE_RESOURCE = {
 }
 
 // REFERENCE_GRANT_RESOURCE is the security.holos.run ReferenceGrant in the
-// KeycloakInstance's namespace.  It authorizes the project namespaces'
-// keycloak.holos.run referrers (KeycloakGroup/GroupMembership/User/Client) to
-// reference this KeycloakInstance by name.  from lists every
+// Instance's namespace.  It authorizes the project namespaces'
+// keycloak.holos.run referrers (Group/GroupMembership/User/Client) to
+// reference this Instance by name.  from lists every
 // (referrer namespace × referrer Kind) pair; to constrains the grant to this one
-// KeycloakInstance by name (the
+// Instance by name (the
 // least-privilege ToRef.Name match the authorizer evaluates).
 let REFERENCE_GRANT_RESOURCE = {
 	apiVersion: "security.holos.run/v1alpha1"
@@ -132,7 +132,7 @@ let REFERENCE_GRANT_RESOURCE = {
 		]
 		to: [{
 			group: KEYCLOAK_GROUP
-			kind:  "KeycloakInstance"
+			kind:  "Instance"
 			name:  NAME
 		}]
 	}
@@ -148,11 +148,11 @@ userDefinedBuildPlan: {
 			generators: [{
 				kind:   "Resources"
 				output: "resources.gen.yaml"
-				// Unify with #Resources (holos/resources.cue): KeycloakInstance and
+				// Unify with #Resources (holos/resources.cue): Instance and
 				// the security.holos.run ReferenceGrant ride the open, Kind-scoped
 				// entries there (their CRDs have no vendored CUE type).
 				resources: #Resources & {
-					KeycloakInstance: (NAME):                                 KEYCLOAK_INSTANCE_RESOURCE
+					Instance: (NAME):                                         KEYCLOAK_INSTANCE_RESOURCE
 					ReferenceGrant: (REFERENCE_GRANT_RESOURCE.metadata.name): REFERENCE_GRANT_RESOURCE
 				}
 			}]

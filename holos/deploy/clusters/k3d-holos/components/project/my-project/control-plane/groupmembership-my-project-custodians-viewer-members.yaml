@@ -1,12 +1,15 @@
 apiVersion: keycloak.holos.run/v1alpha1
-kind: KeycloakGroup
+kind: GroupMembership
 metadata:
   labels:
     app.kubernetes.io/name: my-project
-  name: my-project-custodians-owner
+  name: my-project-custodians-viewer-members
   namespace: my-project
 spec:
+  groupRef:
+    name: my-project-custodians-viewer
   instanceRef:
     name: holos-keycloak
     namespace: keycloak
-  path: projects/my-project/custodians/owner
+  members:
+  - email: bob@example.com

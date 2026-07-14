@@ -22,7 +22,7 @@ _AppImage: string | *"registry.k8s.io/e2e-test-images/agnhost:2.53" @tag(app_ima
 
 // _CABundlePEM is the per-cluster local-ca certificate (PEM) injected at apply
 // time so a quay.holos.run resource (a project's Organization, an app's
-// Repository) and the central KeycloakInstance can carry the trust anchor the
+// Repository) and the central Instance can carry the trust anchor the
 // holos-controller needs to verify the in-cluster Quay/Keycloak mkcert-signed
 // serving certificates (HOL-1319/HOL-1320).
 //
