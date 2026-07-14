@@ -8,18 +8,18 @@ metadata:
 spec:
   from:
   - group: keycloak.holos.run
-    kind: KeycloakGroup
+    kind: Group
     namespace: my-project
   - group: keycloak.holos.run
-    kind: KeycloakGroupMembership
+    kind: GroupMembership
     namespace: my-project
   - group: keycloak.holos.run
-    kind: KeycloakUser
+    kind: User
     namespace: my-project
   - group: keycloak.holos.run
-    kind: KeycloakClient
+    kind: Client
     namespace: my-project
   to:
   - group: keycloak.holos.run
-    kind: KeycloakInstance
+    kind: Instance
     name: holos-keycloak

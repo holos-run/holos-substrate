@@ -1,12 +1,12 @@
 apiVersion: keycloak.holos.run/v1alpha1
-kind: KeycloakGroup
+kind: Group
 metadata:
   labels:
     app.kubernetes.io/name: my-project
-  name: my-project-custodians-editor
+  name: my-project-custodians-owner
   namespace: my-project
 spec:
   instanceRef:
     name: holos-keycloak
     namespace: keycloak
-  path: projects/my-project/custodians/editor
+  path: projects/my-project/custodians/owner
