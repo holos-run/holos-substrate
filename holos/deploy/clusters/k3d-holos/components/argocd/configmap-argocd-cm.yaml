@@ -17,6 +17,43 @@ data:
       groups:
         essential: true
   oidc.tls.insecure.skip.verify: "true"
+  resource.customizations: |
+    keycloak.holos.run/*:
+      health.lua: |-
+        hs = {}
+        hs.status = "Progressing"
+        hs.message = "Waiting for the Ready condition"
+
+        if obj.status == nil or obj.status.conditions == nil then
+          return hs
+        end
+
+        if obj.status.observedGeneration ~= nil and
+           obj.metadata ~= nil and
+           obj.metadata.generation ~= nil and
+           obj.status.observedGeneration ~= obj.metadata.generation then
+          hs.message = "Waiting for the controller to observe the latest generation"
+          return hs
+        end
+
+        for _, condition in ipairs(obj.status.conditions) do
+          if condition.type == "Ready" then
+            if condition.message ~= nil and condition.message ~= "" then
+              hs.message = condition.message
+            elseif condition.reason ~= nil and condition.reason ~= "" then
+              hs.message = condition.reason
+            end
+
+            if condition.status == "True" then
+              hs.status = "Healthy"
+            elseif condition.status == "False" then
+              hs.status = "Degraded"
+            end
+            return hs
+          end
+        end
+
+        return hs
   resource.customizations.health.argoproj.io_Application: |-
     hs = {}
     hs.status = "Progressing"
