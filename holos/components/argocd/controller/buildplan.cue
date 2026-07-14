@@ -200,6 +200,59 @@ let APP_HEALTH_LUA = """
 	return hs
 	"""
 
+// KEYCLOAK_HEALTH_LUA maps the shared keycloak.holos.run status contract to
+// Argo CD health.  The wildcard resource customization below applies this one
+// script to Instance, Group, GroupMembership, User, and Client resources.  A
+// Ready condition is authoritative only after the controller has observed the
+// current generation; resources without current status remain Progressing.
+// Authored as a Lua string, the sanctioned non-YAML/JSON exception to the
+// marshal-embedded-config guardrail.
+let KEYCLOAK_HEALTH_LUA = """
+	hs = {}
+	hs.status = "Progressing"
+	hs.message = "Waiting for the Ready condition"
+
+	if obj.status == nil or obj.status.conditions == nil then
+	  return hs
+	end
+
+	if obj.status.observedGeneration ~= nil and
+	   obj.metadata ~= nil and
+	   obj.metadata.generation ~= nil and
+	   obj.status.observedGeneration ~= obj.metadata.generation then
+	  hs.message = "Waiting for the controller to observe the latest generation"
+	  return hs
+	end
+
+	for _, condition in ipairs(obj.status.conditions) do
+	  if condition.type == "Ready" then
+	    if condition.message ~= nil and condition.message ~= "" then
+	      hs.message = condition.message
+	    elseif condition.reason ~= nil and condition.reason ~= "" then
+	      hs.message = condition.reason
+	    end
+
+	    if condition.status == "True" then
+	      hs.status = "Healthy"
+	    elseif condition.status == "False" then
+	      hs.status = "Degraded"
+	    end
+	    return hs
+	  end
+	end
+
+	return hs
+	"""
+
+// Wildcard GVKs are supported only in Argo CD's aggregate
+// resource.customizations value.  The split
+// resource.customizations.health.<group>_<kind> ConfigMap keys cannot contain
+// the '*' needed to cover every keycloak.holos.run kind.  Marshal the aggregate
+// document so its YAML structure is type-checked and indentation-safe.
+let RESOURCE_CUSTOMIZATIONS = {
+	"keycloak.holos.run/*": "health.lua": KEYCLOAK_HEALTH_LUA
+}
+
 // POLICIES maps Keycloak group/realm-role membership to Argo CD roles, the
 // reference platform's _POLICIES shape adapted to this platform's three
 // managed roles.  Argo CD matches the g, <subject>, <role> rules against the
@@ -450,6 +503,12 @@ userDefinedBuildPlan: {
 								// on the children are cosmetic and the
 								// crds-before-controllers ordering races.
 								"resource.customizations.health.argoproj.io_Application": APP_HEALTH_LUA
+
+								// Assess every keycloak.holos.run kind from its Ready
+								// condition and observedGeneration.  Wildcards require
+								// the aggregate resource.customizations value rather
+								// than a split ConfigMap key.
+								"resource.customizations": yaml.Marshal(RESOURCE_CUSTOMIZATIONS)
 							}
 
 							// argocd-rbac-cm: map Keycloak group/realm-role
