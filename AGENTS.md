@@ -357,6 +357,10 @@ components have been removed. Git history preserves them.
   — the Argo CD `Application` source pattern: OCI rendered-manifests
   artifacts in the in-cluster Quay registry, the repository credential
   Secret shape, and how the repo-server reaches Quay.
+- [holos/docs/argocd-resource-health.md](holos/docs/argocd-resource-health.md)
+  — Argo CD custom health assessment for `keycloak.holos.run` resources: the
+  shared Ready/observedGeneration mapping, full Lua check, verification, and
+  extension pattern for future API groups.
 - [holos/docs/kargo-keycloak-oidc.md](holos/docs/kargo-keycloak-oidc.md) — the
   Kargo↔Keycloak OIDC (PKCE) integration: the public kargo client and
   groups-claim role mapping, issuer-cert trust via the local-ca cabundle, and
