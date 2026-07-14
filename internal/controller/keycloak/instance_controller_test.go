@@ -57,9 +57,9 @@ func TestInstanceReconcile(t *testing.T) {
 	t.Run("ready when realm reachable and threads caBundle", func(t *testing.T) {
 		caBundle := validTestCABundle(t)
 		createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
-		inst := &keycloakv1alpha1.KeycloakInstance{
+		inst := &keycloakv1alpha1.Instance{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "ready"},
-			Spec: keycloakv1alpha1.KeycloakInstanceSpec{
+			Spec: keycloakv1alpha1.InstanceSpec{
 				URL:      "https://keycloak.example.test",
 				Realm:    "holos",
 				CABundle: caBundle,
@@ -68,12 +68,12 @@ func TestInstanceReconcile(t *testing.T) {
 		if err := shared.k8sClient.Create(ctx, inst); err != nil {
 			t.Fatalf("creating instance: %v", err)
 		}
-		fake := newFakeKeycloakClient()
+		fake := newFakeClient()
 		r, recorder := newInstanceReconciler(fake, ns)
 		if _, err := reconcileInstance(ctx, r, client.ObjectKeyFromObject(inst)); err != nil {
 			t.Fatalf("reconcile: %v", err)
 		}
-		got := &keycloakv1alpha1.KeycloakInstance{}
+		got := &keycloakv1alpha1.Instance{}
 		if err := shared.k8sClient.Get(ctx, client.ObjectKeyFromObject(inst), got); err != nil {
 			t.Fatalf("get: %v", err)
 		}
@@ -99,9 +99,9 @@ func TestInstanceReconcile(t *testing.T) {
 	t.Run("credentials not found requeues with condition", func(t *testing.T) {
 		const cns = "kc-instance-nocreds"
 		makeNamespace(t, ctx, cns)
-		inst := &keycloakv1alpha1.KeycloakInstance{
+		inst := &keycloakv1alpha1.Instance{
 			ObjectMeta: metav1.ObjectMeta{Namespace: cns, Name: "nocreds"},
-			Spec: keycloakv1alpha1.KeycloakInstanceSpec{
+			Spec: keycloakv1alpha1.InstanceSpec{
 				URL:   "https://keycloak.example.test",
 				Realm: "holos",
 			},
@@ -109,12 +109,12 @@ func TestInstanceReconcile(t *testing.T) {
 		if err := shared.k8sClient.Create(ctx, inst); err != nil {
 			t.Fatalf("creating instance: %v", err)
 		}
-		fake := newFakeKeycloakClient()
+		fake := newFakeClient()
 		r, _ := newInstanceReconciler(fake, cns) // empty namespace has no credential Secret
 		if _, err := reconcileInstance(ctx, r, client.ObjectKeyFromObject(inst)); err == nil {
 			t.Fatalf("expected a requeue error for missing credential")
 		}
-		got := &keycloakv1alpha1.KeycloakInstance{}
+		got := &keycloakv1alpha1.Instance{}
 		if err := shared.k8sClient.Get(ctx, client.ObjectKeyFromObject(inst), got); err != nil {
 			t.Fatalf("get: %v", err)
 		}
@@ -134,9 +134,9 @@ func TestInstanceReconcile(t *testing.T) {
 		const uns = "kc-instance-unreachable"
 		makeNamespace(t, ctx, uns)
 		createIgnoreExists(t, ctx, newCredentialSecret(uns, keycloakv1alpha1.DefaultCredentialsSecretName))
-		inst := &keycloakv1alpha1.KeycloakInstance{
+		inst := &keycloakv1alpha1.Instance{
 			ObjectMeta: metav1.ObjectMeta{Namespace: uns, Name: "unreachable"},
-			Spec: keycloakv1alpha1.KeycloakInstanceSpec{
+			Spec: keycloakv1alpha1.InstanceSpec{
 				URL:   "https://keycloak.example.test",
 				Realm: "holos",
 			},
@@ -144,13 +144,13 @@ func TestInstanceReconcile(t *testing.T) {
 		if err := shared.k8sClient.Create(ctx, inst); err != nil {
 			t.Fatalf("creating instance: %v", err)
 		}
-		fake := newFakeKeycloakClient()
+		fake := newFakeClient()
 		fake.realmReachable = false
 		r, _ := newInstanceReconciler(fake, uns)
 		if _, err := reconcileInstance(ctx, r, client.ObjectKeyFromObject(inst)); err == nil {
 			t.Fatalf("expected a requeue error for an unreachable realm")
 		}
-		got := &keycloakv1alpha1.KeycloakInstance{}
+		got := &keycloakv1alpha1.Instance{}
 		if err := shared.k8sClient.Get(ctx, client.ObjectKeyFromObject(inst), got); err != nil {
 			t.Fatalf("get: %v", err)
 		}

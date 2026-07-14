@@ -4,17 +4,17 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: keycloakusers.keycloak.holos.run
+  name: users.keycloak.holos.run
 spec:
   group: keycloak.holos.run
   names:
     categories:
     - holos
     - keycloak
-    kind: KeycloakUser
-    listKind: KeycloakUserList
-    plural: keycloakusers
-    singular: keycloakuser
+    kind: User
+    listKind: UserList
+    plural: users
+    singular: user
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -38,7 +38,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          KeycloakUser is the Schema for the keycloakusers API. It pre-provisions a user
+          User is the Schema for the users API. It pre-provisions a user
           by email and configures the IdP link for first-login auto-link (ADR-20).
         properties:
           apiVersion:
@@ -60,10 +60,10 @@ spec:
             type: object
           spec:
             description: |-
-              KeycloakUserSpec defines the desired state of a KeycloakUser: a user
+              UserSpec defines the desired state of a User: a user
               pre-provisioned by email (only when necessary) and the IdP link that lets first
               federated login auto-link the existing record (ADR-20). Group membership is
-              managed separately by KeycloakGroupMembership.
+              managed separately by GroupMembership.
             properties:
               adopt:
                 description: |-
@@ -129,7 +129,7 @@ spec:
                 type: object
               instanceRef:
                 description: |-
-                  InstanceRef references the KeycloakInstance this user is provisioned in. A
+                  InstanceRef references the Instance this user is provisioned in. A
                   cross-namespace reference (Namespace set to a different namespace) is gated
                   by a security.holos.run ReferenceGrant in the instance's namespace. It is
                   immutable: retargeting a provisioned user to another instance would create a
@@ -137,12 +137,12 @@ spec:
                   can no longer reach it), so the target realm is fixed for the user's life.
                 properties:
                   name:
-                    description: Name of the KeycloakInstance resource to target.
+                    description: Name of the Instance resource to target.
                     minLength: 1
                     type: string
                   namespace:
                     description: |-
-                      Namespace of the KeycloakInstance. When omitted the instance is resolved
+                      Namespace of the Instance. When omitted the instance is resolved
                       in the referring resource's own namespace. When set to a different
                       namespace, the cross-namespace reference must be authorized by a
                       security.holos.run ReferenceGrant in the target namespace.
@@ -171,7 +171,7 @@ spec:
             type: object
           status:
             description: |-
-              KeycloakUserStatus defines the observed state of a KeycloakUser, following the
+              UserStatus defines the observed state of a User, following the
               Gateway-API status convention plus the durable ownership markers the claim
               model requires (mirroring ADR-19).
             properties:
@@ -294,7 +294,7 @@ spec:
               observedGeneration:
                 description: |-
                   ObservedGeneration is the most recent generation observed for this
-                  KeycloakUser by the controller.
+                  User by the controller.
                 format: int64
                 type: integer
               userID:

@@ -14,19 +14,19 @@ import (
 	securityv1alpha1 "github.com/holos-run/holos-substrate/api/security/v1alpha1"
 )
 
-// readyInstance creates a KeycloakInstance in ns with a Ready=True status so a
-// KeycloakGroup referencing it can proceed past the dependency gate.
-func readyInstance(t *testing.T, ctx context.Context, ns, name string) *keycloakv1alpha1.KeycloakInstance {
+// readyInstance creates an Instance in ns with a Ready=True status so a
+// Group referencing it can proceed past the dependency gate.
+func readyInstance(t *testing.T, ctx context.Context, ns, name string) *keycloakv1alpha1.Instance {
 	t.Helper()
-	inst := &keycloakv1alpha1.KeycloakInstance{
+	inst := &keycloakv1alpha1.Instance{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
-		Spec: keycloakv1alpha1.KeycloakInstanceSpec{
+		Spec: keycloakv1alpha1.InstanceSpec{
 			URL:   "https://keycloak.example.test",
 			Realm: "holos",
 		},
 	}
 	createIgnoreExists(t, ctx, inst)
-	got := &keycloakv1alpha1.KeycloakInstance{}
+	got := &keycloakv1alpha1.Instance{}
 	if err := shared.k8sClient.Get(ctx, client.ObjectKeyFromObject(inst), got); err != nil {
 		t.Fatalf("get instance: %v", err)
 	}
@@ -38,9 +38,9 @@ func readyInstance(t *testing.T, ctx context.Context, ns, name string) *keycloak
 	return got
 }
 
-func getGroup(t *testing.T, ctx context.Context, key client.ObjectKey) *keycloakv1alpha1.KeycloakGroup {
+func getGroup(t *testing.T, ctx context.Context, key client.ObjectKey) *keycloakv1alpha1.Group {
 	t.Helper()
-	got := &keycloakv1alpha1.KeycloakGroup{}
+	got := &keycloakv1alpha1.Group{}
 	if err := shared.k8sClient.Get(ctx, key, got); err != nil {
 		t.Fatalf("get group: %v", err)
 	}
@@ -57,22 +57,22 @@ func TestGroupReconcileCreate(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	// A KeycloakClient the group confers a role from.
-	kclient := &keycloakv1alpha1.KeycloakClient{
+	// A Client the group confers a role from.
+	kclient := &keycloakv1alpha1.Client{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "consumer"},
-		Spec: keycloakv1alpha1.KeycloakClientSpec{
+		Spec: keycloakv1alpha1.ClientSpec{
 			ClientID:    "https://app.holos.internal",
-			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Type:        keycloakv1alpha1.ClientTypePublic,
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 		},
 	}
 	createIgnoreExists(t, ctx, kclient)
 
-	group := &keycloakv1alpha1.KeycloakGroup{
+	group := &keycloakv1alpha1.Group{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "owner"},
-		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+		Spec: keycloakv1alpha1.GroupSpec{
 			Path:        "projects/my-project/roles/owner",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			ClientRoles: []keycloakv1alpha1.ClientRoleReference{
 				{ClientRef: "consumer", Role: "my-project-owner"},
 			},
@@ -85,7 +85,7 @@ func TestGroupReconcileCreate(t *testing.T) {
 		t.Fatalf("create group: %v", err)
 	}
 
-	fake := newFakeKeycloakClient("projects/my-project/custodians/owner")
+	fake := newFakeClient("projects/my-project/custodians/owner")
 	fake.seedClient("https://app.holos.internal", "client-uuid")
 	fake.seedClientRole("client-uuid", "my-project-owner", "role-uuid")
 	fake.seedClient(adminPermissionsClientID, "perm-client-uuid")
@@ -138,18 +138,18 @@ func TestGroupSteadyStateRefreshesValidationOnly(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	group := &keycloakv1alpha1.KeycloakGroup{
+	group := &keycloakv1alpha1.Group{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "viewer"},
-		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+		Spec: keycloakv1alpha1.GroupSpec{
 			Path:        "projects/observe/roles/viewer",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 		},
 	}
 	if err := shared.k8sClient.Create(ctx, group); err != nil {
 		t.Fatalf("create group: %v", err)
 	}
 
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	r, _ := newGroupReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(group)
 	_, _ = reconcileGroup(ctx, r, key) // finalizer
@@ -194,17 +194,17 @@ func TestGroupReconcileAdoptAndConflict(t *testing.T) {
 	readyInstance(t, ctx, ns, "kc")
 
 	t.Run("conflict when pre-existing and adopt false", func(t *testing.T) {
-		group := &keycloakv1alpha1.KeycloakGroup{
+		group := &keycloakv1alpha1.Group{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "conflict"},
-			Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Spec: keycloakv1alpha1.GroupSpec{
 				Path:        "projects/foreign/roles/owner",
-				InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			},
 		}
 		if err := shared.k8sClient.Create(ctx, group); err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		fake := newFakeKeycloakClient("projects/foreign/roles/owner") // pre-exists, not ours
+		fake := newFakeClient("projects/foreign/roles/owner") // pre-exists, not ours
 		r, _ := newGroupReconciler(fake, ns)
 		key := client.ObjectKeyFromObject(group)
 		_, _ = reconcileGroup(ctx, r, key) // finalizer
@@ -222,18 +222,18 @@ func TestGroupReconcileAdoptAndConflict(t *testing.T) {
 	})
 
 	t.Run("adopt when pre-existing and adopt true", func(t *testing.T) {
-		group := &keycloakv1alpha1.KeycloakGroup{
+		group := &keycloakv1alpha1.Group{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "adopt"},
-			Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Spec: keycloakv1alpha1.GroupSpec{
 				Path:        "projects/foreign/roles/editor",
-				InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 				Adopt:       true,
 			},
 		}
 		if err := shared.k8sClient.Create(ctx, group); err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		fake := newFakeKeycloakClient("projects/foreign/roles/editor")
+		fake := newFakeClient("projects/foreign/roles/editor")
 		r, _ := newGroupReconciler(fake, ns)
 		key := client.ObjectKeyFromObject(group)
 		_, _ = reconcileGroup(ctx, r, key) // finalizer
@@ -268,17 +268,17 @@ func TestGroupPreviouslyReservedPathsNowReconcile(t *testing.T) {
 	readyInstance(t, ctx, ns, "kc")
 
 	for i, path := range []string{"platform-owner", "platform", "authenticated", "realm_roles", "default-roles-holos"} {
-		group := &keycloakv1alpha1.KeycloakGroup{
+		group := &keycloakv1alpha1.Group{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "formerly-reserved-" + strconv.Itoa(i)},
-			Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Spec: keycloakv1alpha1.GroupSpec{
 				Path:        path,
-				InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			},
 		}
 		if err := shared.k8sClient.Create(ctx, group); err != nil {
 			t.Fatalf("create %q: %v", path, err)
 		}
-		fake := newFakeKeycloakClient()
+		fake := newFakeClient()
 		r, _ := newGroupReconciler(fake, ns)
 		key := client.ObjectKeyFromObject(group)
 		_, _ = reconcileGroup(ctx, r, key) // finalizer
@@ -308,12 +308,12 @@ func TestGroupReferenceGrant(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(groupNS, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, instNS, "kc")
 
-	newGroup := func(name string) *keycloakv1alpha1.KeycloakGroup {
-		g := &keycloakv1alpha1.KeycloakGroup{
+	newGroup := func(name string) *keycloakv1alpha1.Group {
+		g := &keycloakv1alpha1.Group{
 			ObjectMeta: metav1.ObjectMeta{Namespace: groupNS, Name: name},
-			Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Spec: keycloakv1alpha1.GroupSpec{
 				Path:        "projects/xns-" + name + "/roles/owner",
-				InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc", Namespace: instNS},
+				InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc", Namespace: instNS},
 			},
 		}
 		if err := shared.k8sClient.Create(ctx, g); err != nil {
@@ -324,7 +324,7 @@ func TestGroupReferenceGrant(t *testing.T) {
 
 	t.Run("denied without a grant", func(t *testing.T) {
 		group := newGroup("denied")
-		fake := newFakeKeycloakClient()
+		fake := newFakeClient()
 		r, _ := newGroupReconciler(fake, groupNS)
 		key := client.ObjectKeyFromObject(group)
 		_, _ = reconcileGroup(ctx, r, key) // finalizer
@@ -347,19 +347,19 @@ func TestGroupReferenceGrant(t *testing.T) {
 			Spec: securityv1alpha1.ReferenceGrantSpec{
 				From: []securityv1alpha1.ReferenceGrantFrom{{
 					Group:     keycloakv1alpha1.GroupVersion.Group,
-					Kind:      "KeycloakGroup",
+					Kind:      "Group",
 					Namespace: groupNS,
 				}},
 				To: []securityv1alpha1.ReferenceGrantTo{{
 					Group: keycloakv1alpha1.GroupVersion.Group,
-					Kind:  "KeycloakInstance",
+					Kind:  "Instance",
 				}},
 			},
 		}
 		createIgnoreExists(t, ctx, grant)
 
 		group := newGroup("allowed")
-		fake := newFakeKeycloakClient()
+		fake := newFakeClient()
 		r, _ := newGroupReconciler(fake, groupNS)
 		key := client.ObjectKeyFromObject(group)
 		_, _ = reconcileGroup(ctx, r, key) // finalizer
@@ -388,17 +388,17 @@ func TestGroupDelete(t *testing.T) {
 	readyInstance(t, ctx, ns, "kc")
 
 	t.Run("created group is deleted in Keycloak", func(t *testing.T) {
-		group := &keycloakv1alpha1.KeycloakGroup{
+		group := &keycloakv1alpha1.Group{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "del-created"},
-			Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Spec: keycloakv1alpha1.GroupSpec{
 				Path:        "projects/del/roles/owner",
-				InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			},
 		}
 		if err := shared.k8sClient.Create(ctx, group); err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		fake := newFakeKeycloakClient()
+		fake := newFakeClient()
 		r, _ := newGroupReconciler(fake, ns)
 		key := client.ObjectKeyFromObject(group)
 		_, _ = reconcileGroup(ctx, r, key) // finalizer
@@ -424,18 +424,18 @@ func TestGroupDelete(t *testing.T) {
 	})
 
 	t.Run("adopted group is released not deleted", func(t *testing.T) {
-		group := &keycloakv1alpha1.KeycloakGroup{
+		group := &keycloakv1alpha1.Group{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "del-adopted"},
-			Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Spec: keycloakv1alpha1.GroupSpec{
 				Path:        "projects/del/roles/editor",
-				InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 				Adopt:       true,
 			},
 		}
 		if err := shared.k8sClient.Create(ctx, group); err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		fake := newFakeKeycloakClient("projects/del/roles/editor") // pre-exists → adopted
+		fake := newFakeClient("projects/del/roles/editor") // pre-exists → adopted
 		r, _ := newGroupReconciler(fake, ns)
 		key := client.ObjectKeyFromObject(group)
 		_, _ = reconcileGroup(ctx, r, key) // finalizer
@@ -458,19 +458,19 @@ func TestGroupDelete(t *testing.T) {
 	})
 
 	t.Run("orphan leaves created group and side effects untouched without Keycloak calls", func(t *testing.T) {
-		createIgnoreExists(t, ctx, &keycloakv1alpha1.KeycloakClient{
+		createIgnoreExists(t, ctx, &keycloakv1alpha1.Client{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "consumer-orphan"},
-			Spec: keycloakv1alpha1.KeycloakClientSpec{
+			Spec: keycloakv1alpha1.ClientSpec{
 				ClientID:    "https://orphan-app.holos.internal",
-				Type:        keycloakv1alpha1.KeycloakClientTypePublic,
-				InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				Type:        keycloakv1alpha1.ClientTypePublic,
+				InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			},
 		})
-		group := &keycloakv1alpha1.KeycloakGroup{
+		group := &keycloakv1alpha1.Group{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "del-orphan"},
-			Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Spec: keycloakv1alpha1.GroupSpec{
 				Path:           "projects/del/roles/orphan",
-				InstanceRef:    keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				InstanceRef:    keycloakv1alpha1.InstanceReference{Name: "kc"},
 				ClientRoles:    []keycloakv1alpha1.ClientRoleReference{{ClientRef: "consumer-orphan", Role: "del-orphan"}},
 				Custodians:     []keycloakv1alpha1.CustodianReference{{Path: "projects/del/custodians/orphan"}},
 				DeletionPolicy: keycloakv1alpha1.DeletionPolicyOrphan,
@@ -479,7 +479,7 @@ func TestGroupDelete(t *testing.T) {
 		if err := shared.k8sClient.Create(ctx, group); err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		fake := newFakeKeycloakClient("projects/del/custodians/orphan")
+		fake := newFakeClient("projects/del/custodians/orphan")
 		fake.seedClient("https://orphan-app.holos.internal", "orphan-client-uuid")
 		fake.seedClientRole("orphan-client-uuid", "del-orphan", "orphan-role-uuid")
 		fake.seedClient(adminPermissionsClientID, "perm-client-uuid")
@@ -517,11 +517,11 @@ func TestGroupDelete(t *testing.T) {
 	})
 
 	t.Run("adopted group with explicit delete is deleted after UUID verification", func(t *testing.T) {
-		group := &keycloakv1alpha1.KeycloakGroup{
+		group := &keycloakv1alpha1.Group{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "del-adopted-explicit"},
-			Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Spec: keycloakv1alpha1.GroupSpec{
 				Path:           "projects/del/roles/adopted-explicit",
-				InstanceRef:    keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				InstanceRef:    keycloakv1alpha1.InstanceReference{Name: "kc"},
 				Adopt:          true,
 				Custodians:     []keycloakv1alpha1.CustodianReference{{Path: "projects/del/custodians/adopted-explicit"}},
 				DeletionPolicy: keycloakv1alpha1.DeletionPolicyDelete,
@@ -530,7 +530,7 @@ func TestGroupDelete(t *testing.T) {
 		if err := shared.k8sClient.Create(ctx, group); err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		fake := newFakeKeycloakClient("projects/del/roles/adopted-explicit", "projects/del/custodians/adopted-explicit")
+		fake := newFakeClient("projects/del/roles/adopted-explicit", "projects/del/custodians/adopted-explicit")
 		fake.seedClient(adminPermissionsClientID, "perm-client-uuid")
 		r, _ := newGroupReconciler(fake, ns)
 		key := client.ObjectKeyFromObject(group)
@@ -561,11 +561,11 @@ func TestGroupDelete(t *testing.T) {
 	})
 
 	t.Run("adopted group explicit delete releases out-of-band replacement", func(t *testing.T) {
-		group := &keycloakv1alpha1.KeycloakGroup{
+		group := &keycloakv1alpha1.Group{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "del-adopted-replaced"},
-			Spec: keycloakv1alpha1.KeycloakGroupSpec{
+			Spec: keycloakv1alpha1.GroupSpec{
 				Path:           "projects/del/roles/adopted-replaced",
-				InstanceRef:    keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				InstanceRef:    keycloakv1alpha1.InstanceReference{Name: "kc"},
 				Adopt:          true,
 				DeletionPolicy: keycloakv1alpha1.DeletionPolicyDelete,
 			},
@@ -573,7 +573,7 @@ func TestGroupDelete(t *testing.T) {
 		if err := shared.k8sClient.Create(ctx, group); err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		fake := newFakeKeycloakClient("projects/del/roles/adopted-replaced")
+		fake := newFakeClient("projects/del/roles/adopted-replaced")
 		r, _ := newGroupReconciler(fake, ns)
 		key := client.ObjectKeyFromObject(group)
 		_, _ = reconcileGroup(ctx, r, key) // finalizer
@@ -609,11 +609,11 @@ func TestGroupRenameTransferFlow(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	old := &keycloakv1alpha1.KeycloakGroup{
+	old := &keycloakv1alpha1.Group{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "old-owner"},
-		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+		Spec: keycloakv1alpha1.GroupSpec{
 			Path:        "projects/transfer/roles/owner",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 		},
 	}
 	if err := shared.k8sClient.Create(ctx, old); err != nil {
@@ -621,7 +621,7 @@ func TestGroupRenameTransferFlow(t *testing.T) {
 	}
 	oldKey := client.ObjectKeyFromObject(old)
 
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	r, _ := newGroupReconciler(fake, ns)
 	_, _ = reconcileGroup(ctx, r, oldKey) // finalizer
 	if _, err := reconcileGroup(ctx, r, oldKey); err != nil {
@@ -651,11 +651,11 @@ func TestGroupRenameTransferFlow(t *testing.T) {
 		t.Fatal("orphaned group should remain in Keycloak")
 	}
 
-	replacement := &keycloakv1alpha1.KeycloakGroup{
+	replacement := &keycloakv1alpha1.Group{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "new-owner"},
-		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+		Spec: keycloakv1alpha1.GroupSpec{
 			Path:        "projects/transfer/roles/owner",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			Adopt:       true,
 		},
 	}
@@ -707,20 +707,20 @@ func TestGroupClientRolePrune(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	createIgnoreExists(t, ctx, &keycloakv1alpha1.KeycloakClient{
+	createIgnoreExists(t, ctx, &keycloakv1alpha1.Client{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "consumer"},
-		Spec: keycloakv1alpha1.KeycloakClientSpec{
+		Spec: keycloakv1alpha1.ClientSpec{
 			ClientID:    "https://app.holos.internal",
-			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Type:        keycloakv1alpha1.ClientTypePublic,
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 		},
 	})
 
-	group := &keycloakv1alpha1.KeycloakGroup{
+	group := &keycloakv1alpha1.Group{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "roleprune"},
-		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+		Spec: keycloakv1alpha1.GroupSpec{
 			Path:        "projects/rp/roles/owner",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			ClientRoles: []keycloakv1alpha1.ClientRoleReference{
 				{ClientRef: "consumer", Role: "rp-owner"},
 				{ClientRef: "consumer", Role: "rp-extra"},
@@ -730,7 +730,7 @@ func TestGroupClientRolePrune(t *testing.T) {
 	if err := shared.k8sClient.Create(ctx, group); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	fake.seedClient("https://app.holos.internal", "client-uuid")
 	fake.seedClientRole("client-uuid", "rp-owner", "role-owner")
 	fake.seedClientRole("client-uuid", "rp-extra", "role-extra")
@@ -775,11 +775,11 @@ func TestGroupCustodianPrune(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	group := &keycloakv1alpha1.KeycloakGroup{
+	group := &keycloakv1alpha1.Group{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "custprune"},
-		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+		Spec: keycloakv1alpha1.GroupSpec{
 			Path:        "projects/cp/roles/owner",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			Custodians: []keycloakv1alpha1.CustodianReference{
 				{Path: "projects/cp/custodians/owner"},
 			},
@@ -788,7 +788,7 @@ func TestGroupCustodianPrune(t *testing.T) {
 	if err := shared.k8sClient.Create(ctx, group); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	fake := newFakeKeycloakClient("projects/cp/custodians/owner")
+	fake := newFakeClient("projects/cp/custodians/owner")
 	fake.seedClient(adminPermissionsClientID, "perm-client-uuid")
 	r, _ := newGroupReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(group)
@@ -827,17 +827,17 @@ func TestGroupReplacedOutOfBand(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	group := &keycloakv1alpha1.KeycloakGroup{
+	group := &keycloakv1alpha1.Group{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "replaced"},
-		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+		Spec: keycloakv1alpha1.GroupSpec{
 			Path:        "projects/rep/roles/owner",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 		},
 	}
 	if err := shared.k8sClient.Create(ctx, group); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	r, _ := newGroupReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(group)
 	_, _ = reconcileGroup(ctx, r, key) // finalizer
@@ -890,18 +890,18 @@ func TestGroupAdoptedReplacedOutOfBand(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	group := &keycloakv1alpha1.KeycloakGroup{
+	group := &keycloakv1alpha1.Group{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "adopt-replaced"},
-		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+		Spec: keycloakv1alpha1.GroupSpec{
 			Path:        "projects/areplaced/roles/owner",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			Adopt:       true,
 		},
 	}
 	if err := shared.k8sClient.Create(ctx, group); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	fake := newFakeKeycloakClient("projects/areplaced/roles/owner") // pre-exists → adopted
+	fake := newFakeClient("projects/areplaced/roles/owner") // pre-exists → adopted
 	r, _ := newGroupReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(group)
 	_, _ = reconcileGroup(ctx, r, key) // finalizer
@@ -938,11 +938,11 @@ func TestGroupGroupIDBackfillPersisted(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	group := &keycloakv1alpha1.KeycloakGroup{
+	group := &keycloakv1alpha1.Group{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "backfill"},
-		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+		Spec: keycloakv1alpha1.GroupSpec{
 			Path:        "projects/bf/roles/owner",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 		},
 	}
 	if err := shared.k8sClient.Create(ctx, group); err != nil {
@@ -951,7 +951,7 @@ func TestGroupGroupIDBackfillPersisted(t *testing.T) {
 	// Seed the group as already existing in Keycloak and mark the CR as Created with
 	// an EMPTY GroupID and Ready already True — the steady-state object whose
 	// ownership id needs backfilling.
-	fake := newFakeKeycloakClient("projects/bf/roles/owner")
+	fake := newFakeClient("projects/bf/roles/owner")
 	r, _ := newGroupReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(group)
 	_, _ = reconcileGroup(ctx, r, key) // finalizer
@@ -982,18 +982,18 @@ func TestGroupAdoptedNoSideEffectsDeleteDropsFinalizer(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	group := &keycloakv1alpha1.KeycloakGroup{
+	group := &keycloakv1alpha1.Group{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "adoptnoop"},
-		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+		Spec: keycloakv1alpha1.GroupSpec{
 			Path:        "projects/an/roles/owner",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			Adopt:       true,
 		},
 	}
 	if err := shared.k8sClient.Create(ctx, group); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	fake := newFakeKeycloakClient("projects/an/roles/owner") // pre-exists → adopted, no roles/custodians
+	fake := newFakeClient("projects/an/roles/owner") // pre-exists → adopted, no roles/custodians
 	r, _ := newGroupReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(group)
 	_, _ = reconcileGroup(ctx, r, key) // finalizer
@@ -1007,7 +1007,7 @@ func TestGroupAdoptedNoSideEffectsDeleteDropsFinalizer(t *testing.T) {
 	// Now make the instance unresolvable (delete it), then delete the CR. Release is
 	// a no-op (no managed side effects), so the finalizer must drop without needing
 	// the instance/credential.
-	inst := &keycloakv1alpha1.KeycloakInstance{}
+	inst := &keycloakv1alpha1.Instance{}
 	_ = shared.k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "kc"}, inst)
 	_ = shared.k8sClient.Delete(ctx, inst)
 
@@ -1017,7 +1017,7 @@ func TestGroupAdoptedNoSideEffectsDeleteDropsFinalizer(t *testing.T) {
 	if _, err := reconcileGroup(ctx, r, key); err != nil {
 		t.Fatalf("reconcile delete: %v", err)
 	}
-	got := &keycloakv1alpha1.KeycloakGroup{}
+	got := &keycloakv1alpha1.Group{}
 	if err := shared.k8sClient.Get(ctx, key, got); err == nil {
 		t.Errorf("adopted no-op CR should be gone, still has finalizers %v", got.Finalizers)
 	}
@@ -1033,18 +1033,18 @@ func TestGroupCreatedDeletePrunesCustodianFGAP(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	group := &keycloakv1alpha1.KeycloakGroup{
+	group := &keycloakv1alpha1.Group{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "createddelfgap"},
-		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+		Spec: keycloakv1alpha1.GroupSpec{
 			Path:        "projects/cdf/roles/owner",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			Custodians:  []keycloakv1alpha1.CustodianReference{{Path: "projects/cdf/custodians/owner"}},
 		},
 	}
 	if err := shared.k8sClient.Create(ctx, group); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	fake := newFakeKeycloakClient("projects/cdf/custodians/owner")
+	fake := newFakeClient("projects/cdf/custodians/owner")
 	fake.seedClient(adminPermissionsClientID, "perm-client-uuid")
 	r, _ := newGroupReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(group)
@@ -1083,17 +1083,17 @@ func TestGroupDeleteUnprovisionedDropsFinalizer(t *testing.T) {
 	// Deliberately NO credential Secret and NO instance: the group can never be
 	// provisioned, so deletion must still succeed (no side effects to clean up).
 
-	group := &keycloakv1alpha1.KeycloakGroup{
+	group := &keycloakv1alpha1.Group{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "never-provisioned"},
-		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+		Spec: keycloakv1alpha1.GroupSpec{
 			Path:        "projects/np/roles/owner",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "absent"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "absent"},
 		},
 	}
 	if err := shared.k8sClient.Create(ctx, group); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	r, _ := newGroupReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(group)
 	_, _ = reconcileGroup(ctx, r, key) // adds finalizer
@@ -1107,7 +1107,7 @@ func TestGroupDeleteUnprovisionedDropsFinalizer(t *testing.T) {
 	if _, err := reconcileGroup(ctx, r, key); err != nil {
 		t.Fatalf("reconcile delete: %v", err)
 	}
-	got := &keycloakv1alpha1.KeycloakGroup{}
+	got := &keycloakv1alpha1.Group{}
 	err := shared.k8sClient.Get(ctx, key, got)
 	if err == nil {
 		t.Errorf("CR should be gone (finalizer dropped), but it still exists with finalizers %v", got.Finalizers)
@@ -1124,20 +1124,20 @@ func TestGroupClientRolePartialFailureTracked(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	createIgnoreExists(t, ctx, &keycloakv1alpha1.KeycloakClient{
+	createIgnoreExists(t, ctx, &keycloakv1alpha1.Client{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "consumer"},
-		Spec: keycloakv1alpha1.KeycloakClientSpec{
+		Spec: keycloakv1alpha1.ClientSpec{
 			ClientID:    "https://app.holos.internal",
-			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Type:        keycloakv1alpha1.ClientTypePublic,
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 		},
 	})
 
-	group := &keycloakv1alpha1.KeycloakGroup{
+	group := &keycloakv1alpha1.Group{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "partialrole"},
-		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+		Spec: keycloakv1alpha1.GroupSpec{
 			Path:        "projects/pf/roles/owner",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			ClientRoles: []keycloakv1alpha1.ClientRoleReference{
 				{ClientRef: "consumer", Role: "pf-a"},
 				{ClientRef: "consumer", Role: "pf-fail"},
@@ -1147,7 +1147,7 @@ func TestGroupClientRolePartialFailureTracked(t *testing.T) {
 	if err := shared.k8sClient.Create(ctx, group); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	fake.seedClient("https://app.holos.internal", "client-uuid")
 	fake.seedClientRole("client-uuid", "pf-a", "role-a")
 	fake.seedClientRole("client-uuid", "pf-fail", "role-fail")
@@ -1183,11 +1183,11 @@ func TestGroupCreateRaceConflict(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	group := &keycloakv1alpha1.KeycloakGroup{
+	group := &keycloakv1alpha1.Group{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "race"},
-		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+		Spec: keycloakv1alpha1.GroupSpec{
 			Path:        "projects/race/roles/owner",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 		},
 	}
 	if err := shared.k8sClient.Create(ctx, group); err != nil {
@@ -1195,7 +1195,7 @@ func TestGroupCreateRaceConflict(t *testing.T) {
 	}
 	// The group does NOT exist at the initial GET, but a concurrent actor created it
 	// just before our ensure: the fake reports it pre-existing (created=false).
-	fake := newFakeKeycloakClient("projects/race/roles/owner")
+	fake := newFakeClient("projects/race/roles/owner")
 	// Force the initial GetGroupByPath to report NotFound so reconcileCreate runs,
 	// then EnsureGroupByPathCreated finds it already present (created=false).
 	fake.groupGetNotFoundOnce = map[string]bool{"/projects/race/roles/owner": true}
@@ -1225,20 +1225,20 @@ func TestGroupAdoptedDeletePrunesManaged(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	createIgnoreExists(t, ctx, &keycloakv1alpha1.KeycloakClient{
+	createIgnoreExists(t, ctx, &keycloakv1alpha1.Client{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "consumer"},
-		Spec: keycloakv1alpha1.KeycloakClientSpec{
+		Spec: keycloakv1alpha1.ClientSpec{
 			ClientID:    "https://app.holos.internal",
-			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Type:        keycloakv1alpha1.ClientTypePublic,
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 		},
 	})
 
-	group := &keycloakv1alpha1.KeycloakGroup{
+	group := &keycloakv1alpha1.Group{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "adoptprune"},
-		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+		Spec: keycloakv1alpha1.GroupSpec{
 			Path:        "projects/ap/roles/owner",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			Adopt:       true,
 			ClientRoles: []keycloakv1alpha1.ClientRoleReference{{ClientRef: "consumer", Role: "ap-owner"}},
 			Custodians:  []keycloakv1alpha1.CustodianReference{{Path: "projects/ap/custodians/owner"}},
@@ -1247,7 +1247,7 @@ func TestGroupAdoptedDeletePrunesManaged(t *testing.T) {
 	if err := shared.k8sClient.Create(ctx, group); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	fake := newFakeKeycloakClient("projects/ap/roles/owner", "projects/ap/custodians/owner") // role group pre-exists → adopted
+	fake := newFakeClient("projects/ap/roles/owner", "projects/ap/custodians/owner") // role group pre-exists → adopted
 	fake.seedClient("https://app.holos.internal", "client-uuid")
 	fake.seedClientRole("client-uuid", "ap-owner", "role-owner")
 	fake.seedClient(adminPermissionsClientID, "perm-client-uuid")
@@ -1295,17 +1295,17 @@ func TestGroupInstanceNotReady(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	// Note: no instance created → InstanceNotReady.
 
-	group := &keycloakv1alpha1.KeycloakGroup{
+	group := &keycloakv1alpha1.Group{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "no-instance"},
-		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+		Spec: keycloakv1alpha1.GroupSpec{
 			Path:        "projects/x/roles/owner",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "absent"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "absent"},
 		},
 	}
 	if err := shared.k8sClient.Create(ctx, group); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	r, _ := newGroupReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(group)
 	_, _ = reconcileGroup(ctx, r, key) // finalizer
@@ -1320,7 +1320,7 @@ func TestGroupInstanceNotReady(t *testing.T) {
 }
 
 // TestGroupConfersArbitraryRoleByClientID is the transparency/round-trip test
-// required by HOL-1421: a KeycloakGroup with an arbitrary spec.path plus a
+// required by HOL-1421: a Group with an arbitrary spec.path plus a
 // clientRoles[] entry naming a client by clientId with an arbitrary role name
 // produces a Keycloak group at exactly that path with exactly that role conferred —
 // identical names, no prefix added/stripped, no allowlist, no project==namespace
@@ -1345,11 +1345,11 @@ func TestGroupConfersArbitraryRoleByClientID(t *testing.T) {
 		clientID = "realm-management"
 		roleName = "arbitrary-role-name"
 	)
-	group := &keycloakv1alpha1.KeycloakGroup{
+	group := &keycloakv1alpha1.Group{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "transparent"},
-		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+		Spec: keycloakv1alpha1.GroupSpec{
 			Path:        path,
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			ClientRoles: []keycloakv1alpha1.ClientRoleReference{
 				{ClientID: clientID, Role: roleName},
 			},
@@ -1359,9 +1359,9 @@ func TestGroupConfersArbitraryRoleByClientID(t *testing.T) {
 		t.Fatalf("create group: %v", err)
 	}
 
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	// The named client exists, but the role does NOT — the direct clientId path
-	// creates it before assigning (no KeycloakClient CR is responsible for it).
+	// creates it before assigning (no Client CR is responsible for it).
 	fake.seedClient(clientID, "target-uuid")
 	r, recorder := newGroupReconciler(fake, ns)
 
@@ -1462,20 +1462,20 @@ func TestGroupLegacyManagedRoleNotPrunedOnUpgrade(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	createIgnoreExists(t, ctx, &keycloakv1alpha1.KeycloakClient{
+	createIgnoreExists(t, ctx, &keycloakv1alpha1.Client{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "consumer"},
-		Spec: keycloakv1alpha1.KeycloakClientSpec{
+		Spec: keycloakv1alpha1.ClientSpec{
 			ClientID:    "https://app.holos.internal",
-			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Type:        keycloakv1alpha1.ClientTypePublic,
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 		},
 	})
 
-	group := &keycloakv1alpha1.KeycloakGroup{
+	group := &keycloakv1alpha1.Group{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "legacy"},
-		Spec: keycloakv1alpha1.KeycloakGroupSpec{
+		Spec: keycloakv1alpha1.GroupSpec{
 			Path:        "projects/lg/roles/owner",
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			ClientRoles: []keycloakv1alpha1.ClientRoleReference{
 				{ClientRef: "consumer", Role: "lg-owner"},
 			},
@@ -1485,7 +1485,7 @@ func TestGroupLegacyManagedRoleNotPrunedOnUpgrade(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	fake.seedClient("https://app.holos.internal", "client-uuid")
 	fake.seedClientRole("client-uuid", "lg-owner", "role-owner")
 	r, _ := newGroupReconciler(fake, ns)

@@ -46,7 +46,7 @@ import (
 // Secrets are limited to get and create (never list/watch): the reconcilers
 // resolve only the specific credential/webhook-URL Secrets a CR names, via the
 // manager's non-caching APIReader, so the controller never enumerates Secrets
-// cluster-wide. The create verb (HOL-1347) is for the KeycloakClient reconciler's
+// cluster-wide. The create verb (HOL-1347) is for the Client reconciler's
 // generate-once delivery of a confidential client's secret into the Secret named
 // by the resource's spec.secretRef; it create-if-absent only and never updates an
 // existing Secret, so the delivered value stays stable (the Runtime Secret
@@ -56,9 +56,9 @@ import (
 // +kubebuilder:rbac:groups=quay.holos.run,resources=organizations;repositories,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=quay.holos.run,resources=organizations/status;repositories/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=quay.holos.run,resources=organizations/finalizers;repositories/finalizers,verbs=update
-// +kubebuilder:rbac:groups=keycloak.holos.run,resources=keycloakinstances;keycloakgroups;keycloakgroupmemberships;keycloakusers;keycloakclients,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=keycloak.holos.run,resources=keycloakinstances/status;keycloakgroups/status;keycloakgroupmemberships/status;keycloakusers/status;keycloakclients/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=keycloak.holos.run,resources=keycloakinstances/finalizers;keycloakgroups/finalizers;keycloakgroupmemberships/finalizers;keycloakusers/finalizers;keycloakclients/finalizers,verbs=update
+// +kubebuilder:rbac:groups=keycloak.holos.run,resources=instances;groups;groupmemberships;users;clients,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=keycloak.holos.run,resources=instances/status;groups/status;groupmemberships/status;users/status;clients/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=keycloak.holos.run,resources=instances/finalizers;groups/finalizers;groupmemberships/finalizers;users/finalizers;clients/finalizers,verbs=update
 // +kubebuilder:rbac:groups=security.holos.run,resources=referencegrants,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -173,45 +173,45 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Register the keycloak.holos.run KeycloakInstance and KeycloakGroup
+	// Register the keycloak.holos.run Instance and Group
 	// reconcilers (HOL-1346). Like the quay reconcilers they resolve the Keycloak
 	// admin credential from the controller's own namespace (POD_NAMESPACE /
 	// holos-controller default), so leaving Namespace empty lets SetupWithManager
-	// pick the env up. The KeycloakUser and KeycloakClient reconcilers are wired in
+	// pick the env up. The User and Client reconcilers are wired in
 	// HOL-1347.
 	if err := (&keycloakcontroller.InstanceReconciler{
 		Client: mgr.GetClient(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "KeycloakInstance")
+		setupLog.Error(err, "unable to create controller", "controller", "Instance")
 		os.Exit(1)
 	}
 
 	if err := (&keycloakcontroller.GroupReconciler{
 		Client: mgr.GetClient(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "KeycloakGroup")
+		setupLog.Error(err, "unable to create controller", "controller", "Group")
 		os.Exit(1)
 	}
 
 	if err := (&keycloakcontroller.MembershipReconciler{
 		Client: mgr.GetClient(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "KeycloakGroupMembership")
+		setupLog.Error(err, "unable to create controller", "controller", "GroupMembership")
 		os.Exit(1)
 	}
 
-	// Register the KeycloakUser reconciler (HOL-1347). It pre-provisions a user by
+	// Register the User reconciler (HOL-1347). It pre-provisions a user by
 	// email and configures the IdP federated-identity link for first-login
 	// auto-link, resolving the Keycloak admin credential from the controller's own
 	// namespace like the reconcilers above.
 	if err := (&keycloakcontroller.UserReconciler{
 		Client: mgr.GetClient(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "KeycloakUser")
+		setupLog.Error(err, "unable to create controller", "controller", "User")
 		os.Exit(1)
 	}
 
-	// Register the KeycloakClient reconciler (HOL-1347). It manages the URL-named
+	// Register the Client reconciler (HOL-1347). It manages the URL-named
 	// OIDC client, its client roles, and the client-role→groups-claim mapper, and
 	// for a confidential client delivers the generated secret (generate-once) to a
 	// Secret in the resource's namespace — the controller's first Secret-creating
@@ -219,7 +219,7 @@ func main() {
 	if err := (&keycloakcontroller.ClientReconciler{
 		Client: mgr.GetClient(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "KeycloakClient")
+		setupLog.Error(err, "unable to create controller", "controller", "Client")
 		os.Exit(1)
 	}
 

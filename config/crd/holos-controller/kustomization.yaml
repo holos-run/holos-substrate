@@ -6,9 +6,9 @@ kind: Kustomization
 resources:
   - bases/quay.holos.run_organizations.yaml
   - bases/quay.holos.run_repositories.yaml
-  - bases/keycloak.holos.run_keycloakinstances.yaml
-  - bases/keycloak.holos.run_keycloakgroups.yaml
-  - bases/keycloak.holos.run_keycloakgroupmemberships.yaml
-  - bases/keycloak.holos.run_keycloakusers.yaml
-  - bases/keycloak.holos.run_keycloakclients.yaml
+  - bases/keycloak.holos.run_instances.yaml
+  - bases/keycloak.holos.run_groups.yaml
+  - bases/keycloak.holos.run_groupmemberships.yaml
+  - bases/keycloak.holos.run_users.yaml
+  - bases/keycloak.holos.run_clients.yaml
   - bases/security.holos.run_referencegrants.yaml

@@ -4,17 +4,17 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// KeycloakGroupReference names the KeycloakGroup whose remote membership this
+// GroupReference names the Group whose remote membership this
 // binding manages. An omitted namespace defaults to the membership CR's
 // namespace. Cross-namespace references are authorized by a security.holos.run
-// ReferenceGrant in the KeycloakGroup's namespace.
-type KeycloakGroupReference struct {
-	// Name is the metadata.name of the KeycloakGroup resource.
+// ReferenceGrant in the Group's namespace.
+type GroupReference struct {
+	// Name is the metadata.name of the Group resource.
 	//
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 
-	// Namespace of the KeycloakGroup. When omitted the group is resolved in the
+	// Namespace of the Group. When omitted the group is resolved in the
 	// membership CR's namespace. When set to a different namespace, the reference
 	// must be authorized by a security.holos.run ReferenceGrant in the group's
 	// namespace.
@@ -23,20 +23,20 @@ type KeycloakGroupReference struct {
 	Namespace string `json:"namespace,omitempty"`
 }
 
-// KeycloakGroupMembershipMember declares one Keycloak user, by email, that
+// GroupMembershipMember declares one Keycloak user, by email, that
 // should be a member of the referenced group. Users are provisioned separately by
-// KeycloakUser; this Kind never creates users.
-type KeycloakGroupMembershipMember struct {
+// User; this Kind never creates users.
+type GroupMembershipMember struct {
 	// Email is the Keycloak user's email address.
 	//
 	// +kubebuilder:validation:MinLength=1
 	Email string `json:"email"`
 }
 
-// ManagedKeycloakGroupMember records one remote group membership this CR owns.
+// ManagedGroupMember records one remote group membership this CR owns.
 // The email ties the status entry back to spec.members, while userID lets the
 // reconciler safely prune only the exact Keycloak user it previously added.
-type ManagedKeycloakGroupMember struct {
+type ManagedGroupMember struct {
 	// Email is the member email from spec.members.
 	//
 	// +kubebuilder:validation:MinLength=1
@@ -48,26 +48,26 @@ type ManagedKeycloakGroupMember struct {
 	UserID string `json:"userID"`
 }
 
-// KeycloakGroupMembershipSpec defines the desired state of one membership
-// binding: a single target KeycloakGroup plus the users this CR should ensure are
+// GroupMembershipSpec defines the desired state of one membership
+// binding: a single target Group plus the users this CR should ensure are
 // members of that group.
-type KeycloakGroupMembershipSpec struct {
-	// InstanceRef references the KeycloakInstance this membership is reconciled
+type GroupMembershipSpec struct {
+	// InstanceRef references the Instance this membership is reconciled
 	// against. It is immutable. The reconciler also requires the referenced
-	// KeycloakGroup's instanceRef, after namespace defaulting, to match this value
+	// Group's instanceRef, after namespace defaulting, to match this value
 	// exactly; a mismatch is Ready=False with reason InstanceMismatch and no
 	// Keycloak mutation.
 	//
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="instanceRef is immutable"
-	InstanceRef KeycloakInstanceReference `json:"instanceRef"`
+	InstanceRef InstanceReference `json:"instanceRef"`
 
-	// GroupRef names the KeycloakGroup whose membership this CR manages. It is
+	// GroupRef names the Group whose membership this CR manages. It is
 	// immutable. An omitted namespace defaults to this CR's namespace; a
 	// cross-namespace reference requires a security.holos.run ReferenceGrant in
 	// the group's namespace.
 	//
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="groupRef is immutable"
-	GroupRef KeycloakGroupReference `json:"groupRef"`
+	GroupRef GroupReference `json:"groupRef"`
 
 	// Members is the desired set of Keycloak users, by email, this CR should add
 	// to the referenced group. A member email with no corresponding Keycloak user
@@ -76,7 +76,7 @@ type KeycloakGroupMembershipSpec struct {
 	// +optional
 	// +listType=map
 	// +listMapKey=email
-	Members []KeycloakGroupMembershipMember `json:"members,omitempty"`
+	Members []GroupMembershipMember `json:"members,omitempty"`
 
 	// DeletionPolicy controls how the controller handles the group memberships
 	// this resource manages when the resource is deleted. Delete removes the
@@ -89,10 +89,10 @@ type KeycloakGroupMembershipSpec struct {
 	DeletionPolicy DeletionPolicy `json:"deletionPolicy,omitempty"`
 }
 
-// KeycloakGroupMembershipStatus defines the observed state of a
-// KeycloakGroupMembership. It follows the Gateway-API status convention and the
+// GroupMembershipStatus defines the observed state of a
+// GroupMembership. It follows the Gateway-API status convention and the
 // ADR-22 drift-observability timestamp contract for external-resource CRs.
-type KeycloakGroupMembershipStatus struct {
+type GroupMembershipStatus struct {
 	// Conditions represent the latest available observations of the membership
 	// binding's state.
 	//
@@ -104,7 +104,7 @@ type KeycloakGroupMembershipStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
 	// ObservedGeneration is the most recent generation observed for this
-	// KeycloakGroupMembership by the controller.
+	// GroupMembership by the controller.
 	//
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -125,7 +125,7 @@ type KeycloakGroupMembershipStatus struct {
 	// +optional
 	// +listType=map
 	// +listMapKey=email
-	ManagedMembers []ManagedKeycloakGroupMember `json:"managedMembers,omitempty"`
+	ManagedMembers []ManagedGroupMember `json:"managedMembers,omitempty"`
 
 	// LastValidatedTime is the last time the controller successfully read
 	// Keycloak and confirmed or restored the declared membership state. It is not
@@ -165,25 +165,25 @@ type KeycloakGroupMembershipStatus struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +kubebuilder:printcolumn:name="Validated",type=date,priority=1,JSONPath=`.status.lastValidatedTime`
 
-// KeycloakGroupMembership is the Schema for the keycloakgroupmemberships API.
-// It manages the members this CR declares for one KeycloakGroup.
-type KeycloakGroupMembership struct {
+// GroupMembership is the Schema for the groupmemberships API.
+// It manages the members this CR declares for one Group.
+type GroupMembership struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   KeycloakGroupMembershipSpec   `json:"spec,omitempty"`
-	Status KeycloakGroupMembershipStatus `json:"status,omitempty"`
+	Spec   GroupMembershipSpec   `json:"spec,omitempty"`
+	Status GroupMembershipStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// KeycloakGroupMembershipList contains a list of KeycloakGroupMembership.
-type KeycloakGroupMembershipList struct {
+// GroupMembershipList contains a list of GroupMembership.
+type GroupMembershipList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []KeycloakGroupMembership `json:"items"`
+	Items           []GroupMembership `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&KeycloakGroupMembership{}, &KeycloakGroupMembershipList{})
+	SchemeBuilder.Register(&GroupMembership{}, &GroupMembershipList{})
 }

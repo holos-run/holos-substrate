@@ -2,14 +2,14 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: keycloakgroupmembership-viewer-role
+  name: groupmembership-viewer-role
   labels:
     rbac.authorization.k8s.io/aggregate-to-view: "true"
 rules:
   - apiGroups:
       - keycloak.holos.run
     resources:
-      - keycloakgroupmemberships
+      - groupmemberships
     verbs:
       - get
       - list

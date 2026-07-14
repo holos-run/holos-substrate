@@ -1,6 +1,6 @@
 // Package keycloak holds the controller-runtime reconcilers for the
-// keycloak.holos.run API group (ADR-20): the KeycloakInstance reconciler and the
-// KeycloakGroup reconciler (HOL-1346), with the KeycloakUser and KeycloakClient
+// keycloak.holos.run API group (ADR-20): the Instance reconciler and the
+// Group reconciler (HOL-1346), with the User and Client
 // reconcilers landing in a later phase (HOL-1347). The reconcilers drive the
 // target Keycloak realm through the internal/keycloak Admin REST client,
 // authenticating with the admin credential named by a resource's
@@ -33,7 +33,7 @@ import (
 const requeueImmediately = time.Millisecond
 
 // requeueDependency is the backoff used when a reconcile cannot proceed because a
-// declarative dependency is not yet satisfied — the referenced KeycloakInstance is
+// declarative dependency is not yet satisfied — the referenced Instance is
 // absent or not Ready, or a cross-namespace ReferenceGrant is missing. It is a
 // modest periodic re-check (not the negligible requeueImmediately, which would
 // hot-loop an absent dependency) that backstops the watch-driven recovery
@@ -108,12 +108,12 @@ const (
 	// controller-layer reason with no API-package counterpart.
 	ReasonReleased = "Released"
 	// ReasonInstanceNotReady marks a condition False because the referenced
-	// KeycloakInstance does not exist or has not reported Ready. The dependent
+	// Instance does not exist or has not reported Ready. The dependent
 	// reconciler requeues until the instance is provisioned, mirroring quay's
 	// OrganizationNotReady.
 	ReasonInstanceNotReady = "InstanceNotReady"
 	// ReasonGroupNotReady marks a condition False because the referenced
-	// KeycloakGroup does not exist or has not reported Ready.
+	// Group does not exist or has not reported Ready.
 	ReasonGroupNotReady = "GroupNotReady"
 )
 

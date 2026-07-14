@@ -15,9 +15,9 @@ import (
 	securityv1alpha1 "github.com/holos-run/holos-substrate/api/security/v1alpha1"
 )
 
-func getKClient(t *testing.T, ctx context.Context, key client.ObjectKey) *keycloakv1alpha1.KeycloakClient {
+func getKClient(t *testing.T, ctx context.Context, key client.ObjectKey) *keycloakv1alpha1.Client {
 	t.Helper()
-	got := &keycloakv1alpha1.KeycloakClient{}
+	got := &keycloakv1alpha1.Client{}
 	if err := shared.k8sClient.Get(ctx, key, got); err != nil {
 		t.Fatalf("get client: %v", err)
 	}
@@ -45,12 +45,12 @@ func TestClientReconcileCreatePublicWithRolesAndMapper(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	kclient := &keycloakv1alpha1.KeycloakClient{
+	kclient := &keycloakv1alpha1.Client{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "my-project"},
-		Spec: keycloakv1alpha1.KeycloakClientSpec{
+		Spec: keycloakv1alpha1.ClientSpec{
 			ClientID:     "https://my-project.holos.internal",
-			Type:         keycloakv1alpha1.KeycloakClientTypePublic,
-			InstanceRef:  keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Type:         keycloakv1alpha1.ClientTypePublic,
+			InstanceRef:  keycloakv1alpha1.InstanceReference{Name: "kc"},
 			RedirectURIs: []string{"https://my-project.holos.internal/callback"},
 			ClientRoles: []keycloakv1alpha1.ClientRoleReference{
 				{ClientRef: "my-project", Role: "my-project-owner"},
@@ -62,7 +62,7 @@ func TestClientReconcileCreatePublicWithRolesAndMapper(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	r, recorder := newClientReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(kclient)
 	reconcileClientToSteady(t, ctx, r, key)
@@ -101,19 +101,19 @@ func TestClientSteadyStateRefreshesValidationOnly(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	kclient := &keycloakv1alpha1.KeycloakClient{
+	kclient := &keycloakv1alpha1.Client{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "observe"},
-		Spec: keycloakv1alpha1.KeycloakClientSpec{
+		Spec: keycloakv1alpha1.ClientSpec{
 			ClientID:    "https://observe.holos.internal",
-			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Type:        keycloakv1alpha1.ClientTypePublic,
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 		},
 	}
 	if err := shared.k8sClient.Create(ctx, kclient); err != nil {
 		t.Fatalf("create client: %v", err)
 	}
 
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	r, _ := newClientReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(kclient)
 	reconcileClientToSteady(t, ctx, r, key)
@@ -152,12 +152,12 @@ func TestClientReconcileDescriptionPropagatedOnCreate(t *testing.T) {
 	readyInstance(t, ctx, ns, "kc")
 
 	const want = "the my-project OIDC client"
-	kclient := &keycloakv1alpha1.KeycloakClient{
+	kclient := &keycloakv1alpha1.Client{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "desc-create"},
-		Spec: keycloakv1alpha1.KeycloakClientSpec{
+		Spec: keycloakv1alpha1.ClientSpec{
 			ClientID:    "https://desc-create.holos.internal",
-			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Type:        keycloakv1alpha1.ClientTypePublic,
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			Description: want,
 		},
 	}
@@ -165,7 +165,7 @@ func TestClientReconcileDescriptionPropagatedOnCreate(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	r, _ := newClientReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(kclient)
 	reconcileClientToSteady(t, ctx, r, key)
@@ -190,12 +190,12 @@ func TestClientReconcileDescriptionDriftCorrected(t *testing.T) {
 	readyInstance(t, ctx, ns, "kc")
 
 	const want = "spec-owned description"
-	kclient := &keycloakv1alpha1.KeycloakClient{
+	kclient := &keycloakv1alpha1.Client{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "desc-drift"},
-		Spec: keycloakv1alpha1.KeycloakClientSpec{
+		Spec: keycloakv1alpha1.ClientSpec{
 			ClientID:    "https://desc-drift.holos.internal",
-			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Type:        keycloakv1alpha1.ClientTypePublic,
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			Description: want,
 			Adopt:       true,
 		},
@@ -204,7 +204,7 @@ func TestClientReconcileDescriptionDriftCorrected(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	// Pre-existing client whose description was changed in the console (drift).
 	fake.seedClient("https://desc-drift.holos.internal", "drift-uuid")
 	fake.seedClientDescription("drift-uuid", "console-set drift")
@@ -227,12 +227,12 @@ func TestClientReconcileDescriptionClearedWhenOmitted(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	kclient := &keycloakv1alpha1.KeycloakClient{
+	kclient := &keycloakv1alpha1.Client{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "desc-clear"},
-		Spec: keycloakv1alpha1.KeycloakClientSpec{
+		Spec: keycloakv1alpha1.ClientSpec{
 			ClientID:    "https://desc-clear.holos.internal",
-			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Type:        keycloakv1alpha1.ClientTypePublic,
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			// Description omitted.
 			Adopt: true,
 		},
@@ -241,7 +241,7 @@ func TestClientReconcileDescriptionClearedWhenOmitted(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	// Pre-existing client carrying a console-set description that the empty spec
 	// value must actively clear.
 	fake.seedClient("https://desc-clear.holos.internal", "clear-uuid")
@@ -265,12 +265,12 @@ func TestClientReconcileAdoptExisting(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	kclient := &keycloakv1alpha1.KeycloakClient{
+	kclient := &keycloakv1alpha1.Client{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "existing"},
-		Spec: keycloakv1alpha1.KeycloakClientSpec{
+		Spec: keycloakv1alpha1.ClientSpec{
 			ClientID:    "https://existing.holos.internal",
-			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Type:        keycloakv1alpha1.ClientTypePublic,
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			Adopt:       true,
 		},
 	}
@@ -278,7 +278,7 @@ func TestClientReconcileAdoptExisting(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	fake.seedClient("https://existing.holos.internal", "existing-uuid") // pre-existing
 	r, _ := newClientReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(kclient)
@@ -307,12 +307,12 @@ func TestClientReconcileConflictWithoutAdopt(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	kclient := &keycloakv1alpha1.KeycloakClient{
+	kclient := &keycloakv1alpha1.Client{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "foreign"},
-		Spec: keycloakv1alpha1.KeycloakClientSpec{
+		Spec: keycloakv1alpha1.ClientSpec{
 			ClientID:    "https://foreign.holos.internal",
-			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Type:        keycloakv1alpha1.ClientTypePublic,
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			// Adopt defaults false.
 		},
 	}
@@ -320,7 +320,7 @@ func TestClientReconcileConflictWithoutAdopt(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	fake.seedClient("https://foreign.holos.internal", "foreign-uuid") // pre-existing, foreign
 	r, _ := newClientReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(kclient)
@@ -349,19 +349,19 @@ func TestClientReconcilePublicSetsPKCE(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	kclient := &keycloakv1alpha1.KeycloakClient{
+	kclient := &keycloakv1alpha1.Client{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "pkce"},
-		Spec: keycloakv1alpha1.KeycloakClientSpec{
+		Spec: keycloakv1alpha1.ClientSpec{
 			ClientID:    "https://pkce.holos.internal",
-			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Type:        keycloakv1alpha1.ClientTypePublic,
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 		},
 	}
 	if err := shared.k8sClient.Create(ctx, kclient); err != nil {
 		t.Fatalf("create client: %v", err)
 	}
 
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	r, _ := newClientReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(kclient)
 	reconcileClientToSteady(t, ctx, r, key)
@@ -381,12 +381,12 @@ func TestClientReconcileConfidentialSecretDelivery(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	kclient := &keycloakv1alpha1.KeycloakClient{
+	kclient := &keycloakv1alpha1.Client{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "confidential"},
-		Spec: keycloakv1alpha1.KeycloakClientSpec{
+		Spec: keycloakv1alpha1.ClientSpec{
 			ClientID:    "https://confidential.holos.internal",
-			Type:        keycloakv1alpha1.KeycloakClientTypeConfidential,
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Type:        keycloakv1alpha1.ClientTypeConfidential,
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			SecretRef:   &keycloakv1alpha1.ClientSecretReference{Name: "confidential-oidc", Key: "clientSecret"},
 		},
 	}
@@ -394,7 +394,7 @@ func TestClientReconcileConfidentialSecretDelivery(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	r, _ := newClientReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(kclient)
 	reconcileClientToSteady(t, ctx, r, key)
@@ -444,12 +444,12 @@ func TestClientReconcileConfidentialClearsPKCE(t *testing.T) {
 	// An adopted confidential client that already carries a stale PKCE S256
 	// attribute must converge to no-PKCE: the update requests removal of the PKCE
 	// attribute (and does not set it), and a public client still sets it.
-	kclient := &keycloakv1alpha1.KeycloakClient{
+	kclient := &keycloakv1alpha1.Client{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "conf"},
-		Spec: keycloakv1alpha1.KeycloakClientSpec{
+		Spec: keycloakv1alpha1.ClientSpec{
 			ClientID:    "https://conf.holos.internal",
-			Type:        keycloakv1alpha1.KeycloakClientTypeConfidential,
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Type:        keycloakv1alpha1.ClientTypeConfidential,
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			SecretRef:   &keycloakv1alpha1.ClientSecretReference{Name: "conf-oidc", Key: "clientSecret"},
 			Adopt:       true,
 		},
@@ -458,7 +458,7 @@ func TestClientReconcileConfidentialClearsPKCE(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	fake.seedClient("https://conf.holos.internal", "conf-uuid") // pre-existing, with stale S256
 	r, _ := newClientReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(kclient)
@@ -488,12 +488,12 @@ func TestClientReconcileSecretCollisionMissingKeyFails(t *testing.T) {
 		Data:       map[string][]byte{"unrelated": []byte("x")},
 	})
 
-	kclient := &keycloakv1alpha1.KeycloakClient{
+	kclient := &keycloakv1alpha1.Client{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "collide"},
-		Spec: keycloakv1alpha1.KeycloakClientSpec{
+		Spec: keycloakv1alpha1.ClientSpec{
 			ClientID:    "https://collide.holos.internal",
-			Type:        keycloakv1alpha1.KeycloakClientTypeConfidential,
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Type:        keycloakv1alpha1.ClientTypeConfidential,
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			SecretRef:   &keycloakv1alpha1.ClientSecretReference{Name: "collide-oidc", Key: "clientSecret"},
 		},
 	}
@@ -501,7 +501,7 @@ func TestClientReconcileSecretCollisionMissingKeyFails(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	r, _ := newClientReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(kclient)
 	if _, err := reconcileClient(ctx, r, key); err != nil {
@@ -543,18 +543,18 @@ func TestClientReconcilePreviouslyReservedIDsNowReconcile(t *testing.T) {
 	readyInstance(t, ctx, ns, "kc")
 
 	for _, formerlyReserved := range []string{"argocd", "kargo", "https://quay.holos.internal", "realm-management"} {
-		kclient := &keycloakv1alpha1.KeycloakClient{
+		kclient := &keycloakv1alpha1.Client{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "formerly-" + sanitize(formerlyReserved)},
-			Spec: keycloakv1alpha1.KeycloakClientSpec{
+			Spec: keycloakv1alpha1.ClientSpec{
 				ClientID:    formerlyReserved,
-				Type:        keycloakv1alpha1.KeycloakClientTypePublic,
-				InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				Type:        keycloakv1alpha1.ClientTypePublic,
+				InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 			},
 		}
 		if err := shared.k8sClient.Create(ctx, kclient); err != nil {
 			t.Fatalf("create client %q: %v", formerlyReserved, err)
 		}
-		fake := newFakeKeycloakClient()
+		fake := newFakeClient()
 		r, _ := newClientReconciler(fake, ns)
 		key := client.ObjectKeyFromObject(kclient)
 		reconcileClientToSteady(t, ctx, r, key)
@@ -594,13 +594,13 @@ func TestClientReconcileReferenceGrant(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(clientNS, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, instNS, "kc")
 
-	newClient := func(name string) *keycloakv1alpha1.KeycloakClient {
-		c := &keycloakv1alpha1.KeycloakClient{
+	newClient := func(name string) *keycloakv1alpha1.Client {
+		c := &keycloakv1alpha1.Client{
 			ObjectMeta: metav1.ObjectMeta{Namespace: clientNS, Name: name},
-			Spec: keycloakv1alpha1.KeycloakClientSpec{
+			Spec: keycloakv1alpha1.ClientSpec{
 				ClientID:    "https://" + name + ".holos.internal",
-				Type:        keycloakv1alpha1.KeycloakClientTypePublic,
-				InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc", Namespace: instNS},
+				Type:        keycloakv1alpha1.ClientTypePublic,
+				InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc", Namespace: instNS},
 			},
 		}
 		if err := shared.k8sClient.Create(ctx, c); err != nil {
@@ -611,7 +611,7 @@ func TestClientReconcileReferenceGrant(t *testing.T) {
 
 	t.Run("denied without a grant", func(t *testing.T) {
 		kclient := newClient("denied")
-		fake := newFakeKeycloakClient()
+		fake := newFakeClient()
 		r, _ := newClientReconciler(fake, clientNS)
 		key := client.ObjectKeyFromObject(kclient)
 		_, _ = reconcileClient(ctx, r, key) // finalizer
@@ -634,19 +634,19 @@ func TestClientReconcileReferenceGrant(t *testing.T) {
 			Spec: securityv1alpha1.ReferenceGrantSpec{
 				From: []securityv1alpha1.ReferenceGrantFrom{{
 					Group:     keycloakv1alpha1.GroupVersion.Group,
-					Kind:      "KeycloakClient",
+					Kind:      "Client",
 					Namespace: clientNS,
 				}},
 				To: []securityv1alpha1.ReferenceGrantTo{{
 					Group: keycloakv1alpha1.GroupVersion.Group,
-					Kind:  "KeycloakInstance",
+					Kind:  "Instance",
 				}},
 			},
 		}
 		createIgnoreExists(t, ctx, grant)
 
 		kclient := newClient("allowed")
-		fake := newFakeKeycloakClient()
+		fake := newFakeClient()
 		r, _ := newClientReconciler(fake, clientNS)
 		key := client.ObjectKeyFromObject(kclient)
 		reconcileClientToSteady(t, ctx, r, key)
@@ -671,12 +671,12 @@ func TestClientRenameTransferFlow(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	old := &keycloakv1alpha1.KeycloakClient{
+	old := &keycloakv1alpha1.Client{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "old-client"},
-		Spec: keycloakv1alpha1.KeycloakClientSpec{
+		Spec: keycloakv1alpha1.ClientSpec{
 			ClientID:     "https://transfer.holos.internal",
-			Type:         keycloakv1alpha1.KeycloakClientTypePublic,
-			InstanceRef:  keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Type:         keycloakv1alpha1.ClientTypePublic,
+			InstanceRef:  keycloakv1alpha1.InstanceReference{Name: "kc"},
 			RedirectURIs: []string{"https://transfer.holos.internal/callback"},
 			ClientRoles: []keycloakv1alpha1.ClientRoleReference{{
 				ClientRef: "old-client",
@@ -689,7 +689,7 @@ func TestClientRenameTransferFlow(t *testing.T) {
 	}
 	oldKey := client.ObjectKeyFromObject(old)
 
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	r, _ := newClientReconciler(fake, ns)
 	reconcileClientToSteady(t, ctx, r, oldKey)
 	old = getKClient(t, ctx, oldKey)
@@ -719,12 +719,12 @@ func TestClientRenameTransferFlow(t *testing.T) {
 		t.Fatal("orphaned client should remain in Keycloak")
 	}
 
-	replacement := &keycloakv1alpha1.KeycloakClient{
+	replacement := &keycloakv1alpha1.Client{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "new-client"},
-		Spec: keycloakv1alpha1.KeycloakClientSpec{
+		Spec: keycloakv1alpha1.ClientSpec{
 			ClientID:     "https://transfer.holos.internal",
-			Type:         keycloakv1alpha1.KeycloakClientTypePublic,
-			InstanceRef:  keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Type:         keycloakv1alpha1.ClientTypePublic,
+			InstanceRef:  keycloakv1alpha1.InstanceReference{Name: "kc"},
 			RedirectURIs: []string{"https://transfer.holos.internal/callback"},
 			ClientRoles: []keycloakv1alpha1.ClientRoleReference{{
 				ClientRef: "new-client",
@@ -782,18 +782,18 @@ func TestClientDelete(t *testing.T) {
 	createIgnoreExists(t, ctx, newCredentialSecret(ns, keycloakv1alpha1.DefaultCredentialsSecretName))
 	readyInstance(t, ctx, ns, "kc")
 
-	kclient := &keycloakv1alpha1.KeycloakClient{
+	kclient := &keycloakv1alpha1.Client{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "del"},
-		Spec: keycloakv1alpha1.KeycloakClientSpec{
+		Spec: keycloakv1alpha1.ClientSpec{
 			ClientID:    "https://del.holos.internal",
-			Type:        keycloakv1alpha1.KeycloakClientTypePublic,
-			InstanceRef: keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+			Type:        keycloakv1alpha1.ClientTypePublic,
+			InstanceRef: keycloakv1alpha1.InstanceReference{Name: "kc"},
 		},
 	}
 	if err := shared.k8sClient.Create(ctx, kclient); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	fake := newFakeKeycloakClient()
+	fake := newFakeClient()
 	r, _ := newClientReconciler(fake, ns)
 	key := client.ObjectKeyFromObject(kclient)
 	reconcileClientToSteady(t, ctx, r, key)
@@ -811,7 +811,7 @@ func TestClientDelete(t *testing.T) {
 		t.Errorf("created client was not deleted in Keycloak on finalize")
 	}
 	// The CR's finalizer should be gone, so it is fully removed.
-	if err := shared.k8sClient.Get(ctx, key, &keycloakv1alpha1.KeycloakClient{}); err == nil || !apierrors.IsNotFound(err) {
+	if err := shared.k8sClient.Get(ctx, key, &keycloakv1alpha1.Client{}); err == nil || !apierrors.IsNotFound(err) {
 		t.Errorf("client CR still present after finalize: err = %v", err)
 	}
 }
@@ -827,19 +827,19 @@ func TestClientDeletionPolicy(t *testing.T) {
 	readyInstance(t, ctx, ns, "kc")
 
 	t.Run("orphan leaves created client untouched without Keycloak calls", func(t *testing.T) {
-		kclient := &keycloakv1alpha1.KeycloakClient{
+		kclient := &keycloakv1alpha1.Client{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "orphan"},
-			Spec: keycloakv1alpha1.KeycloakClientSpec{
+			Spec: keycloakv1alpha1.ClientSpec{
 				ClientID:       "https://orphan-client.holos.internal",
-				Type:           keycloakv1alpha1.KeycloakClientTypePublic,
-				InstanceRef:    keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				Type:           keycloakv1alpha1.ClientTypePublic,
+				InstanceRef:    keycloakv1alpha1.InstanceReference{Name: "kc"},
 				DeletionPolicy: keycloakv1alpha1.DeletionPolicyOrphan,
 			},
 		}
 		if err := shared.k8sClient.Create(ctx, kclient); err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		fake := newFakeKeycloakClient()
+		fake := newFakeClient()
 		r, _ := newClientReconciler(fake, ns)
 		key := client.ObjectKeyFromObject(kclient)
 		reconcileClientToSteady(t, ctx, r, key)
@@ -863,12 +863,12 @@ func TestClientDeletionPolicy(t *testing.T) {
 	})
 
 	t.Run("adopted client with explicit delete is deleted after UUID verification", func(t *testing.T) {
-		kclient := &keycloakv1alpha1.KeycloakClient{
+		kclient := &keycloakv1alpha1.Client{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "adopted-delete"},
-			Spec: keycloakv1alpha1.KeycloakClientSpec{
+			Spec: keycloakv1alpha1.ClientSpec{
 				ClientID:       "https://adopted-delete.holos.internal",
-				Type:           keycloakv1alpha1.KeycloakClientTypePublic,
-				InstanceRef:    keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				Type:           keycloakv1alpha1.ClientTypePublic,
+				InstanceRef:    keycloakv1alpha1.InstanceReference{Name: "kc"},
 				Adopt:          true,
 				DeletionPolicy: keycloakv1alpha1.DeletionPolicyDelete,
 			},
@@ -876,7 +876,7 @@ func TestClientDeletionPolicy(t *testing.T) {
 		if err := shared.k8sClient.Create(ctx, kclient); err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		fake := newFakeKeycloakClient()
+		fake := newFakeClient()
 		fake.seedClient("https://adopted-delete.holos.internal", "adopted-delete-uuid")
 		r, _ := newClientReconciler(fake, ns)
 		key := client.ObjectKeyFromObject(kclient)
@@ -901,12 +901,12 @@ func TestClientDeletionPolicy(t *testing.T) {
 	})
 
 	t.Run("adopted client explicit delete releases out-of-band replacement", func(t *testing.T) {
-		kclient := &keycloakv1alpha1.KeycloakClient{
+		kclient := &keycloakv1alpha1.Client{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "adopted-replaced"},
-			Spec: keycloakv1alpha1.KeycloakClientSpec{
+			Spec: keycloakv1alpha1.ClientSpec{
 				ClientID:       "https://adopted-replaced.holos.internal",
-				Type:           keycloakv1alpha1.KeycloakClientTypePublic,
-				InstanceRef:    keycloakv1alpha1.KeycloakInstanceReference{Name: "kc"},
+				Type:           keycloakv1alpha1.ClientTypePublic,
+				InstanceRef:    keycloakv1alpha1.InstanceReference{Name: "kc"},
 				Adopt:          true,
 				DeletionPolicy: keycloakv1alpha1.DeletionPolicyDelete,
 			},
@@ -914,7 +914,7 @@ func TestClientDeletionPolicy(t *testing.T) {
 		if err := shared.k8sClient.Create(ctx, kclient); err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		fake := newFakeKeycloakClient()
+		fake := newFakeClient()
 		fake.seedClient("https://adopted-replaced.holos.internal", "claimed-client-uuid")
 		r, _ := newClientReconciler(fake, ns)
 		key := client.ObjectKeyFromObject(kclient)

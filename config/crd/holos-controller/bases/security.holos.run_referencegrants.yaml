@@ -74,7 +74,7 @@ spec:
                       type: string
                     kind:
                       description: |-
-                        Kind is the kind of the referrer (e.g. KeycloakInstance). It is matched
+                        Kind is the kind of the referrer (e.g. Instance). It is matched
                         exactly and is required.
                       maxLength: 63
                       minLength: 1

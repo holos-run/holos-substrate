@@ -4,17 +4,17 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: keycloakgroupmemberships.keycloak.holos.run
+  name: groupmemberships.keycloak.holos.run
 spec:
   group: keycloak.holos.run
   names:
     categories:
     - holos
     - keycloak
-    kind: KeycloakGroupMembership
-    listKind: KeycloakGroupMembershipList
-    plural: keycloakgroupmemberships
-    singular: keycloakgroupmembership
+    kind: GroupMembership
+    listKind: GroupMembershipList
+    plural: groupmemberships
+    singular: groupmembership
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -38,8 +38,8 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          KeycloakGroupMembership is the Schema for the keycloakgroupmemberships API.
-          It manages the members this CR declares for one KeycloakGroup.
+          GroupMembership is the Schema for the groupmemberships API.
+          It manages the members this CR declares for one Group.
         properties:
           apiVersion:
             description: |-
@@ -60,8 +60,8 @@ spec:
             type: object
           spec:
             description: |-
-              KeycloakGroupMembershipSpec defines the desired state of one membership
-              binding: a single target KeycloakGroup plus the users this CR should ensure are
+              GroupMembershipSpec defines the desired state of one membership
+              binding: a single target Group plus the users this CR should ensure are
               members of that group.
             properties:
               deletionPolicy:
@@ -78,18 +78,18 @@ spec:
                 type: string
               groupRef:
                 description: |-
-                  GroupRef names the KeycloakGroup whose membership this CR manages. It is
+                  GroupRef names the Group whose membership this CR manages. It is
                   immutable. An omitted namespace defaults to this CR's namespace; a
                   cross-namespace reference requires a security.holos.run ReferenceGrant in
                   the group's namespace.
                 properties:
                   name:
-                    description: Name is the metadata.name of the KeycloakGroup resource.
+                    description: Name is the metadata.name of the Group resource.
                     minLength: 1
                     type: string
                   namespace:
                     description: |-
-                      Namespace of the KeycloakGroup. When omitted the group is resolved in the
+                      Namespace of the Group. When omitted the group is resolved in the
                       membership CR's namespace. When set to a different namespace, the reference
                       must be authorized by a security.holos.run ReferenceGrant in the group's
                       namespace.
@@ -102,19 +102,19 @@ spec:
                   rule: self == oldSelf
               instanceRef:
                 description: |-
-                  InstanceRef references the KeycloakInstance this membership is reconciled
+                  InstanceRef references the Instance this membership is reconciled
                   against. It is immutable. The reconciler also requires the referenced
-                  KeycloakGroup's instanceRef, after namespace defaulting, to match this value
+                  Group's instanceRef, after namespace defaulting, to match this value
                   exactly; a mismatch is Ready=False with reason InstanceMismatch and no
                   Keycloak mutation.
                 properties:
                   name:
-                    description: Name of the KeycloakInstance resource to target.
+                    description: Name of the Instance resource to target.
                     minLength: 1
                     type: string
                   namespace:
                     description: |-
-                      Namespace of the KeycloakInstance. When omitted the instance is resolved
+                      Namespace of the Instance. When omitted the instance is resolved
                       in the referring resource's own namespace. When set to a different
                       namespace, the cross-namespace reference must be authorized by a
                       security.holos.run ReferenceGrant in the target namespace.
@@ -132,9 +132,9 @@ spec:
                   reports Ready=False with reason MemberNotFound; users are not created here.
                 items:
                   description: |-
-                    KeycloakGroupMembershipMember declares one Keycloak user, by email, that
+                    GroupMembershipMember declares one Keycloak user, by email, that
                     should be a member of the referenced group. Users are provisioned separately by
-                    KeycloakUser; this Kind never creates users.
+                    User; this Kind never creates users.
                   properties:
                     email:
                       description: Email is the Keycloak user's email address.
@@ -153,8 +153,8 @@ spec:
             type: object
           status:
             description: |-
-              KeycloakGroupMembershipStatus defines the observed state of a
-              KeycloakGroupMembership. It follows the Gateway-API status convention and the
+              GroupMembershipStatus defines the observed state of a
+              GroupMembership. It follows the Gateway-API status convention and the
               ADR-22 drift-observability timestamp contract for external-resource CRs.
             properties:
               conditions:
@@ -263,7 +263,7 @@ spec:
                   exact remote Keycloak user UUID without delimiter parsing.
                 items:
                   description: |-
-                    ManagedKeycloakGroupMember records one remote group membership this CR owns.
+                    ManagedGroupMember records one remote group membership this CR owns.
                     The email ties the status entry back to spec.members, while userID lets the
                     reconciler safely prune only the exact Keycloak user it previously added.
                   properties:
@@ -287,7 +287,7 @@ spec:
               observedGeneration:
                 description: |-
                   ObservedGeneration is the most recent generation observed for this
-                  KeycloakGroupMembership by the controller.
+                  GroupMembership by the controller.
                 format: int64
                 type: integer
             type: object

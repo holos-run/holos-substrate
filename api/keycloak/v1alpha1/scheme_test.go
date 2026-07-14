@@ -19,11 +19,11 @@ func TestAddToSchemeRegistersKinds(t *testing.T) {
 	}
 
 	for _, kind := range []string{
-		"KeycloakInstance", "KeycloakInstanceList",
-		"KeycloakGroup", "KeycloakGroupList",
-		"KeycloakGroupMembership", "KeycloakGroupMembershipList",
-		"KeycloakUser", "KeycloakUserList",
-		"KeycloakClient", "KeycloakClientList",
+		"Instance", "InstanceList",
+		"Group", "GroupList",
+		"GroupMembership", "GroupMembershipList",
+		"User", "UserList",
+		"Client", "ClientList",
 	} {
 		gvk := schema.GroupVersionKind{Group: "keycloak.holos.run", Version: "v1alpha1", Kind: kind}
 		if !s.Recognizes(gvk) {
@@ -46,14 +46,14 @@ func TestGroupVersion(t *testing.T) {
 // resources — a non-trivial smoke test that the generated code copies nested
 // pointer and slice fields independently.
 func TestDeepCopyRoundTrip(t *testing.T) {
-	client := &KeycloakClient{
-		// ClientRef is the KeycloakClient's metadata.name (an object name), not the
+	client := &Client{
+		// ClientRef is the Client's metadata.name (an object name), not the
 		// URL-shaped clientId — the reconciler derives the clientId from the
 		// referenced CR's spec.clientId (see ClientRoleReference).
-		Spec: KeycloakClientSpec{
+		Spec: ClientSpec{
 			ClientID:     "https://my-app.holos.internal",
-			Type:         KeycloakClientTypeConfidential,
-			InstanceRef:  KeycloakInstanceReference{Name: "holos", Namespace: "holos-controller"},
+			Type:         ClientTypeConfidential,
+			InstanceRef:  InstanceReference{Name: "holos", Namespace: "holos-controller"},
 			RedirectURIs: []string{"https://my-app.holos.internal/oauth2/callback"},
 			ClientRoles:  []ClientRoleReference{{ClientRef: "my-app", Role: "editor"}},
 			SecretRef:    &ClientSecretReference{Name: "my-app-oidc", Key: "client_secret"},
@@ -71,10 +71,10 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 		t.Error("DeepCopy did not clone the CABundle slice")
 	}
 
-	group := &KeycloakGroup{
-		Spec: KeycloakGroupSpec{
+	group := &Group{
+		Spec: GroupSpec{
 			Path:        "projects/my-project/roles/owner",
-			InstanceRef: KeycloakInstanceReference{Name: "holos"},
+			InstanceRef: InstanceReference{Name: "holos"},
 			ClientRoles: []ClientRoleReference{{ClientRef: "my-app", Role: "owner"}},
 			Custodians:  []CustodianReference{{Path: "projects/my-project/custodians/owner"}},
 		},
@@ -87,15 +87,15 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 	lastValidated := metav1.Now()
 	lastMutated := metav1.Now()
 	lastDrift := metav1.Now()
-	membership := &KeycloakGroupMembership{
-		Spec: KeycloakGroupMembershipSpec{
-			InstanceRef: KeycloakInstanceReference{Name: "holos"},
-			GroupRef:    KeycloakGroupReference{Name: "my-project-roles-owner"},
-			Members:     []KeycloakGroupMembershipMember{{Email: "bob@example.com"}},
+	membership := &GroupMembership{
+		Spec: GroupMembershipSpec{
+			InstanceRef: InstanceReference{Name: "holos"},
+			GroupRef:    GroupReference{Name: "my-project-roles-owner"},
+			Members:     []GroupMembershipMember{{Email: "bob@example.com"}},
 		},
-		Status: KeycloakGroupMembershipStatus{
+		Status: GroupMembershipStatus{
 			GroupID:            "group-uuid",
-			ManagedMembers:     []ManagedKeycloakGroupMember{{Email: "bob@example.com", UserID: "user-uuid"}},
+			ManagedMembers:     []ManagedGroupMember{{Email: "bob@example.com", UserID: "user-uuid"}},
 			LastValidatedTime:  &lastValidated,
 			LastMutatedTime:    &lastMutated,
 			LastMutationReason: MutationReasonDriftRemediation,
@@ -122,10 +122,10 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 		t.Error("DeepCopy changed LastValidatedTime")
 	}
 
-	user := &KeycloakUser{
-		Spec: KeycloakUserSpec{
+	user := &User{
+		Spec: UserSpec{
 			Email:                "bob@example.com",
-			InstanceRef:          KeycloakInstanceReference{Name: "holos"},
+			InstanceRef:          InstanceReference{Name: "holos"},
 			IdentityProviderLink: &IdentityProviderLink{Alias: "google"},
 		},
 	}

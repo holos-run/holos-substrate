@@ -42,7 +42,7 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 	name := "kc-creds"
 	rg := &ReferenceGrant{
 		Spec: ReferenceGrantSpec{
-			From: []ReferenceGrantFrom{{Group: "keycloak.holos.run", Kind: "KeycloakInstance", Namespace: "team-a"}},
+			From: []ReferenceGrantFrom{{Group: "keycloak.holos.run", Kind: "Instance", Namespace: "team-a"}},
 			To:   []ReferenceGrantTo{{Group: "", Kind: "Secret", Name: &name}},
 		},
 	}

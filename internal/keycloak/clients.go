@@ -88,7 +88,7 @@ func (f ClientFields) apply(raw RawClient) {
 // ProtocolMapperClientRole is the Keycloak protocol-mapper type that folds a
 // client's client-role names into a token claim. The platform uses it (as
 // quay-client-roles) to emit the my-project-<role> client roles into the shared
-// groups claim (ADR-20); the project KeycloakClient reconciler ensures one of
+// groups claim (ADR-20); the project Client reconciler ensures one of
 // these scoped to its own clientId.
 const ProtocolMapperClientRole = "oidc-usermodel-client-role-mapper"
 
@@ -129,7 +129,7 @@ type OIDCClient struct {
 }
 
 // PKCECodeChallengeMethodAttr is the Keycloak client-attribute key holding the
-// PKCE code-challenge method (e.g. "S256"). The KeycloakClient reconciler sets it
+// PKCE code-challenge method (e.g. "S256"). The Client reconciler sets it
 // to S256 on public clients so the authorization-code flow requires PKCE, per the
 // platform's public-client guardrail (keycloak-clients.md).
 const PKCECodeChallengeMethodAttr = "pkce.code.challenge.method"
