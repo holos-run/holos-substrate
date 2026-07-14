@@ -635,12 +635,12 @@ func (r *GroupReconciler) resolveClientID(ctx context.Context, namespace string,
 	key := types.NamespacedName{Namespace: namespace, Name: clientRef}
 	if err := r.Get(ctx, key, kclient); err != nil {
 		if apierrors.IsNotFound(err) {
-			return "", fmt.Errorf("Client %s/%s referenced by clientRef does not exist", namespace, clientRef)
+			return "", fmt.Errorf("client %s/%s referenced by clientRef does not exist", namespace, clientRef)
 		}
 		return "", fmt.Errorf("resolving Client %s/%s: %w", namespace, clientRef, err)
 	}
 	if kclient.Spec.ClientID == "" {
-		return "", fmt.Errorf("Client %s/%s has an empty spec.clientId", namespace, clientRef)
+		return "", fmt.Errorf("client %s/%s has an empty spec.clientId", namespace, clientRef)
 	}
 	return kclient.Spec.ClientID, nil
 }
