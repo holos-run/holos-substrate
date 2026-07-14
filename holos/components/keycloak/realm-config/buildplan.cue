@@ -658,16 +658,16 @@ let REALM_CONFIG = {
 		directAccessGrantsEnabled: false
 		serviceAccountsEnabled:    true
 		secret:                    "$(env:\(CONTROLLER_CLIENT_SECRET_ENV))"
-		// A service-account client has no browser redirect.
-		redirectUris: []
-		webOrigins: []
-	},
 		// The scoped realm-management roles the controller's service account holds
 		// are NOT granted on the client object — keycloak-config-cli has no
 		// serviceAccountClientRoles client field.  They are assigned via the
 		// synthetic service-account user (service-account-svc-holos-controller) in
 		// the users[] list below (serviceAccountClientId + clientRoles), the
 		// keycloak-config-cli convention for service-account role assignment.
+		// A service-account client has no browser redirect.
+		redirectUris: []
+		webOrigins: []
+	},
 	]
 
 	// HOL-1348/HOL-1369: a first-broker-login flow configured for AUTO-LINK, so a
