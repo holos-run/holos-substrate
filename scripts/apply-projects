@@ -9,7 +9,7 @@
 # resource set into clusters/k3d-holos/components/project/<name>/.  The
 # `application` component iterates the `apps` collection and renders one app
 # resource set per apps.<name> into clusters/k3d-holos/components/application/<app>/
-# (the Deployment/Service/HTTPRoute, the app KeycloakClient, the Quay Repository,
+# (the Deployment/Service/HTTPRoute, the app Client, the Quay Repository,
 # and the Kargo Warehouse/Stage + Argo CD Application), each landing in its
 # project's bare control namespace.  Each project's Quay Organization (and each
 # app's Quay Repository) carries spec.caBundle — the per-cluster local-ca
@@ -191,9 +191,9 @@ if [[ ! -d "${KEYCLOAK_INSTANCE_DIR}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Apply the central KeycloakInstance + ReferenceGrant (shared by all projects)
+# Apply the central Instance + ReferenceGrant (shared by all projects)
 # ---------------------------------------------------------------------------
-# The KeycloakInstance carries the injected local-ca caBundle and the
+# The Instance carries the injected local-ca caBundle and the
 # ReferenceGrant authorizes each project namespace's Keycloak CRs to reference
 # it.  Applied once before any project component, from this injected render (the
 # committed tree omits the caBundle), exactly as scripts/apply-my-project does.
@@ -216,9 +216,9 @@ kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts \
 #     scripts/apply-my-project and moves here so upgraded clusters do not retain
 #     the inert cross-namespace RBAC and the dead privileged Secret.
 #
-# The stale owner KeycloakUser CR from the HOL-1357 rename (`bob` → `bob-<hash8>`)
+# The stale owner User CR from the HOL-1357 rename (`bob` → `bob-<hash8>`)
 # is DELIBERATELY NOT pruned (neither here nor in the project loop): the stale
-# `bob` CR created the realm user (status.created=true), and the KeycloakUser
+# `bob` CR created the realm user (status.created=true), and the User
 # finalizer deletes the user it created on CR deletion, so pruning it would
 # deprovision bob@example.com.  The orphan `bob` CR is inert and reconciles the
 # same desired state the new adopt:true CR asserts, so the two coexist; see the
@@ -374,14 +374,14 @@ gate_ready() {
 # ---------------------------------------------------------------------------
 # The Application component renders one subdirectory per apps.<name> entry into
 # components/application/<app>/.  Every app resource (the Deployment/Service/
-# HTTPRoute, the app KeycloakClient, the Quay Repository, and the Kargo
+# HTTPRoute, the app Client, the Quay Repository, and the Kargo
 # Warehouse/Stage + Argo CD Application) lands in the app's PROJECT's bare
-# control namespace — the SAME namespace the project's role KeycloakGroups live
-# in, so the role groups' clientRef to the app KeycloakClient resolves
+# control namespace — the SAME namespace the project's role Groups live
+# in, so the role groups' clientRef to the app Client resolves
 # same-namespace.  That co-location is exactly why the app resources must be
 # APPLIED before the project's role groups are gated Ready: the project's role
-# KeycloakGroups now carry a clientRef to each app's KeycloakClient, so the group
-# reconciler marks the group NOT Ready until that app KeycloakClient exists.
+# Groups now carry a clientRef to each app's Client, so the group
+# reconciler marks the group NOT Ready until that app Client exists.
 # apply_application_resources is therefore split from its gate: a project's apps
 # are applied right after the project (before the project's group gates), and
 # gated afterward.
@@ -391,7 +391,7 @@ gate_ready() {
 
 # The Application component renders each app into TWO subdirectories:
 #   <app_dir>control-plane/ — the operator-applied control plane (Repository,
-#     KeycloakClient, Warehouse, Stage, Argo CD Application).  This script applies
+#     Client, Warehouse, Stage, Argo CD Application).  This script applies
 #     ONLY this subtree.
 #   <app_dir>workload/       — the Deployment/Service/HTTPRoute/ConfigMap/SA/
 #     RoleBinding the app's Argo CD Application SYNCS from the published
@@ -412,7 +412,7 @@ app_namespace() {
 }
 
 # apply_application_resources APP_DIR APP — apply ONLY the app's CONTROL-PLANE
-# subdirectory (Repository, KeycloakClient, Warehouse, Stage, Argo CD
+# subdirectory (Repository, Client, Warehouse, Stage, Argo CD
 # Application), WITHOUT gating.  The WORKLOAD subdirectory is deliberately NOT
 # applied: the app's Argo CD Application delivers it from the published
 # <app>-config artifact, so applying it here would make this script a second
@@ -430,11 +430,11 @@ apply_application_resources() {
   fi
 }
 
-# gate_application APP_NS APP — gate one app's KeycloakClient and Repository
+# gate_application APP_NS APP — gate one app's Client and Repository
 # (named <app>-config, the managed config artifact repo) to Ready.
 gate_application() {
   local app_ns="$1" app="$2"
-  gate_ready "${app_ns}" "keycloakclient.keycloak.holos.run/${app}" || return 1
+  gate_ready "${app_ns}" "client.keycloak.holos.run/${app}" || return 1
   gate_ready "${app_ns}" "repository.quay.holos.run/${app}-config" "Conflict" || return 1
 }
 
@@ -517,8 +517,8 @@ for project_dir in "${PROJECT_BASE}"/*/; do
   kubectl --context "${KUBE_CONTEXT}" apply --server-side --force-conflicts -f "${CP_DIR}/"
 
   # Apply this project's apps BEFORE the project's role-group Ready gates: the
-  # role groups carry a clientRef to each app's KeycloakClient, so they cannot go
-  # Ready until that app KeycloakClient exists (else the gates below time out).
+  # role groups carry a clientRef to each app's Client, so they cannot go
+  # Ready until that app Client exists (else the gates below time out).
   while IFS= read -r app_dir; do
     [[ -n "${app_dir}" ]] || continue
     app="$(basename "${app_dir}")"
@@ -533,24 +533,24 @@ for project_dir in "${PROJECT_BASE}"/*/; do
   # condition (adoption failure) directly, so no Ready-reason override is needed.
   gate_ready "" "project.kargo.akuity.io/${NAME}" || exit 1
   gate_ready "${CTRL_NS}" "organization.quay.holos.run/${NAME}" "Conflict" || exit 1
-  gate_ready "${CTRL_NS}" "keycloakclient.keycloak.holos.run/${NAME}" || exit 1
+  gate_ready "${CTRL_NS}" "client.keycloak.holos.run/${NAME}" || exit 1
   for r in owner editor viewer; do
-    gate_ready "${CTRL_NS}" "keycloakgroup.keycloak.holos.run/${NAME}-roles-${r}" || exit 1
-    gate_ready "${CTRL_NS}" "keycloakgroup.keycloak.holos.run/${NAME}-custodians-${r}" || exit 1
+    gate_ready "${CTRL_NS}" "group.keycloak.holos.run/${NAME}-roles-${r}" || exit 1
+    gate_ready "${CTRL_NS}" "group.keycloak.holos.run/${NAME}-custodians-${r}" || exit 1
   done
-  # One KeycloakUser per owner; gate each rendered user Ready.
-  for user_file in "${CP_DIR}/"keycloakuser-*.yaml; do
+  # One User per owner; gate each rendered user Ready.
+  for user_file in "${CP_DIR}/"user-*.yaml; do
     [[ -e "${user_file}" ]] || continue
     user_name="$(basename "${user_file}" .yaml)"
-    user_name="${user_name#keycloakuser-}"
-    gate_ready "${CTRL_NS}" "keycloakuser.keycloak.holos.run/${user_name}" || exit 1
+    user_name="${user_name#user-}"
+    gate_ready "${CTRL_NS}" "user.keycloak.holos.run/${user_name}" || exit 1
   done
 
   # NOTE on the HOL-1357 owner-user RENAME (`bob` → `bob-<hash8>`): this script
-  # deliberately does NOT delete the stale `bob` KeycloakUser CR the bespoke
+  # deliberately does NOT delete the stale `bob` User CR the bespoke
   # component left on upgraded clusters.  Deleting it would be DESTRUCTIVE: that CR
   # CREATED the realm user (status.created=true, the default adopt:false), and the
-  # KeycloakUser finalizer DELETES the realm user it created on CR deletion
+  # User finalizer DELETES the realm user it created on CR deletion
   # (internal/controller/keycloak/user_controller.go) — so pruning `bob` would
   # deprovision bob@example.com (then the new adopt:true CR would recreate it,
   # losing any out-of-band memberships/IdP links in the window).  The new adopt:true
@@ -562,7 +562,7 @@ for project_dir in "${PROJECT_BASE}"/*/; do
   # idempotently.  The stale CR is an inert, harmless orphan; removing it is a
   # manual, deliberate operator step (release-then-delete), not an automated prune.
 
-  # Now gate this project's apps (their KeycloakClient + Repository).
+  # Now gate this project's apps (their Client + Repository).
   while IFS= read -r app_dir; do
     [[ -n "${app_dir}" ]] || continue
     app="$(basename "${app_dir}")"

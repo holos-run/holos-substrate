@@ -193,8 +193,8 @@ let QUAY_ADMIN_PASSWORD_ENV = "QUAY_ADMIN_PASSWORD"
 // credential", preferred shape #1 — a confidential service-account client with
 // scoped realm-management roles).  The controller authenticates to the Keycloak
 // Admin REST API with a client_credentials grant using this client's id +
-// secret to reconcile the keycloak.holos.run Kinds (KeycloakInstance,
-// KeycloakGroup, KeycloakUser, KeycloakClient).  This is a dedicated,
+// secret to reconcile the keycloak.holos.run Kinds (Instance,
+// Group, User, Client).  This is a dedicated,
 // least-privileged machine identity — NOT the bootstrap keycloak-initial-admin
 // credential keycloak-config-cli itself uses (ADR-20).
 //
@@ -223,7 +223,7 @@ let CONTROLLER_NAMESPACE = "holos-controller" & #RegisteredNamespace
 // internal/controller/keycloak/credentials.go reads: DefaultCredentialsSecretName
 // "holos-controller-keycloak-creds" with keys clientId and clientSecret (the
 // optional tokenUrl is omitted — the in-cluster token endpoint derives from the
-// KeycloakInstance's url + realm).
+// Instance's url + realm).
 let CONTROLLER_CREDS_SECRET = "holos-controller-keycloak-creds"
 let CONTROLLER_CREDS_CLIENT_ID_KEY = "clientId"
 let CONTROLLER_CREDS_CLIENT_SECRET_KEY = "clientSecret"
@@ -239,9 +239,9 @@ let CONTROLLER_CLIENT_SECRET_ENV = "HOLOS_CONTROLLER_CLIENT_SECRET"
 
 // The realm-management client roles the controller's service account holds —
 // the scoped set ADR-20 recommends (NOT blanket realm-admin).  manage-clients
-// covers KeycloakClient (create/update clients, client roles, protocol mappers);
-// manage-users covers KeycloakUser identity records and federated-identity links,
-// plus KeycloakGroupMembership edges; query-groups + query-clients let the
+// covers Client (create/update clients, client roles, protocol mappers);
+// manage-users covers User identity records and federated-identity links,
+// plus GroupMembership edges; query-groups + query-clients let the
 // reconcilers look objects up by name/path before acting.
 let CONTROLLER_REALM_MGMT_ROLES = [
 	"manage-clients",
@@ -256,7 +256,7 @@ let CONTROLLER_REALM_MGMT_ROLES = [
 // against it.  ESSO_IDP_ALIAS is the broker alias — the {provider} path segment
 // in the broker endpoint https://auth.holos.internal/realms/holos/broker/esso/endpoint
 // the esso confidential client registers as its redirect URI — and the alias the
-// project component's KeycloakUser identityProviderLink references (HOL-1369
+// project component's User identityProviderLink references (HOL-1369
 // repoints it from the placeholder "holos" to "esso").
 let ESSO_IDP_ALIAS = "esso"
 
@@ -373,8 +373,8 @@ let REALM_CONFIG = {
 			// path for service-account role assignment — there is no
 			// serviceAccountClientRoles field on the client object.  No password (a
 			// service account authenticates by the client secret, not a password).
-			username:              "service-account-\(CONTROLLER_CLIENT_ID)"
-			enabled:               true
+			username:               "service-account-\(CONTROLLER_CLIENT_ID)"
+			enabled:                true
 			serviceAccountClientId: CONTROLLER_CLIENT_ID
 			clientRoles: "realm-management": CONTROLLER_REALM_MGMT_ROLES
 		},
@@ -661,20 +661,21 @@ let REALM_CONFIG = {
 		// A service-account client has no browser redirect.
 		redirectUris: []
 		webOrigins: []
+	},
 		// The scoped realm-management roles the controller's service account holds
 		// are NOT granted on the client object — keycloak-config-cli has no
 		// serviceAccountClientRoles client field.  They are assigned via the
 		// synthetic service-account user (service-account-svc-holos-controller) in
 		// the users[] list below (serviceAccountClientId + clientRoles), the
 		// keycloak-config-cli convention for service-account role assignment.
-	}]
+	]
 
 	// HOL-1348/HOL-1369: a first-broker-login flow configured for AUTO-LINK, so a
-	// pre-provisioned KeycloakUser (a record the controller creates by email,
+	// pre-provisioned User (a record the controller creates by email,
 	// e.g. bob@example.com) is linked to its federated identity on the user's
 	// FIRST login through an upstream IdP — rather than Keycloak creating a
 	// duplicate account or prompting the user to manually link.  This is the
-	// realm half of the auto-link mechanism ADR-20's KeycloakUser relies on; the
+	// realm half of the auto-link mechanism ADR-20's User relies on; the
 	// IdP half (trustEmail: true and firstBrokerLoginFlowAlias) is set on the
 	// esso identityProvider in identityProviders[] below.
 	//
@@ -1760,16 +1761,16 @@ userDefinedBuildPlan: {
 					// so it adds one pair per namespace.  Keyed by a distinct name so
 					// the entries do not collide in this map.
 					Role: {
-						(NAMESPACE):          QUAY_OIDC_BOOTSTRAP_ROLE_KEYCLOAK
-						(QUAY_NAMESPACE):     QUAY_OIDC_BOOTSTRAP_ROLE_QUAY
-						(PASSWORD_BOOTSTRAP): PASSWORD_BOOTSTRAP_ROLE
+						(NAMESPACE):                                                QUAY_OIDC_BOOTSTRAP_ROLE_KEYCLOAK
+						(QUAY_NAMESPACE):                                           QUAY_OIDC_BOOTSTRAP_ROLE_QUAY
+						(PASSWORD_BOOTSTRAP):                                       PASSWORD_BOOTSTRAP_ROLE
 						(CONTROLLER_CREDS_BOOTSTRAP_ROLE_KEYCLOAK.metadata.name):   CONTROLLER_CREDS_BOOTSTRAP_ROLE_KEYCLOAK
 						(CONTROLLER_CREDS_BOOTSTRAP_ROLE_CONTROLLER.metadata.name): CONTROLLER_CREDS_BOOTSTRAP_ROLE_CONTROLLER
 					}
 					RoleBinding: {
-						(NAMESPACE):          QUAY_OIDC_BOOTSTRAP_ROLE_BINDING_KEYCLOAK
-						(QUAY_NAMESPACE):     QUAY_OIDC_BOOTSTRAP_ROLE_BINDING_QUAY
-						(PASSWORD_BOOTSTRAP): PASSWORD_BOOTSTRAP_ROLE_BINDING
+						(NAMESPACE):                                                        QUAY_OIDC_BOOTSTRAP_ROLE_BINDING_KEYCLOAK
+						(QUAY_NAMESPACE):                                                   QUAY_OIDC_BOOTSTRAP_ROLE_BINDING_QUAY
+						(PASSWORD_BOOTSTRAP):                                               PASSWORD_BOOTSTRAP_ROLE_BINDING
 						(CONTROLLER_CREDS_BOOTSTRAP_ROLE_BINDING_KEYCLOAK.metadata.name):   CONTROLLER_CREDS_BOOTSTRAP_ROLE_BINDING_KEYCLOAK
 						(CONTROLLER_CREDS_BOOTSTRAP_ROLE_BINDING_CONTROLLER.metadata.name): CONTROLLER_CREDS_BOOTSTRAP_ROLE_BINDING_CONTROLLER
 					}

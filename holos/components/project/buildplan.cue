@@ -16,7 +16,7 @@ import (
 // it iterates the `projects` collection (holos/collections.cue, HOL-1354) and
 // renders, FOR EACH projects.<name> entry, the full project-level resource set —
 // the IAM primitive-role groups (owner/editor/viewer) + custodians, the owner
-// KeycloakUser(s), the project KeycloakClient, the Quay Organization with its
+// User(s), the project Client, the Quay Organization with its
 // OIDC-synced teams, the Kargo control plane (Project/ProjectConfig/Warehouse/
 // Stage + the webhook-token bootstrap Job), the Argo CD AppProject/Application,
 // and the owner-access RoleBinding (ADR-3).  A Project STANDS ALONE with zero
@@ -28,7 +28,7 @@ import (
 //
 // --- THE CONTROL-NAMESPACE RESOLUTION (the trickiest interaction, HOL-1355) ---
 //
-// A project's keycloak.holos.run role KeycloakGroups confer the project-prefixed
+// A project's keycloak.holos.run role Groups confer the project-prefixed
 // client role <name>-<role> on the platform Quay client
 // (https://quay.holos.internal) DIRECTLY via clientRoles[].clientId — the
 // ADR-20 Rev 4 "Quay use case" (HOL-1350) that surfaces <name>-<role> in Quay's
@@ -62,7 +62,7 @@ import (
 //     renders it.
 //   - holos/components/keycloak/keycloak-instance/buildplan.cue's ReferenceGrant
 //     authorizes the bare <name> namespace's keycloak.holos.run referrers to
-//     reference the central KeycloakInstance cross-namespace (the grant is owned
+//     reference the central Instance cross-namespace (the grant is owned
 //     by the keycloak namespace, ADR-22 — this component does not re-emit it).
 //
 // --- my-project: now produced by this component (HOL-1357) ---------------------
@@ -74,7 +74,7 @@ import (
 // sole producer of the reference instance's project-level resource set.  The
 // rendered my-project tree is behavior-equivalent to the bespoke one, with two
 // deliberate, documented supersets: the owner-access RoleBinding (the bespoke
-// component lacked it) and the env-derived hash suffix on the owner KeycloakUser's
+// component lacked it) and the env-derived hash suffix on the owner User's
 // metadata.name (a DNS-safe, collision-resistant name derived from the email).
 // See the PR description for the full pre/post diff rationale.
 
@@ -91,11 +91,11 @@ let ROLES = ["owner", "editor", "viewer"]
 
 // QUAY_CLIENT_ID is the platform Quay client's clientId (realm-config's
 // QUAY_CLIENT_ID).  The role groups confer <name>-<role> on it directly via
-// clientRoles[].clientId (no tenant KeycloakClient CR exists for the platform
+// clientRoles[].clientId (no tenant Client CR exists for the platform
 // Quay client object, which stays config-cli's), the ADR-20 Rev 4 Quay use case.
 let QUAY_CLIENT_ID = "https://quay.holos.internal"
 
-// KEYCLOAK_NAMESPACE is the central KeycloakInstance's namespace; the project CRs
+// KEYCLOAK_NAMESPACE is the central Instance's namespace; the project CRs
 // reference it cross-namespace (gated by the keycloak-instance component's
 // ReferenceGrant).  KEYCLOAK_INSTANCE is that instance's name.
 let KEYCLOAK_NAMESPACE = "keycloak" & #RegisteredNamespace
@@ -121,7 +121,7 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 	NAME: string
 
 	// OWNERS is the project's owners map (projects.<name>.owners) keyed by email;
-	// one KeycloakUser and one KeycloakGroupMembership member entry are rendered
+	// one User and one GroupMembership member entry are rendered
 	// per owner.
 	OWNERS: {[string]: {email: string, ...}}
 
@@ -154,7 +154,7 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 		namespace: KEYCLOAK_NAMESPACE
 	}
 
-	// PROJECT_CLIENT_NAME is the project KeycloakClient CR's metadata.name (the
+	// PROJECT_CLIENT_NAME is the project Client CR's metadata.name (the
 	// object name the role groups' clientRoles[].clientRef resolves — NOT the URL
 	// clientId).  PROJECT_CLIENT_ID is its URL-shaped clientId.
 	let PROJECT_CLIENT_NAME = NAME
@@ -242,7 +242,7 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 	// ORGANIZATION_RESOURCE is the quay.holos.run Organization the Holos
 	// Controller reconciles into the in-cluster Quay registry (creates, does not
 	// adopt — spec.adopt: false).  spec.syncedTeams maps the primitive-role OIDC
-	// groups (<name>-{owner,editor,viewer}, produced by the role KeycloakGroups
+	// groups (<name>-{owner,editor,viewer}, produced by the role Groups
 	// below) to Quay teams: owner→admin, editor→creator+write, viewer→member+read
 	// (ADR-19 Rev 6).  spec.caBundle carries the per-cluster local-ca PEM (the
 	// trust anchor for Quay's mkcert-signed serving cert) only when _CABundlePEM
@@ -548,7 +548,7 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 	// is required for a confidential client (the CRD's CEL rule).
 	let KEYCLOAK_CLIENT_RESOURCE = {
 		apiVersion: "keycloak.holos.run/v1alpha1"
-		kind:       "KeycloakClient"
+		kind:       "Client"
 		metadata: {
 			name:      PROJECT_CLIENT_NAME
 			namespace: CTRL_NS
@@ -589,20 +589,20 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 	//   - EACH app contained by this project (apps where app.project == NAME): the
 	//     `for app in apps` comprehension below appends a clientRoles entry
 	//     {clientRef: <app-name>, role: <leaf>} per app, so the same project role
-	//     also confers the matching role on every app's KeycloakClient (the
+	//     also confers the matching role on every app's Client (the
 	//     Application component, HOL-1356, emits those app clients and defines the
 	//     owner/editor/viewer roles on them).  With ZERO apps the comprehension
 	//     contributes nothing and the role group confers only the Quay + project
 	//     clients (the HOL-1355 zero-app behavior); each registered app adds its
-	//     own clientRef entry.  The clientRef path is a SAME-NAMESPACE KeycloakClient
+	//     own clientRef entry.  The clientRef path is a SAME-NAMESPACE Client
 	//     resolution, which holds because the Application component places each app's
-	//     KeycloakClient in this same bare <name> control namespace.  app.name (the
+	//     Client in this same bare <name> control namespace.  app.name (the
 	//     leaf role) maps 1:1 to the app's owner/editor/viewer client roles.
 	let KEYCLOAK_ROLE_GROUP_RESOURCES = {
 		for r in ROLES {
 			(r): {
 				apiVersion: "keycloak.holos.run/v1alpha1"
-				kind:       "KeycloakGroup"
+				kind:       "Group"
 				metadata: {
 					name:      "\(NAME)-roles-\(r)"
 					namespace: CTRL_NS
@@ -621,7 +621,7 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 							role:      CLIENT_ROLE[r]
 						},
 						// One entry per app contained by this project (empty for a
-						// zero-app project).  The app's KeycloakClient CR metadata.name
+						// zero-app project).  The app's Client CR metadata.name
 						// is the app name (the Application component), resolved
 						// same-namespace via clientRef; the app's matching client role
 						// is named r (owner/editor/viewer, 1:1 with the primitive role).
@@ -648,7 +648,7 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 		for r in ROLES {
 			(r): {
 				apiVersion: "keycloak.holos.run/v1alpha1"
-				kind:       "KeycloakGroup"
+				kind:       "Group"
 				metadata: {
 					name:      "\(NAME)-custodians-\(r)"
 					namespace: CTRL_NS
@@ -673,10 +673,10 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 
 	// KEYCLOAK_ROLE_OWNER_MEMBERSHIP_RESOURCE seeds project owners into
 	// projects/<name>/roles/owner. The groupRef is same-namespace, while the
-	// instanceRef is the central cross-namespace KeycloakInstance grant.
+	// instanceRef is the central cross-namespace Instance grant.
 	let KEYCLOAK_ROLE_OWNER_MEMBERSHIP_RESOURCE = {
 		apiVersion: "keycloak.holos.run/v1alpha1"
-		kind:       "KeycloakGroupMembership"
+		kind:       "GroupMembership"
 		metadata: {
 			name:      "\(NAME)-roles-owner-members"
 			namespace: CTRL_NS
@@ -696,7 +696,7 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 		for r in ROLES {
 			(r): {
 				apiVersion: "keycloak.holos.run/v1alpha1"
-				kind:       "KeycloakGroupMembership"
+				kind:       "GroupMembership"
 				metadata: {
 					name:      "\(NAME)-custodians-\(r)-members"
 					namespace: CTRL_NS
@@ -711,11 +711,11 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 		}
 	}
 
-	// KEYCLOAK_USER_RESOURCES pre-provisions one KeycloakUser per project owner
+	// KEYCLOAK_USER_RESOURCES pre-provisions one User per project owner
 	// (projects.<name>.owners) with the IdP federated-identity link so first
 	// federated login auto-links the pre-created record (paired with the realm's
 	// first-broker-login auto-link flow). Group membership is owned by
-	// KeycloakGroupMembership CRs above, not by the KeycloakUser group list. The CR
+	// GroupMembership CRs above, not by the User group list. The CR
 	// metadata.name must be a DNS label, but an email is not — derive a stable
 	// DNS-safe name from the email's local part (lowercased; @, ., + and any other
 	// non-label char collapsed to "-"; bounded to a valid label by #DNSLabel via
@@ -725,7 +725,7 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 		for EMAIL, _ in OWNERS {
 			(EMAIL): {
 				apiVersion: "keycloak.holos.run/v1alpha1"
-				kind:       "KeycloakUser"
+				kind:       "User"
 				// _userName is the DNS-safe, COLLISION-RESISTANT, LENGTH-BOUNDED
 				// metadata.name derived from the email.  A pure sanitize-the-email
 				// scheme is neither: alice.foo@ and alice+foo@ both normalize to
@@ -758,7 +758,7 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 					instanceRef: INSTANCE_REF
 					identityProviderLink: alias: "esso"
 					// adopt: true — a Keycloak user is realm-GLOBAL by email, but
-					// these KeycloakUser CRs are per-PROJECT (each project emits one
+					// these User CRs are per-PROJECT (each project emits one
 					// for its owner).  The same human owning two projects yields two
 					// CRs for the same spec.email; with the default adopt: false the
 					// second would hit Ready=False (reason Conflict) and fail
@@ -766,7 +766,7 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 					// adopt: true lets each project's CR converge the shared realm
 					// user (same email → same user) without seizing-and-deleting it:
 					// an adopted user is RELEASED, never deleted, on CR removal
-					// (api/keycloak/v1alpha1 KeycloakUserSpec.Adopt), so two projects
+					// (api/keycloak/v1alpha1 UserSpec.Adopt), so two projects
 					// adopting one owner is benign and non-destructive.  The separate
 					// membership CRs are additive per project, so a shared owner ends
 					// up in both projects' owner groups, which is the intended
@@ -821,19 +821,19 @@ let KUBECTL_IMAGE = "docker.io/alpine/kubectl:1.33.3"
 		Warehouse: (WAREHOUSE): WAREHOUSE_RESOURCE
 		Stage: (STAGE):         STAGE_RESOURCE
 
-		KeycloakClient: (PROJECT_CLIENT_NAME): KEYCLOAK_CLIENT_RESOURCE
-		KeycloakUser: {
+		Client: (PROJECT_CLIENT_NAME): KEYCLOAK_CLIENT_RESOURCE
+		User: {
 			for EMAIL, U in KEYCLOAK_USER_RESOURCES {
 				(U.metadata.name): U
 			}
 		}
-		KeycloakGroup: {
+		Group: {
 			for r in ROLES {
 				(KEYCLOAK_ROLE_GROUP_RESOURCES[r].metadata.name):      KEYCLOAK_ROLE_GROUP_RESOURCES[r]
 				(KEYCLOAK_CUSTODIAN_GROUP_RESOURCES[r].metadata.name): KEYCLOAK_CUSTODIAN_GROUP_RESOURCES[r]
 			}
 		}
-		KeycloakGroupMembership: {
+		GroupMembership: {
 			(KEYCLOAK_ROLE_OWNER_MEMBERSHIP_RESOURCE.metadata.name): KEYCLOAK_ROLE_OWNER_MEMBERSHIP_RESOURCE
 			for r in ROLES {
 				(KEYCLOAK_CUSTODIAN_MEMBERSHIP_RESOURCES[r].metadata.name): KEYCLOAK_CUSTODIAN_MEMBERSHIP_RESOURCES[r]

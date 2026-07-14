@@ -14,7 +14,7 @@ import (
 // form, an OCI image run as a k8s Deployment fronted by a Service and exposed
 // via a Gateway-API HTTPRoute on the shared *.holos.internal wildcard
 // certificate, delivered by Kargo + Argo CD.  But its PRIMARY PURPOSE is
-// identity: it manages a keycloak.holos.run KeycloakClient for the app and maps
+// identity: it manages a keycloak.holos.run Client for the app and maps
 // the project's primitive roles (owner/editor/viewer) onto matching app client
 // roles, so a project member's token for the app client carries the application
 // role.  A Project supports ZERO-to-MANY apps; this component renders nothing
@@ -29,15 +29,15 @@ import (
 // Every resource this component emits for an app lands in the app's project's
 // BARE control namespace <project> (NAME & #RegisteredNamespace below) — the
 // same namespace the Project component (HOL-1355) places the project's role
-// KeycloakGroups, project KeycloakClient, Quay Organization, and Kargo control
+// Groups, project Client, Quay Organization, and Kargo control
 // plane in.  Two constraints force this single namespace:
 //
-//   - The role-group → app-client-role binding uses the KeycloakGroup
-//     clientRoles[].clientRef path (a SAME-NAMESPACE KeycloakClient resolution;
+//   - The role-group → app-client-role binding uses the Group
+//     clientRoles[].clientRef path (a SAME-NAMESPACE Client resolution;
 //     internal/controller/keycloak/group_controller.go).  The project's role
-//     KeycloakGroups live in the bare <project> control namespace (a convention —
+//     Groups live in the bare <project> control namespace (a convention —
 //     see the project component's control-namespace resolution; HOL-1421 removed
-//     the controller guard that formerly forced it), so the app's KeycloakClient
+//     the controller guard that formerly forced it), so the app's Client
 //     MUST live in that same <project> namespace for the clientRef to resolve.
 //   - The Project component's Argo CD Application destination is the bare
 //     <project> control namespace, and the project namespace doubles as the
@@ -51,9 +51,9 @@ import (
 //
 // --- APP CLIENT ROLES: owner/editor/viewer, 1:1 from the project primitives ---
 //
-// The app's KeycloakClient defines client roles named owner/editor/viewer — the
+// The app's Client defines client roles named owner/editor/viewer — the
 // same names as the project's primitive roles, the simplest faithful mapping.
-// The per-client oidc-usermodel-client-role-mapper the KeycloakClient reconciler
+// The per-client oidc-usermodel-client-role-mapper the Client reconciler
 // ensures (internal/controller/keycloak/client_controller.go) emits an assigned
 // role into the shared groups claim — NO new mapper or Quay-side change is
 // needed (ADR-20 *Claim value via a client role*).  Each project role group
@@ -65,15 +65,15 @@ import (
 // apps confers only the Quay client role and each registered app additionally
 // confers its app roles.  App-SPECIFIC role vocabularies (roles other than the
 // owner/editor/viewer triad) are a future extension; the binding lives on the
-// project role KeycloakGroup regardless (ADR-20).
+// project role Group regardless (ADR-20).
 
 // ROLES is the GCP-style primitive role triad, shared with the Project
 // component: the app client defines a role per entry and the project role groups
 // confer the matching one.
 let ROLES = ["owner", "editor", "viewer"]
 
-// KEYCLOAK_NAMESPACE / KEYCLOAK_INSTANCE identify the central KeycloakInstance
-// the app's KeycloakClient references cross-namespace (ReferenceGrant-gated by
+// KEYCLOAK_NAMESPACE / KEYCLOAK_INSTANCE identify the central Instance
+// the app's Client references cross-namespace (ReferenceGrant-gated by
 // the keycloak-instance component, not re-emitted here) — the same instance the
 // Project component references.
 let KEYCLOAK_NAMESPACE = "keycloak" & #RegisteredNamespace
@@ -123,7 +123,7 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 
 	// An app MUST NOT be named the same as its project.  Every app resource here
 	// is named with the bare app name in the project's control namespace, and the
-	// PROJECT component names its own KeycloakClient / Warehouse / Argo CD
+	// PROJECT component names its own Client / Warehouse / Argo CD
 	// Application with the bare PROJECT name in that SAME namespace — so an app
 	// named <project> would collide with the project's own client/warehouse/
 	// application (a silent apply/reconcile-time failure).  Reject it at RENDER:
@@ -163,14 +163,14 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 		labels: "app.kubernetes.io/name": NAME
 	}
 
-	// INSTANCE_REF is the cross-namespace reference the app's KeycloakClient
+	// INSTANCE_REF is the cross-namespace reference the app's Client
 	// carries (ReferenceGrant-gated; namespace differs from the control ns).
 	let INSTANCE_REF = {
 		name:      KEYCLOAK_INSTANCE
 		namespace: KEYCLOAK_NAMESPACE
 	}
 
-	// APP_CLIENT_NAME is the app KeycloakClient CR's metadata.name (the object
+	// APP_CLIENT_NAME is the app Client CR's metadata.name (the object
 	// name the project role groups' clientRoles[].clientRef resolves — NOT the
 	// URL clientId).  Namespaced under the app name so it never collides with the
 	// project's own client (named <project>) in the shared control namespace.
@@ -395,7 +395,7 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 	// required for a confidential client.
 	let KEYCLOAK_CLIENT_RESOURCE = {
 		apiVersion: "keycloak.holos.run/v1alpha1"
-		kind:       "KeycloakClient"
+		kind:       "Client"
 		metadata: {
 			name:      APP_CLIENT_NAME
 			namespace: CTRL_NS
@@ -579,29 +579,29 @@ let ArgoCDNamespace = "argocd" & #RegisteredNamespace
 	//     published <app>-config OCI artifact.  scripts/publish packages ONLY this
 	//     bundle as <app>-config, and the Application's source.path is "." (the
 	//     workload bundle is the artifact root).
-	//   - controlPlaneResources — the Quay Repository, the app KeycloakClient, the
+	//   - controlPlaneResources — the Quay Repository, the app Client, the
 	//     Kargo Warehouse/Stage, and the Argo CD Application ITSELF, applied by the
 	//     operator path (scripts/apply-projects).  These must NOT be in the
 	//     <app>-config artifact: if Argo CD synced them it would try to MANAGE the
-	//     Repository/KeycloakClient/Warehouse/Stage and the Application object that
+	//     Repository/Client/Warehouse/Stage and the Application object that
 	//     points at itself — the second-manager / sync-scope problem (the codex
 	//     round-3 confirming finding).  Keeping them in a SEPARATE artifact
 	//     directory the publish workflow never packages is the fix.
 	workloadResources: #Resources & {
-		Deployment: (NAME):     DEPLOYMENT_RESOURCE
-		Service: (NAME):        SERVICE_RESOURCE
-		HTTPRoute: (NAME):      HTTPROUTE_RESOURCE
-		ConfigMap: (NAME):      CONFIG_MAP_RESOURCE
-		ServiceAccount: (NAME): SERVICE_ACCOUNT_RESOURCE
+		Deployment: (NAME):                                 DEPLOYMENT_RESOURCE
+		Service: (NAME):                                    SERVICE_RESOURCE
+		HTTPRoute: (NAME):                                  HTTPROUTE_RESOURCE
+		ConfigMap: (NAME):                                  CONFIG_MAP_RESOURCE
+		ServiceAccount: (NAME):                             SERVICE_ACCOUNT_RESOURCE
 		RoleBinding: (ROLE_BINDING_RESOURCE.metadata.name): ROLE_BINDING_RESOURCE
 	}
 
 	controlPlaneResources: #Resources & {
-		KeycloakClient: (APP_CLIENT_NAME): KEYCLOAK_CLIENT_RESOURCE
-		Repository: (CONFIG_REPO_NAME):    REPOSITORY_RESOURCE
-		Warehouse: (WAREHOUSE):            WAREHOUSE_RESOURCE
-		Stage: (STAGE):                    STAGE_RESOURCE
-		Application: (ARGOCD_APP_NAME):    APPLICATION_RESOURCE
+		Client: (APP_CLIENT_NAME):      KEYCLOAK_CLIENT_RESOURCE
+		Repository: (CONFIG_REPO_NAME): REPOSITORY_RESOURCE
+		Warehouse: (WAREHOUSE):         WAREHOUSE_RESOURCE
+		Stage: (STAGE):                 STAGE_RESOURCE
+		Application: (ARGOCD_APP_NAME): APPLICATION_RESOURCE
 	}
 }
 
@@ -614,7 +614,7 @@ userDefinedBuildPlan: {
 	//     ServiceAccount/RoleBinding).  scripts/publish packages THIS subtree as
 	//     the <app>-config OCI artifact the app's Argo CD Application syncs.
 	//   clusters/<cluster>/components/application/<app>/control-plane/  — the
-	//     operator-applied control plane (Repository/KeycloakClient/Warehouse/
+	//     operator-applied control plane (Repository/Client/Warehouse/
 	//     Stage/Application).  scripts/apply-projects applies THIS subtree; it is
 	//     NEVER published into the <app>-config artifact (else Argo CD would try to
 	//     manage these objects — the second-manager problem).
@@ -671,7 +671,7 @@ userDefinedBuildPlan: {
 				}
 			}
 
-			(mkBundle & {BUNDLE: "workload", RESOURCES:      APP_RESOURCES.workloadResources}).out
+			(mkBundle & {BUNDLE: "workload", RESOURCES: APP_RESOURCES.workloadResources}).out
 			(mkBundle & {BUNDLE: "control-plane", RESOURCES: APP_RESOURCES.controlPlaneResources}).out
 		}
 	}

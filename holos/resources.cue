@@ -44,7 +44,7 @@ import (
 	AuthorizationPolicy?: [_]: azp.#AuthorizationPolicy
 	// The authenticator.holos.run Backend kind (ADR-23, the Holos Authenticator)
 	// gets an explicit but DELIBERATELY OPEN entry (the trailing `...`), like
-	// Organization / KeycloakClient above and for the same reason: its CRD has no
+	// Organization / Client above and for the same reason: its CRD has no
 	// generated CUE type under cue.mod/gen/ (it lives in api/authenticator/
 	// v1alpha1/).  The openness is SCOPED to this kind, so the generic catch-all
 	// above stays CLOSED and a misspelled Kind still fails render-time validation.
@@ -167,35 +167,35 @@ import (
 	}
 
 	// The keycloak.holos.run Kinds (ADR-20/ADR-24, the shipped Holos Controller's
-	// Keycloak API group — KeycloakInstance/Group/GroupMembership/User/Client) get
+	// Keycloak API group — Instance/Group/GroupMembership/User/Client) get
 	// explicit but DELIBERATELY OPEN entries for the same reason as Organization
 	// above: their CRDs have no generated CUE type under cue.mod/gen/ (they live in
 	// api/keycloak/v1alpha1/).  The openness is SCOPED to these Kinds, so the
 	// generic catch-all stays CLOSED.  The keycloak-instance component
-	// (KeycloakInstance) and the project scaffold (Group/GroupMembership/User/
+	// (Instance) and the project scaffold (Group/GroupMembership/User/
 	// Client) emit these through #Resources.
-	KeycloakInstance?: [_]: {
-		kind: "KeycloakInstance"
+	Instance?: [_]: {
+		kind: "Instance"
 		metadata: name: string
 		...
 	}
-	KeycloakGroup?: [_]: {
-		kind: "KeycloakGroup"
+	Group?: [_]: {
+		kind: "Group"
 		metadata: name: string
 		...
 	}
-	KeycloakGroupMembership?: [_]: {
-		kind: "KeycloakGroupMembership"
+	GroupMembership?: [_]: {
+		kind: "GroupMembership"
 		metadata: name: string
 		...
 	}
-	KeycloakUser?: [_]: {
-		kind: "KeycloakUser"
+	User?: [_]: {
+		kind: "User"
 		metadata: name: string
 		...
 	}
-	KeycloakClient?: [_]: {
-		kind: "KeycloakClient"
+	Client?: [_]: {
+		kind: "Client"
 		metadata: name: string
 		...
 	}
