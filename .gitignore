@@ -43,7 +43,7 @@ go.work.sum
 .idea/
 .vscode/
 .claude/
-.codex/
+.codex
 
 # In-progress download directories created by read-thru-cache scripts.  The
 # EXIT trap removes them, but a SIGKILL bypasses traps and could strand one
